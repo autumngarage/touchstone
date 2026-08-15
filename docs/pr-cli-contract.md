@@ -12,7 +12,7 @@ touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
 touchstone pr status PR
 touchstone pr findings PR
 touchstone pr respond PR --comment-id ID --body-file FILE [--fix-commit SHA]
-touchstone pr merge PR [--head SHA]
+touchstone pr merge PR --head SHA
 ```
 
 Every command accepts `--project DIR` and `--json`. JSON has schema
@@ -41,8 +41,10 @@ command runs a daemon, stores credentials, or persists derived PR state.
   resolved canonical repository and hostname while preserving the single
   reply, resolve, and fresh verification path. Raw equivalent: that script's
   documented invocation.
-- `merge` binds `--match-head-commit` to the live (and optionally caller-
-  expected) head, asks GitHub to merge, and always re-reads actual PR state.
+- `merge` requires the caller's exact reviewed head, binds
+  `--match-head-commit` to it, asks GitHub to merge, and always re-reads actual
+  PR state. A verified merge-queue entry or enabled auto-merge request is a
+  successful queued result, distinct from an already completed merge.
   It does not reconstruct the ruleset, review, or conversation verdict before
   the mutation; GitHub alone decides whether the merge is allowed. Raw
   equivalent: `gh pr merge --squash --match-head-commit SHA`, then

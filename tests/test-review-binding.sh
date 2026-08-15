@@ -529,7 +529,10 @@ value_after() {
 }
 
 case "$1 ${2:-}" in
-  "auth status") [ "${GH_MODE:-ok}" != auth_fail ] ;;
+  "auth status")
+    [ "${GH_MODE:-ok}" != auth_fail ]
+    [ "${GH_MODE:-ok}" != auth_unrelated ] || has '--hostname' "$@"
+    ;;
   "repo view")
     [ "${GH_MODE:-ok}" != success_stderr ] || printf 'repo debug detail\n' >&2
     if [ -n "${GH_REPO:-}" ]; then
@@ -589,6 +592,7 @@ case "$1 ${2:-}" in
     ;;
   "pr merge")
     if [ "${GH_MODE:-ok}" = merge_failed ]; then exit 1; fi
+    case "${GH_MODE:-ok}" in merge_queue | auto_merge) exit 0 ;; esac
     touch "$GH_STATE/merged"
     [ "${GH_MODE:-ok}" != merge_lied ] || exit 1
     ;;
@@ -597,7 +601,17 @@ case "$1 ${2:-}" in
     ;;
   "api user") printf '%s\n' alice ;;
   "api graphql")
-    if has 'resolveReviewThread' "$@"; then
+    if has 'mergeQueueEntry' "$@"; then
+      if [ -f "$GH_STATE/merged" ]; then
+        printf 'MERGED\thttps://example.test/pr/7\tfalse\t\n'
+      elif [ "${GH_MODE:-ok}" = merge_queue ]; then
+        printf 'OPEN\thttps://example.test/pr/7\tfalse\tQUEUED\n'
+      elif [ "${GH_MODE:-ok}" = auto_merge ]; then
+        printf 'OPEN\thttps://example.test/pr/7\ttrue\t\n'
+      else
+        printf 'OPEN\thttps://example.test/pr/7\tfalse\t\n'
+      fi
+    elif has 'resolveReviewThread' "$@"; then
       printf '%s\n' true
     elif has 'node(id:' "$@"; then
       printf '%s\n' true
@@ -615,12 +629,26 @@ case "$1 ${2:-}" in
     if has '/issues/7/comments' "$@"; then
       if [ "${GH_MODE:-ok}" = many_requests ]; then
         for index in $(awk 'BEGIN { for (i = 1; i <= 4000; i++) print i }'); do
-          printf 'https://example.test/pr/7#issuecomment-%s\t%s\n' "$index" \
+          printf 'https://example.test/pr/7#issuecomment-%s\talice\t%s\n' "$index" \
             "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
         done
+      elif [ "${GH_MODE:-ok}" = spoofed_request ]; then
+        printf '%s\tmallory\t%s\n' 'https://example.test/pr/7#issuecomment-spoofed' \
+          "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
+        if [ -f "$GH_STATE/review-request" ]; then
+          printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-1' \
+            "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
+        fi
+      elif [ "${GH_MODE:-ok}" = marker_only ]; then
+        printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-marker' \
+          "<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
+        if [ -f "$GH_STATE/review-request" ]; then
+          printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-1' \
+            "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
+        fi
       elif [ -f "$GH_STATE/review-request" ]; then
         read -r saved_head saved_base saved_base_sha <"$GH_STATE/review-request"
-        printf '%s\t%s\n' 'https://example.test/pr/7#issuecomment-1' \
+        printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-1' \
           "@codex review\\n\\n<!-- touchstone:pr-open head=$saved_head base=$saved_base base_sha=$saved_base_sha -->"
       fi
     elif has '/reviews?per_page=100' "$@"; then
@@ -692,6 +720,9 @@ EOF
   GH_MODE=auth_fail run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 1
   assert_not_has "$TMP/out" '"status":"observed"'
+  GH_MODE=auth_unrelated run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'auth status --hostname github.com'
 
   echo "==> open refuses head drift and reconciles a lying creation response"
   rm -f "$TMP/state/pr-exists" "$TMP/state/review-request"
@@ -738,6 +769,14 @@ EOF
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewRequest":"existing:'
   [ "$(grep -c '^pr comment' "$GH_CALLS" || true)" -eq 0 ] || fail "rerun duplicated the review request"
+  rm -f "$TMP/state/review-request"
+  GH_MODE=spoofed_request run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  [ "$(grep -c '^pr comment' "$GH_CALLS")" -eq 1 ] || fail "spoofed marker suppressed the real review request"
+  rm -f "$TMP/state/review-request"
+  GH_MODE=marker_only run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  [ "$(grep -c '^pr comment' "$GH_CALLS")" -eq 1 ] || fail "marker without trigger suppressed the real review request"
   GH_MODE=many_requests run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewRequest":"existing:https://example.test/pr/7#issuecomment-1"'
@@ -790,6 +829,9 @@ EOF
 
   echo "==> merge binds the head, delegates the verdict, and verifies actual state"
   rm -f "$TMP/state/merged"
+  run_pr "$TMP/out" merge 7 --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'merge requires --head SHA'
   run_pr "$TMP/out" merge 7 --head wrong --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'expected head wrong'
@@ -804,11 +846,19 @@ EOF
   assert_has "$TMP/out" '"status":"already-merged"'
   assert_not_has "$GH_CALLS" 'pr merge'
 
+  rm -f "$TMP/state/merged"
+  GH_MODE=merge_queue run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"queued"'
+  GH_MODE=auto_merge run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"auto-merge-enabled"'
+
   echo "==> an unsuccessful mutation never claims a merge"
   rm -f "$TMP/state/merged"
   GH_MODE=merge_failed run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 1
-  assert_has "$TMP/out" 'GitHub did not merge'
+  assert_has "$TMP/out" 'GitHub did not accept merge'
   assert_not_has "$TMP/out" '"status":"merged"'
 
   if [ "$ERRORS" -gt 0 ]; then

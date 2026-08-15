@@ -42,7 +42,7 @@ Usage:
   touchstone pr status PR [--project DIR] [--json]
   touchstone pr findings PR [--project DIR] [--json]
   touchstone pr respond PR --comment-id ID --body-file FILE [--fix-commit SHA] [--project DIR] [--json]
-  touchstone pr merge PR [--head SHA] [--project DIR] [--json]
+  touchstone pr merge PR --head SHA [--project DIR] [--json]
 EOF
   exit 2
 }
@@ -274,8 +274,6 @@ git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1 \
   || fail_input "project is not a Git repository" "Initialize the project before using PR commands."
 command -v gh >/dev/null 2>&1 \
   || fail_operation "GitHub CLI is unavailable" "Install and authenticate gh."
-gh auth status >/dev/null 2>&1 \
-  || fail_operation "GitHub authentication failed" "Run 'gh auth login' and retry."
 read_with_retry read_repository \
   || fail_operation "could not resolve the canonical base repository: $READ_OUTPUT" "Verify origin and GitHub access."
 IFS="$(printf '\t')" read -r REPO REPO_URL <<<"$READ_OUTPUT"
@@ -288,6 +286,8 @@ case "$REPO_URL" in
   *) fail_operation "GitHub returned an invalid repository URL" "Expected an HTTP(S) repository URL, got '$REPO_URL'." ;;
 esac
 REPO_SPEC="$REPO_HOST/$REPO"
+gh auth status --hostname "$REPO_HOST" >/dev/null 2>&1 \
+  || fail_operation "GitHub authentication failed for $REPO_HOST" "Run 'gh auth login --hostname $REPO_HOST' and retry."
 
 emit_open_result() {
   local state="$1" number="$2" url="$3" head="$4" request="$5"
@@ -307,7 +307,7 @@ emit_open_result() {
 
 open_pr() {
   local branch local_head remote_line remote_head rows count number url pr_head pr_base pr_base_sha create_output create_status=0
-  local request_marker request_head_marker comment_rows existing_request moved_request request_body request_url request_rows state
+  local request_marker request_head_marker comment_rows existing_request moved_request request_body request_url request_rows state request_author
   [ -n "$TITLE" ] || fail_input "open requires --title" "Pass the PR title explicitly."
   [ -f "$BODY_FILE" ] && [ -s "$BODY_FILE" ] \
     || fail_input "open requires a non-empty --body-file" "Put the reviewed PR description in that file."
@@ -360,19 +360,24 @@ open_pr() {
     || fail_operation "GitHub returned no base SHA for PR #$number" "Retry after GitHub returns the complete PR binding."
   request_marker="<!-- touchstone:pr-open head=$local_head base=$pr_base base_sha=$pr_base_sha -->"
   request_head_marker="<!-- touchstone:pr-open head=$local_head "
+  read_with_retry gh api user --hostname "$REPO_HOST" --jq '.login' \
+    || fail_operation "could not resolve the authenticated user: $READ_OUTPUT" "Verify authentication for $REPO_HOST."
+  request_author="$READ_OUTPUT"
+  [ -n "$request_author" ] \
+    || fail_operation "GitHub returned no authenticated login" "Re-authenticate to $REPO_HOST."
   read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$number/comments" \
-    --jq '.[] | [.html_url, (.body // "")] | @tsv' \
+    --jq '.[] | [.html_url, (.user.login // ""), (.body // "")] | @tsv' \
     || fail_operation "could not inspect prior review requests: $READ_OUTPUT" "Retry without posting a duplicate."
   comment_rows="$READ_OUTPUT"
-  existing_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$request_marker" \
-    'index($2, marker) { print $1 }')"
+  existing_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$request_marker" -v author="$request_author" \
+    '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
   if [ -n "$existing_request" ]; then
     request_url="$(printf '%s\n' "$existing_request" | sed -n '1p')"
     emit_open_result "$state" "$number" "$url" "$local_head" "existing:$request_url"
     return 0
   fi
-  moved_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$request_head_marker" \
-    'index($2, marker) { print $1 }')"
+  moved_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$request_head_marker" -v author="$request_author" \
+    '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
   [ -z "$moved_request" ] \
     || fail_input "this head already has a review request for different base coordinates" \
       "Wait for that request to finish, then integrate or use the documented raw recovery path."
@@ -385,12 +390,12 @@ $request_marker"
     fail_operation "could not post the review request: $CAPTURE_ERROR" "Inspect comments before retrying."
   fi
   read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$number/comments" \
-    --jq '.[] | [.html_url, (.body // "")] | @tsv' \
+    --jq '.[] | [.html_url, (.user.login // ""), (.body // "")] | @tsv' \
     || fail_operation "review request returned $request_url but its surviving state could not be read: $READ_OUTPUT" \
       "Inspect comments before retrying."
   request_rows="$READ_OUTPUT"
-  printf '%s\n' "$request_rows" | awk -F '\t' -v url="$request_url" -v marker="$request_marker" \
-    '$1 == url && index($2, marker) { found=1 } END { exit !found }' \
+  printf '%s\n' "$request_rows" | awk -F '\t' -v url="$request_url" -v marker="$request_marker" -v author="$request_author" \
+    '$1 == url && $2 == author && index($3, "@codex review") && index($3, marker) { found=1 } END { exit !found }' \
     || fail_operation "review request returned $request_url but was not verified" \
       "Inspect comments before retrying; a rerun will reuse a surviving exact-binding request."
   emit_open_result "$state" "$number" "$url" "$local_head" "posted:$request_url"
@@ -486,26 +491,36 @@ respond_pr() {
 
 merge_pr() {
   local number state url head base base_sha merge_state draft merge_output merge_status=0
-  local final_row
+  local final_row auto_merge queue_state
+  [ -n "$EXPECTED_HEAD" ] \
+    || fail_input "merge requires --head SHA" "Pass the exact reviewed head from GitHub."
   read_pr_row
   IFS="$(printf '\t')" read -r number state url head base base_sha merge_state draft <<<"$PR_ROW"
-  if [ -n "$EXPECTED_HEAD" ] && [ "$EXPECTED_HEAD" != "$head" ]; then
+  if [ "$EXPECTED_HEAD" != "$head" ]; then
     fail_input "expected head $EXPECTED_HEAD but PR #$PR_NUMBER is at $head" "Re-review the live head."
   fi
-  EXPECTED_HEAD="$head"
   if [ "$state" = MERGED ]; then
     final_state=already-merged
   else
     [ "$state" = OPEN ] || fail_input "PR #$PR_NUMBER is $state" "Only an open or merged PR is supported."
     merge_output="$(cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash \
       --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
-    read_with_retry gh pr view "$PR_NUMBER" --repo "$REPO_SPEC" --json state,url --jq '[.state,.url] | @tsv' \
+    read_with_retry gh api graphql --hostname "$REPO_HOST" \
+      -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F pr="$PR_NUMBER" \
+      -f query='query($owner: String!, $name: String!, $pr: Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$pr) { state url autoMergeRequest { enabledAt } mergeQueueEntry { state } } } }' \
+      --jq '[.data.repository.pullRequest.state,.data.repository.pullRequest.url,(.data.repository.pullRequest.autoMergeRequest != null),(.data.repository.pullRequest.mergeQueueEntry.state // "")] | @tsv' \
       || fail_operation "merge returned $merge_status and final state could not be read: $READ_OUTPUT" "Inspect GitHub."
     final_row="$READ_OUTPUT"
-    IFS="$(printf '\t')" read -r state _ <<<"$final_row"
-    [ "$state" = MERGED ] \
-      || fail_operation "GitHub did not merge PR #$PR_NUMBER: $merge_output" "The repository ruleset remains authoritative."
-    final_state=merged
+    IFS="$(printf '\t')" read -r state _ auto_merge queue_state <<<"$final_row"
+    if [ "$state" = MERGED ]; then
+      final_state=merged
+    elif [ "$state" = OPEN ] && [ -n "$queue_state" ]; then
+      final_state=queued
+    elif [ "$state" = OPEN ] && [ "$auto_merge" = true ]; then
+      final_state=auto-merge-enabled
+    else
+      fail_operation "GitHub did not accept merge for PR #$PR_NUMBER: $merge_output" "The repository ruleset remains authoritative."
+    fi
   fi
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"merge","status":"%s","pullRequest":%s,"head":' \
