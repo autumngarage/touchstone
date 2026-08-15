@@ -32,6 +32,12 @@ python_has_unverifiable_build_hook() {
           value != "hatchling.build" && value != "flit_core.buildapi" &&
           value != "poetry.core.masonry.api" && value != "uv_build") unsafe=1
     }
+    normalized_section == "" {
+      compact = $0
+      sub(/[[:space:]]*#.*/, "", compact)
+      gsub(/[[:space:]"\047]/, "", compact)
+      if (compact ~ /^build-system[.](build-backend|backend-path)=/) unsafe=1
+    }
     END { exit !unsafe }
   ' "$file"
 }
@@ -209,7 +215,7 @@ python_project_dependencies_valid() {
   local file="$1"
   awk '
     function requirement_valid(value) {
-      return value ~ /^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._-]+([[:space:]]*,[[:space:]]*[A-Za-z0-9._-]+)*\])?([[:space:]]*(===|==|~=|!=|<=|>=|<|>)[[:space:]]*[A-Za-z0-9*+._!-]+([[:space:]]*,[[:space:]]*(===|==|~=|!=|<=|>=|<|>)[[:space:]]*[A-Za-z0-9*+._!-]+)*)?$/
+      return value ~ /^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._-]+([[:space:]]*,[[:space:]]*[A-Za-z0-9._-]+)*\])?([[:space:]]*(==|~=|!=|<=|>=|<|>)[[:space:]]*[0-9]+([.][0-9]+)*([[:space:]]*,[[:space:]]*(==|~=|!=|<=|>=|<|>)[[:space:]]*[0-9]+([.][0-9]+)*)*)?$/
     }
     function scan(value, position, character) {
       for (position = 1; position <= length(value); position++) {
