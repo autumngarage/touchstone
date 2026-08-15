@@ -11,7 +11,7 @@ OUTPUT_SCHEMA="touchstone.tracker/v1"
 JSON_MODE=false
 PROJECT_ARG=""
 OPERATION="${1:-}"
-REFERENCE="${2:-}"
+REFERENCE=""
 TRACKER=""
 KEY_PREFIX=""
 TRACKER_SCHEMA_SEEN=false
@@ -165,8 +165,8 @@ normalize_reference() {
 claim_github() {
   local output rc partial
   if ! command -v gh >/dev/null 2>&1; then
-    emit failed transport-unavailable "Install and authenticate the gh CLI."
-    exit 1
+    emit unverifiable transport-unavailable "Install and authenticate the gh CLI."
+    exit 3
   fi
   set +e
   output="$(cd "$PROJECT_ROOT" && bash "$SCRIPT_ROOT/claim-issue.sh" "$ISSUE_ID" 2>&1)"
@@ -186,16 +186,12 @@ claim_linear() {
   exit 3
 }
 
-case "$OPERATION" in claim) ;; *)
+case "$OPERATION" in -h | --help)
   usage
-  exit 2
+  exit 0
   ;;
 esac
-[ -n "$REFERENCE" ] || {
-  usage
-  exit 2
-}
-shift 2
+[ "$#" -eq 0 ] || shift
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --json)
@@ -211,11 +207,23 @@ while [ "$#" -gt 0 ]; do
       usage
       exit 0
       ;;
-    *)
+    --*)
       fail_input unknown-argument "Remove unsupported argument '$1'."
+      ;;
+    *)
+      [ -z "$REFERENCE" ] || fail_input unexpected-positional "Pass exactly one issue reference."
+      REFERENCE="$1"
+      shift
       ;;
   esac
 done
+
+case "$OPERATION" in claim) ;; *)
+  usage
+  exit 2
+  ;;
+esac
+[ -n "$REFERENCE" ] || fail_input missing-reference "Pass the configured tracker issue after '$OPERATION'."
 
 if [ -n "$PROJECT_ARG" ]; then
   PROJECT_ROOT="$(cd "$PROJECT_ARG" 2>/dev/null && pwd -P)" || {

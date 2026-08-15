@@ -363,6 +363,15 @@ EOF
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" '"reason":"missing-option-value"'
   assert_json "$TMP/out"
+  run_adapter "$TMP/out" claim --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"reason":"missing-reference"'
+  assert_json "$TMP/out"
+  PATH=/usr/bin:/bin run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 3
+  assert_has "$TMP/out" '"status":"unverifiable"'
+  assert_has "$TMP/out" '"reason":"transport-unavailable"'
+  assert_json "$TMP/out"
 
   echo "==> malformed, old-compatible, and unsupported tracker declarations are explicit"
   cp "$TMP/github/.touchstone-tracker.toml" "$TMP/github/tracker-good"
