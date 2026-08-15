@@ -62,6 +62,7 @@ touchstone/
 | `principles/git-workflow.md` | The full delivery sequence in raw `git` + `gh`, including thread resolution |
 | `scripts/respond-review.sh` | Reply to a review finding and resolve its thread in one step (GitHub needs four API calls) |
 | `scripts/touchstone-tracker.sh` | Versioned tracker-neutral verified claim adapter |
+| `scripts/touchstone-pr.sh` | Source entrypoint for bounded PR open and status operations |
 | `scripts/claim-issue.sh` | GitHub transport used by the tracker adapter |
 | `hooks/branch-guard.sh` | Refuses `git commit` on the default branch at the Claude tool boundary |
 | `tests/test-steering-size-caps.sh` | Steering size caps plus path integrity — every path the docs name must exist |
@@ -70,7 +71,10 @@ Release history lives in `git log` and `gh release list` — there is no `CHANGE
 
 ## Delivery
 
-There is no wrapper. Ship with `git` and `gh` directly, as `TOUCHSTONE.md` and `principles/git-workflow.md` describe. That is the current state by design: the acceptance test for the strip is that a change ships end-to-end on the bare commands, and whatever proves awkward is the specification for the CLI that replaces them.
+Raw `git` and `gh` remain the active delivery workflow until distribution
+lands. In this source checkout, `bash bin/touchstone pr open|status` exercises
+the two bounded operations; `docs/pr-cli-contract.md` records their stable
+schema and exact raw equivalents.
 
 ## Distribution — currently absent
 

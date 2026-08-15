@@ -65,7 +65,8 @@ reference parsing or claim verification, and it has no implicit
 Linear equivalent. A tracker-specific exception must remain visible in that
 tracker and in the PR.
 
-Claiming is delivery discipline, not merge adjudication. The future
-`touchstone pr` commands may sequence this adapter, but GitHub remains
-the authority for PR checks, review evidence, conversation resolution, and the
-merge result.
+Claiming and reconciliation are delivery discipline, not merge adjudication.
+The claim adapter does not infer repository identity for tracker mutations;
+drivers reconcile through the configured tracker's API or CLI. `touchstone pr`
+sequences GitHub delivery only. GitHub remains the authority for PR checks,
+review evidence, conversation resolution, and the merge result.
