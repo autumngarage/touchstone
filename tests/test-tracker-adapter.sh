@@ -22,8 +22,16 @@ git -C "$TMP/github" init -q
 git -C "$TMP/linear" init -q
 git -C "$TMP/github" remote add origin git@github.com:autumngarage/current.git
 git -C "$TMP/linear" remote add origin https://github.com/autumngarage/current.git
-printf '%s\n' 'schema = 1' '' '[tracker]' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone.toml"
-printf '%s\n' 'schema = 1' '' '[tracker]' 'schema = 1' 'type = "linear"' 'key_prefix = "AUT"' >"$TMP/linear/.touchstone.toml"
+printf '%s\n' 'schema = 1' '' '[tracker]' 'schema = 1' 'type = "github"' \
+  '' '[validation]' 'runtime = "bash"' \
+  '' '[[validation.targets]]' 'name = "root"' 'path = "."' \
+  '' '[[validation.tasks]]' 'name = "test"' 'target = "root"' \
+  'command = "true"' 'required = true' >"$TMP/github/.touchstone.toml"
+printf '%s\n' 'schema = 1' '' '[tracker]' 'schema = 1' 'type = "linear"' 'key_prefix = "AUT"' \
+  '' '[validation]' 'runtime = "bash"' \
+  '' '[[validation.targets]]' 'name = "root"' 'path = "."' \
+  '' '[[validation.tasks]]' 'name = "test"' 'target = "root"' \
+  'command = "true"' 'required = true' >"$TMP/linear/.touchstone.toml"
 
 cat >"$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -209,6 +217,7 @@ assert_has "$TMP/out" 'verify the issue remains open'
 echo "==> malformed, old-compatible, and unsupported tracker declarations are explicit"
 cp "$TMP/github/.touchstone.toml" "$TMP/github/config-good"
 printf '%s\n' 'schema = 1' >"$TMP/github/.touchstone.toml"
+sed -n '/^\[validation\]/,$p' "$TMP/github/config-good" >>"$TMP/github/.touchstone.toml"
 : >"$GH_STATE"
 run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
 assert_rc "$RUN_RC" 0
@@ -245,6 +254,15 @@ run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
 assert_rc "$RUN_RC" 2
 assert_has "$TMP/out" 'duplicate-tracker-table'
 mv "$TMP/github/config-good" "$TMP/github/.touchstone.toml"
+
+echo "==> tracker mutations require a valid project contract"
+printf '%s\n' 'schema = 1' '' '[tracker]' 'schema = 1' 'type = "github"' \
+  '' '[validation]' 'runtime = "bash"' >"$TMP/github/.touchstone.toml"
+: >"$GH_CALLS"
+run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+assert_rc "$RUN_RC" 2
+assert_has "$TMP/out" 'invalid-project-contract'
+assert_not_has "$GH_CALLS" 'issue edit'
 
 if [ "$ERRORS" -gt 0 ]; then
   echo "==> FAIL: $ERRORS tracker adapter assertion(s) failed" >&2

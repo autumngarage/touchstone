@@ -178,6 +178,17 @@ load_tracker() {
   fi
 }
 
+validate_project_contract() {
+  local output status
+  set +e
+  output="$(bash "$SCRIPT_ROOT/touchstone-run.sh" validate --check-contract \
+    --project "$PROJECT_ROOT" 2>&1)"
+  status=$?
+  set -e
+  [ "$status" -eq 0 ] \
+    || fail_input invalid-project-contract "$output"
+}
+
 normalize_reference() {
   local raw="$REFERENCE"
   case "$TRACKER" in
@@ -430,6 +441,7 @@ fi
 SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 
 load_tracker
+validate_project_contract
 normalize_reference
 
 if [ "$OPERATION" = claim ]; then
