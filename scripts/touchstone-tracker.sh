@@ -316,7 +316,20 @@ reconcile_github() {
     emit failed github-comment-unverified "The mutation returned $note_url, but the paginated issue timeline did not verify it." true
     exit 1
   fi
-  if [ "$DISPOSITION" = stale ]; then
+  if [ "$DISPOSITION" = partial ]; then
+    set +e
+    state="$(cd "$PROJECT_ROOT" && gh issue view "$ISSUE_ID" --json state --jq '.state' 2>/dev/null)"
+    verification_status=$?
+    set -e
+    if [ "$verification_status" -ne 0 ]; then
+      emit failed github-open-verification-failed "The comment was created at $note_url, but reading $REFERENCE final state failed." true
+      exit 1
+    fi
+    if [ "$state" != OPEN ]; then
+      emit failed github-open-unverified "The comment was created at $note_url, but $REFERENCE was not verified open." true
+      exit 1
+    fi
+  elif [ "$DISPOSITION" = stale ]; then
     if ! (cd "$PROJECT_ROOT" && gh issue close "$ISSUE_ID" >/dev/null 2>&1); then
       emit failed github-close-failed "The comment was created at $note_url, but closing $REFERENCE failed; retry only the close after inspecting the issue." true
       exit 1
