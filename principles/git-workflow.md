@@ -20,18 +20,19 @@ verdict or make the raw recovery path unavailable.
 
 **If you've already pushed**, the standard ship path is broken. Don't try to rewrite history on the default branch. Disclose the slip in the next PR (see "Emergency path" below) and carry on — the commit is now part of history, and the audit trail captures what happened.
 
-**The mechanical guardrails** that back this rule:
+**Local guardrails are optional feedback, not authority.** A repository may
+configure a driver hook or pre-commit hook that refuses commits on its default
+branch. Inspect the repository before relying on either integration; their
+absence never changes the branching rule, and `git commit --no-verify` bypasses
+pre-commit feedback only.
 
-- `hooks/branch-guard.sh` runs as a Claude Code `PreToolUse` hook and refuses a `git commit` invocation on the default branch before the tool call runs at all.
-- The `no-commit-to-branch` hook in `.pre-commit-config.yaml` is configured with `--branch main --branch master`. It runs at `pre-commit` stage and refuses the commit outright. `git commit --no-verify` bypasses this local feedback only.
 - Where the repository's effective policy contains the Touchstone organization
   ruleset, GitHub requires the change to go through a PR and rejects direct
   pushes to `main`, including from organization admins.
 
-The layers are complementary: the tool-boundary hook catches the intent and
-the local hook catches the honest mistake before it becomes a commit. Where
-the repository's effective policy contains the Touchstone ruleset, GitHub also
-rejects direct pushes at the server.
+Local feedback and server policy are complementary when both are present.
+Missing local hooks do not change the branching rule; where effective GitHub
+policy contains the Touchstone ruleset, the server rejects direct pushes.
 
 ## The lifecycle
 
@@ -40,7 +41,7 @@ rejects direct pushes at the server.
 3. **Check the tree before changing it.** Run `git status --short` and `git branch --show-current` before starting implementation. If the tree is dirty with unrelated user changes, do not stash them and do not auto-commit on the user's behalf. Ask how to proceed, or branch around the changes when the file surfaces are disjoint. `git stash` is hidden multi-agent state, not a coordination mechanism.
 4. **Loop: change → commit → push.** Each meaningful sub-task gets its own commit and push. Stage explicit file paths (not `git add -A`), write a concise message, push to the open branch.
 5. **Ship.** Push and open the PR — see "Opening a PR" below.
-6. **Answer every piece of PR feedback before merging.** Reply to each comment and resolve its thread, whoever left it. Unresolved threads genuinely block the merge — `required_conversation_resolution` is on, so this one GitHub enforces.
+6. **Answer every piece of PR feedback before merging.** Reply to each comment and resolve its thread, whoever left it. Where effective policy requires conversation resolution, GitHub blocks unresolved threads; elsewhere resolving them remains mandatory driver procedure.
 7. **Merge**, bound to the head the review actually saw — see "Merging" below.
 8. **Clean up after merge.** Delete the local feature branch once the PR is merged.
 
@@ -136,14 +137,16 @@ conversation resolution separately requires every inline thread closed.
 
 ## Answering findings
 
-Answer each finding with the canonical response command instead of hand-rolling API calls:
+Answer each finding with the public response command:
 
 ```bash
-bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file> [--fix-commit <sha>]
-bash scripts/respond-review.sh <pr> --all-resolved-check
+touchstone pr respond <pr> --comment-id <id> --body-file <file> [--fix-commit <sha>]
+touchstone pr findings <pr>
 ```
 
-It posts the threaded reply, resolves the thread, and verifies the resolution stuck, with bounded retries for transient API failures. GitHub needs four separate calls to do this correctly, which is why it is a script rather than a line of prose.
+`respond` posts the threaded reply, resolves the mapped thread, and verifies the
+resolution. `findings` reads the complete paginated surface so the driver can
+prove every item has been handled.
 
 The raw equivalent, if you need it: reply with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<id>/replies -f body=@<file>`, then resolve with the GraphQL mutation:
 
@@ -462,9 +465,12 @@ assignments are worse than no assignment at all.
 **For bundles.** When one lane closes multiple items, claim and comment on all
 of them with the same branch reference.
 
-**Deterministic enforcement.** `.github/workflows/issue-claim-check.yml` runs on every `pull_request` open/edit/synchronize. It parses `Closes #N` / `Fixes #N` / `Resolves #N` / `Closes-issue: #N` from the PR body, fetches each open referenced issue, and fails the check if the PR author is not in the issue's assignees. The failure posts a comment on the PR explaining what to fix. `scripts/issue-claim-check.sh` is the same check, runnable locally before you push.
-
-**Bypass token: `[skip-claim-check]`.** For documented exemptions (drive-by typo fix, true emergency, sandbox PR you don't intend to merge), put the literal token in the PR body. The CI check sees the token and skips with a workflow-run note, leaving an audit trail. This is a documented escape hatch, not a daily shortcut.
+**Enforcement is repository policy, not a prose assumption.** Where effective
+GitHub policy includes an issue-claim check, it may parse closing references,
+verify assignees, and document a repository-specific bypass. Inspect that
+policy before relying on either behavior. Without such a check, the
+claim-and-reconcile discipline remains mandatory driver procedure; there is no
+universal bypass token.
 
 ## Parallel work with worktrees
 

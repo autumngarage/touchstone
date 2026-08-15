@@ -62,3 +62,10 @@ required-workflow scenarios use the permanent
 `autumngarage/touchstone-policy-canary` repository documented in
 `policy/github/README.md`; the canary is retained for future policy and
 validation tests.
+
+The workflow adapter installs no unrelated package or lint toolchain. A
+project's declared `validation.setup` may provision that project's own locked
+dependencies; it is executable project policy and is evaluated with the same
+failure semantics as every other declared command. Touchstone's own required
+test remains offline, while consumer projects own the availability and
+determinism of their intrinsic dependencies.

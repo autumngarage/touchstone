@@ -53,7 +53,8 @@ for file in \
   # a squash merge, because GitHub reads the PR body. Nothing warns you.
   assert_contains "$file" "PR body"
   assert_contains "$file" "Answer every piece of PR feedback before merging"
-  assert_contains "$file" "scripts/respond-review.sh"
+  assert_contains "$file" "touchstone pr findings"
+  assert_contains "$file" "touchstone pr respond"
   assert_not_contains "$file" "touchstone worker"
   assert_contains "$file" "Claim tracked work before implementation"
   assert_contains "$file" "configured tracker's race-safe claim"
@@ -126,7 +127,7 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   # bind, and merge the ordinary review first.
   assert_contains "$file" 'gh pr comment <n> --body "@codex review"'
   assert_contains "$file" "headRefOid"
-  assert_contains "$file" "scripts/respond-review.sh"
+  assert_contains "$file" "touchstone pr respond"
   assert_contains "$file" "--match-head-commit"
   assert_contains "$file" "submitted, accepted, and completed states"
   assert_contains "$file" "PR conversation comments"

@@ -1087,4 +1087,294 @@ mkdir -p "$PLAN_RECORDS/project/packages/web"
   }
 ) || fail "adoption plan-record invariant failed"
 
+echo "==> adoption plans once, applies safely, and compiles only portfolio evidence"
+ADOPTION="$TMP_DIR/adoption"
+mkdir -p "$ADOPTION"
+
+new_adoption_repo() {
+  local directory="$1"
+  mkdir -p "$directory"
+  git -C "$directory" init -q -b main
+  git -C "$directory" config user.name test
+  git -C "$directory" config user.email test@example.com
+  printf '# Consumer\n\nProject-owned guidance.\n' >"$directory/AGENTS.md"
+  git -C "$directory" add AGENTS.md
+  git -C "$directory" commit -qm fixture
+}
+
+run_adoption() {
+  local output="$1"
+  shift
+  set +e
+  bash "$ROOT/bin/touchstone" "$@" >"$output" 2>"$output.err"
+  ADOPTION_STATUS=$?
+  set -e
+}
+
+MANUAL="$ADOPTION/manual"
+new_adoption_repo "$MANUAL"
+git -C "$MANUAL" switch -qc feat/adopt
+run_adoption "$ADOPTION/empty-project.json" adopt --dry-run --json \
+  --project '' --project "$MANUAL" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 2 ] || fail "explicitly empty adoption project was accepted"
+assert_contains "$ADOPTION/empty-project.json" '"status":"invalid-invocation"'
+assert_contains "$ADOPTION/empty-project.json" 'missing value for --project'
+run_adoption "$ADOPTION/manual-one.json" adopt --dry-run --json --project "$MANUAL" \
+  --tracker linear --tracker-prefix AUT --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "manual adoption dry-run failed"
+assert_contains "$ADOPTION/manual-one.json" '"schema":"touchstone.adoption/v1"'
+assert_contains "$ADOPTION/manual-one.json" '"profile":"manual"'
+assert_contains "$ADOPTION/manual-one.json" '"path":".touchstone.toml"'
+assert_contains "$ADOPTION/manual-one.json" '"path":".touchstone-tracker.toml"'
+assert_contains "$ADOPTION/manual-one.json" '"remotePolicy":{"status":"separate-operation"}'
+assert_contains "$ADOPTION/manual-one.json" 'type = \"linear\"'
+assert_contains "$ADOPTION/manual-one.json" 'key_prefix = \"AUT\"'
+[ ! -e "$MANUAL/.touchstone.toml" ] || fail "adoption dry-run mutated the repository"
+run_adoption "$ADOPTION/manual-two.json" adopt --dry-run --json --project "$MANUAL" \
+  --tracker linear --tracker-prefix AUT --task 'verify=true'
+cmp -s "$ADOPTION/manual-one.json" "$ADOPTION/manual-two.json" \
+  || fail "unchanged adoption inputs produced a different JSON plan"
+
+run_adoption "$ADOPTION/manual-check.json" adopt --check --json --project "$MANUAL" \
+  --tracker linear --tracker-prefix AUT --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 3 ] || fail "adoption check did not report required changes"
+[ ! -e "$MANUAL/.touchstone.toml" ] || fail "adoption check mutated the repository"
+
+git -C "$MANUAL" switch -q main
+run_adoption "$ADOPTION/default-apply.out" adopt --project "$MANUAL" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "default-branch adoption apply was accepted"
+[ ! -e "$MANUAL/.touchstone.toml" ] || fail "default-branch refusal left a partial write"
+git -C "$MANUAL" switch -q feat/adopt
+printf 'dirty\n' >"$MANUAL/untracked"
+run_adoption "$ADOPTION/dirty-apply.out" adopt --project "$MANUAL" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "dirty adoption apply was accepted"
+[ ! -e "$MANUAL/.touchstone.toml" ] || fail "dirty refusal left a partial write"
+rm "$MANUAL/untracked"
+
+ROLLBACK="$ADOPTION/rollback"
+new_adoption_repo "$ROLLBACK"
+git -C "$ROLLBACK" switch -qc feat/adopt
+rollback_agents_hash="$(git -C "$ROLLBACK" hash-object AGENTS.md)"
+mkdir -p "$ADOPTION/fake-git"
+cat >"$ADOPTION/fake-git/git" <<'EOF'
+#!/usr/bin/env bash
+set -u
+is_apply=false
+is_check=false
+for argument in "$@"; do
+	[ "$argument" != apply ] || is_apply=true
+	[ "$argument" != --check ] || is_check=true
+done
+"$ADOPTION_REAL_GIT" "$@"
+status=$?
+if [ "$status" -eq 0 ] && [ "$is_apply" = true ] && [ "$is_check" = false ] &&
+	[ "${ADOPTION_FAIL_AFTER_APPLY:-}" = 1 ]; then
+	exit 97
+fi
+exit "$status"
+EOF
+chmod +x "$ADOPTION/fake-git/git"
+ADOPTION_REAL_GIT="$(command -v git)"
+original_path="$PATH"
+export ADOPTION_REAL_GIT ADOPTION_FAIL_AFTER_APPLY=1 PATH="$ADOPTION/fake-git:$PATH"
+run_adoption "$ADOPTION/rollback.out" adopt --project "$ROLLBACK" --task 'verify=true'
+PATH="$original_path"
+unset ADOPTION_FAIL_AFTER_APPLY ADOPTION_REAL_GIT
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "ambiguous apply failure did not report an operational failure"
+[ "$rollback_agents_hash" = "$(git -C "$ROLLBACK" hash-object AGENTS.md)" ] \
+  || fail "apply recovery did not restore project-owned prose"
+[ ! -e "$ROLLBACK/.touchstone.toml" ] || fail "apply recovery retained the new validation declaration"
+[ ! -e "$ROLLBACK/.touchstone-tracker.toml" ] || fail "apply recovery retained the new tracker declaration"
+[ ! -e "$ROLLBACK/.touchstone" ] \
+  || fail "apply recovery retained Touchstone-created paths: $(find "$ROLLBACK/.touchstone" -print | sed "s#$ROLLBACK/##")"
+
+run_adoption "$ADOPTION/manual-apply.out" adopt --project "$MANUAL" \
+  --tracker linear --tracker-prefix AUT --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "clean adoption apply failed"
+[ -f "$MANUAL/.touchstone.toml" ] || fail "adoption did not create the declaration"
+[ -f "$MANUAL/.touchstone-tracker.toml" ] || fail "adoption did not create the tracker declaration"
+[ -f "$MANUAL/.touchstone/TOUCHSTONE.md" ] || fail "adoption did not create portable steering"
+assert_contains "$MANUAL/AGENTS.md" 'Project-owned guidance.'
+assert_contains "$MANUAL/AGENTS.md" '<!-- touchstone:steering:start -->'
+assert_contains "$MANUAL/.touchstone/TOUCHSTONE.md" 'A security-review quota notice is never a blocker'
+assert_not_contains "$MANUAL/.touchstone/TOUCHSTONE.md" 'scripts/respond-review.sh'
+assert_contains "$MANUAL/.touchstone/TOUCHSTONE.md" 'touchstone pr respond'
+assert_not_contains "$MANUAL/AGENTS.md" 'docs/pr-cli-contract.md'
+for route in agent-swarms.md ai-delivery-architecture.md audit-weak-points.md \
+  documentation-ownership.md engineering-principles.md file-upstream-bugs.md \
+  git-workflow.md memory-hygiene.md pre-implementation-checklist.md; do
+  [ -f "$MANUAL/.touchstone/principles/$route" ] \
+    || fail "rendered steering route is missing: $route"
+done
+assert_contains "$ADOPTION/manual-apply.out.err" 'complete accepted plan before writes'
+git -C "$MANUAL" add .touchstone.toml .touchstone-tracker.toml .touchstone AGENTS.md CLAUDE.md GEMINI.md
+git -C "$MANUAL" commit -qm adopted
+contract_hash="$(git -C "$MANUAL" hash-object .touchstone.toml)"
+run_adoption "$ADOPTION/manual-current.json" adopt --json --project "$MANUAL"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "repeat adoption failed"
+assert_contains "$ADOPTION/manual-current.json" '"status":"current"'
+[ "$contract_hash" = "$(git -C "$MANUAL" hash-object .touchstone.toml)" ] \
+  || fail "repeat adoption rewrote the accepted contract"
+
+printf '\nMore project-owned guidance.\n' >>"$MANUAL/AGENTS.md"
+printf '\nSTALE MANAGED BYTES\n' >>"$MANUAL/.touchstone/TOUCHSTONE.md"
+git -C "$MANUAL" add AGENTS.md .touchstone/TOUCHSTONE.md
+git -C "$MANUAL" commit -qm stale-steering
+run_adoption "$ADOPTION/upgrade.out" upgrade --project "$MANUAL"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "explicit steering upgrade failed"
+assert_contains "$MANUAL/AGENTS.md" 'More project-owned guidance.'
+assert_not_contains "$MANUAL/.touchstone/TOUCHSTONE.md" 'STALE MANAGED BYTES'
+[ "$contract_hash" = "$(git -C "$MANUAL" hash-object .touchstone.toml)" ] \
+  || fail "upgrade rewrote the project-owned contract"
+
+OLDER_V1="$ADOPTION/older-v1"
+new_adoption_repo "$OLDER_V1"
+cat >"$OLDER_V1/.touchstone.toml" <<'EOF'
+schema = 1
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "verify"
+target = "root"
+command = "true"
+required = true
+EOF
+git -C "$OLDER_V1" add .touchstone.toml
+git -C "$OLDER_V1" commit -qm older-v1
+git -C "$OLDER_V1" switch -qc feat/adopt
+older_contract_hash="$(git -C "$OLDER_V1" hash-object .touchstone.toml)"
+run_adoption "$ADOPTION/older-v1.out" adopt --project "$OLDER_V1"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "new runtime refused an older valid v1 contract"
+[ "$older_contract_hash" = "$(git -C "$OLDER_V1" hash-object .touchstone.toml)" ] \
+  || fail "adoption rewrote an older valid v1 contract"
+[ -f "$OLDER_V1/.touchstone-tracker.toml" ] \
+  || fail "adoption did not add the compatible tracker declaration"
+
+NPM="$ADOPTION/npm"
+new_adoption_repo "$NPM"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package.json" "$NPM/package.json"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package-lock.json" "$NPM/package-lock.json"
+git -C "$NPM" add package.json package-lock.json
+git -C "$NPM" commit -qm npm
+run_adoption "$ADOPTION/npm.json" adopt --dry-run --json --project "$NPM"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "captured npm profile did not compile"
+assert_contains "$ADOPTION/npm.json" '"profile":"npm"'
+assert_contains "$ADOPTION/npm.json" 'npm ci --ignore-scripts'
+assert_contains "$ADOPTION/npm.json" 'npm run verify'
+
+PYTHON="$ADOPTION/python"
+new_adoption_repo "$PYTHON"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/arpeggio/pyproject.toml" "$PYTHON/pyproject.toml"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/arpeggio/uv.lock" "$PYTHON/uv.lock"
+git -C "$PYTHON" add pyproject.toml uv.lock
+git -C "$PYTHON" commit -qm python
+run_adoption "$ADOPTION/python.json" adopt --dry-run --json --project "$PYTHON"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "captured Python profile did not compile"
+assert_contains "$ADOPTION/python.json" '"profile":"python"'
+assert_contains "$ADOPTION/python.json" 'uv sync --frozen'
+assert_contains "$ADOPTION/python.json" 'uv run --frozen pytest'
+
+SWIFT="$ADOPTION/swift"
+new_adoption_repo "$SWIFT"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/autumn-mail/Package.swift" "$SWIFT/Package.swift"
+git -C "$SWIFT" add Package.swift
+git -C "$SWIFT" commit -qm swift
+run_adoption "$ADOPTION/swift.json" adopt --dry-run --json --project "$SWIFT"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "captured Swift profile did not compile"
+assert_contains "$ADOPTION/swift.json" '"profile":"swift"'
+assert_contains "$ADOPTION/swift.json" 'swift test --disable-automatic-resolution'
+
+LEGACY="$ADOPTION/legacy"
+new_adoption_repo "$LEGACY"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/sentinel/pyproject.toml" "$LEGACY/pyproject.toml"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/sentinel/.touchstone-config" "$LEGACY/.touchstone-config"
+git -C "$LEGACY" add pyproject.toml .touchstone-config
+git -C "$LEGACY" commit -qm legacy
+run_adoption "$ADOPTION/legacy.json" adopt --dry-run --json --project "$LEGACY"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "captured legacy profile did not compile"
+assert_contains "$ADOPTION/legacy.json" '"profile":"legacy"'
+assert_contains "$ADOPTION/legacy.json" 'uv run ruff check src/ tests/'
+assert_contains "$ADOPTION/legacy.json" 'uv run pytest'
+
+AMBIGUOUS="$ADOPTION/ambiguous"
+new_adoption_repo "$AMBIGUOUS"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package.json" "$AMBIGUOUS/package.json"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package-lock.json" "$AMBIGUOUS/package-lock.json"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/arpeggio/pyproject.toml" "$AMBIGUOUS/pyproject.toml"
+git -C "$AMBIGUOUS" add package.json package-lock.json pyproject.toml
+git -C "$AMBIGUOUS" commit -qm ambiguous
+run_adoption "$ADOPTION/ambiguous.out" adopt --dry-run --project "$AMBIGUOUS"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "competing profile evidence did not fail closed"
+assert_contains "$ADOPTION/ambiguous.out.err" 'competing project evidence found: npm,python'
+run_adoption "$ADOPTION/ambiguous.json" adopt --dry-run --json --project "$AMBIGUOUS"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "JSON competing profile evidence did not fail closed"
+assert_contains "$ADOPTION/ambiguous.json" '"schema":"touchstone.adoption/v1"'
+assert_contains "$ADOPTION/ambiguous.json" '"status":"contract-refusal"'
+assert_contains "$ADOPTION/ambiguous.json" 'competing project evidence found: npm,python'
+
+UNSUPPORTED="$ADOPTION/unsupported"
+new_adoption_repo "$UNSUPPORTED"
+printf 'schema = 2\n' >"$UNSUPPORTED/.touchstone.toml"
+git -C "$UNSUPPORTED" add .touchstone.toml
+git -C "$UNSUPPORTED" commit -qm unsupported
+run_adoption "$ADOPTION/unsupported.out" adopt --dry-run --project "$UNSUPPORTED"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "unsupported schema did not fail closed"
+
+SYMLINKED="$ADOPTION/symlinked"
+OUTSIDE="$ADOPTION/outside"
+new_adoption_repo "$SYMLINKED"
+mkdir -p "$OUTSIDE"
+ln -s "$OUTSIDE" "$SYMLINKED/.touchstone"
+git -C "$SYMLINKED" add .touchstone
+git -C "$SYMLINKED" commit -qm symlink
+run_adoption "$ADOPTION/symlinked.out" adopt --dry-run --project "$SYMLINKED" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "symlinked managed ancestor did not fail closed"
+[ -z "$(find "$OUTSIDE" -mindepth 1 -print -quit)" ] || fail "adoption wrote through a symlinked ancestor"
+
+DRIFTED="$ADOPTION/drifted"
+new_adoption_repo "$DRIFTED"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/autumn-mail/Package.swift" "$DRIFTED/Package.swift"
+git -C "$DRIFTED" add Package.swift
+git -C "$DRIFTED" commit -qm swift
+printf '\n// uncommitted detector input\n' >>"$DRIFTED/Package.swift"
+run_adoption "$ADOPTION/drifted.out" adopt --dry-run --project "$DRIFTED"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "detector accepted input that differed from HEAD"
+[ ! -e "$DRIFTED/.touchstone.toml" ] || fail "drift refusal left a partial write"
+
+MALFORMED="$ADOPTION/malformed-markers"
+new_adoption_repo "$MALFORMED"
+cat >>"$MALFORMED/AGENTS.md" <<'EOF'
+<!-- touchstone:steering:start -->
+first
+<!-- touchstone:steering:start -->
+second
+<!-- touchstone:steering:end -->
+EOF
+git -C "$MALFORMED" add AGENTS.md
+git -C "$MALFORMED" commit -qm malformed
+run_adoption "$ADOPTION/malformed.out" adopt --dry-run --project "$MALFORMED" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "repeated steering markers did not fail closed"
+[ ! -e "$MALFORMED/.touchstone.toml" ] || fail "marker refusal left a partial write"
+
+IGNORED="$ADOPTION/ignored-output"
+new_adoption_repo "$IGNORED"
+printf '.touchstone.toml\n' >"$IGNORED/.gitignore"
+git -C "$IGNORED" add .gitignore
+git -C "$IGNORED" commit -qm ignored
+run_adoption "$ADOPTION/ignored.out" adopt --dry-run --project "$IGNORED" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "ignored managed output did not fail closed"
+
+UNTRACKED="$ADOPTION/untracked-output"
+new_adoption_repo "$UNTRACKED"
+printf '# local untracked instructions\n' >"$UNTRACKED/CLAUDE.md"
+run_adoption "$ADOPTION/untracked.out" adopt --dry-run --project "$UNTRACKED" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "untracked managed output did not fail closed"
+assert_contains "$ADOPTION/untracked.out.err" 'existing managed output is not tracked: CLAUDE.md'
+
 echo "validation engine tests passed"
