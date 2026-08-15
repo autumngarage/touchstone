@@ -51,6 +51,17 @@ Each adapter owns its runtime-specific evidence, offline setup, and generated
 task contract. The accepted commands and setup are written explicitly to
 `.touchstone.toml`; later adapter changes never rewrite that file.
 
+The Node adapter derives tasks only from non-empty package scripts. A declared
+`validate` or `verify` script is the single task; otherwise it records declared
+`lint`, `typecheck`, `test`, and `build` scripts in that order. Install steps
+require a completely verified dependency-free lock and run offline with package
+scripts disabled. Every pnpm or Yarn task requires an exact supported runtime
+version and disables Corepack network access. Project-controlled npm, pnpm, or
+Yarn configuration at the task or effective setup root requires a manual task,
+including unlocked projects where hooks can still run. Workspace children
+inherit root setup only when an explicit supported workspace pattern proves
+membership; ambiguous or unsupported declarations refuse.
+
 ## Ownership and safety
 
 The applier owns only these boundaries:

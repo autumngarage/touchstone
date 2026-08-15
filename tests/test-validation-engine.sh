@@ -925,23 +925,67 @@ set -e
 assert_contains "$TMP_DIR/adopt-symlinked-output.err" \
   'managed path traverses a symlink: .touchstone'
 
-ADOPT_NODE_UNAVAILABLE="$TMP_DIR/adopt-node-unavailable"
-mkdir -p "$ADOPT_NODE_UNAVAILABLE"
-git -C "$ADOPT_NODE_UNAVAILABLE" init -q
-git -C "$ADOPT_NODE_UNAVAILABLE" config user.name fixture
-git -C "$ADOPT_NODE_UNAVAILABLE" config user.email fixture@example.com
-printf '%s\n' '{"scripts":{"test":"node --test"}}' \
-  >"$ADOPT_NODE_UNAVAILABLE/package.json"
-git -C "$ADOPT_NODE_UNAVAILABLE" add package.json
-git -C "$ADOPT_NODE_UNAVAILABLE" commit -qm fixture
-git -C "$ADOPT_NODE_UNAVAILABLE" switch -q -c feat/adopt
-set +e
-bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_NODE_UNAVAILABLE" \
-  >"$TMP_DIR/adopt-node-unavailable.out" 2>"$TMP_DIR/adopt-node-unavailable.err"
-ADOPTION_STATUS=$?
-set -e
-[ "$ADOPTION_STATUS" -eq 4 ] || fail "missing Node adapter did not refuse automatic adoption"
-assert_contains "$TMP_DIR/adopt-node-unavailable.err" \
-  'automatic node adoption is unavailable in this Touchstone build'
+echo "==> Node adapter derives scripts and rejects project-controlled execution"
+init_node_adoption_repo() {
+  local directory="$1"
+  mkdir -p "$directory"
+  git -C "$directory" init -q
+  git -C "$directory" config user.name fixture
+  git -C "$directory" config user.email fixture@example.com
+}
+
+commit_node_adoption_repo() {
+  local directory="$1"
+  git -C "$directory" add -A
+  git -C "$directory" commit -qm fixture
+  git -C "$directory" switch -q -c feat/adopt
+}
+
+ADOPT_NODE="$TMP_DIR/adopt-node"
+init_node_adoption_repo "$ADOPT_NODE"
+printf '%s\n' \
+  '{"scripts":{"lint":"eslint .","test":"node --test","postinstall":"curl https://example.invalid"}}' \
+  >"$ADOPT_NODE/package.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' \
+  >"$ADOPT_NODE/package-lock.json"
+commit_node_adoption_repo "$ADOPT_NODE"
+bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_NODE" \
+  >"$TMP_DIR/adopt-node-plan.json"
+assert_contains "$TMP_DIR/adopt-node-plan.json" '"profile":"node"'
+assert_contains "$TMP_DIR/adopt-node-plan.json" 'command = \"npm run lint\"'
+assert_contains "$TMP_DIR/adopt-node-plan.json" 'command = \"npm run test\"'
+assert_contains "$TMP_DIR/adopt-node-plan.json" \
+  'setup = \"npm ci --offline --ignore-scripts\"'
+assert_not_contains "$TMP_DIR/adopt-node-plan.json" 'postinstall'
+
+for node_config in npmrc pnpmfile pnpmfile-unlocked; do
+  ADOPT_NODE_CONFIG="$TMP_DIR/adopt-node-config-$node_config"
+  init_node_adoption_repo "$ADOPT_NODE_CONFIG"
+  if [ "$node_config" = npmrc ]; then
+    printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+      >"$ADOPT_NODE_CONFIG/package.json"
+    printf '%s\n' 'script-shell=./custom-shell.sh' >"$ADOPT_NODE_CONFIG/.npmrc"
+  else
+    printf '%s\n' '{"packageManager":"pnpm@10.0.0","scripts":{"test":"node --test"}}' \
+      >"$ADOPT_NODE_CONFIG/package.json"
+    printf '%s\n' 'module.exports = { hooks: {} }' >"$ADOPT_NODE_CONFIG/.pnpmfile.cjs"
+    if [ "$node_config" = pnpmfile ]; then
+      printf '%s\n' "lockfileVersion: '9.0'" >"$ADOPT_NODE_CONFIG/pnpm-lock.yaml"
+    fi
+  fi
+  commit_node_adoption_repo "$ADOPT_NODE_CONFIG"
+  set +e
+  bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_NODE_CONFIG" \
+    >"$TMP_DIR/adopt-node-config-$node_config.out" \
+    2>"$TMP_DIR/adopt-node-config-$node_config.err"
+  ADOPTION_STATUS=$?
+  set -e
+  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$node_config execution config was accepted"
+done
+assert_contains "$TMP_DIR/adopt-node-config-npmrc.err" 'project-controlled config'
+assert_contains "$TMP_DIR/adopt-node-config-pnpmfile.err" \
+  'project-controlled pnpm hook or config'
+assert_contains "$TMP_DIR/adopt-node-config-pnpmfile-unlocked.err" \
+  'project-controlled pnpm hook or config'
 
 echo "validation engine tests passed"
