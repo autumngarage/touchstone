@@ -532,7 +532,11 @@ case "$1 ${2:-}" in
   "auth status") [ "${GH_MODE:-ok}" != auth_fail ] ;;
   "repo view")
     [ "${GH_MODE:-ok}" != success_stderr ] || printf 'repo debug detail\n' >&2
-    printf 'autumngarage/current\thttps://%s/autumngarage/current\n' "${GH_REPO_HOST:-github.com}"
+    if [ -n "${GH_REPO:-}" ]; then
+      printf '%s\thttps://%s/%s\n' "$GH_REPO" "${GH_REPO_HOST:-github.com}" "$GH_REPO"
+    else
+      printf 'autumngarage/current\thttps://%s/autumngarage/current\n' "${GH_REPO_HOST:-github.com}"
+    fi
     ;;
   "pr list")
     if [ -f "$GH_STATE/pr-exists" ]; then
@@ -671,6 +675,10 @@ EOF
   GH_REPO_HOST=github.enterprise.example run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'pr view 7 --repo github.enterprise.example/autumngarage/current'
+  GH_REPO=ambient/wrong run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'pr view 7 --repo github.com/autumngarage/current'
+  assert_not_has "$GH_CALLS" 'ambient/wrong'
   GH_MODE=success_stderr run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" "\"head\":\"$HEAD_SHA\""

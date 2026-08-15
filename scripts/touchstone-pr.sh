@@ -157,7 +157,11 @@ read_with_retry() {
 }
 
 read_repository() {
-  (cd "$PROJECT_ROOT" && gh repo view --json nameWithOwner,url --jq '[.nameWithOwner,.url] | @tsv')
+  (
+    unset GH_REPO
+    cd "$PROJECT_ROOT"
+    gh repo view --json nameWithOwner,url --jq '[.nameWithOwner,.url] | @tsv'
+  )
 }
 
 absolute_input_file() {
