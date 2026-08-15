@@ -259,14 +259,14 @@ render_diff() {
     if [ "$action" = create ]; then
       (
         cd "$PLAN_ROOT"
-        git diff --no-index --no-ext-diff --no-color --src-prefix=a/ --dst-prefix=b/ -- /dev/null "new/$path"
+        git diff --no-index --no-ext-diff --no-color --unified=3 --src-prefix=a/ --dst-prefix=b/ -- /dev/null "new/$path"
       ) | sed \
         -e 's#^diff --git a/new/\(.*\) b/new/#diff --git a/\1 b/#' \
         -e 's#^+++ b/new/#+++ b/#' >>"$DIFF_FILE"
     else
       (
         cd "$PLAN_ROOT"
-        git diff --no-index --no-ext-diff --no-color --src-prefix=a/ --dst-prefix=b/ -- "old/$path" "new/$path"
+        git diff --no-index --no-ext-diff --no-color --unified=3 --src-prefix=a/ --dst-prefix=b/ -- "old/$path" "new/$path"
       ) | sed \
         -e 's#^diff --git a/old/\(.*\) b/new/#diff --git a/\1 b/#' \
         -e 's#^--- a/old/#--- a/#' \
