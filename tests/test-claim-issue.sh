@@ -376,7 +376,15 @@ EOF
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" '"reason":"missing-option-value"'
   assert_json "$TMP/out"
-  PATH=/usr/bin:/bin run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+  cat >"$TMP/no-gh.bash" <<'EOF'
+command() {
+  if [ "${1:-}" = -v ] && [ "${2:-}" = gh ]; then
+    return 1
+  fi
+  builtin command "$@"
+}
+EOF
+  BASH_ENV="$TMP/no-gh.bash" run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
   assert_rc "$RUN_RC" 3
   assert_has "$TMP/out" '"status":"unverifiable"'
   assert_has "$TMP/out" '"reason":"transport-unavailable"'
