@@ -504,7 +504,21 @@ EOF
   assert_has "$GH_CALLS" 'issue comment 42 --repo github.enterprise.example/autumngarage/current --body-file'
   assert_has "$GH_CALLS" 'api --paginate --hostname github.enterprise.example repos/autumngarage/current/issues/42/comments'
   : >"$GH_CALLS"
-  GH_REPO='' run_adapter "$TMP/out" reconcile 42 --disposition partial \
+  GH_HOST=github.com GH_REPO=github.enterprise.example/autumngarage/current \
+    run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" \
+    --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'issue comment 42 --repo github.enterprise.example/autumngarage/current --body-file'
+  assert_has "$GH_CALLS" 'api --paginate --hostname github.enterprise.example repos/autumngarage/current/issues/42/comments'
+  : >"$GH_CALLS"
+  GH_HOST=github.enterprise.example GH_REPO=autumngarage/current \
+    run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" \
+    --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'issue comment 42 --repo github.enterprise.example/autumngarage/current --body-file'
+  assert_has "$GH_CALLS" 'api --paginate --hostname github.enterprise.example repos/autumngarage/current/issues/42/comments'
+  : >"$GH_CALLS"
+  GH_HOST=github.com GH_REPO='' run_adapter "$TMP/out" reconcile 42 --disposition partial \
     --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/enterprise" --json
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'issue comment 42 --repo github.enterprise.example/autumngarage/current --body-file'

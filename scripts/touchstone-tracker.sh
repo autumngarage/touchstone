@@ -174,47 +174,66 @@ normalize_reference() {
   esac
 }
 
-resolve_repo() {
-  local resolved remote host="${GH_HOST:-}"
-  resolved="${GH_REPO:-}"
-  case "$resolved" in
-    */*/*)
-      [ -n "$host" ] || host="${resolved%%/*}"
-      resolved="${resolved#*/}"
+set_canonical_repo_identity() {
+  local identity="$1" fallback_host="$2" authority host repo
+  host=""
+  repo=""
+
+  case "$identity" in
+    http://* | https://*)
+      authority="${identity#*://}"
+      host="${authority%%/*}"
+      repo="${authority#*/}"
       ;;
+    ssh://*)
+      authority="${identity#ssh://}"
+      authority="${authority#*@}"
+      host="${authority%%/*}"
+      host="${host%%:*}"
+      repo="${authority#*/}"
+      ;;
+    *@*:*)
+      authority="${identity#*@}"
+      host="${authority%%:*}"
+      repo="${identity#*:}"
+      ;;
+    */*/*)
+      host="${identity%%/*}"
+      repo="${identity#*/}"
+      ;;
+    */*)
+      host="$fallback_host"
+      repo="$identity"
+      ;;
+    *) return 1 ;;
   esac
-  if [ -z "$resolved" ]; then
-    remote="$(git -C "$PROJECT_ROOT" remote get-url origin 2>/dev/null || true)"
-    case "$remote" in
-      http://* | https://*)
-        resolved="${remote#*://}"
-        [ -n "$host" ] || host="${resolved%%/*}"
-        resolved="${resolved#*/}"
-        resolved="${resolved%.git}"
-        ;;
-      git@*:*)
-        [ -n "$host" ] || host="${remote#git@}"
-        host="${host%%:*}"
-        resolved="${remote#*:}"
-        resolved="${resolved%.git}"
-        ;;
-      ssh://*)
-        resolved="${remote#ssh://}"
-        resolved="${resolved#*@}"
-        [ -n "$host" ] || host="${resolved%%/*}"
-        host="${host%%:*}"
-        resolved="${resolved#*/}"
-        resolved="${resolved%.git}"
-        ;;
-    esac
-  fi
-  if [ -z "$resolved" ] && command -v gh >/dev/null 2>&1; then
-    resolved="$(cd "$PROJECT_ROOT" && gh repo view --json nameWithOwner --jq '.nameWithOwner // empty' 2>/dev/null || true)"
-  fi
-  resolved="${resolved%.git}"
-  [ -n "$host" ] || host=github.com
+
+  repo="${repo%.git}"
+  case "$host" in "" | */* | *@*) return 1 ;; esac
+  case "$repo" in "" | /* | */ | */*/*) return 1 ;; esac
   GITHUB_HOST="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
-  case "$resolved" in */*) CURRENT_REPO="$(printf '%s' "$resolved" | tr '[:upper:]' '[:lower:]')" ;; *) CURRENT_REPO="" ;; esac
+  CURRENT_REPO="$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')"
+}
+
+resolve_repo() {
+  local identity remote fallback_host="${GH_HOST:-github.com}"
+  CURRENT_REPO=""
+
+  identity="${GH_REPO:-}"
+  if [ -n "$identity" ]; then
+    set_canonical_repo_identity "$identity" "$fallback_host" || true
+    return
+  fi
+
+  remote="$(git -C "$PROJECT_ROOT" remote get-url origin 2>/dev/null || true)"
+  if [ -n "$remote" ] && set_canonical_repo_identity "$remote" "$fallback_host"; then
+    return
+  fi
+
+  if command -v gh >/dev/null 2>&1; then
+    identity="$(cd "$PROJECT_ROOT" && gh repo view --json url --jq '.url // empty' 2>/dev/null || true)"
+    [ -z "$identity" ] || set_canonical_repo_identity "$identity" "$fallback_host" || true
+  fi
 }
 
 absolute_input_file() {
