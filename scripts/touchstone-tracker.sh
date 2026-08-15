@@ -204,7 +204,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --project)
       [ "$#" -ge 2 ] || fail_input missing-option-value "Pass a directory after --project."
-      case "$2" in --*) fail_input missing-option-value "Pass a directory after --project." ;; esac
+      case "$2" in '' | --*) fail_input missing-option-value "Pass a directory after --project." ;; esac
       PROJECT_ARG="$2"
       shift 2
       ;;

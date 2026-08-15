@@ -364,6 +364,10 @@ EOF
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" '"reason":"missing-option-value"'
   assert_json "$TMP/out"
+  run_adapter "$TMP/out" claim 42 --project '' --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"reason":"missing-option-value"'
+  assert_json "$TMP/out"
   run_adapter "$TMP/out" claim --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" '"reason":"missing-reference"'
