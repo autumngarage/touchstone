@@ -1185,6 +1185,9 @@ mkdir -p "$STEERING_PLAN" "$STEERING_PROJECT"
   grep -Fq 'A security-review quota notice is never a blocker' "$PLAN_ROOT/consumer.md" || exit 31
   grep -Fq 'do not post a fourth request on the same' "$PLAN_ROOT/rendered-git-workflow.md" || exit 32
   grep -Fq -- '-F body=@<file>' "$PLAN_ROOT/rendered-git-workflow.md" || exit 33
+  grep -Fq 'comments(first:100) { nodes { databaseId } }' "$PLAN_ROOT/rendered-git-workflow.md" || exit 40
+  grep -Fq 'gh issue edit <n> --remove-assignee "$me"' "$PLAN_ROOT/rendered-git-workflow.md" || exit 41
+  grep -Fq 'publishes no false dispatch' "$PLAN_ROOT/rendered-git-workflow.md" || exit 42
   ! grep -Eq 'scripts/(claim-issue|respond-review|issue-claim-check)\.sh|hooks/branch-guard\.sh|\.github/workflows/|\.pre-commit-config\.yaml' "$PLAN_ROOT/consumer.md" || exit 34
   ! grep -Rq 'Hard-Won Lessons\|required_conversation_resolution.*is on\|tool-boundary hook catches' "$PLAN_ROOT" || exit 39
   ! grep -Fq '`.touchstone/principles/`, `hooks/`' \

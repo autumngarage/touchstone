@@ -192,7 +192,7 @@ else
 fi
 
 # =============================================================================
-# No file may instruct the reader to run the CLI, because no CLI ships.
+# No file may instruct the reader to run a CLI subcommand that does not ship.
 #
 # The path-integrity check above only reads markdown, so it could not see
 # setup.sh finishing with "Run `touchstone doctor`" after the same commit
@@ -200,43 +200,86 @@ fi
 # follow a successful setup straight into command-not-found.
 #
 # Matched by subcommand rather than by the bare word, so prose about the
-# project and the surviving scripts/touchstone-run.sh both stay legal. When
-# the CLI is rebuilt, delete this check in the commit that ships it.
+# project and scripts/touchstone-run.sh both stay legal. The supported CLI
+# surface is deliberately narrow; this guard prevents deleted commands from
+# returning through prose while allowing validate, adopt, and upgrade.
 # =============================================================================
 
 echo ""
-echo "==> No file invokes a touchstone CLI subcommand"
+echo "==> No file invokes an unsupported touchstone CLI subcommand"
 
 # POSIX ERE only. The first version of this check used `\b` for the trailing
 # word boundary, which glibc's ERE honours and BSD/macOS does not — so it
 # matched on CI and matched nothing locally. The suite went green on a
 # developer machine and red on the required check, which is the worst possible
-# split: local green is what people trust. Both boundaries are now bracket
-# expressions, which behave identically on both platforms.
-CLI_SUBCOMMANDS='doctor|status|update|update-all|new|init|version|release|list|diff|sync|changelog'
-CLI_PATTERN="(^|[^-/[:alnum:]])touchstone (${CLI_SUBCOMMANDS})([^[:alnum:]-]|$)"
+# split: local green is what people trust. Match every command-shaped
+# invocation, then derive rejection from the public three-command surface.
+CLI_PATTERN='touchstone [a-z][a-z-]*'
+MARKDOWN_CODE_TICK="$(printf '\140')"
 
 # The check must be able to fail, and must be proven to on THIS platform
 # before its silence is allowed to mean anything.
 probe_hit=0
-printf 'Run `touchstone doctor` to verify.\n' | grep -qE "$CLI_PATTERN" && probe_hit=1
+printf 'Run `touchstone run validate` to verify.\n' | grep -qE "$CLI_PATTERN" && probe_hit=1
 probe_miss=0
-printf 'bash scripts/touchstone-run.sh validate\n' | grep -qE "$CLI_PATTERN" || probe_miss=1
+printf 'Run `touchstone validate` to verify.\n' | awk '
+  {
+    text = $0
+    while (match(text, /touchstone [a-z][a-z-]*/)) {
+      command = substr(text, RSTART + 11, RLENGTH - 11)
+      if (command != "validate" && command != "adopt" && command != "upgrade") exit 1
+      text = substr(text, RSTART + RLENGTH)
+    }
+  }
+' && probe_miss=1
 if [ "$probe_hit" -eq 1 ] && [ "$probe_miss" -eq 1 ]; then
   echo "  OK: the pattern matches a CLI invocation and spares touchstone-run.sh"
 else
   fail "the CLI-reference pattern is not working on this platform (hit=$probe_hit spared=$probe_miss); its silence below proves nothing"
 fi
 
-cli_refs="$(
-  git -C "$TOUCHSTONE_ROOT" grep -nE "$CLI_PATTERN" \
-    -- ':!tests/test-steering-size-caps.sh' ':!audits' ':!feedback' 2>/dev/null || true
-)"
+cli_refs=$(
+  {
+    # Markdown commands follow the repository house style and are backtick
+    # quoted. Restricting prose to that syntax avoids treating phrases such as
+    # "touchstone command dispatcher" as invocations.
+    git -C "$TOUCHSTONE_ROOT" grep -nE "$MARKDOWN_CODE_TICK$CLI_PATTERN" \
+      -- '*.md' ':!audits' ':!feedback' 2>/dev/null || true
+    # Also inspect explicit run/execute instructions in user-facing strings
+    # and the dispatcher's own usage surface. Incidental phrases such as
+    # "touchstone files" are not command syntax.
+    git -C "$TOUCHSTONE_ROOT" grep -nE "([Rr]un|[Ee]xecute)[[:space:]]+$CLI_PATTERN" \
+      -- '*.sh' '*.yml' '*.yaml' '*.json' ':!tests' ':!audits' ':!feedback' 2>/dev/null || true
+    git -C "$TOUCHSTONE_ROOT" grep -nE "$CLI_PATTERN" -- 'bin/*' 2>/dev/null || true
+  } | awk '
+      {
+        original = $0
+        text = $0
+        while (match(text, /touchstone [a-z][a-z-]*/)) {
+          command = substr(text, RSTART + 11, RLENGTH - 11)
+          if (command != "validate" && command != "adopt" && command != "upgrade") {
+            print original
+            next
+          }
+          text = substr(text, RSTART + RLENGTH)
+        }
+      }
+    ' || true
+)
 if [ -n "$cli_refs" ]; then
   printf '%s\n' "$cli_refs" >&2
-  fail "a file tells the reader to run a touchstone CLI subcommand, but no CLI ships"
+  fail "a file tells the reader to run an unsupported touchstone CLI subcommand"
 else
-  echo "  OK: nothing instructs the reader to run a CLI that does not exist"
+  echo "  OK: nothing instructs the reader to run a CLI command that does not exist"
+fi
+
+if [ -x "$TOUCHSTONE_ROOT/bin/touchstone" ] \
+  && "$TOUCHSTONE_ROOT/bin/touchstone" --help | grep -qF 'touchstone validate' \
+  && "$TOUCHSTONE_ROOT/bin/touchstone" --help | grep -qF 'touchstone adopt' \
+  && "$TOUCHSTONE_ROOT/bin/touchstone" --help | grep -qF 'touchstone upgrade'; then
+  echo "  OK: the documented validate/adopt/upgrade surface is executable"
+else
+  fail "bin/touchstone does not expose the documented validate/adopt/upgrade surface"
 fi
 
 # Touchstone must obey the conventions it ships. templates/gitignore has

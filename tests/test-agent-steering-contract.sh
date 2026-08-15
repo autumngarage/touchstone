@@ -359,6 +359,15 @@ for file in \
   assert_contains "$file" "time-bounded migration shims"
   assert_contains "$file" "unmatched"
 done
+
+echo "==> adoption contract binds repeatability to committed outputs"
+assert_contains "$TOUCHSTONE_ROOT/docs/adoption-contract.md" \
+  "commit them before another plan"
+assert_contains "$TOUCHSTONE_ROOT/docs/adoption-contract.md" \
+  "Exit 6 can"
+assert_contains "$TOUCHSTONE_ROOT/docs/adoption-contract.md" \
+  "also follow completed writes"
+assert_not_contains "$TOUCHSTONE_ROOT/docs/adoption-contract.md" "AUT-283 closes"
 assert_contains "$TOUCHSTONE_ROOT/skills/touchstone-pre-impl/SKILL.md" \
   "The seven questions"
 assert_not_contains "$TOUCHSTONE_ROOT/skills/touchstone-pre-impl/SKILL.md" \

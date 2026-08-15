@@ -9,7 +9,7 @@ One person cannot read everything many agents produce. Touchstone exists so that
 
 The goal is that every Autumn Garage project gets the same dev flow by adopting Touchstone, and that the flow is industry-leading practice for GitHub and agent-driven delivery. Adoption is **set-and-forget**: an adopted repository must remain correct if Touchstone never rewrites it again. V1 serves one operator's portfolio through public-quality interfaces; it does not build a speculative third-party platform. The durable boundary is defined in `docs/product-contract.md`.
 
-**What the second half ships today is narrower than that ambition.** The surviving repository machinery claims issues, answers review threads, binds review evidence to the current head, runs a project's checks, and manages this repository's audited GitHub policy. **Nothing here opens a PR or merges** — those remain raw `git` and `gh`, documented below and in `principles/git-workflow.md`. Rebuilding that sequencing as a thin CLI is the open work; until it lands, read "push tooling" as a goal, not a complete inventory.
+**What the second half ships today is narrower than that ambition.** The repository machinery claims issues, answers review threads, binds review evidence to the current head, validates declarations, compiles adoption plans, and manages this repository's audited GitHub policy. **Nothing here opens a PR or merges** — those remain raw `git` and `gh`, documented below and in `principles/git-workflow.md`. Rebuilding that sequencing as a thin CLI is still open work.
 
 ## Purpose
 
@@ -60,6 +60,9 @@ The surviving `templates/` describe the frozen pre-strip consumer shape and are
 historical inputs for compatibility audits, not the new architecture.
 `scripts/touchstone-run.sh` is the declaration-only schema-v1 validation
 engine; its contract lives in [docs/validation-contract.md](docs/validation-contract.md).
+`scripts/touchstone-adopt.sh` owns the pure adoption planner and generic
+applier; its interface and ownership boundary live in
+[docs/adoption-contract.md](docs/adoption-contract.md).
 Current replacement scope and sequencing live in the [canonical Linear execution plan](https://linear.app/autumngarage/document/touchstone-execution-plan-post-strip-baseline-cac4c56e593e), not this durable overview.
 
 The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so GitHub approval count does not represent it. The required `review-binding` check instead binds trusted review evidence to the exact head and requires a later qualifying answer for every finding; GitHub independently requires every inline thread resolved.
@@ -95,6 +98,7 @@ bash scripts/respond-review.sh <pr> --all-resolved-check
 - **[git-workflow.md](principles/git-workflow.md)** — the full delivery sequence in raw `git` + `gh`
 - **[engineering-principles.md](principles/engineering-principles.md)** — the principles every change is reviewed against
 - **[product-contract.md](docs/product-contract.md)** — the durable product boundary, adoption/evolution contract, and anti-bloat admission test
+- **[adoption-contract.md](docs/adoption-contract.md)** — plan/apply modes, adapters, output schema, and write ownership
 - **[ai-delivery-architecture.md](principles/ai-delivery-architecture.md)** — the AI-authored change lifecycle
 - **[pre-implementation-checklist.md](principles/pre-implementation-checklist.md)** — the gate before a non-trivial change
 - **[agent-swarms.md](principles/agent-swarms.md)** — parallel agents, slice manifests, worktree isolation
