@@ -1,0 +1,1 @@
+success	swift	command = "swift test --disable-automatic-resolution"	-

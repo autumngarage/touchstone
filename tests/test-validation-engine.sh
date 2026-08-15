@@ -1881,3 +1881,317 @@ assert_contains "$ADOPTION/parent-symlink-rollback.out.err" 'unexpected concurre
 assert_contains "$PARENT_SYMLINK_TARGET/TOUCHSTONE.md" 'Touchstone — Shared Agent Steering'
 
 echo "validation engine tests passed"
+
+(
+  # tests/test-fresh-consumer.sh — public consumer-boundary compatibility harness.
+
+  set -euo pipefail
+
+  ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+  CLI="$ROOT/bin/touchstone"
+  RUNNER="$ROOT/scripts/touchstone-run.sh"
+  FIXTURES="$ROOT/evals/fresh-consumer/v1"
+  POLICY="$ROOT/policy/github/touchstone-main.json"
+  TMP="$(mktemp -d -t touchstone-fresh-consumer.XXXXXX)"
+  trap 'rm -rf "$TMP"' EXIT
+  printf '%s\n' 'outside ownership sentinel' >"$TMP/outside-sentinel"
+  OUTSIDE_SENTINEL_HASH="$(git hash-object "$TMP/outside-sentinel")"
+  TOOL_BIN="$TMP/tool-bin"
+  mkdir -p "$TOOL_BIN"
+  cat >"$TOOL_BIN/tool" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s %s\n' "$(basename "$0")" "$*" >>"$TOUCHSTONE_TOOL_LOG"
+EOF
+  chmod +x "$TOOL_BIN/tool"
+  for tool in npm uv swift; do ln -s tool "$TOOL_BIN/$tool"; done
+
+  fail() {
+    echo "FAIL: $*" >&2
+    exit 1
+  }
+
+  assert_contains() {
+    grep -qF -- "$2" "$1" || fail "$1 does not contain: $2"
+  }
+
+  assert_clean() {
+    [ -z "$(git -C "$1" status --porcelain=v1)" ] || fail "$2 mutated the consumer"
+  }
+
+  init_repo() {
+    local repo="$1"
+    git -C "$repo" init -q -b main
+    git -C "$repo" config user.name fresh-consumer
+    git -C "$repo" config user.email fresh-consumer@example.invalid
+    git -C "$repo" add .
+    git -C "$repo" commit -qm fixture
+    git -C "$repo" update-ref refs/remotes/origin/main HEAD
+    git -C "$repo" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  }
+
+  run_cli() {
+    local output="$1"
+    shift
+    RUN_STATUS=0
+    set +e
+    "$CLI" "$@" >"$output" 2>"$output.err"
+    RUN_STATUS=$?
+    set -e
+  }
+
+  echo "==> data-driven detectors compile reviewable, idempotent consumer contracts"
+  for fixture in "$FIXTURES"/*; do
+    [ -d "$fixture" ] || continue
+    id="$(basename "$fixture")"
+    repo="$TMP/project-$id"
+    mkdir -p "$repo"
+    cp -R "$fixture/." "$repo/"
+    IFS="$(printf '\t')" read -r outcome profile expected expected_setup <"$repo/expect.tsv"
+    printf '%s\n' 'PROJECT AGENT PROSE' >"$repo/AGENTS.md"
+    printf '%s\n' 'PROJECT CLAUDE PROSE' >"$repo/CLAUDE.md"
+    printf '%s\n' 'PROJECT GEMINI PROSE' >"$repo/GEMINI.md"
+    printf '%s\n' 'legacy content must survive' >"$repo/legacy.keep"
+    init_repo "$repo"
+    git -C "$repo" switch -q -c feat/adopt
+    args=(adopt --project "$repo")
+    if [ -f "$repo/manual-task" ]; then args+=(--task "$(cat "$repo/manual-task")"); fi
+
+    if [ "$outcome" = refusal ]; then
+      run_cli "$TMP/$id-refusal" "${args[@]}" --dry-run --json
+      [ "$RUN_STATUS" -eq 4 ] || fail "$id ambiguity did not refuse with exit 4"
+      assert_contains "$TMP/$id-refusal" "$expected"
+      assert_clean "$repo" "$id refusal"
+      continue
+    fi
+
+    run_cli "$TMP/$id-check" "${args[@]}" --check --json
+    [ "$RUN_STATUS" -eq 3 ] || fail "$id check did not report a required plan"
+    assert_contains "$TMP/$id-check" "\"profile\":\"$profile\""
+    assert_clean "$repo" "$id check"
+
+    run_cli "$TMP/$id-dry-1" "${args[@]}" --dry-run --json
+    [ "$RUN_STATUS" -eq 0 ] || fail "$id dry-run failed"
+    run_cli "$TMP/$id-dry-2" "${args[@]}" --dry-run --json
+    [ "$RUN_STATUS" -eq 0 ] || fail "$id repeated dry-run failed"
+    cmp -s "$TMP/$id-dry-1" "$TMP/$id-dry-2" || fail "$id dry-run was nondeterministic"
+    assert_clean "$repo" "$id dry-run"
+    run_cli "$TMP/$id-policy-boundary" "${args[@]}" --dry-run
+    assert_contains "$TMP/$id-policy-boundary" 'remote policy: separate operation'
+
+    run_cli "$TMP/$id-apply" "${args[@]}"
+    [ "$RUN_STATUS" -eq 0 ] || fail "$id apply failed"
+    git -C "$repo" add .touchstone.toml .touchstone-tracker.toml .touchstone \
+      AGENTS.md CLAUDE.md GEMINI.md
+    git -C "$repo" commit -qm "adopt Touchstone"
+    run_cli "$TMP/$id-repeat" adopt --project "$repo" --check --json
+    if [ "$RUN_STATUS" -ne 0 ]; then
+      cat "$TMP/$id-repeat" "$TMP/$id-repeat.err" >&2
+      fail "$id second adoption was not current"
+    fi
+    assert_contains "$repo/.touchstone.toml" "$expected"
+    if [ "$expected_setup" = - ]; then
+      ! grep -q '^setup = ' "$repo/.touchstone.toml" || fail "$id generated an unexpected setup command"
+    else
+      assert_contains "$repo/.touchstone.toml" "$expected_setup"
+    fi
+    bash "$RUNNER" validate --check-contract --project "$repo" >/dev/null
+
+    tool_log="$TMP/$id-tool.log"
+    : >"$tool_log"
+    if ! TOUCHSTONE_TOOL_LOG="$tool_log" PATH="$TOOL_BIN:$PATH" \
+      "$CLI" validate --project "$repo" >"$TMP/$id-validation" 2>"$TMP/$id-validation.err"; then
+      cat "$TMP/$id-validation" "$TMP/$id-validation.err" >&2
+      fail "$id generated command did not execute"
+    fi
+    expected_command="${expected#command = \"}"
+    expected_command="${expected_command%\"}"
+    case "$expected_command" in
+      npm\ * | uv\ * | swift\ *) assert_contains "$tool_log" "$expected_command" ;;
+    esac
+    if [ "$expected_setup" != - ]; then
+      setup_command="${expected_setup#setup = \"}"
+      setup_command="${setup_command%\"}"
+      assert_contains "$tool_log" "$setup_command"
+    fi
+
+    while IFS= read -r target_path; do
+      [ -d "$repo/$target_path" ] || fail "$id generated missing target path: $target_path"
+    done < <(awk -F '"' '/^path = / { print $2 }' "$repo/.touchstone.toml")
+    awk -F '"' '/^command = / { if ($2 == "") exit 1; found=1 } END { exit !found }' \
+      "$repo/.touchstone.toml" || fail "$id generated an empty or missing command"
+    for steering in AGENTS.md CLAUDE.md GEMINI.md; do
+      case "$steering" in AGENTS.md) project_prose='PROJECT AGENT PROSE' ;; *) project_prose="PROJECT ${steering%%.*} PROSE" ;; esac
+      assert_contains "$repo/$steering" "$project_prose"
+      [ "$(grep -cF '<!-- touchstone:steering:start -->' "$repo/$steering")" -eq 1 ] \
+        || fail "$id did not install exactly one managed block in $steering"
+    done
+    [ -f "$repo/legacy.keep" ] || fail "$id adoption deleted project-owned legacy content"
+    while IFS= read -r routed_path; do
+      [ -e "$repo/$routed_path" ] || fail "$id generated a stale steering route: $routed_path"
+    done < <(grep -rhoE '`\.touchstone/[^` ]+`' "$repo/.touchstone" "$repo"/*.md \
+      | tr -d '`' | sort -u)
+    if find "$repo" -type f \( -name 'touchstone-run.sh' -o -name 'touchstone-pr.sh' \
+      -o -name 'update-project.sh' -o -name '*registry*' -o -name '*sync*' \) -print -quit | grep -q .; then
+      fail "$id adoption vendored implementation or background machinery"
+    fi
+  done
+
+  echo "==> old schema-v1 consumers validate and adopt through one explicit transition"
+  upgrade_repo="$TMP/upgrade-consumer"
+  mkdir -p "$upgrade_repo/tests"
+  cp "$FIXTURES/manual/tests/pass.sh" "$upgrade_repo/tests/pass.sh"
+  chmod +x "$upgrade_repo/tests/pass.sh"
+  cat >"$upgrade_repo/.touchstone.toml" <<'EOF'
+schema = 1
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "validate"
+target = "root"
+command = "bash tests/pass.sh"
+required = true
+EOF
+  printf '%s\n' 'PROJECT AGENT PROSE' >"$upgrade_repo/AGENTS.md"
+  printf '%s\n' 'PROJECT CLAUDE PROSE' >"$upgrade_repo/CLAUDE.md"
+  printf '%s\n' 'PROJECT GEMINI PROSE' >"$upgrade_repo/GEMINI.md"
+  init_repo "$upgrade_repo"
+  git -C "$upgrade_repo" switch -q -c feat/upgrade
+  run_cli "$TMP/old-v1-runtime" validate --project "$upgrade_repo" --json
+  [ "$RUN_STATUS" -eq 0 ] || fail "newer runtime rejected an older valid v1 contract"
+  command_before="$(grep '^command = ' "$upgrade_repo/.touchstone.toml")"
+  run_cli "$TMP/upgrade-check" adopt --check --json --project "$upgrade_repo" \
+    --tracker linear --tracker-prefix AUT
+  [ "$RUN_STATUS" -eq 3 ] || fail "adoption check did not expose the supported v1 transition"
+  assert_clean "$upgrade_repo" "adoption check"
+  run_cli "$TMP/upgrade-dry" adopt --dry-run --json --project "$upgrade_repo" \
+    --tracker linear --tracker-prefix AUT
+  [ "$RUN_STATUS" -eq 0 ] || fail "adoption dry-run failed"
+  assert_clean "$upgrade_repo" "adoption dry-run"
+  run_cli "$TMP/upgrade-apply" adopt --project "$upgrade_repo" \
+    --tracker linear --tracker-prefix AUT
+  [ "$RUN_STATUS" -eq 0 ] || fail "adoption apply failed"
+  [ "$(grep '^command = ' "$upgrade_repo/.touchstone.toml")" = "$command_before" ] \
+    || fail "adoption rewrote a project-owned validation command"
+  assert_contains "$upgrade_repo/.touchstone-tracker.toml" 'type = "linear"'
+  assert_contains "$upgrade_repo/.touchstone-tracker.toml" 'key_prefix = "AUT"'
+  git -C "$upgrade_repo" add .touchstone-tracker.toml .touchstone AGENTS.md CLAUDE.md GEMINI.md
+  git -C "$upgrade_repo" commit -qm "declare tracker"
+  run_cli "$TMP/upgrade-repeat" adopt --check --json --project "$upgrade_repo"
+  if [ "$RUN_STATUS" -ne 0 ]; then
+    cat "$TMP/upgrade-repeat" "$TMP/upgrade-repeat.err" >&2
+    fail "repeated adoption was not current"
+  fi
+  contract_hash="$(git -C "$upgrade_repo" hash-object .touchstone.toml)"
+  printf '%s\n' 'stale managed steering' >"$upgrade_repo/.touchstone/TOUCHSTONE.md"
+  git -C "$upgrade_repo" add .touchstone/TOUCHSTONE.md
+  git -C "$upgrade_repo" commit -qm "stale managed steering"
+  run_cli "$TMP/upgrade-check" upgrade --check --json --project "$upgrade_repo"
+  [ "$RUN_STATUS" -eq 3 ] || fail "upgrade check did not report stale managed steering"
+  assert_clean "$upgrade_repo" "upgrade check"
+  run_cli "$TMP/upgrade-dry" upgrade --dry-run --json --project "$upgrade_repo"
+  [ "$RUN_STATUS" -eq 0 ] || fail "upgrade dry-run failed"
+  assert_contains "$TMP/upgrade-dry" '.touchstone/TOUCHSTONE.md'
+  assert_clean "$upgrade_repo" "upgrade dry-run"
+  run_cli "$TMP/upgrade-apply" upgrade --json --project "$upgrade_repo"
+  [ "$RUN_STATUS" -eq 0 ] || fail "upgrade apply failed"
+  [ "$contract_hash" = "$(git -C "$upgrade_repo" hash-object .touchstone.toml)" ] \
+    || fail "upgrade rewrote the project-owned validation contract"
+  assert_contains "$upgrade_repo/.touchstone/TOUCHSTONE.md" 'Touchstone — Shared Agent Steering'
+  git -C "$upgrade_repo" add .touchstone/TOUCHSTONE.md
+  git -C "$upgrade_repo" commit -qm "upgrade managed steering"
+  run_cli "$TMP/upgrade-current" upgrade --check --json --project "$upgrade_repo"
+  [ "$RUN_STATUS" -eq 0 ] || fail "repeated upgrade was not current"
+
+  echo "==> local and pinned-workflow adapters share validation semantics"
+  policy_repo="$TMP/policy-consumer"
+  mkdir -p "$policy_repo/tests" "$policy_repo/.github/workflows"
+  cp "$FIXTURES/manual/tests/pass.sh" "$policy_repo/tests/pass.sh"
+  chmod +x "$policy_repo/tests/pass.sh"
+  cp "$upgrade_repo/.touchstone.toml" "$policy_repo/.touchstone.toml"
+  printf '%s\n' 'name: consumer-local-bypass' >"$policy_repo/.github/workflows/validate.yml"
+  init_repo "$policy_repo"
+  git -C "$policy_repo" switch -q -c feat/policy
+  run_cli "$TMP/local-validation" validate --project "$policy_repo" --json
+  [ "$RUN_STATUS" -eq 0 ] || fail "local validation adapter failed"
+  bash "$RUNNER" validate --project "$policy_repo" --json >"$TMP/workflow-validation"
+  cmp -s "$TMP/local-validation" "$TMP/workflow-validation" \
+    || fail "local and required-workflow adapters disagreed"
+  rm "$policy_repo/.github/workflows/validate.yml"
+  bash "$RUNNER" validate --project "$policy_repo" --json >"$TMP/workflow-after-delete"
+  cmp -s "$TMP/workflow-validation" "$TMP/workflow-after-delete" \
+    || fail "consumer workflow deletion changed the central validation verdict"
+
+  jq -e '
+  .workflowSource.repository != .repository
+  and (.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[0]
+    | (.sha | test("^[0-9a-f]{40}$"))
+    and .path == ".github/workflows/validate.yml"
+    and .ref == "refs/heads/main")
+  and .workflowSource.branchProtection.enforce_admins
+  and .workflowSource.branchProtection.required_pull_request_reviews
+  and .workflowSource.branchProtection.required_conversation_resolution
+' "$POLICY" >/dev/null || fail "required workflow is not pinned to a separately protected source"
+
+  echo "==> ordinary validation, install, revision, and PR observations do not mutate projects"
+  status_before="$(git -C "$policy_repo" status --porcelain=v1)"
+  TOUCHSTONE_REQUIRED_WORKFLOW_SHA=1111111111111111111111111111111111111111 \
+    bash "$RUNNER" validate --project "$policy_repo" --json >/dev/null
+  (cd "$policy_repo" && "$CLI" --help >/dev/null)
+  mkdir -p "$TMP/mock-bin"
+  cat >"$TMP/mock-bin/gh" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  'auth status') exit 0 ;;
+  'repo view') printf '%s\n' $'autumngarage/consumer\thttps://github.com/autumngarage/consumer' ;;
+  'pr view') printf '%s\n' $'1\tOPEN\thttps://example.invalid/pr/1\t1111111111111111111111111111111111111111\tmain\t2222222222222222222222222222222222222222\tCLEAN\tfalse' ;;
+esac
+EOF
+  chmod +x "$TMP/mock-bin/gh"
+  cat >"$TMP/mock-bin/brew" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${1:-} ${2:-}" = 'upgrade touchstone' ] || exit 2
+mkdir -p "$TOUCHSTONE_TEST_INSTALL_PREFIX"
+printf '%s\n' upgraded >"$TOUCHSTONE_TEST_INSTALL_PREFIX/version"
+EOF
+  chmod +x "$TMP/mock-bin/brew"
+  (
+    cd "$policy_repo"
+    TOUCHSTONE_TEST_INSTALL_PREFIX="$TMP/install-prefix" PATH="$TMP/mock-bin:$PATH" \
+      brew upgrade touchstone
+  )
+  [ -f "$TMP/install-prefix/version" ] || fail "Homebrew adapter did not update its installation prefix"
+  PATH="$TMP/mock-bin:$PATH" TOUCHSTONE_READ_ATTEMPTS=1 "$CLI" pr status 1 \
+    --project "$policy_repo" --json >/dev/null
+  [ "$(git -C "$policy_repo" status --porcelain=v1)" = "$status_before" ] \
+    || fail "ordinary validation, installed-tool, revision, or PR observation mutated the project"
+
+  echo "==> unsafe apply states refuse without partial writes"
+  safety_repo="$TMP/safety-consumer"
+  mkdir -p "$safety_repo"
+  cp -R "$FIXTURES/node/." "$safety_repo/"
+  init_repo "$safety_repo"
+  run_cli "$TMP/default-apply" adopt --project "$safety_repo"
+  [ "$RUN_STATUS" -eq 5 ] || fail "default-branch apply did not refuse"
+  [ ! -e "$safety_repo/.touchstone.toml" ] || fail "default-branch refusal partially wrote"
+  git -C "$safety_repo" switch -q -c feat/dirty
+  printf '%s\n' dirty >"$safety_repo/README.md"
+  run_cli "$TMP/dirty-apply" adopt --project "$safety_repo"
+  [ "$RUN_STATUS" -eq 5 ] || fail "dirty apply did not refuse"
+  [ ! -e "$safety_repo/.touchstone.toml" ] || fail "dirty refusal partially wrote"
+
+  echo "==> fresh consumers reuse the versioned steering-resolution fixtures"
+  structural="$(bash "$ROOT/scripts/evaluate-steering.sh" structural --json)"
+  case "$structural" in *'"status":"passed"'*) ;; *) fail "structural steering fixtures failed: $structural" ;; esac
+  [ "$(git hash-object "$TMP/outside-sentinel")" = "$OUTSIDE_SENTINEL_HASH" ] \
+    || fail "consumer operations wrote outside their ownership boundary"
+
+  echo "==> PASS: fresh-consumer adoption, compatibility, policy, and safety contracts hold"
+)

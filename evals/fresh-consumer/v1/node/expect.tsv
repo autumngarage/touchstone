@@ -1,0 +1,1 @@
+success	npm	command = "npm run test"	setup = "npm ci --ignore-scripts"

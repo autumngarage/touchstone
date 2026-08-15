@@ -114,6 +114,7 @@ bash scripts/respond-review.sh <pr> --all-resolved-check
 - **[engineering-principles.md](principles/engineering-principles.md)** — the principles every change is reviewed against
 - **[product-contract.md](docs/product-contract.md)** — the durable product boundary, adoption/evolution contract, and anti-bloat admission test
 - **[steering-evaluation.md](docs/steering-evaluation.md)** — deterministic resolved-instruction fixtures and precedence checks
+- **[fresh-consumer-harness.md](docs/fresh-consumer-harness.md)** — scratch-repository adoption, compatibility, policy, and mutation proofs
 - **[ai-delivery-architecture.md](principles/ai-delivery-architecture.md)** — the AI-authored change lifecycle
 - **[pre-implementation-checklist.md](principles/pre-implementation-checklist.md)** — the gate before a non-trivial change
 - **[agent-swarms.md](principles/agent-swarms.md)** — parallel agents, slice manifests, worktree isolation

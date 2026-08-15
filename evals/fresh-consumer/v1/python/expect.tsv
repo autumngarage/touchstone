@@ -1,0 +1,1 @@
+success	python	command = "uv run --frozen pytest"	setup = "uv sync --frozen"

@@ -1,0 +1,1 @@
+validate=bash tests/pass.sh
