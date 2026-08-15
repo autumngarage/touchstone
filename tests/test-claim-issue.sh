@@ -260,9 +260,10 @@ echo "==> PASS: claim-issue.sh behaves correctly across 7 cases"
   git -C "$TMP/github" remote add origin git@github.com:autumngarage/current.git
   git -C "$TMP/linear" remote add origin https://github.com/autumngarage/current.git
   printf '%s\n' 'schema = 1' '' '[validation]' 'runtime = "bash"' \
+    'setup = "touch contract-ran"' \
     '' '[[validation.targets]]' 'name = "root"' 'path = "."' \
     '' '[[validation.tasks]]' 'name = "test"' 'target = "root"' \
-    'command = "true"' 'required = true' >"$TMP/github/.touchstone.toml"
+    'command = "touch contract-ran"' 'required = true' >"$TMP/github/.touchstone.toml"
   cp "$TMP/github/.touchstone.toml" "$TMP/linear/.touchstone.toml"
   printf '%s\n' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone-tracker.toml"
   printf '%s\n' 'schema = 1' 'type = "linear"' 'key_prefix = "AUT"' >"$TMP/linear/.touchstone-tracker.toml"
@@ -315,6 +316,7 @@ EOF
   assert_json "$TMP/out"
   assert_has "$GH_CALLS" 'issue edit 42 --add-assignee @me'
   test "$(cat "$GH_STATE")" = henry || fail "claim did not persist mocked assignment"
+  [ ! -e "$TMP/github/contract-ran" ] || fail "contract check executed validation commands"
 
   echo "==> authentication and failed mutations never report success"
   GH_MODE=auth_fail run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
@@ -352,6 +354,14 @@ EOF
   run_adapter "$TMP/out" claim 42 --project "$TMP/missing" --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" '"reason":"project-not-found"'
+  assert_json "$TMP/out"
+  run_adapter "$TMP/out" claim 42 --json --bogus
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"reason":"unknown-argument"'
+  assert_json "$TMP/out"
+  run_adapter "$TMP/out" claim 42 --json --project
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"reason":"missing-option-value"'
   assert_json "$TMP/out"
 
   echo "==> malformed, old-compatible, and unsupported tracker declarations are explicit"

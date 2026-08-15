@@ -203,10 +203,7 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --project)
-      [ "$#" -ge 2 ] || {
-        usage
-        exit 2
-      }
+      [ "$#" -ge 2 ] || fail_input missing-option-value "Pass a directory after --project."
       PROJECT_ARG="$2"
       shift 2
       ;;
@@ -215,9 +212,7 @@ while [ "$#" -gt 0 ]; do
       exit 0
       ;;
     *)
-      echo "ERROR: unknown argument '$1'" >&2
-      usage
-      exit 2
+      fail_input unknown-argument "Remove unsupported argument '$1'."
       ;;
   esac
 done
