@@ -219,10 +219,9 @@ CLI_PATTERN='touchstone [a-z][a-z-]*'
 SHELL_CLI_AWK='
   /^[[:space:]]*#/ { next }
   {
-    direct = "^[[:space:]]*(if[[:space:]]+|then[[:space:]]+|![[:space:]]*|command[[:space:]]+|exec[[:space:]]+)?touchstone [a-z][a-z-]*"
-    chained = "(&&|\\|\\||;)[[:space:]]*touchstone [a-z][a-z-]*"
+    command_position = "(^[[:space:]]*|[;&|({][[:space:]]*)((if|then|elif|while|until|do|!|command|exec|env|sudo)[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+)*touchstone [a-z][a-z-]*"
     instructed = "([Rr]un|[Ee]xecute)[[:space:]]+touchstone [a-z][a-z-]*"
-    if ($0 ~ direct || $0 ~ chained || $0 ~ instructed) print FILENAME ":" FNR ":" $0
+    if ($0 ~ command_position || $0 ~ instructed) print FILENAME ":" FNR ":" $0
   }
 '
 YAML_CLI_AWK='
@@ -231,8 +230,9 @@ YAML_CLI_AWK='
     return first ? first - 1 : length(line)
   }
   function invokes(line) {
-    return line ~ /^[[:space:]]*(\$[[:space:]]+)?(if[[:space:]]+|then[[:space:]]+|![[:space:]]*|command[[:space:]]+|exec[[:space:]]+)?touchstone [a-z][a-z-]*/ \
-      || line ~ /(&&|\|\||;)[[:space:]]*touchstone [a-z][a-z-]*/
+    command_position = "(^[[:space:]]*|[;&|({][[:space:]]*)((if|then|elif|while|until|do|!|command|exec|env|sudo)[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+)*touchstone [a-z][a-z-]*"
+    sub(/^[[:space:]]*\$[[:space:]]+/, "", line)
+    return line ~ command_position
   }
   {
     if (in_run) {
@@ -244,7 +244,10 @@ YAML_CLI_AWK='
       in_run = 1
       next
     }
-    if ($0 ~ /^[ ]*(-[ ]+)?run:[ ]*touchstone [a-z][a-z-]*/) print FILENAME ":" FNR ":" $0
+    if (match($0, /^[ ]*(-[ ]+)?run:[ ]*/)) {
+      command = substr($0, RLENGTH + 1)
+      if (invokes(command)) print FILENAME ":" FNR ":" $0
+    }
   }
 '
 
@@ -258,16 +261,23 @@ printf '```bash\ntouchstone retired-command\n```\n' \
   && probe_fence=1
 probe_shell=0
 printf 'touchstone retired-command\n' | awk "$SHELL_CLI_AWK" | grep -q . && probe_shell=1
+probe_pipeline=0
+printf 'printf hi | touchstone retired-command\n' \
+  | awk "$SHELL_CLI_AWK" | grep -q . && probe_pipeline=1
 probe_yaml=0
 printf '%s\n' 'steps:' '  - run: |' '      touchstone retired-command' \
   | awk "$YAML_CLI_AWK" | grep -q . && probe_yaml=1
+probe_yaml_single=0
+printf '%s\n' 'steps:' '  - run: command touchstone retired-command' \
+  | awk "$YAML_CLI_AWK" | grep -q . && probe_yaml_single=1
 probe_miss=0
 printf 'bash scripts/touchstone-run.sh validate\n' | grep -qE '(^|[[:space:]])touchstone [a-z]' || probe_miss=1
 if [ "$probe_hit" -eq 1 ] && [ "$probe_fence" -eq 1 ] \
-  && [ "$probe_shell" -eq 1 ] && [ "$probe_yaml" -eq 1 ] && [ "$probe_miss" -eq 1 ]; then
-  echo "  OK: inline, fenced, shell, and YAML-block commands match while touchstone-run.sh is spared"
+  && [ "$probe_shell" -eq 1 ] && [ "$probe_pipeline" -eq 1 ] \
+  && [ "$probe_yaml" -eq 1 ] && [ "$probe_yaml_single" -eq 1 ] && [ "$probe_miss" -eq 1 ]; then
+  echo "  OK: inline, fenced, shell, pipeline, and YAML commands match while touchstone-run.sh is spared"
 else
-  fail "the CLI-reference extractors are not working (inline=$probe_hit fenced=$probe_fence shell=$probe_shell yaml=$probe_yaml spared=$probe_miss)"
+  fail "the CLI extractors failed (inline=$probe_hit fenced=$probe_fence shell=$probe_shell pipeline=$probe_pipeline yaml=$probe_yaml yaml-single=$probe_yaml_single spared=$probe_miss)"
 fi
 
 cli_refs=$(
