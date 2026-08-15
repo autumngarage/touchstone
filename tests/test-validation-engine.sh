@@ -1078,6 +1078,7 @@ for profile in python swift rust go; do
   init_adoption_repo "$ADOPT_PROFILE"
   case "$profile" in
     python)
+      mkdir -p "$ADOPT_PROFILE/tests"
       printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
         'requires-python = ">=3.11"' 'dependencies = ["pytest"]' \
         '[tool.pytest.ini_options]' >"$ADOPT_PROFILE/pyproject.toml"
@@ -1086,8 +1087,9 @@ for profile in python swift rust go; do
         'source = { virtual = "." }' '' '[[package]]' 'name = "pytest"' \
         'version = "9.1.1"' 'source = { registry = "https://pypi.org/simple" }' \
         >"$ADOPT_PROFILE/uv.lock"
-      expected_command='command = "uv run --no-sync pytest"'
-      expected_setup='setup = "uv sync --offline --frozen"'
+      printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_PROFILE/tests/test_fixture.py"
+      expected_command='command = "uv run --no-sync --no-config pytest"'
+      expected_setup='setup = "uv sync --no-config --offline --frozen"'
       ;;
     swift)
       mkdir -p "$ADOPT_PROFILE/Tests/FixtureTests"
@@ -1461,9 +1463,9 @@ for pnpm_spec in missing bogus unsupported; do
   [ "$ADOPTION_STATUS" -eq 4 ] || fail "$pnpm_spec pnpm version was accepted"
 done
 assert_contains "$TMP_DIR/adopt-pnpm-version-missing.out.err" \
-  'pnpm-lock.yaml requires packageManager with an exact pnpm version'
+  'pnpm requires packageManager with an exact pnpm version'
 assert_contains "$TMP_DIR/adopt-pnpm-version-bogus.out.err" \
-  "pnpm setup requires an exact packageManager version, found 'bogus'"
+  "pnpm requires an exact packageManager version, found 'bogus'"
 assert_contains "$TMP_DIR/adopt-pnpm-version-unsupported.out.err" \
   "unsupported pnpm packageManager version '8.0.0'"
 
@@ -1486,6 +1488,18 @@ for pnpm_config in pnpmfile npmrc; do
   assert_contains "$TMP_DIR/adopt-pnpm-config-$pnpm_config.out.err" \
     'has project-controlled pnpm hook or config'
 done
+
+ADOPT_PNPM_UNLOCKED_VERSION="$TMP_DIR/adopt-pnpm-unlocked-version"
+init_adoption_repo "$ADOPT_PNPM_UNLOCKED_VERSION"
+printf '%s\n' '{"packageManager":"pnpm@bogus","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_PNPM_UNLOCKED_VERSION/package.json"
+commit_adoption_repo "$ADOPT_PNPM_UNLOCKED_VERSION" "fixture"
+git -C "$ADOPT_PNPM_UNLOCKED_VERSION" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-unlocked-version.out" adopt --dry-run \
+  --project "$ADOPT_PNPM_UNLOCKED_VERSION"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "unlocked pnpm project with an invalid runtime version was accepted"
+assert_contains "$TMP_DIR/adopt-pnpm-unlocked-version.out.err" \
+  "pnpm requires an exact packageManager version, found 'bogus'"
 
 ADOPT_IGNORED_CONTRACT="$TMP_DIR/adopt-ignored-contract"
 init_adoption_repo "$ADOPT_IGNORED_CONTRACT"
@@ -1685,10 +1699,12 @@ assert_contains "$ADOPT_CONCURRENT_COMMIT/AGENTS.md" 'CONCURRENT COMMIT'
 
 ADOPT_PYPROJECT="$TMP_DIR/adopt-pyproject"
 init_adoption_repo "$ADOPT_PYPROJECT"
+mkdir -p "$ADOPT_PYPROJECT/tests"
 printf '%s\n' '[project]' 'name = "\u0066ixture"' 'dependencies = [' '  "pytest",' ']' \
   'authors = [{ name = "Touchstone", email = "test@example.invalid" }]' \
   '[project.urls]' 'Homepage = "https://example.invalid/project"' \
   >"$ADOPT_PYPROJECT/pyproject.toml"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_PYPROJECT/tests/test_fixture.py"
 commit_adoption_repo "$ADOPT_PYPROJECT" "fixture"
 git -C "$ADOPT_PYPROJECT" switch -q -c feat/adopt
 mkdir -p "$TMP_DIR/no-python"
@@ -1763,6 +1779,7 @@ assert_contains "$TMP_DIR/adopt-python-setup-hook.out.err" 'build hook this port
 ADOPT_REQUIREMENTS="$TMP_DIR/adopt-requirements"
 init_adoption_repo "$ADOPT_REQUIREMENTS"
 mkdir -p "$ADOPT_REQUIREMENTS/tests"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_REQUIREMENTS/tests/test_fixture.py"
 printf '%s\n' 'pytest==9.0.0' >"$ADOPT_REQUIREMENTS/requirements.txt"
 commit_adoption_repo "$ADOPT_REQUIREMENTS" "fixture"
 git -C "$ADOPT_REQUIREMENTS" switch -q -c feat/adopt
@@ -1908,6 +1925,7 @@ run_adoption "$TMP_DIR/adopt-invalid-bare-value.out" adopt --dry-run --project "
 ADOPT_UNDECLARED_CHECKER="$TMP_DIR/adopt-undeclared-checker"
 init_adoption_repo "$ADOPT_UNDECLARED_CHECKER"
 mkdir -p "$ADOPT_UNDECLARED_CHECKER/tests"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_UNDECLARED_CHECKER/tests/test_fixture.py"
 printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = []' \
   >"$ADOPT_UNDECLARED_CHECKER/pyproject.toml"
 commit_adoption_repo "$ADOPT_UNDECLARED_CHECKER" "fixture"
@@ -1919,6 +1937,7 @@ assert_contains "$TMP_DIR/adopt-undeclared-checker.out.err" "without an installe
 ADOPT_MIXED_PYTHON="$TMP_DIR/adopt-mixed-python"
 init_adoption_repo "$ADOPT_MIXED_PYTHON"
 mkdir -p "$ADOPT_MIXED_PYTHON/tests"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_MIXED_PYTHON/tests/test_fixture.py"
 printf '%s\n' 'requests==2.0.0' >"$ADOPT_MIXED_PYTHON/requirements.txt"
 printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
   >"$ADOPT_MIXED_PYTHON/pyproject.toml"
@@ -1939,6 +1958,8 @@ assert_contains "$TMP_DIR/adopt-tool-only-python.out.err" "no installable projec
 
 ADOPT_POETRY_OPTIONAL="$TMP_DIR/adopt-poetry-optional"
 init_adoption_repo "$ADOPT_POETRY_OPTIONAL"
+mkdir -p "$ADOPT_POETRY_OPTIONAL/tests"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_POETRY_OPTIONAL/tests/test_fixture.py"
 printf '%s\n' '[build-system]' 'requires = ["poetry-core>=2"]' \
   'build-backend = "poetry.core.masonry.api"' \
   '[tool.poetry]' 'name = "fixture"' 'version = "0.1.0"' \
@@ -1965,6 +1986,7 @@ assert_contains "$TMP_DIR/adopt-poetry-no-backend.out.err" 'Poetry metadata with
 ADOPT_UV_DEV="$TMP_DIR/adopt-uv-dev"
 init_adoption_repo "$ADOPT_UV_DEV"
 mkdir -p "$ADOPT_UV_DEV/tests"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_UV_DEV/tests/test_fixture.py"
 printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
   'requires-python = ">=3.11"' 'dependencies = []' \
   '[tool.uv]' 'default-groups = []' '[dependency-groups]' 'dev = ["pytest"]' \
@@ -1978,7 +2000,40 @@ commit_adoption_repo "$ADOPT_UV_DEV" "fixture"
 git -C "$ADOPT_UV_DEV" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-uv-dev.out" adopt --project "$ADOPT_UV_DEV"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "uv dev-group adoption failed"
-assert_contains "$ADOPT_UV_DEV/.touchstone.toml" 'setup = "uv sync --offline --frozen --group dev"'
+assert_contains "$ADOPT_UV_DEV/.touchstone.toml" 'setup = "uv sync --no-config --offline --frozen --group dev"'
+
+ADOPT_UV_CONFIG="$TMP_DIR/adopt-uv-config"
+init_adoption_repo "$ADOPT_UV_CONFIG"
+mkdir -p "$ADOPT_UV_CONFIG/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+  'requires-python = ">=3.11"' 'dependencies = ["pytest"]' \
+  >"$ADOPT_UV_CONFIG/pyproject.toml"
+printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
+  '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
+  'source = { virtual = "." }' '' '[[package]]' 'name = "pytest"' \
+  'version = "9.1.1"' 'source = { registry = "https://pypi.org/simple" }' \
+  >"$ADOPT_UV_CONFIG/uv.lock"
+printf '%s\n' 'this is malformed uv configuration [' >"$ADOPT_UV_CONFIG/uv.toml"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_UV_CONFIG/tests/test_fixture.py"
+commit_adoption_repo "$ADOPT_UV_CONFIG" "fixture"
+git -C "$ADOPT_UV_CONFIG" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-uv-config.out" adopt --project "$ADOPT_UV_CONFIG"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "uv config isolated by --no-config prevented adoption"
+assert_contains "$ADOPT_UV_CONFIG/.touchstone.toml" \
+  'setup = "uv sync --no-config --offline --frozen"'
+assert_contains "$ADOPT_UV_CONFIG/.touchstone.toml" \
+  'command = "uv run --no-sync --no-config pytest"'
+
+ADOPT_PYTEST_NO_TESTS="$TMP_DIR/adopt-pytest-no-tests"
+init_adoption_repo "$ADOPT_PYTEST_NO_TESTS"
+printf '%s\n' 'pytest==9.0.0' >"$ADOPT_PYTEST_NO_TESTS/requirements.txt"
+commit_adoption_repo "$ADOPT_PYTEST_NO_TESTS" "fixture"
+git -C "$ADOPT_PYTEST_NO_TESTS" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pytest-no-tests.out" adopt --dry-run \
+  --project "$ADOPT_PYTEST_NO_TESTS"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "pytest dependency without tracked tests emitted a failing task"
+assert_contains "$TMP_DIR/adopt-pytest-no-tests.out.err" \
+  'no declared ruff, mypy, or pytest evidence'
 
 ADOPT_UV_BAD_LOCK="$TMP_DIR/adopt-uv-bad-lock"
 init_adoption_repo "$ADOPT_UV_BAD_LOCK"
@@ -2026,6 +2081,7 @@ assert_contains "$TMP_DIR/adopt-uv-mismatch.out.err" \
 ADOPT_UV_MISSING_CHECKER="$TMP_DIR/adopt-uv-missing-checker"
 init_adoption_repo "$ADOPT_UV_MISSING_CHECKER"
 mkdir -p "$ADOPT_UV_MISSING_CHECKER/tests"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_UV_MISSING_CHECKER/tests/test_fixture.py"
 printf '%s\n' '[project]' 'name = "fixture"' 'requires-python = ">=3.11"' \
   'dependencies = ["pytest"]' >"$ADOPT_UV_MISSING_CHECKER/pyproject.toml"
 printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
@@ -2471,7 +2527,7 @@ git -C "$ADOPT_YARN_NO_VERSION" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-yarn-no-version.out" adopt --dry-run --project "$ADOPT_YARN_NO_VERSION"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "Yarn lockfile without an exact runtime version was accepted"
 assert_contains "$TMP_DIR/adopt-yarn-no-version.out.err" \
-  'yarn.lock requires packageManager with an exact Yarn version'
+  'yarn requires packageManager with an exact yarn version'
 
 ADOPT_YARN_PATH="$TMP_DIR/adopt-yarn-path"
 init_adoption_repo "$ADOPT_YARN_PATH"
@@ -2485,7 +2541,26 @@ git -C "$ADOPT_YARN_PATH" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-yarn-path.out" adopt --dry-run --project "$ADOPT_YARN_PATH"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "project-controlled Yarn executable was accepted"
 assert_contains "$TMP_DIR/adopt-yarn-path.out.err" \
-  '.yarnrc.yml can select project-controlled Yarn code'
+  'has project-controlled config'
+
+ADOPT_YARN_CHILD_CONFIG="$TMP_DIR/adopt-yarn-child-config"
+init_adoption_repo "$ADOPT_YARN_CHILD_CONFIG"
+mkdir -p "$ADOPT_YARN_CHILD_CONFIG/apps/foo"
+printf '%s\n' '{"packageManager":"yarn@4.14.1","workspaces":["apps/*"]}' \
+  >"$ADOPT_YARN_CHILD_CONFIG/package.json"
+printf '%s\n' '__metadata:' '  version: 8' >"$ADOPT_YARN_CHILD_CONFIG/yarn.lock"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_YARN_CHILD_CONFIG/apps/foo/package.json"
+printf '%s\n' 'yarnPath: ./custom-yarn.cjs' \
+  >"$ADOPT_YARN_CHILD_CONFIG/apps/foo/.yarnrc.yml"
+printf '%s\n' 'process.exit(0)' >"$ADOPT_YARN_CHILD_CONFIG/apps/foo/custom-yarn.cjs"
+commit_adoption_repo "$ADOPT_YARN_CHILD_CONFIG" "fixture"
+git -C "$ADOPT_YARN_CHILD_CONFIG" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-yarn-child-config.out" adopt --dry-run \
+  --project "$ADOPT_YARN_CHILD_CONFIG"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "workspace child Yarn executable config was accepted"
+assert_contains "$TMP_DIR/adopt-yarn-child-config.out.err" \
+  "project-controlled config 'apps/foo/.yarnrc.yml'"
 
 ADOPT_BUN_LOCK="$TMP_DIR/adopt-bun-lock"
 init_adoption_repo "$ADOPT_BUN_LOCK"

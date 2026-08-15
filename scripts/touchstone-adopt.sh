@@ -949,8 +949,39 @@ node_effective_package_manager_spec() {
   return 1
 }
 
+node_validate_package_manager_spec() {
+  local manager="$1" directory="$2" status spec version major
+  NODE_MANAGER_SPEC=""
+  NODE_MANAGER_MAJOR=""
+  case "$manager" in pnpm | yarn) ;; *) return 0 ;; esac
+  if spec="$(node_effective_package_manager_spec "$directory")"; then
+    status=0
+  else
+    status=$?
+  fi
+  case "$status" in
+    0) ;;
+    1) contract_refusal "$manager requires packageManager with an exact $manager version" ;;
+    *) contract_refusal "package.json is malformed or packageManager is not a string" ;;
+  esac
+  case "$spec" in
+    "$manager"@*) version="${spec#"$manager"@}" ;;
+    *) contract_refusal "packageManager '$spec' conflicts with selected package manager '$manager'" ;;
+  esac
+  printf '%s' "$version" | grep -Eq '^[0-9]+[.][0-9]+[.][0-9]+([+-][A-Za-z0-9.-]+)?$' \
+    || contract_refusal "$manager requires an exact packageManager version, found '$version'"
+  major="${version%%.*}"
+  case "$manager:$major" in
+    pnpm:9 | pnpm:10) ;;
+    yarn:*) [ "$major" -ge 1 ] || contract_refusal "unsupported Yarn packageManager version '$version'" ;;
+    *) contract_refusal "unsupported pnpm packageManager version '$version'" ;;
+  esac
+  NODE_MANAGER_SPEC="$spec"
+  NODE_MANAGER_MAJOR="$major"
+}
+
 node_setup_command() {
-  local manager="$1" directory="$2" declaration_status spec version major lock_kind=""
+  local manager="$1" directory="$2" lock_kind=""
   case "$manager" in
     npm)
       if [ -f "$directory/package-lock.json" ] || [ -f "$directory/npm-shrinkwrap.json" ]; then
@@ -959,82 +990,25 @@ node_setup_command() {
       ;;
     pnpm)
       if [ -f "$directory/pnpm-lock.yaml" ]; then
-        if spec="$(node_effective_package_manager_spec "$directory")"; then
-          declaration_status=0
-        else
-          declaration_status=$?
-        fi
-        case "$declaration_status" in
-          0)
-            case "$spec" in
-              pnpm@*)
-                version="${spec#pnpm@}"
-                printf '%s' "$version" | grep -Eq '^[0-9]+[.][0-9]+[.][0-9]+([+-][A-Za-z0-9.-]+)?$' \
-                  || contract_refusal "pnpm setup requires an exact packageManager version, found '$version'"
-                major="${version%%.*}"
-                case "$major" in 9 | 10) ;; *)
-                  contract_refusal "unsupported pnpm packageManager version '$version'"
-                  ;;
-                esac
-                ;;
-              *) contract_refusal "packageManager '$spec' conflicts with the 'pnpm' lockfile" ;;
-            esac
-            ;;
-          1) contract_refusal "pnpm-lock.yaml requires packageManager with an exact pnpm version" ;;
-          *) contract_refusal "package.json is malformed or packageManager is not a string" ;;
-        esac
         printf 'COREPACK_ENABLE_NETWORK=0 pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile\n'
       fi
       ;;
     yarn)
       if [ -f "$directory/yarn.lock" ]; then
-        [ ! -f "$directory/.yarnrc.yml" ] \
-          || contract_refusal ".yarnrc.yml can select project-controlled Yarn code this portable compiler cannot execute; pass --task NAME=COMMAND"
         if grep -q '^# yarn lockfile v1' "$directory/yarn.lock"; then
           lock_kind=classic
         elif grep -q '^__metadata:' "$directory/yarn.lock"; then
           lock_kind=berry
         fi
-        if spec="$(node_effective_package_manager_spec "$directory")"; then
-          declaration_status=0
+        if [ "$NODE_MANAGER_MAJOR" -eq 1 ]; then
+          [ "$lock_kind" != berry ] \
+            || contract_refusal "Yarn Classic packageManager '$NODE_MANAGER_SPEC' conflicts with a Berry lockfile"
+          printf 'COREPACK_ENABLE_NETWORK=0 yarn install --offline --frozen-lockfile --ignore-scripts\n'
         else
-          declaration_status=$?
+          [ "$lock_kind" != classic ] \
+            || contract_refusal "Yarn Berry packageManager '$NODE_MANAGER_SPEC' conflicts with a Classic lockfile"
+          printf 'COREPACK_ENABLE_NETWORK=0 yarn install --immutable --immutable-cache --mode=skip-build\n'
         fi
-        case "$declaration_status" in
-          0)
-            case "$spec" in
-              yarn@*)
-                version="${spec#yarn@}"
-                printf '%s' "$version" | grep -Eq '^[0-9]+[.][0-9]+[.][0-9]+([+-][A-Za-z0-9.-]+)?$' \
-                  || contract_refusal "Yarn setup requires an exact packageManager version, found '$version'"
-                major="${version%%.*}"
-                printf '%s' "$major" | grep -Eq '^[0-9]+$' \
-                  || contract_refusal "unsupported Yarn packageManager version '$version'"
-                if [ "$major" -eq 1 ]; then
-                  [ "$lock_kind" != berry ] \
-                    || contract_refusal "Yarn Classic packageManager '$spec' conflicts with a Berry lockfile"
-                  printf 'COREPACK_ENABLE_NETWORK=0 yarn install --offline --frozen-lockfile --ignore-scripts\n'
-                else
-                  [ "$major" -ge 2 ] \
-                    || contract_refusal "unsupported Yarn packageManager version '$version'"
-                  [ "$lock_kind" != classic ] \
-                    || contract_refusal "Yarn Berry packageManager '$spec' conflicts with a Classic lockfile"
-                  printf 'COREPACK_ENABLE_NETWORK=0 yarn install --immutable --immutable-cache --mode=skip-build\n'
-                fi
-                ;;
-              yarn)
-                case "$lock_kind" in
-                  classic) printf 'COREPACK_ENABLE_NETWORK=0 yarn install --offline --frozen-lockfile --ignore-scripts\n' ;;
-                  berry) printf 'COREPACK_ENABLE_NETWORK=0 yarn install --immutable --immutable-cache --mode=skip-build\n' ;;
-                  *) contract_refusal "yarn.lock format is ambiguous; declare packageManager with an exact Yarn version" ;;
-                esac
-                ;;
-              *) contract_refusal "packageManager '$spec' conflicts with the 'yarn' lockfile" ;;
-            esac
-            ;;
-          1) contract_refusal "yarn.lock requires packageManager with an exact Yarn version" ;;
-          *) contract_refusal "package.json is malformed or packageManager is not a string" ;;
-        esac
       fi
       ;;
     bun)
@@ -1437,6 +1411,7 @@ tasks_for_node() {
     node_has_declared_dependency "$setup_directory/package.json" \
       && contract_refusal "Node workspace root declares dependencies whose lock compatibility this portable compiler cannot verify; pass --task NAME=COMMAND"
   fi
+  node_validate_package_manager_spec "$manager" "$directory"
   if [ "$manager" = npm ]; then
     if [ -f "$setup_directory/package-lock.json" ]; then
       npm_lock="$setup_directory/package-lock.json"
@@ -1459,14 +1434,22 @@ tasks_for_node() {
     pnpm_lock_valid "$setup_directory/pnpm-lock.yaml" \
       || contract_refusal "Node target '$target' has a pnpm lockfile outside the dependency-free portable subset; pass --task NAME=COMMAND"
   fi
-  if [ "$manager" = yarn ] && [ -f "$setup_directory/yarn.lock" ]; then
-    if grep -q '^# yarn lockfile v1$' "$setup_directory/yarn.lock"; then
-      yarn_kind=classic
-    elif grep -q '^__metadata:$' "$setup_directory/yarn.lock"; then
-      yarn_kind=berry
+  if [ "$manager" = yarn ]; then
+    for config in "$directory/.yarnrc.yml" "$directory/.yarnrc" \
+      "$setup_directory/.yarnrc.yml" "$setup_directory/.yarnrc"; do
+      if [ -e "$config" ] || [ -L "$config" ]; then
+        contract_refusal "Yarn target '$target' has project-controlled config '${config#"$PROJECT_ROOT"/}'; pass --task NAME=COMMAND"
+      fi
+    done
+    if [ -f "$setup_directory/yarn.lock" ]; then
+      if grep -q '^# yarn lockfile v1$' "$setup_directory/yarn.lock"; then
+        yarn_kind=classic
+      elif grep -q '^__metadata:$' "$setup_directory/yarn.lock"; then
+        yarn_kind=berry
+      fi
+      yarn_lock_valid "$setup_directory/yarn.lock" "$yarn_kind" \
+        || contract_refusal "Node target '$target' has a Yarn lockfile outside the dependency-free portable subset; pass --task NAME=COMMAND"
     fi
-    yarn_lock_valid "$setup_directory/yarn.lock" "$yarn_kind" \
-      || contract_refusal "Node target '$target' has a Yarn lockfile outside the dependency-free portable subset; pass --task NAME=COMMAND"
   fi
   if [ "$manager" = bun ] && { [ -f "$setup_directory/bun.lock" ] || [ -f "$setup_directory/bun.lockb" ]; }; then
     contract_refusal "Node target '$target' has a Bun lockfile this portable compiler cannot validate; pass --task NAME=COMMAND"
@@ -2139,6 +2122,22 @@ python_checker_declared() {
   python_project_has_dependency "$directory/pyproject.toml" "$checker" "$include_dev"
 }
 
+python_has_tracked_tests() {
+  local directory="$1" relative prefix
+  relative="${directory#"$PROJECT_ROOT"}"
+  relative="${relative#/}"
+  if [ -n "$relative" ]; then prefix="$relative/"; else prefix=""; fi
+  git -C "$PROJECT_ROOT" ls-files | awk -v prefix="$prefix" '
+    index($0, prefix) == 1 {
+      path = substr($0, length(prefix) + 1)
+      count = split(path, parts, "/")
+      name = parts[count]
+      if (name ~ /^test_.*[.]py$/ || name ~ /_test[.]py$/) found = 1
+    }
+    END { exit !found }
+  '
+}
+
 tasks_for_python() {
   local directory="$1" target="$2" suffix="$3" prefix="python -m" found=false evidence=false
   if [ -f "$directory/pyproject.toml" ]; then
@@ -2165,11 +2164,11 @@ tasks_for_python() {
       || contract_refusal "uv automatic adoption requires pyproject.toml compatibility facts"
     validate_uv_lock "$directory/uv.lock" "$directory/pyproject.toml"
     verify_uv_lock_compatibility "$directory"
-    prefix="uv run --no-sync"
+    prefix="uv run --no-sync --no-config"
     if [ -f "$directory/pyproject.toml" ] && python_has_uv_dev_group "$directory/pyproject.toml"; then
-      record_setup "$directory" "uv sync --offline --frozen --group dev"
+      record_setup "$directory" "uv sync --no-config --offline --frozen --group dev"
     else
-      record_setup "$directory" "uv sync --offline --frozen"
+      record_setup "$directory" "uv sync --no-config --offline --frozen"
     fi
   elif [ -f "$directory/requirements.txt" ]; then
     record_setup "$directory" "python -m pip install --no-index -r requirements.txt"
@@ -2203,11 +2202,8 @@ tasks_for_python() {
     found=true
   fi
   evidence=false
-  if { [ -f "$directory/pyproject.toml" ] && grep -Eq '^\[tool\.pytest(\.|\])' "$directory/pyproject.toml"; } \
-    || [ -d "$directory/tests" ]; then evidence=true; fi
-  if python_checker_declared "$directory" pytest; then
-    evidence=true
-  elif [ "$evidence" = true ]; then
+  if python_has_tracked_tests "$directory"; then evidence=true; fi
+  if ! python_checker_declared "$directory" pytest && [ "$evidence" = true ]; then
     contract_refusal "Python target '$target' has pytest evidence without an installed pytest dependency"
   fi
   if [ "$evidence" = true ]; then
