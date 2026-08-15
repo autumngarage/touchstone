@@ -10,7 +10,7 @@ One person cannot read everything many agents produce. Touchstone exists so that
 The goal is that every Autumn Garage project gets the same dev flow by adopting Touchstone, and that the flow is industry-leading practice for GitHub and agent-driven delivery. Adoption is **set-and-forget**: an adopted repository must remain correct if Touchstone never rewrites it again. V1 serves one operator's portfolio through public-quality interfaces; it does not build a speculative third-party platform. The durable boundary is defined in `docs/product-contract.md`.
 
 **The second half is deliberately narrow.** The CLI validates declared project
-checks, verifies tracker claims, and exposes two bounded source-only PR
+checks, verifies tracker claims, and exposes three bounded source-only PR
 operations. GitHub remains the review, findings, and merge surface; drivers
 reconcile delivered work through the configured tracker API or CLI.
 It does not stage, commit, or push code, and it never replaces GitHub's merge
@@ -64,7 +64,7 @@ engine; its contract lives in [docs/validation-contract.md](docs/validation-cont
 `scripts/touchstone-tracker.sh` owns the tracker-neutral verified claim boundary;
 its versioned outcomes live in [docs/tracker-contract.md](docs/tracker-contract.md).
 Drivers reconcile delivered work through the configured tracker's API or CLI.
-`scripts/touchstone-pr.sh` owns the two bounded PR sequencing operations; its
+`scripts/touchstone-pr.sh` owns the three bounded PR sequencing operations; its
 versioned output and raw recovery equivalents live in
 [docs/pr-cli-contract.md](docs/pr-cli-contract.md).
 Current replacement scope and sequencing live in the [canonical Linear execution plan](https://linear.app/autumngarage/document/touchstone-execution-plan-post-strip-baseline-cac4c56e593e), not this durable overview.
@@ -74,11 +74,12 @@ The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so GitHub approv
 ## Delivery
 
 Raw `git` and `gh` remain the active delivery workflow. Source contributors can
-exercise the two bounded operations after the branch is pushed:
+exercise the three bounded operations after the branch is pushed:
 
 ```bash
 bash bin/touchstone pr open --title "fix: some change" --body-file /tmp/pr-body
 bash bin/touchstone pr status <n>
+bash bin/touchstone pr merge <n> --head <reviewed-sha>
 ```
 
 The exact raw recovery path remains:

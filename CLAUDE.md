@@ -62,7 +62,7 @@ touchstone/
 | `principles/git-workflow.md` | The full delivery sequence in raw `git` + `gh`, including thread resolution |
 | `scripts/respond-review.sh` | Reply to a review finding and resolve its thread in one step (GitHub needs four API calls) |
 | `scripts/touchstone-tracker.sh` | Versioned tracker-neutral verified claim adapter |
-| `scripts/touchstone-pr.sh` | Source entrypoint for bounded PR open and status operations |
+| `scripts/touchstone-pr.sh` | Source entrypoint for three bounded PR operations |
 | `scripts/claim-issue.sh` | GitHub transport used by the tracker adapter |
 | `hooks/branch-guard.sh` | Refuses `git commit` on the default branch at the Claude tool boundary |
 | `tests/test-steering-size-caps.sh` | Steering size caps plus path integrity — every path the docs name must exist |
@@ -72,8 +72,8 @@ Release history lives in `git log` and `gh release list` — there is no `CHANGE
 ## Delivery
 
 Raw `git` and `gh` remain the active delivery workflow until distribution
-lands. In this source checkout, `bash bin/touchstone pr open|status` exercises
-the two bounded operations; `docs/pr-cli-contract.md` records their stable
+lands. In this source checkout, `bash bin/touchstone pr open|status|merge`
+exercises the three bounded operations; `docs/pr-cli-contract.md` records their stable
 schema and exact raw equivalents.
 
 ## Distribution — currently absent

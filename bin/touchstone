@@ -20,7 +20,7 @@ usage() {
 Usage:
   touchstone validate [--json] [--project DIR] [--config FILE]
   touchstone tracker claim [arguments]
-  touchstone pr open|status [arguments]
+  touchstone pr open|status|merge [arguments]
 EOF
 }
 

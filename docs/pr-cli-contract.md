@@ -10,6 +10,7 @@ precondition for recovery.
 ```text
 touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
 touchstone pr status PR
+touchstone pr merge PR --head SHA
 ```
 
 Every command accepts `--project DIR` and `--json`. JSON has schema
@@ -32,15 +33,21 @@ command runs a daemon, stores credentials, or persists derived PR state.
 - `status` is a read-only observation of state, URL, exact head, base ref/base
   SHA, draft state, and GitHub's merge-state observation. Raw equivalent:
   `gh pr view --json number,state,url,headRefOid,baseRefName,baseRefOid,mergeStateStatus,isDraft`.
+- `merge` requires the caller's exact reviewed head, passes it through
+  `--match-head-commit`, and re-reads state and head after the mutation. It
+  accepts merged, queued, or auto-merge-enabled only while the reconciled head
+  still equals the reviewed head. Raw equivalent: `gh pr merge --squash
+  --match-head-commit SHA`, then re-read `state`, `headRefOid`, merge queue, and
+  auto-merge state.
 
 ## Safety and recovery
 
 All reads use bounded retries. Mutations are never blindly retried: their
 surviving state is read first or immediately afterward, so a timeout after a
 successful mutation does not create a second PR, review request, reply, or
-other mutation. A moved head, unknown or changed review base, ambiguous branch-to-PR
-mapping, GitHub rejection, or unverified final state fails closed with a
-concrete remedy.
+other mutation. A moved head, unknown or changed review base, ambiguous
+branch-to-PR mapping, GitHub rejection, or unverified final state fails closed
+with a concrete remedy.
 
 GitHub response data and diagnostics remain separate. Successful commands are
 parsed from stdout alone; failed commands retain a bounded, sanitized
@@ -53,15 +60,15 @@ cannot drift from GitHub Enterprise to `github.com`.
 
 Security-review quota notices are provisional observations, never trusted
 review evidence and never a blocker. `open` leaves the request recorded and the
-driver waits for exact-head review. Merge remains the exact raw GitHub procedure
-until its separately reviewed boundary lands.
+driver waits for exact-head review; `merge` delegates GitHub's complete verdict
+while binding both the mutation and reconciliation to the reviewed head.
 
 ## Ownership boundary
 
-The CLI owns two GitHub PR operations whose boundaries have concrete failure
-evidence: exact-head review request and bounded state observation. It does not
+The CLI owns three GitHub PR operations whose boundaries have concrete failure
+evidence: exact-head review request, bounded state observation, and exact-head
+merge reconciliation. It does not
 reconstruct review findings, conversation state, tracker state, or the merge
-verdict. Drivers inspect GitHub's review surface directly, use
-`scripts/respond-review.sh` for inline reply-and-resolve semantics, and merge
-with the exact raw command in `principles/git-workflow.md`. Repository rules
-and the required workflow remain authoritative.
+verdict. Drivers inspect GitHub's review surface directly and use
+`scripts/respond-review.sh` for inline reply-and-resolve semantics. Repository
+rules and the required workflow remain authoritative.

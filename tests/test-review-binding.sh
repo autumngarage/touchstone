@@ -600,7 +600,7 @@ case "$1 ${2:-}" in
     if [ "${GH_MODE:-ok}" = merge_failed ]; then exit 1; fi
     case "${GH_MODE:-ok}" in merge_queue | auto_merge) exit 0 ;; esac
     touch "$GH_STATE/merged"
-    [ "${GH_MODE:-ok}" != merge_lied ] || exit 1
+    case "${GH_MODE:-ok}" in merge_lied | merge_head_moved) exit 1 ;; esac
     ;;
   "issue view")
     if [ -f "$GH_STATE/merged" ]; then printf 'CLOSED\tCOMPLETED\n'; else printf 'OPEN\t\n'; fi
@@ -608,14 +608,16 @@ case "$1 ${2:-}" in
   "api user") printf '%s\n' alice ;;
   "api graphql")
     if has 'mergeQueueEntry' "$@"; then
-      if [ -f "$GH_STATE/merged" ]; then
-        printf 'MERGED\thttps://example.test/pr/7\tfalse\t\n'
+      if [ "${GH_MODE:-ok}" = merge_head_moved ]; then
+        printf 'MERGED\thttps://example.test/pr/7\tmoved-head\tfalse\t\n'
+      elif [ -f "$GH_STATE/merged" ]; then
+        printf 'MERGED\thttps://example.test/pr/7\t%s\tfalse\t\n' "$GH_HEAD"
       elif [ "${GH_MODE:-ok}" = merge_queue ]; then
-        printf 'OPEN\thttps://example.test/pr/7\tfalse\tQUEUED\n'
+        printf 'OPEN\thttps://example.test/pr/7\t%s\tfalse\tQUEUED\n' "$GH_HEAD"
       elif [ "${GH_MODE:-ok}" = auto_merge ]; then
-        printf 'OPEN\thttps://example.test/pr/7\ttrue\t\n'
+        printf 'OPEN\thttps://example.test/pr/7\t%s\ttrue\t\n' "$GH_HEAD"
       else
-        printf 'OPEN\thttps://example.test/pr/7\tfalse\t\n'
+        printf 'OPEN\thttps://example.test/pr/7\t%s\tfalse\t\n' "$GH_HEAD"
       fi
     elif has 'resolveReviewThread' "$@"; then
       printf '%s\n' true
@@ -838,14 +840,48 @@ EOF
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'touchstone pr open'
 
-  echo "==> merge remains on the exact raw GitHub boundary"
-  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  echo "==> merge binds both mutation and reconciliation to the reviewed head"
+  rm -f "$TMP/state/merged"
+  run_pr "$TMP/out" merge 7 --json
   assert_rc "$RUN_RC" 2
-  assert_has "$TMP/out" 'touchstone pr open'
+  assert_has "$TMP/out" 'merge requires --head SHA'
+  run_pr "$TMP/out" merge 7 --head wrong --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'expected head wrong'
+  GH_MODE=merge_lied run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"merged"'
+  assert_has "$GH_CALLS" "--match-head-commit $HEAD_SHA"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"already-merged"'
+  assert_not_has "$GH_CALLS" 'pr merge'
+
+  rm -f "$TMP/state/merged"
+  GH_MODE=merge_queue run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"queued"'
+  GH_MODE=auto_merge run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"auto-merge-enabled"'
+
+  echo "==> merge refuses a success state observed on a moved head"
+  rm -f "$TMP/state/merged"
+  GH_MODE=merge_head_moved run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'moved to moved-head during merge reconciliation'
+  assert_not_has "$TMP/out" '"status":"merged"'
+
+  echo "==> an unsuccessful mutation never claims a merge"
+  rm -f "$TMP/state/merged"
+  GH_MODE=merge_failed run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'GitHub did not accept merge'
+  assert_not_has "$TMP/out" '"status":"merged"'
 
   if [ "$ERRORS" -gt 0 ]; then
     echo "==> FAIL: $ERRORS PR CLI assertion(s) failed" >&2
     exit 1
   fi
-  echo "==> PASS: PR open/status preserve exact-head and idempotency invariants"
+  echo "==> PASS: PR CLI preserves exact-head and idempotency invariants"
 )
