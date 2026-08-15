@@ -54,7 +54,8 @@ for file in \
   assert_contains "$file" "scripts/respond-review.sh"
   assert_not_contains "$file" "touchstone worker"
   assert_contains "$file" "Claim issues before implementation"
-  assert_contains "$file" "bash scripts/claim-issue.sh <n>"
+  assert_contains "$file" "configured tracker's race-safe claim"
+  assert_contains "$file" "never assume a repository-local helper exists"
   assert_contains "$file" "Reconcile issues"
   assert_contains "$file" "Do not leave fixed issues open silently"
   assert_contains "$file" "Do not infer adoption from this document"
@@ -63,6 +64,10 @@ for file in \
   assert_contains "$file" "bounded stalled-request recovery"
   assert_not_contains "$file" "Review is an enforced gate."
 done
+
+assert_not_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "scripts/claim-issue.sh"
+assert_not_contains "$TOUCHSTONE_ROOT/templates/AGENTS.md" "scripts/claim-issue.sh"
+assert_not_contains "$TOUCHSTONE_ROOT/templates/GEMINI.md" "scripts/claim-issue.sh"
 
 GIT_WORKFLOW_SKILL="$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md"
 assert_contains "$GIT_WORKFLOW_SKILL" "Inspect the repository's effective rules"
@@ -167,6 +172,11 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "unresolvedCount: 
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "threadId: .id"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "rootCommentId: .comments.nodes[0].databaseId"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Replies are deliberately omitted"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Use the configured tracker"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "fail closed on"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "there is no universal bypass token"
+assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "scripts/claim-issue.sh"
+assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "scripts/issue-claim-check.sh"
 
 echo "==> PR babysitting preserves approved scope"
 # PR #829 showed how individually reasonable findings can turn an exact-head

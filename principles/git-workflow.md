@@ -387,22 +387,14 @@ Merge a chain in order, parent first, repeating both steps for each next child.
 
 ## Claiming issues before agent dispatch
 
-Before spawning a coding agent — Claude Code subagent, Codex CLI, or any other — to work on a GitHub issue, **claim it first**. Set the assignee, post a one-line dispatch comment, then spawn the agent. The cost is ten seconds per issue; the cost of skipping it is two agents picking up the same issue and shipping competing PRs.
+Before spawning a coding agent — Claude Code subagent, Codex CLI, or any other — to work on an issue, **claim it first**. Verify sole ownership, post a one-line dispatch record only after the claim is stable, then spawn the agent. The cost is ten seconds per issue; the cost of skipping it is two agents picking up the same issue and shipping competing PRs.
 
-**The mechanical steps.**
-
-```bash
-bash scripts/claim-issue.sh <n>
-```
-
-Under the hood this uses the same GitHub API flow (claim + dispatch comment), equivalent to:
-
-```bash
-gh issue edit <n> --add-assignee @me
-gh issue comment <n> --body "Dispatched. Branch \`<branch>\`, worktree at \`<path>\`. <agent type> implementing."
-```
-
-The script is preferred because it detects races — another assignee appearing between the API read and write — and exits non-zero so the dispatching agent knows not to start work.
+**Use the configured tracker.** Its claim operation must fail closed on
+contention, verify sole ownership after mutation, and publish a durable dispatch
+record. If the repository provides no race-safe operation, stop before
+dispatching; do not substitute a repository-local helper copied from another
+project. Add a GitHub-specific portable sequence here only when it preserves
+those invariants without relying on repository-owned files.
 
 Then start the agent. Not after.
 
@@ -421,9 +413,11 @@ Then start the agent. Not after.
 
 **For multi-issue bundles.** When one lane closes multiple issues, claim and comment on all of them with the same branch reference.
 
-**Deterministic enforcement.** `.github/workflows/issue-claim-check.yml` runs on every `pull_request` open/edit/synchronize. It parses `Closes #N` / `Fixes #N` / `Resolves #N` / `Closes-issue: #N` from the PR body, fetches each open referenced issue, and fails the check if the PR author is not in the issue's assignees. The failure posts a comment on the PR explaining what to fix. `scripts/issue-claim-check.sh` is the same check, runnable locally before you push.
-
-**Bypass token: `[skip-claim-check]`.** For documented exemptions (drive-by typo fix, true emergency, sandbox PR you don't intend to merge), put the literal token in the PR body. The CI check sees the token and skips with a workflow-run note, leaving an audit trail. This is a documented escape hatch, not a daily shortcut.
+**Enforcement is repository policy, not a prose assumption.** Where effective
+policy includes an issue-claim check, inspect that check and its help output
+before relying on its behavior or any repository-specific bypass. Without such
+a check, claim-and-reconcile discipline remains mandatory driver procedure;
+there is no universal bypass token.
 
 ## Parallel work with worktrees
 

@@ -78,7 +78,7 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 
 1. **Pull.** `git pull --rebase` on the default branch.
 2. **Branch.** Before any edit that might become a commit.
-3. **Claim issues before implementation.** If the work starts from a GitHub issue, claim it before editing or dispatching an agent: `bash scripts/claim-issue.sh <n>`. Claim every issue in a multi-issue bundle so two agents do not ship competing fixes.
+3. **Claim issues before implementation.** Use the configured tracker's race-safe claim, verification, and dispatch sequence before editing. Claim every issue in a bundle; never assume a repository-local helper exists.
 4. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
 5. **Reconcile issues.** Before opening the PR, list every GitHub issue found, claimed, fixed, partially fixed, or made stale by the work. Fully fixed issues get closing trailers (`Closes-issue: #123` or `Closes #123`) so merge auto-closes them; partial/stale issues get a comment explaining the evidence or remaining gap. Do not leave fixed issues open silently.
 6. **Ship.** `git push -u origin HEAD`, then `gh pr create`. Put the closing reference (`Closes #123`) in the **PR body** — squash-merge reads the body, not the commit. Request review by commenting `@codex review` on the PR.
@@ -116,7 +116,7 @@ Use the normal lifecycle unless the user asks for a different flow:
 
 1. Pull/rebase the default branch.
 2. Branch before editing.
-3. Claim every GitHub issue you are actively implementing with `bash scripts/claim-issue.sh <n>` before editing or dispatching an agent.
+3. Claim every issue through the configured tracker's race-safe claim, verification, and dispatch sequence before editing or dispatching an agent.
 4. Make the change, stage explicit file paths, and commit with a concise message.
 5. Reconcile issue state before opening the PR: fixed issues get closing trailers/PR body lines; partial or stale issues get an issue comment with evidence and remaining gaps.
 6. Ship with `git push -u origin HEAD`, then `gh pr create` — put `Closes #123` in the **PR body**, since that is what squash-merge reads. Request review, answer every finding, then merge with `gh pr merge <n> --squash --match-head-commit <reviewed-sha>` and confirm the result rather than trusting the exit code.
