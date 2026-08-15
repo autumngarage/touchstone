@@ -490,8 +490,15 @@ EOF
   run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"verified"'
-  assert_has "$GH_CALLS" 'issue comment 42 --body-file'
-  assert_has "$GH_CALLS" 'api --paginate repos/autumngarage/current/issues/42/comments'
+  assert_has "$GH_CALLS" 'issue comment 42 --repo github.com/autumngarage/current --body-file'
+  assert_has "$GH_CALLS" 'api --paginate --hostname github.com repos/autumngarage/current/issues/42/comments'
+  : >"$GH_CALLS"
+  GH_REPO=github.enterprise.example/autumngarage/current \
+    run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" \
+    --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'issue comment 42 --repo github.enterprise.example/autumngarage/current --body-file'
+  assert_has "$GH_CALLS" 'api --paginate --hostname github.enterprise.example repos/autumngarage/current/issues/42/comments'
   printf '%s\n' 'Relative note from caller directory.' >"$TMP/relative-note"
   relative_note_path="$(cd "$TMP" && pwd -P)/relative-note"
   caller_directory="$PWD"
@@ -499,7 +506,7 @@ EOF
   run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" --note-file relative-note --project "$TMP/github" --json
   cd "$caller_directory"
   assert_rc "$RUN_RC" 0
-  assert_has "$GH_CALLS" "issue comment 42 --body-file $relative_note_path"
+  assert_has "$GH_CALLS" "issue comment 42 --repo github.com/autumngarage/current --body-file $relative_note_path"
   GH_MODE=comment_unverified run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" '"reason":"github-comment-unverified"'
@@ -543,7 +550,15 @@ EOF
   printf '%s\n' 'Refs #42' 'Closes #42' >"$TMP/body"
   run_adapter "$TMP/out" reconcile 42 --disposition stale --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 2
-  assert_has "$TMP/out" 'Replace the closing reference for #42'
+  assert_has "$TMP/out" '"reason":"closing-nonfixed-issue"'
+  printf '%s\n' 'Refs #42' 'Closes autumngarage/current#42' >"$TMP/body"
+  run_adapter "$TMP/out" validate 42 --disposition partial --body-file "$TMP/body" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"reason":"closing-nonfixed-issue"'
+  printf '%s\n' 'Refs #42' 'Closes autumngarage/current#77' 'Closes autumngarage/other#42' >"$TMP/body"
+  run_adapter "$TMP/out" validate 42 --disposition partial --body-file "$TMP/body" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reason":"body-valid"'
 
   echo "==> Linear partial reconciliation names the MCP/API action and never calls gh"
   : >"$GH_CALLS"

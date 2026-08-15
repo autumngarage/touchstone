@@ -24,6 +24,7 @@ KEY_PREFIX=""
 TRACKER_SCHEMA_SEEN=false
 TRACKER_TYPE_SEEN=false
 TRACKER_KEYS=""
+GITHUB_HOST="github.com"
 
 usage() {
   sed -n '3,8p' "$0" | sed 's/^# \{0,1\}//' >&2
@@ -174,17 +175,26 @@ normalize_reference() {
 }
 
 resolve_repo() {
-  local resolved remote
+  local resolved remote host="${GH_HOST:-}"
   resolved="${GH_REPO:-}"
+  case "$resolved" in
+    */*/*)
+      [ -n "$host" ] || host="${resolved%%/*}"
+      resolved="${resolved#*/}"
+      ;;
+  esac
   if [ -z "$resolved" ]; then
     remote="$(git -C "$PROJECT_ROOT" remote get-url origin 2>/dev/null || true)"
     case "$remote" in
       http://* | https://*)
         resolved="${remote#*://}"
+        [ -n "$host" ] || host="${resolved%%/*}"
         resolved="${resolved#*/}"
         resolved="${resolved%.git}"
         ;;
       git@*:*)
+        [ -n "$host" ] || host="${remote#git@}"
+        host="${host%%:*}"
         resolved="${remote#*:}"
         resolved="${resolved%.git}"
         ;;
@@ -194,9 +204,8 @@ resolve_repo() {
     resolved="$(cd "$PROJECT_ROOT" && gh repo view --json nameWithOwner --jq '.nameWithOwner // empty' 2>/dev/null || true)"
   fi
   resolved="${resolved%.git}"
-  case "$resolved" in
-    */*/*) resolved="${resolved#*/}" ;;
-  esac
+  [ -n "$host" ] || host=github.com
+  GITHUB_HOST="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
   case "$resolved" in */*) CURRENT_REPO="$(printf '%s' "$resolved" | tr '[:upper:]' '[:lower:]')" ;; *) CURRENT_REPO="" ;; esac
 }
 
@@ -248,12 +257,14 @@ validate_body() {
       fail_input missing-reconciliation-reference "Add '$refs_expected' to the PR body; $DISPOSITION work must not auto-close on merge."
     fi
     if [ "$TRACKER" = github ]; then
-      closing_pattern="\\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved|closes-issue):?[[:space:]]*#${ISSUE_ID}\\b"
+      wrong="$(same_repo_github_closers "$text" | grep -Ei "#${ISSUE_ID}$" || true)"
+      [ -z "$wrong" ] \
+        || fail_input closing-nonfixed-issue "Replace '$wrong' with '$refs_expected'."
     else
       closing_pattern="\\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?[[:space:]]*${REFERENCE}\\b"
-    fi
-    if grep -Eqi "$closing_pattern" <<<"$text"; then
-      fail_input closing-nonfixed-issue "Replace the closing reference for $REFERENCE with '$refs_expected'."
+      if grep -Eqi "$closing_pattern" <<<"$text"; then
+        fail_input closing-nonfixed-issue "Replace the closing reference for $REFERENCE with '$refs_expected'."
+      fi
     fi
   fi
 }
@@ -294,7 +305,7 @@ reconcile_github() {
       exit 3
     }
     set +e
-    state="$(cd "$PROJECT_ROOT" && gh issue view "$ISSUE_ID" --json state --jq '.state' 2>/dev/null)"
+    state="$(cd "$PROJECT_ROOT" && gh issue view "$ISSUE_ID" --repo "$GITHUB_HOST/$CURRENT_REPO" --json state --jq '.state' 2>/dev/null)"
     verification_status=$?
     set -e
     if [ "$verification_status" -ne 0 ]; then
@@ -317,12 +328,12 @@ reconcile_github() {
     emit failed github-repository-unresolved "Resolve the repository through GH_REPO, the origin remote, or gh before retrying."
     exit 1
   fi
-  if ! note_url="$(cd "$PROJECT_ROOT" && gh issue comment "$ISSUE_ID" --body-file "$NOTE_FILE" 2>/dev/null)" || [ -z "$note_url" ]; then
+  if ! note_url="$(cd "$PROJECT_ROOT" && gh issue comment "$ISSUE_ID" --repo "$GITHUB_HOST/$CURRENT_REPO" --body-file "$NOTE_FILE" 2>/dev/null)" || [ -z "$note_url" ]; then
     emit failed github-comment-failed "No reconciliation comment was verified."
     exit 1
   fi
   set +e
-  verified_url="$(cd "$PROJECT_ROOT" && gh api --paginate "repos/$CURRENT_REPO/issues/$ISSUE_ID/comments" \
+  verified_url="$(cd "$PROJECT_ROOT" && gh api --paginate --hostname "$GITHUB_HOST" "repos/$CURRENT_REPO/issues/$ISSUE_ID/comments" \
     --jq ".[] | select(.html_url == \"$note_url\") | .html_url" 2>/dev/null)"
   verification_status=$?
   set -e
@@ -336,7 +347,7 @@ reconcile_github() {
   fi
   if [ "$DISPOSITION" = partial ]; then
     set +e
-    state="$(cd "$PROJECT_ROOT" && gh issue view "$ISSUE_ID" --json state --jq '.state' 2>/dev/null)"
+    state="$(cd "$PROJECT_ROOT" && gh issue view "$ISSUE_ID" --repo "$GITHUB_HOST/$CURRENT_REPO" --json state --jq '.state' 2>/dev/null)"
     verification_status=$?
     set -e
     if [ "$verification_status" -ne 0 ]; then
@@ -348,12 +359,12 @@ reconcile_github() {
       exit 1
     fi
   elif [ "$DISPOSITION" = stale ]; then
-    if ! (cd "$PROJECT_ROOT" && gh issue close "$ISSUE_ID" >/dev/null 2>&1); then
+    if ! (cd "$PROJECT_ROOT" && gh issue close "$ISSUE_ID" --repo "$GITHUB_HOST/$CURRENT_REPO" >/dev/null 2>&1); then
       emit failed github-close-failed "The comment was created at $note_url, but closing $REFERENCE failed; retry only the close after inspecting the issue." true
       exit 1
     fi
     set +e
-    state="$(cd "$PROJECT_ROOT" && gh issue view "$ISSUE_ID" --json state --jq '.state' 2>/dev/null)"
+    state="$(cd "$PROJECT_ROOT" && gh issue view "$ISSUE_ID" --repo "$GITHUB_HOST/$CURRENT_REPO" --json state --jq '.state' 2>/dev/null)"
     verification_status=$?
     set -e
     if [ "$verification_status" -ne 0 ]; then
