@@ -948,6 +948,8 @@ node_setup_command() {
       ;;
     yarn)
       if [ -f "$directory/yarn.lock" ]; then
+        [ ! -f "$directory/.yarnrc.yml" ] \
+          || contract_refusal ".yarnrc.yml can select project-controlled Yarn code this portable compiler cannot execute; pass --task NAME=COMMAND"
         if grep -q '^# yarn lockfile v1' "$directory/yarn.lock"; then
           lock_kind=classic
         elif grep -q '^__metadata:' "$directory/yarn.lock"; then
@@ -963,6 +965,8 @@ node_setup_command() {
             case "$spec" in
               yarn@*)
                 version="${spec#yarn@}"
+                printf '%s' "$version" | grep -Eq '^[0-9]+[.][0-9]+[.][0-9]+([+-][A-Za-z0-9.-]+)?$' \
+                  || contract_refusal "Yarn setup requires an exact packageManager version, found '$version'"
                 major="${version%%.*}"
                 printf '%s' "$major" | grep -Eq '^[0-9]+$' \
                   || contract_refusal "unsupported Yarn packageManager version '$version'"
@@ -988,13 +992,7 @@ node_setup_command() {
               *) contract_refusal "packageManager '$spec' conflicts with the 'yarn' lockfile" ;;
             esac
             ;;
-          1)
-            case "$lock_kind" in
-              classic) printf 'yarn install --offline --frozen-lockfile --ignore-scripts\n' ;;
-              berry) printf 'yarn install --immutable --immutable-cache --mode=skip-build\n' ;;
-              *) contract_refusal "yarn.lock format is ambiguous; declare packageManager with an exact Yarn version" ;;
-            esac
-            ;;
+          1) contract_refusal "yarn.lock requires packageManager with an exact Yarn version" ;;
           *) contract_refusal "package.json is malformed or packageManager is not a string" ;;
         esac
       fi
@@ -2638,7 +2636,7 @@ require_compiler_inputs_tracked() {
   local directory relative name resolved_directory resolved_relative
   local -a inputs=(
     .touchstone.toml .touchstone-config AGENTS.md CLAUDE.md GEMINI.md TOUCHSTONE.md
-    package.json package-lock.json npm-shrinkwrap.json pnpm-lock.yaml pnpm-workspace.yaml yarn.lock bun.lock bun.lockb tsconfig.json
+    package.json package-lock.json npm-shrinkwrap.json pnpm-lock.yaml pnpm-workspace.yaml yarn.lock .yarnrc.yml bun.lock bun.lockb tsconfig.json
     pyproject.toml setup.py setup.cfg uv.lock requirements.txt Package.swift Package.resolved Cargo.toml Cargo.lock go.mod go.sum go.work go.work.sum
   )
   for name in "${inputs[@]}"; do require_tracked_compiler_input "$name"; done

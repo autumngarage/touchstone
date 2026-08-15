@@ -2086,6 +2086,31 @@ run_adoption "$TMP_DIR/adopt-yarn-bad-lock.out" adopt --dry-run --project "$ADOP
 assert_contains "$TMP_DIR/adopt-yarn-bad-lock.out.err" \
   'Yarn lockfile outside the dependency-free portable subset'
 
+ADOPT_YARN_NO_VERSION="$TMP_DIR/adopt-yarn-no-version"
+init_adoption_repo "$ADOPT_YARN_NO_VERSION"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_YARN_NO_VERSION/package.json"
+printf '%s\n' '# yarn lockfile v1' >"$ADOPT_YARN_NO_VERSION/yarn.lock"
+commit_adoption_repo "$ADOPT_YARN_NO_VERSION" "fixture"
+git -C "$ADOPT_YARN_NO_VERSION" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-yarn-no-version.out" adopt --dry-run --project "$ADOPT_YARN_NO_VERSION"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Yarn lockfile without an exact runtime version was accepted"
+assert_contains "$TMP_DIR/adopt-yarn-no-version.out.err" \
+  'yarn.lock requires packageManager with an exact Yarn version'
+
+ADOPT_YARN_PATH="$TMP_DIR/adopt-yarn-path"
+init_adoption_repo "$ADOPT_YARN_PATH"
+printf '%s\n' '{"packageManager":"yarn@4.14.1","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_YARN_PATH/package.json"
+printf '%s\n' '__metadata:' '  version: 8' >"$ADOPT_YARN_PATH/yarn.lock"
+printf '%s\n' 'yarnPath: ./custom-yarn.cjs' >"$ADOPT_YARN_PATH/.yarnrc.yml"
+printf '%s\n' 'process.exit(0)' >"$ADOPT_YARN_PATH/custom-yarn.cjs"
+commit_adoption_repo "$ADOPT_YARN_PATH" "fixture"
+git -C "$ADOPT_YARN_PATH" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-yarn-path.out" adopt --dry-run --project "$ADOPT_YARN_PATH"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "project-controlled Yarn executable was accepted"
+assert_contains "$TMP_DIR/adopt-yarn-path.out.err" \
+  '.yarnrc.yml can select project-controlled Yarn code'
+
 ADOPT_BUN_LOCK="$TMP_DIR/adopt-bun-lock"
 init_adoption_repo "$ADOPT_BUN_LOCK"
 printf '%s\n' '{"packageManager":"bun@1.2.0","scripts":{"test":"node --test"}}' \

@@ -54,8 +54,8 @@ When a dependency-free lockfile in the compiler's complete portable subset
 exists, the declaration prepares Node dependencies only in the manager's
 offline, frozen/immutable mode; dependency-bearing or unverifiable locks require
 a manual declaration, and an unlocked project gets no generated install step.
-Yarn Classic and Berry are distinguished by the declared major
-version, with the lock format as the fallback when no version is declared. A
+Yarn Classic and Berry require an exact declared package-manager version, and
+project-controlled Yarn configuration requires a manual declaration. A
 child uses the root setup only when an explicit JSON, block YAML, or single-line
 flow YAML workspace glob proves membership. Every workspace entry must be a
 string in the compiler's narrow, slash-aware glob subset; duplicate, mixed-type,
