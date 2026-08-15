@@ -198,6 +198,14 @@ resolve_repo() {
         resolved="${remote#*:}"
         resolved="${resolved%.git}"
         ;;
+      ssh://*)
+        resolved="${remote#ssh://}"
+        resolved="${resolved#*@}"
+        [ -n "$host" ] || host="${resolved%%/*}"
+        host="${host%%:*}"
+        resolved="${resolved#*/}"
+        resolved="${resolved%.git}"
+        ;;
     esac
   fi
   if [ -z "$resolved" ] && command -v gh >/dev/null 2>&1; then
@@ -225,7 +233,9 @@ absolute_input_file() {
 
 same_repo_github_closers() {
   local text="$1" match normalized target matches
-  matches="$(printf '%s\n' "$text" | grep -Eoi '\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved|closes-issue):?[[:space:]]*([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+\b' || true)"
+  matches="$(printf '%s\n' "$text" \
+    | grep -Eoi '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved|closes-issue):?[[:space:]]*([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+([^[:alnum:]_]|$)' \
+    | sed -E 's/^[^[:alnum:]_]//; s/[^[:alnum:]_]$//' || true)"
   [ -n "$matches" ] || return 0
   while IFS= read -r match; do
     normalized="$(printf '%s' "$match" | tr '[:upper:]' '[:lower:]')"
@@ -261,7 +271,7 @@ validate_body() {
       [ -z "$wrong" ] \
         || fail_input closing-nonfixed-issue "Replace '$wrong' with '$refs_expected'."
     else
-      closing_pattern="\\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?[[:space:]]*${REFERENCE}\\b"
+      closing_pattern="(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?[[:space:]]*${REFERENCE}([^[:alnum:]_]|$)"
       if grep -Eqi "$closing_pattern" <<<"$text"; then
         fail_input closing-nonfixed-issue "Replace the closing reference for $REFERENCE with '$refs_expected'."
       fi

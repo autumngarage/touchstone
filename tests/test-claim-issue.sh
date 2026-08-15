@@ -255,11 +255,13 @@ echo "==> PASS: claim-issue.sh behaves correctly across 7 cases"
   assert_rc() { [ "$1" -eq "$2" ] || fail "expected rc $2, got $1"; }
   assert_json() { jq -e '.schema == "touchstone.tracker/v1" and (.status == "verified" or .status == "unverifiable" or .status == "failed")' "$1" >/dev/null || fail "$1 is not a valid v1 tracker result"; }
 
-  mkdir -p "$TMP/bin" "$TMP/github" "$TMP/linear" "$TMP/unresolved-linear"
+  mkdir -p "$TMP/bin" "$TMP/github" "$TMP/linear" "$TMP/unresolved-linear" "$TMP/enterprise"
   git -C "$TMP/github" init -q
   git -C "$TMP/linear" init -q
+  git -C "$TMP/enterprise" init -q
   git -C "$TMP/github" remote add origin git@github.com:autumngarage/current.git
   git -C "$TMP/linear" remote add origin https://github.com/autumngarage/current.git
+  git -C "$TMP/enterprise" remote add origin ssh://git@github.enterprise.example/autumngarage/current.git
   printf '%s\n' 'schema = 1' '' '[validation]' 'runtime = "bash"' \
     'setup = "touch contract-ran"' \
     '' '[[validation.targets]]' 'name = "root"' 'path = "."' \
@@ -267,9 +269,11 @@ echo "==> PASS: claim-issue.sh behaves correctly across 7 cases"
     'command = "touch contract-ran"' 'required = true' >"$TMP/github/.touchstone.toml"
   cp "$TMP/github/.touchstone.toml" "$TMP/linear/.touchstone.toml"
   cp "$TMP/github/.touchstone.toml" "$TMP/unresolved-linear/.touchstone.toml"
+  cp "$TMP/github/.touchstone.toml" "$TMP/enterprise/.touchstone.toml"
   printf '%s\n' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone-tracker.toml"
   printf '%s\n' 'schema = 1' 'type = "linear"' 'key_prefix = "AUT"' >"$TMP/linear/.touchstone-tracker.toml"
   cp "$TMP/linear/.touchstone-tracker.toml" "$TMP/unresolved-linear/.touchstone-tracker.toml"
+  cp "$TMP/github/.touchstone-tracker.toml" "$TMP/enterprise/.touchstone-tracker.toml"
 
   cat >"$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -499,6 +503,12 @@ EOF
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'issue comment 42 --repo github.enterprise.example/autumngarage/current --body-file'
   assert_has "$GH_CALLS" 'api --paginate --hostname github.enterprise.example repos/autumngarage/current/issues/42/comments'
+  : >"$GH_CALLS"
+  GH_REPO='' run_adapter "$TMP/out" reconcile 42 --disposition partial \
+    --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/enterprise" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'issue comment 42 --repo github.enterprise.example/autumngarage/current --body-file'
+  assert_has "$GH_CALLS" 'api --paginate --hostname github.enterprise.example repos/autumngarage/current/issues/42/comments'
   printf '%s\n' 'Relative note from caller directory.' >"$TMP/relative-note"
   relative_note_path="$(cd "$TMP" && pwd -P)/relative-note"
   caller_directory="$PWD"
@@ -559,6 +569,11 @@ EOF
   run_adapter "$TMP/out" validate 42 --disposition partial --body-file "$TMP/body" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reason":"body-valid"'
+  printf '%s\n' 'Refs #42' 'Discloses #42' >"$TMP/body"
+  run_adapter "$TMP/out" validate 42 --disposition partial --body-file "$TMP/body" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reason":"body-valid"'
+  assert_not_has "$ROOT/scripts/touchstone-tracker.sh" '\b'
 
   echo "==> Linear partial reconciliation names the MCP/API action and never calls gh"
   : >"$GH_CALLS"
