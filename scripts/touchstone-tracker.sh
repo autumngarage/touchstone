@@ -23,9 +23,11 @@ TRACKER_TYPE_SEEN=false
 TRACKER_KEYS=""
 GITHUB_HOST="github.com"
 RECONCILE_NOTE_TEMP=""
+GITHUB_READ_STDERR_TEMP=""
 
 cleanup() {
   [ -z "$RECONCILE_NOTE_TEMP" ] || rm -f -- "$RECONCILE_NOTE_TEMP"
+  [ -z "$GITHUB_READ_STDERR_TEMP" ] || rm -f -- "$GITHUB_READ_STDERR_TEMP"
 }
 trap cleanup EXIT
 
@@ -87,6 +89,32 @@ clean_diagnostic() {
       if (NR > 1) printf " | "; printf "%s", $0
     }')"
   printf '%.2000s' "$cleaned"
+}
+
+capture_github_read() {
+  local output diagnostic status=0
+  GITHUB_READ_STDERR_TEMP="$(mktemp "${TMPDIR:-/tmp}/touchstone-github-read.XXXXXX")" || {
+    GITHUB_READ_OUTPUT=""
+    GITHUB_READ_ERROR="Could not create a temporary file for GitHub diagnostics."
+    return 1
+  }
+  set +e
+  output="$(cd "$PROJECT_ROOT" && "$@" 2>"$GITHUB_READ_STDERR_TEMP")"
+  status=$?
+  set -e
+  diagnostic="$(cat "$GITHUB_READ_STDERR_TEMP")"
+  rm -f -- "$GITHUB_READ_STDERR_TEMP"
+  GITHUB_READ_STDERR_TEMP=""
+  if [ "$status" -eq 0 ]; then
+    GITHUB_READ_OUTPUT="$output"
+    GITHUB_READ_ERROR=""
+  else
+    [ -z "$output" ] || diagnostic="${diagnostic}${diagnostic:+
+}${output}"
+    GITHUB_READ_OUTPUT=""
+    GITHUB_READ_ERROR="$(clean_diagnostic "$diagnostic")"
+  fi
+  return "$status"
 }
 
 parse_string() {
@@ -291,39 +319,30 @@ claim_linear() {
 }
 
 read_github_issue_state() {
-  local output status=0
-  set +e
-  output="$(cd "$PROJECT_ROOT" && gh issue view "$ISSUE_ID" \
+  if capture_github_read gh issue view "$ISSUE_ID" \
     --repo "$GITHUB_HOST/$CURRENT_REPO" --json state,stateReason \
-    --jq '[.state,.stateReason] | @tsv' 2>&1)"
-  status=$?
-  set -e
-  if [ "$status" -eq 0 ]; then
-    GITHUB_STATE_ROW="$output"
+    --jq '[.state,.stateReason] | @tsv'; then
+    GITHUB_STATE_ROW="$GITHUB_READ_OUTPUT"
     GITHUB_STATE_ERROR=""
   else
     GITHUB_STATE_ROW=""
-    GITHUB_STATE_ERROR="$(clean_diagnostic "$output")"
+    GITHUB_STATE_ERROR="$GITHUB_READ_ERROR"
+    return 1
   fi
-  return "$status"
 }
 
 read_reconciliation_comment() {
-  local marker="$1" output status=0
-  set +e
-  output="$(cd "$PROJECT_ROOT" && gh api --paginate --hostname "$GITHUB_HOST" \
+  local marker="$1"
+  if capture_github_read gh api --paginate --hostname "$GITHUB_HOST" \
     "repos/$CURRENT_REPO/issues/$ISSUE_ID/comments" \
-    --jq ".[] | select((.body // \"\") | contains(\"$marker\")) | .html_url" 2>&1)"
-  status=$?
-  set -e
-  if [ "$status" -eq 0 ]; then
-    RECONCILIATION_COMMENT_URL="$(printf '%s\n' "$output" | sed -n '1p')"
+    --jq ".[] | select((.body // \"\") | contains(\"$marker\")) | .html_url"; then
+    RECONCILIATION_COMMENT_URL="$(printf '%s\n' "$GITHUB_READ_OUTPUT" | sed -n '1p')"
     RECONCILIATION_COMMENT_ERROR=""
   else
     RECONCILIATION_COMMENT_URL=""
-    RECONCILIATION_COMMENT_ERROR="$(clean_diagnostic "$output")"
+    RECONCILIATION_COMMENT_ERROR="$GITHUB_READ_ERROR"
+    return 1
   fi
-  return "$status"
 }
 
 reconcile_github() {

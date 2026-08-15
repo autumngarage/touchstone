@@ -281,6 +281,7 @@ case "$1 ${2:-}" in
   "auth status") [ "${GH_MODE:-ok}" != auth_fail ] ;;
 	"api user") printf '%s\n' henry ;;
   "api --paginate")
+		[ "${GH_MODE:-ok}" != success_stderr ] || printf 'api debug detail\n' >&2
 		if [ "${GH_MODE:-ok}" = timeline_fail ]; then
       printf 'timeline unavailable\rpermission denied\n' >&2
       exit 1
@@ -296,6 +297,7 @@ case "$1 ${2:-}" in
 		printf '%s\n' autumngarage/current
 		;;
   "issue view")
+		[ "${GH_MODE:-ok}" != success_stderr ] || printf 'issue debug detail\n' >&2
 		if [ "${GH_MODE:-ok}" = state_fail ] \
       || { [ "${GH_MODE:-ok}" = post_close_state_fail ] && [ -f "$GH_CLOSED" ]; }; then
       printf 'state read failed\rretry later\n' >&2
@@ -493,6 +495,12 @@ EOF
   run_adapter "$TMP/out" reconcile 42 --disposition partial --note-file "$TMP/note" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 0
   assert_not_has "$GH_CALLS" 'issue comment 42'
+  rm -f "$GH_COMMENT_BODY"
+  : >"$GH_CALLS"
+  GH_MODE=success_stderr run_adapter "$TMP/out" reconcile 42 --disposition partial --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'issue comment 42'
+  assert_has "$TMP/out" '"status":"verified"'
   printf '%s\n' 'Relative note from caller directory.' >"$TMP/relative-note"
   caller_directory="$PWD"
   cd "$TMP"
