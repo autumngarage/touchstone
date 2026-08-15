@@ -1170,7 +1170,7 @@ echo "==> native adapters require tracked buildable targets"
 NATIVE_TOOL_BIN="$TMP_DIR/native-tools"
 mkdir -p "$NATIVE_TOOL_BIN"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "{}\\n"' >"$NATIVE_TOOL_BIN/cargo"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "example.invalid/fixture\\n"' >"$NATIVE_TOOL_BIN/go"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s/fixture.go\\n" "$PWD"' >"$NATIVE_TOOL_BIN/go"
 chmod +x "$NATIVE_TOOL_BIN/cargo" "$NATIVE_TOOL_BIN/go"
 for native_profile in swift rust go; do
   ADOPT_NATIVE="$TMP_DIR/adopt-native-$native_profile"
@@ -1231,5 +1231,72 @@ set -e
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "Rust task without tracked source was accepted"
 assert_contains "$TMP_DIR/adopt-rust-untracked.err" \
   'has no tracked default src/lib.rs or src/main.rs'
+
+for cargo_boundary in dotted-path dotted-build external-workspace; do
+  ADOPT_CARGO_BOUNDARY="$TMP_DIR/adopt-cargo-$cargo_boundary"
+  init_node_adoption_repo "$ADOPT_CARGO_BOUNDARY"
+  mkdir -p "$ADOPT_CARGO_BOUNDARY/src"
+  case "$cargo_boundary" in
+    dotted-path)
+      printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+        '[dependencies]' 'dep.path = "../sibling"' \
+        >"$ADOPT_CARGO_BOUNDARY/Cargo.toml"
+      expected_cargo_boundary='local path dependency'
+      ;;
+    dotted-build)
+      printf '%s\n' 'package.name = "fixture"' 'package.version = "0.1.0"' \
+        'package.build = "evil.rs"' >"$ADOPT_CARGO_BOUNDARY/Cargo.toml"
+      expected_cargo_boundary='dotted package keys'
+      ;;
+    external-workspace)
+      printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+        'workspace = ".."' >"$ADOPT_CARGO_BOUNDARY/Cargo.toml"
+      expected_cargo_boundary='explicit workspace root'
+      ;;
+  esac
+  printf '%s\n' 'version = 4' '' '[[package]]' 'name = "fixture"' \
+    'version = "0.1.0"' >"$ADOPT_CARGO_BOUNDARY/Cargo.lock"
+  printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_CARGO_BOUNDARY/src/lib.rs"
+  commit_node_adoption_repo "$ADOPT_CARGO_BOUNDARY"
+  set +e
+  PATH="$NATIVE_TOOL_BIN:$PATH" bash "$ROOT/bin/touchstone" adopt --dry-run \
+    --project "$ADOPT_CARGO_BOUNDARY" >"$TMP_DIR/adopt-cargo-$cargo_boundary.out" \
+    2>"$TMP_DIR/adopt-cargo-$cargo_boundary.err"
+  ADOPTION_STATUS=$?
+  set -e
+  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$cargo_boundary Cargo boundary was accepted"
+  assert_contains "$TMP_DIR/adopt-cargo-$cargo_boundary.err" "$expected_cargo_boundary"
+done
+
+for go_boundary in warning generated-source; do
+  ADOPT_GO_BOUNDARY="$TMP_DIR/adopt-go-$go_boundary"
+  GO_BOUNDARY_BIN="$TMP_DIR/go-tools-$go_boundary"
+  init_node_adoption_repo "$ADOPT_GO_BOUNDARY"
+  mkdir -p "$GO_BOUNDARY_BIN"
+  printf '%s\n' 'module example.invalid/fixture' >"$ADOPT_GO_BOUNDARY/go.mod"
+  if [ "$go_boundary" = warning ]; then
+    printf '%s\n' 'package fixture' >"$ADOPT_GO_BOUNDARY/fixture.go"
+    printf '%s\n' '#!/usr/bin/env bash' \
+      'printf '\''go: warning: "./..." matched no packages\\n'\''' >"$GO_BOUNDARY_BIN/go"
+  else
+    printf '%s\n' '//go:build never' '' 'package fixture' \
+      >"$ADOPT_GO_BOUNDARY/excluded.go"
+    printf '%s\n' 'generated.go' >"$ADOPT_GO_BOUNDARY/.gitignore"
+    printf '%s\n' 'package fixture' >"$ADOPT_GO_BOUNDARY/generated.go"
+    printf '%s\n' '#!/usr/bin/env bash' \
+      'printf "%s/generated.go\\n" "$PWD"' >"$GO_BOUNDARY_BIN/go"
+  fi
+  chmod +x "$GO_BOUNDARY_BIN/go"
+  commit_node_adoption_repo "$ADOPT_GO_BOUNDARY"
+  set +e
+  PATH="$GO_BOUNDARY_BIN:$PATH" bash "$ROOT/bin/touchstone" adopt --dry-run \
+    --project "$ADOPT_GO_BOUNDARY" >"$TMP_DIR/adopt-go-$go_boundary.out" \
+    2>"$TMP_DIR/adopt-go-$go_boundary.err"
+  ADOPTION_STATUS=$?
+  set -e
+  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$go_boundary Go boundary was accepted"
+  assert_contains "$TMP_DIR/adopt-go-$go_boundary.err" \
+    'no package selected by ./... under offline local-toolchain resolution'
+done
 
 echo "validation engine tests passed"
