@@ -103,6 +103,7 @@ fi
 
 log "Claiming issue #$ISSUE_NUMBER as @$GH_LOGIN ..."
 gh issue edit "$ISSUE_NUMBER" --add-assignee @me >/dev/null
+log "touchstone-claim-state: assignment-mutated"
 
 if ! POST_ASSIGNEES="$(gh issue view "$ISSUE_NUMBER" --json assignees --jq '.assignees | map(.login) | join("\n")' 2>/dev/null)"; then
   echo "ERROR: failed to re-read assignees after claiming issue #$ISSUE_NUMBER." >&2
