@@ -17,7 +17,7 @@ Walk through these seven questions before writing code. If any answer exposes du
 
 For the canonical version: read **`principles/pre-implementation-checklist.md`** now.
 
-## The six questions
+## The seven questions
 
 1. **Am I patching local infrastructure that shared infrastructure should own?**
    Search the project's existing utilities, base classes, and common modules first. Hand-rolling a thing the shared layer already provides deepens debt; migration eliminates it.
