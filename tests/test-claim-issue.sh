@@ -235,3 +235,207 @@ fi
 
 echo ""
 echo "==> PASS: claim-issue.sh behaves correctly across 7 cases"
+
+(
+  # tests/test-tracker-adapter.sh — tracker-neutral adapter contract tests.
+
+  set -euo pipefail
+
+  ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+  TMP="$(mktemp -d -t touchstone-tracker.XXXXXX)"
+  trap 'rm -rf "$TMP"' EXIT
+  ERRORS=0
+
+  fail() {
+    echo "FAIL: $*" >&2
+    ERRORS=$((ERRORS + 1))
+  }
+  assert_has() { grep -qF -- "$2" "$1" || fail "expected $1 to contain: $2"; }
+  assert_not_has() { grep -qF -- "$2" "$1" && fail "expected $1 not to contain: $2" || true; }
+  assert_rc() { [ "$1" -eq "$2" ] || fail "expected rc $2, got $1"; }
+  assert_json() { jq -e '.schema == "touchstone.tracker/v1" and (.status == "verified" or .status == "unverifiable" or .status == "failed")' "$1" >/dev/null || fail "$1 is not a valid v1 tracker result"; }
+
+  mkdir -p "$TMP/bin" "$TMP/github" "$TMP/linear"
+  git -C "$TMP/github" init -q
+  git -C "$TMP/linear" init -q
+  git -C "$TMP/github" remote add origin git@github.com:autumngarage/current.git
+  git -C "$TMP/linear" remote add origin https://github.com/autumngarage/current.git
+  printf '%s\n' 'schema = 1' '' '[validation]' 'runtime = "bash"' \
+    'setup = "touch contract-ran"' \
+    '' '[[validation.targets]]' 'name = "root"' 'path = "."' \
+    '' '[[validation.tasks]]' 'name = "test"' 'target = "root"' \
+    'command = "touch contract-ran"' 'required = true' >"$TMP/github/.touchstone.toml"
+  cp "$TMP/github/.touchstone.toml" "$TMP/linear/.touchstone.toml"
+  printf '%s\n' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone-tracker.toml"
+  printf '%s\n' 'schema = 1' 'type = "linear"' 'key_prefix = "AUT"' >"$TMP/linear/.touchstone-tracker.toml"
+
+  cat >"$TMP/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GH_CALLS"
+case "$1 ${2:-}" in
+  "auth status") [ "${GH_MODE:-ok}" != auth_fail ] ;;
+	"api user") printf '%s\n' henry ;;
+  "issue view")
+    if printf '%s\n' "$*" | grep -q -- '--json state'; then
+      printf '%s\n' OPEN
+    elif [ "${GH_MODE:-ok}" = post_claim_read_fail ] && [ -s "$GH_STATE" ]; then
+			exit 1
+    elif [ -f "$GH_STATE" ]; then cat "$GH_STATE"
+    fi
+    ;;
+  "issue edit")
+    if [ "${GH_MODE:-ok}" = claim_control_error ]; then
+      printf 'claim failed\rwith control\fbyte\n' >&2
+      exit 1
+    fi
+    printf '%s\n' henry >"$GH_STATE"
+    ;;
+  "issue comment") ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "$TMP/bin/gh"
+  export PATH="$TMP/bin:$PATH" GH_CALLS="$TMP/gh-calls" GH_STATE="$TMP/gh-state"
+
+  run_adapter() {
+    local output="$1"
+    shift
+    set +e
+    bash "$ROOT/scripts/touchstone-tracker.sh" "$@" >"$output" 2>&1
+    RUN_RC=$?
+    set -e
+  }
+
+  echo "==> GitHub claim is verified only after the surviving adapter re-reads assignment"
+  : >"$GH_CALLS"
+  : >"$GH_STATE"
+  run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"schema":"touchstone.tracker/v1"'
+  assert_has "$TMP/out" '"status":"verified"'
+  assert_json "$TMP/out"
+  assert_has "$GH_CALLS" 'issue edit 42 --add-assignee @me'
+  test "$(cat "$GH_STATE")" = henry || fail "claim did not persist mocked assignment"
+  [ ! -e "$TMP/github/contract-ran" ] || fail "contract check executed validation commands"
+
+  echo "==> authentication and failed mutations never report success"
+  GH_MODE=auth_fail run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" '"status":"failed"'
+  assert_not_has "$TMP/out" '"status":"verified"'
+  : >"$GH_STATE"
+  GH_MODE=claim_control_error run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 1
+  assert_json "$TMP/out"
+  assert_has "$TMP/out" 'claim failed\rwith control\u000cbyte'
+  : >"$GH_STATE"
+  GH_MODE=post_claim_read_fail run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" '"reason":"github-claim-failed"'
+  assert_has "$TMP/out" '"partial":true'
+  test "$(cat "$GH_STATE")" = henry || fail "partial claim did not preserve the mutated assignment"
+
+  echo "==> Linear claim exposes an exact MCP/API action without false verification"
+  run_adapter "$TMP/out" claim aut-281 --project "$TMP/linear" --json
+  assert_rc "$RUN_RC" 3
+  assert_has "$TMP/out" '"tracker":"linear"'
+  assert_has "$TMP/out" '"reference":"AUT-281"'
+  assert_has "$TMP/out" '"status":"unverifiable"'
+  assert_has "$TMP/out" 'assign AUT-281 to yourself'
+  assert_json "$TMP/out"
+
+  echo "==> wrong-tracker issue references fail with a concrete rewrite"
+  run_adapter "$TMP/out" claim 281 --project "$TMP/linear"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'Use a Linear issue key such as AUT-123'
+  run_adapter "$TMP/out" claim AUT-281 --project "$TMP/github"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'Use a GitHub issue number such as #123'
+  run_adapter "$TMP/out" claim 42 --project "$TMP/missing" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"reason":"project-not-found"'
+  assert_json "$TMP/out"
+  run_adapter "$TMP/out" claim 42 --json --bogus
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"reason":"unknown-argument"'
+  assert_json "$TMP/out"
+  run_adapter "$TMP/out" claim 42 --json --project
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"reason":"missing-option-value"'
+  assert_json "$TMP/out"
+  run_adapter "$TMP/out" claim --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"reason":"missing-reference"'
+  assert_json "$TMP/out"
+  run_adapter "$TMP/out" bogus --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"reason":"unknown-operation"'
+  assert_json "$TMP/out"
+  run_adapter "$TMP/out" claim 42 --project --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"reason":"missing-option-value"'
+  assert_json "$TMP/out"
+  PATH=/usr/bin:/bin run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 3
+  assert_has "$TMP/out" '"status":"unverifiable"'
+  assert_has "$TMP/out" '"reason":"transport-unavailable"'
+  assert_json "$TMP/out"
+
+  echo "==> malformed, old-compatible, and unsupported tracker declarations are explicit"
+  cp "$TMP/github/.touchstone-tracker.toml" "$TMP/github/tracker-good"
+  rm "$TMP/github/.touchstone-tracker.toml"
+  : >"$GH_STATE"
+  run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 0
+  printf '%s\n' 'type = "linear"' 'key_prefix = "AUT"' >"$TMP/github/.touchstone-tracker.toml"
+  run_adapter "$TMP/out" claim AUT-1 --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'missing-tracker-schema'
+  printf '%s\n' 'schema = 2' 'type = "github"' >"$TMP/github/.touchstone-tracker.toml"
+  run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'unsupported-tracker-schema'
+  printf '%s\n' 'schema = 1' 'type = "github"' 'type = "github"' >"$TMP/github/.touchstone-tracker.toml"
+  run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'duplicate-tracker-key'
+  printf '%s\n' 'schema = 1' 'type = "linear"' 'key_prefix = "aut"' >"$TMP/github/.touchstone-tracker.toml"
+  run_adapter "$TMP/out" claim AUT-1 --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'invalid-key-prefix'
+  printf '%s\n' 'schema = 1' '[tracker]' 'type = "github"' >"$TMP/github/.touchstone-tracker.toml"
+  run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'malformed-config'
+  printf '%s\n' 'schema = 1' 'type = "github' >"$TMP/github/.touchstone-tracker.toml"
+  run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'malformed-config'
+  mv "$TMP/github/tracker-good" "$TMP/github/.touchstone-tracker.toml"
+
+  echo "==> tracker mutations require a valid project contract"
+  cp "$TMP/github/.touchstone.toml" "$TMP/github/project-good"
+  printf '%s\n' 'schema = 1' '' '[validation]' 'runtime = "bash"' >"$TMP/github/.touchstone.toml"
+  : >"$GH_CALLS"
+  run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'invalid-project-contract'
+  assert_not_has "$GH_CALLS" 'issue edit'
+  mv "$TMP/github/project-good" "$TMP/github/.touchstone.toml"
+
+  echo "==> tracker selection cannot follow a configuration symlink"
+  rm "$TMP/github/.touchstone-tracker.toml"
+  ln -s "$TMP/linear/.touchstone-tracker.toml" "$TMP/github/.touchstone-tracker.toml"
+  : >"$GH_CALLS"
+  run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'unsafe-config'
+  assert_not_has "$GH_CALLS" 'issue edit'
+
+  if [ "$ERRORS" -gt 0 ]; then
+    echo "==> FAIL: $ERRORS tracker adapter assertion(s) failed" >&2
+    exit 1
+  fi
+  echo "==> PASS: tracker adapter preserves claim semantics"
+)
