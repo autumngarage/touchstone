@@ -1020,4 +1020,132 @@ mkdir -p "$LEGACY_COMPILER/packages/api" "$LEGACY_COMPILER/packages/web"
   [ "$collision_status" -eq 2 ] || exit 30
 ) || fail "legacy adapter changed validation coverage"
 
+echo "==> adoption planner validates contracts without executing tasks"
+PLANNER_CONTRACT="$TMP_DIR/planner-contract"
+mkdir -p "$PLANNER_CONTRACT"
+cat >"$PLANNER_CONTRACT/.touchstone.toml" <<'EOF'
+schema = 1
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "must-not-run"
+target = "root"
+command = "exit 77"
+required = true
+EOF
+planner_output="$(bash "$RUNNER" validate --check-contract --project "$PLANNER_CONTRACT")" \
+  || fail "parse-only contract validation failed"
+case "$planner_output" in *"schema-v1 contract is valid"*) ;; *) fail "parse-only validation did not report success" ;; esac
+
+git -C "$PLANNER_CONTRACT" init -q -b main
+git -C "$PLANNER_CONTRACT" config user.name fixture
+git -C "$PLANNER_CONTRACT" config user.email fixture@example.com
+printf 'tracked\n' >"$PLANNER_CONTRACT/README.md"
+git -C "$PLANNER_CONTRACT" add README.md
+git -C "$PLANNER_CONTRACT" commit -qm fixture
+(
+  PROJECT_ROOT="$(cd "$PLANNER_CONTRACT" && pwd -P)"
+  PLAN_ROOT="$TMP_DIR/planner-untracked-plan"
+  CHANGES_FILE="$TMP_DIR/planner-untracked-changes"
+  DIFF_FILE="$TMP_DIR/planner-untracked-diff"
+  MANUAL_TASK_COUNT=0
+  OPERATION=adopt
+  PROFILE=""
+  export DIFF_FILE MANUAL_TASK_COUNT OPERATION PROFILE
+  mkdir -p "$PLAN_ROOT"
+  : >"$CHANGES_FILE"
+  contract_refusal() {
+    printf 'refused: %s\n' "$*" >&2
+    exit 2
+  }
+  operational_failure() {
+    printf 'failed: %s\n' "$*" >&2
+    exit 6
+  }
+  # shellcheck source=scripts/lib/touchstone-adopt-planner.sh
+  source "$ROOT/scripts/lib/touchstone-adopt-planner.sh"
+  require_compiler_outputs_unignored() { :; }
+  validate_existing_contract() { :; }
+  plan_steering() { :; }
+  render_diff() { :; }
+  compile_plan
+) >/dev/null 2>&1 && fail "planner accepted an untracked existing contract"
+
+mkdir -p "$PLANNER_CONTRACT/.touchstone"
+printf 'untracked\n' >"$PLANNER_CONTRACT/.touchstone/TOUCHSTONE.md"
+printf 'untracked\n' >"$TMP_DIR/planner-managed-proposed"
+for refresh in false true; do
+  (
+    PROJECT_ROOT="$(cd "$PLANNER_CONTRACT" && pwd -P)"
+    PLAN_ROOT="$TMP_DIR/planner-untracked-managed-plan-$refresh"
+    CHANGES_FILE="$TMP_DIR/planner-untracked-managed-changes-$refresh"
+    mkdir -p "$PLAN_ROOT"
+    : >"$CHANGES_FILE"
+    contract_refusal() {
+      printf 'refused: %s\n' "$*" >&2
+      exit 2
+    }
+    operational_failure() {
+      printf 'failed: %s\n' "$*" >&2
+      exit 6
+    }
+    # shellcheck source=scripts/lib/touchstone-adopt-planner.sh
+    source "$ROOT/scripts/lib/touchstone-adopt-planner.sh"
+    plan_managed_file .touchstone/TOUCHSTONE.md "$TMP_DIR/planner-managed-proposed" "$refresh"
+  ) >/dev/null 2>&1 && fail "planner accepted an untracked managed output during refresh=$refresh"
+done
+
+PLANNER_DIRECTORY_FACT="$TMP_DIR/planner-directory-fact"
+mkdir -p "$PLANNER_DIRECTORY_FACT/tests"
+git -C "$PLANNER_DIRECTORY_FACT" init -q -b main
+git -C "$PLANNER_DIRECTORY_FACT" config user.name fixture
+git -C "$PLANNER_DIRECTORY_FACT" config user.email fixture@example.com
+printf '[project]\n' >"$PLANNER_DIRECTORY_FACT/pyproject.toml"
+git -C "$PLANNER_DIRECTORY_FACT" add pyproject.toml
+git -C "$PLANNER_DIRECTORY_FACT" commit -qm fixture
+(
+  PROJECT_ROOT="$(cd "$PLANNER_DIRECTORY_FACT" && pwd -P)"
+  SCRIPT_ROOT="$ROOT"
+  contract_refusal() {
+    printf 'refused: %s\n' "$*" >&2
+    exit 2
+  }
+  operational_failure() {
+    printf 'failed: %s\n' "$*" >&2
+    exit 6
+  }
+  # shellcheck source=scripts/lib/touchstone-adopt-planner.sh
+  source "$ROOT/scripts/lib/touchstone-adopt-planner.sh"
+  require_compiler_inputs_tracked
+) >/dev/null 2>&1 && fail "planner accepted an untracked directory detection fact"
+
+echo "==> adoption planner rejects unsafe managed-path ancestors"
+PLANNER_PATHS="$TMP_DIR/planner-paths"
+mkdir -p "$PLANNER_PATHS"
+: >"$PLANNER_PATHS/.touchstone"
+(
+  PROJECT_ROOT="$(cd "$PLANNER_PATHS" && pwd -P)"
+  TAB="$(printf '\t')"
+  CR="$(printf '\r')"
+  LF="$(printf '\nX')"
+  LF="${LF%X}"
+  valid_relative_path() {
+    case "$1" in "" | /* | .. | ../* | */../* | */..) return 1 ;; esac
+    return 0
+  }
+  contract_refusal() {
+    printf 'refused: %s\n' "$*" >&2
+    exit 2
+  }
+  # shellcheck source=scripts/lib/touchstone-adopt-planner.sh
+  source "$ROOT/scripts/lib/touchstone-adopt-planner.sh"
+  safe_owned_path .touchstone/TOUCHSTONE.md
+) >/dev/null 2>&1 && fail "planner accepted a managed path through a regular file"
+
 echo "validation engine tests passed"
