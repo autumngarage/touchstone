@@ -137,18 +137,9 @@ conversation resolution separately requires every inline thread closed.
 
 ## Answering findings
 
-Answer each finding with the public response command:
-
-```bash
-touchstone pr respond <pr> --comment-id <id> --body-file <file> [--fix-commit <sha>]
-touchstone pr findings <pr>
-```
-
-`respond` posts the threaded reply, resolves the mapped thread, and verifies the
-resolution. `findings` reads the complete paginated surface so the driver can
-prove every item has been handled.
-
-The raw equivalent, if you need it: reply with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<id>/replies -f body=@<file>`, then resolve with the GraphQL mutation:
+Use the stable root comment ID from the complete GitHub review surface. Reply
+with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<id>/replies -f
+body=@<file>`, then resolve with the GraphQL mutation:
 
 ```bash
 gh api graphql -f query='
