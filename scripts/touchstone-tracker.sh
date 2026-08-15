@@ -19,11 +19,9 @@ OPERATION="${1:-}"
 REFERENCE="${2:-}"
 TRACKER=""
 KEY_PREFIX=""
-TRACKER_SECTION_SEEN=false
 TRACKER_SCHEMA_SEEN=false
 TRACKER_TYPE_SEEN=false
 TRACKER_KEYS=""
-ROOT_SCHEMA_SEEN=false
 
 usage() {
   sed -n '3,8p' "$0" | sed 's/^# \{0,1\}//' >&2
@@ -87,94 +85,56 @@ parse_string() {
 }
 
 load_tracker() {
-  local config="$PROJECT_ROOT/.touchstone.toml" section="" line key value lineno=0
+  local config="$PROJECT_ROOT/.touchstone-tracker.toml" line key value lineno=0
   TRACKER="github"
   [ ! -L "$config" ] \
-    || fail_input unsafe-config "Replace the .touchstone.toml symlink with a reviewed regular file in this repository."
-  [ -f "$config" ] || fail_input missing-config "Create .touchstone.toml before using the tracker adapter."
+    || fail_input unsafe-config "Replace the .touchstone-tracker.toml symlink with a reviewed regular file in this repository."
+  [ -e "$config" ] || return 0
+  [ -f "$config" ] \
+    || fail_input unsafe-config "Replace .touchstone-tracker.toml with a reviewed regular file."
 
   while IFS= read -r line || [ -n "$line" ]; do
     lineno=$((lineno + 1))
     line="$(trim "${line%%#*}")"
     [ -n "$line" ] || continue
     case "$line" in
-      \[*\])
-        if [ "$line" = '[[tracker]]' ]; then
-          fail_input malformed-tracker-table "Use one ordinary [tracker] table, not [[tracker]]."
-        fi
-        section="${line#\[}"
-        section="${section%\]}"
-        if [ "$section" = tracker ]; then
-          [ "$TRACKER_SECTION_SEEN" = false ] || fail_input duplicate-tracker-table "Keep exactly one [tracker] table."
-          TRACKER_SECTION_SEEN=true
-        fi
-        continue
-        ;;
-      \[*) fail_input malformed-config "Close the section header at .touchstone.toml:$lineno." ;;
-    esac
-    if [ -z "$section" ]; then
-      case "$line" in
-        schema=*)
-          key=schema
-          value="${line#*=}"
-          ;;
-        schema[[:space:]]*=*)
-          key=schema
-          value="${line#*=}"
-          ;;
-        *) continue ;;
-      esac
-      [ "$ROOT_SCHEMA_SEEN" = false ] \
-        || fail_input duplicate-project-schema "Keep exactly one top-level schema declaration."
-      value="$(trim "$value")"
-      [ "$value" = 1 ] \
-        || fail_input unsupported-project-schema "Set the top-level project schema to 1 before using this tracker adapter."
-      ROOT_SCHEMA_SEEN=true
-      continue
-    fi
-    [ "$section" = tracker ] || continue
-    case "$line" in
       *=*)
         key="$(trim "${line%%=*}")"
         value="${line#*=}"
         ;;
-      *) fail_input malformed-config "Use key = value syntax in [tracker] at .touchstone.toml:$lineno." ;;
+      *) fail_input malformed-config "Use key = value syntax at .touchstone-tracker.toml:$lineno." ;;
     esac
     case " $TRACKER_KEYS " in
-      *" $key "*) fail_input duplicate-tracker-key "Keep exactly one [tracker].$key declaration." ;;
+      *" $key "*) fail_input duplicate-tracker-key "Keep exactly one tracker $key declaration." ;;
     esac
     TRACKER_KEYS="$TRACKER_KEYS $key"
     case "$key" in
       schema)
         value="$(trim "$value")"
-        [ "$value" = 1 ] || fail_input unsupported-tracker-schema "Set [tracker].schema = 1."
+        [ "$value" = 1 ] || fail_input unsupported-tracker-schema "Set schema = 1 in .touchstone-tracker.toml."
         TRACKER_SCHEMA_SEEN=true
         ;;
       type)
-        parse_string "$value" || fail_input malformed-config "Set [tracker].type to a single-line quoted string."
+        parse_string "$value" || fail_input malformed-config "Set type to a single-line quoted string."
         TRACKER="$PARSED"
         TRACKER_TYPE_SEEN=true
         ;;
       key_prefix)
-        parse_string "$value" || fail_input malformed-config "Set [tracker].key_prefix to a single-line quoted string."
+        parse_string "$value" || fail_input malformed-config "Set key_prefix to a single-line quoted string."
         KEY_PREFIX="$PARSED"
         ;;
-      *) fail_input unknown-tracker-key "Remove unsupported [tracker] key '$key'." ;;
+      *) fail_input unknown-tracker-key "Remove unsupported tracker key '$key'." ;;
     esac
   done <"$config"
 
-  [ "$ROOT_SCHEMA_SEEN" = true ] \
-    || fail_input missing-project-schema "Add top-level schema = 1 to .touchstone.toml."
-  case "$TRACKER" in github | linear) ;; *) fail_input unknown-tracker "Set [tracker].type to \"github\" or \"linear\"." ;; esac
-  if [ "$TRACKER_SECTION_SEEN" = true ] && [ "$TRACKER_SCHEMA_SEEN" = false ]; then
-    fail_input missing-tracker-schema "Add schema = 1 inside [tracker]."
-  fi
-  if [ "$TRACKER_SECTION_SEEN" = true ] && [ "$TRACKER_TYPE_SEEN" = false ]; then
-    fail_input missing-tracker-type "Add type = \"github\" or type = \"linear\" inside [tracker]."
-  fi
+  case "$TRACKER" in github | linear) ;; *) fail_input unknown-tracker "Set type to \"github\" or \"linear\"." ;; esac
+  [ "$TRACKER_SCHEMA_SEEN" = true ] \
+    || fail_input missing-tracker-schema "Add schema = 1 to .touchstone-tracker.toml."
+  [ "$TRACKER_TYPE_SEEN" = true ] \
+    || fail_input missing-tracker-type "Add type = \"github\" or type = \"linear\" to .touchstone-tracker.toml."
   if [ "$TRACKER" = linear ]; then
     printf '%s' "$KEY_PREFIX" | grep -Eq '^[A-Z][A-Z0-9]*$' \
-      || fail_input invalid-key-prefix "Set [tracker].key_prefix to the Linear team key, for example \"AUT\"."
+      || fail_input invalid-key-prefix "Set key_prefix to the Linear team key, for example \"AUT\"."
   elif [ -n "$KEY_PREFIX" ]; then
     fail_input invalid-key-prefix "Remove key_prefix; it applies only to the Linear tracker."
   fi
@@ -442,8 +402,8 @@ else
 fi
 SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 
-load_tracker
 validate_project_contract
+load_tracker
 normalize_reference
 
 if [ "$OPERATION" = claim ]; then

@@ -412,9 +412,9 @@ Merge a chain in order, parent first, repeating both steps for each next child.
 ## Claiming tracked work before agent dispatch
 
 Before spawning a coding agent to implement a tracker item, **claim it first**
-through the tracker declared in `.touchstone.toml`. Verify sole ownership, post
-a one-line dispatch comment only after the claim is stable, then spawn the
-agent.
+through the tracker declared in `.touchstone-tracker.toml`. Verify sole
+ownership, post a one-line dispatch comment only after the claim is stable,
+then spawn the agent.
 
 **The mechanical steps are adapter-specific.** For GitHub:
 

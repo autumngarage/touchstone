@@ -25,11 +25,6 @@ Schema 1 is a deliberately narrow TOML subset:
 - strings are single-line TOML basic strings. Schema 1 accepts `\"` and `\\`
   escapes and intentionally rejects multiline strings and broader TOML syntax.
 
-The optional `[tracker]` table belongs to the
-[tracker adapter contract](tracker-contract.md). The validation reader accepts
-and validates that public shape without using it to choose tasks or verdicts;
-no tracker value changes validation behavior.
-
 The last restriction is part of the versioned contract, not an incomplete
 parser. A future schema may add syntax without changing what schema 1 means.
 

@@ -6,24 +6,23 @@ performs an available transport, and reports what it could verify.
 
 ## Declaration
 
-Newly adopted projects declare the tracker once in `.touchstone.toml`:
+Newly adopted projects declare the tracker once in `.touchstone-tracker.toml`:
 
 ```toml
-[tracker]
 schema = 1
 type = "github"
 ```
 
 `type` is `github` or `linear`. Linear declarations also require the team's
-uppercase `key_prefix`, such as `AUT`. Contracts without `[tracker]` retain the
-pre-declaration GitHub behavior for schema-1 compatibility; adoption and an
-explicit upgrade add the declaration rather than rewriting it implicitly.
-The adapter requires the top-level project schema to be exactly `1`; it never
-runs tracker operations against a missing or newer project contract.
+uppercase `key_prefix`, such as `AUT`. Projects without the tracker file retain
+the pre-declaration GitHub behavior for compatibility; adoption creates the
+declaration rather than rewriting it implicitly. The adapter independently
+requires a valid schema-v1 `.touchstone.toml` before any mutation.
 
-The validation engine ignores the known `[tracker]` table because the tracker
-adapter owns it. Both readers still reject unsupported schemas and malformed
-values instead of silently selecting a different tracker.
+Tracker selection is a separate versioned boundary because it must not change
+validation semantics or force a centrally pinned validator rollout. The tracker
+reader rejects unsupported schemas and malformed values instead of silently
+selecting another tracker.
 
 ## Operations and outcomes
 
