@@ -306,7 +306,7 @@ detect_profile() {
 
 # Compiler boundaries and profile adapters are separate reviewable units.
 # shellcheck source=/dev/null
-for component in compiler planner transaction parsers workspaces node-locks node-package node python native; do
+for component in compiler planner transaction parsers workspaces node-locks node-package node python-deps python-uv python-evidence python native; do
   component_path="$SCRIPT_ROOT/scripts/lib/touchstone-adopt-$component.sh"
   if [ -f "$component_path" ]; then
     . "$component_path"
