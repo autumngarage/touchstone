@@ -1413,6 +1413,11 @@ tasks_for_node() {
   fi
   node_validate_package_manager_spec "$manager" "$directory"
   if [ "$manager" = npm ]; then
+    for config in "$directory/.npmrc" "$setup_directory/.npmrc"; do
+      if [ -e "$config" ] || [ -L "$config" ]; then
+        contract_refusal "npm target '$target' has project-controlled config '${config#"$PROJECT_ROOT"/}'; pass --task NAME=COMMAND"
+      fi
+    done
     if [ -f "$setup_directory/package-lock.json" ]; then
       npm_lock="$setup_directory/package-lock.json"
     elif [ -f "$setup_directory/npm-shrinkwrap.json" ]; then
@@ -2122,20 +2127,37 @@ python_checker_declared() {
   python_project_has_dependency "$directory/pyproject.toml" "$checker" "$include_dev"
 }
 
-python_has_tracked_tests() {
+python_tracked_paths() {
   local directory="$1" relative prefix
   relative="${directory#"$PROJECT_ROOT"}"
   relative="${relative#/}"
   if [ -n "$relative" ]; then prefix="$relative/"; else prefix=""; fi
   git -C "$PROJECT_ROOT" ls-files | awk -v prefix="$prefix" '
     index($0, prefix) == 1 {
-      path = substr($0, length(prefix) + 1)
-      count = split(path, parts, "/")
-      name = parts[count]
-      if (name ~ /^test_.*[.]py$/ || name ~ /_test[.]py$/) found = 1
+      print $0
     }
-    END { exit !found }
   '
+}
+
+python_has_tracked_source() {
+  local directory="$1" path
+  while IFS= read -r path; do
+    case "$path" in *.py | *.pyi) ;; *) continue ;; esac
+    [ -f "$PROJECT_ROOT/$path" ] && [ ! -L "$PROJECT_ROOT/$path" ] && return 0
+  done < <(python_tracked_paths "$directory")
+  return 1
+}
+
+python_has_tracked_tests() {
+  local directory="$1" path name
+  while IFS= read -r path; do
+    name="${path##*/}"
+    case "$name" in test_*.py | *_test.py) ;; *) continue ;; esac
+    [ -f "$PROJECT_ROOT/$path" ] && [ ! -L "$PROJECT_ROOT/$path" ] || continue
+    grep -Eq '^def[[:space:]]+test_[A-Za-z0-9_]*[[:space:]]*\([^)]*\)[[:space:]]*(->[[:space:]]*[^:]+)?[[:space:]]*:' \
+      "$PROJECT_ROOT/$path" && return 0
+  done < <(python_tracked_paths "$directory")
+  return 1
 }
 
 tasks_for_python() {
@@ -2196,6 +2218,9 @@ tasks_for_python() {
     evidence=true
   elif [ "$evidence" = true ]; then
     contract_refusal "Python target '$target' configures mypy without an installed mypy dependency"
+  fi
+  if [ "$evidence" = true ] && ! python_has_tracked_source "$directory"; then
+    contract_refusal "Python target '$target' has mypy evidence but no tracked regular Python source"
   fi
   if [ "$evidence" = true ]; then
     record_task "typecheck$suffix" "$target" "$prefix mypy ."

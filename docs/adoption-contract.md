@@ -54,8 +54,9 @@ When a dependency-free lockfile in the compiler's complete portable subset
 exists, the declaration prepares Node dependencies only in the manager's
 offline, frozen/immutable mode. Every pnpm or Yarn task, including an unlocked
 one, requires an exact supported runtime version and disables Corepack network
-access before resolving it. Project-owned pnpm hook/config files require a
-manual task because pnpm also loads them while running declared scripts.
+access before resolving it. Project-owned npm, pnpm, and Yarn configuration at
+the task or effective setup root requires a manual task because it can replace
+the script shell, load hooks, or select project-controlled package-manager code.
 Dependency-bearing or unverifiable locks require a manual declaration, and an
 unlocked project gets no generated install step. Yarn Classic and Berry reject
 project-controlled configuration at both the task and workspace setup roots. A
@@ -63,8 +64,9 @@ child uses the root setup only when an explicit JSON, block YAML, or single-line
 flow YAML workspace glob proves membership. Every workspace entry must be a
 string in the compiler's narrow, slash-aware glob subset; duplicate, mixed-type,
 or unsupported declarations refuse instead of compiling a partial view.
-Python tasks come from ruff and mypy declarations, or from a pytest dependency
-paired with tracked files under pytest's portable default naming convention. A
+Python tasks come from ruff declarations, mypy paired with tracked regular
+Python source, or pytest paired with a tracked regular test file containing a
+statically recognizable top-level test under pytest's portable default naming convention. A
 dependency-free portable parser verifies the complete
 `pyproject.toml` before any facts are derived and refuses TOML syntax it cannot
 verify with a manual-task remedy. Explicit setup uses a completely parsed uv

@@ -1432,6 +1432,19 @@ run_adoption "$TMP_DIR/adopt-npm-no-lock.out" adopt --dry-run --project "$ADOPT_
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "dependency-free npm project without a lockfile was refused"
 assert_not_contains "$TMP_DIR/adopt-npm-no-lock.out" 'setup = '
 
+ADOPT_NPM_CONFIG="$TMP_DIR/adopt-npm-config"
+init_adoption_repo "$ADOPT_NPM_CONFIG"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_NPM_CONFIG/package.json"
+printf '%s\n' 'script-shell=./custom-shell.sh' >"$ADOPT_NPM_CONFIG/.npmrc"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$ADOPT_NPM_CONFIG/custom-shell.sh"
+chmod +x "$ADOPT_NPM_CONFIG/custom-shell.sh"
+commit_adoption_repo "$ADOPT_NPM_CONFIG" "fixture"
+git -C "$ADOPT_NPM_CONFIG" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-npm-config.out" adopt --dry-run --project "$ADOPT_NPM_CONFIG"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "project-controlled npm script shell was accepted"
+assert_contains "$TMP_DIR/adopt-npm-config.out.err" \
+  "project-controlled config '.npmrc'"
+
 ADOPT_PNPM_BAD_LOCK="$TMP_DIR/adopt-pnpm-bad-lock"
 init_adoption_repo "$ADOPT_PNPM_BAD_LOCK"
 printf '%s\n' '{"packageManager":"pnpm@10.0.0","scripts":{"test":"node --test"}}' \
@@ -2034,6 +2047,49 @@ run_adoption "$TMP_DIR/adopt-pytest-no-tests.out" adopt --dry-run \
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "pytest dependency without tracked tests emitted a failing task"
 assert_contains "$TMP_DIR/adopt-pytest-no-tests.out.err" \
   'no declared ruff, mypy, or pytest evidence'
+
+for pytest_input in empty symlink; do
+  ADOPT_PYTEST_INPUT="$TMP_DIR/adopt-pytest-$pytest_input-input"
+  init_adoption_repo "$ADOPT_PYTEST_INPUT"
+  mkdir -p "$ADOPT_PYTEST_INPUT/tests"
+  printf '%s\n' 'pytest==9.0.0' >"$ADOPT_PYTEST_INPUT/requirements.txt"
+  case "$pytest_input" in
+    empty) : >"$ADOPT_PYTEST_INPUT/tests/test_empty.py" ;;
+    symlink)
+      printf '%s\n' 'def test_outside():' '    assert True' >"$TMP_DIR/outside-test.py"
+      ln -s "$TMP_DIR/outside-test.py" "$ADOPT_PYTEST_INPUT/tests/test_outside.py"
+      ;;
+  esac
+  commit_adoption_repo "$ADOPT_PYTEST_INPUT" "fixture"
+  git -C "$ADOPT_PYTEST_INPUT" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-pytest-$pytest_input-input.out" adopt --dry-run \
+    --project "$ADOPT_PYTEST_INPUT"
+  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$pytest_input pytest input emitted an uncollectable task"
+  assert_contains "$TMP_DIR/adopt-pytest-$pytest_input-input.out.err" \
+    'no declared ruff, mypy, or pytest evidence'
+done
+
+for mypy_source in missing tracked; do
+  ADOPT_MYPY_SOURCE="$TMP_DIR/adopt-mypy-source-$mypy_source"
+  init_adoption_repo "$ADOPT_MYPY_SOURCE"
+  printf '%s\n' 'mypy==1.20.2' >"$ADOPT_MYPY_SOURCE/requirements.txt"
+  if [ "$mypy_source" = tracked ]; then
+    printf '%s\n' 'value: int = 1' >"$ADOPT_MYPY_SOURCE/fixture.py"
+  fi
+  commit_adoption_repo "$ADOPT_MYPY_SOURCE" "fixture"
+  git -C "$ADOPT_MYPY_SOURCE" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-mypy-source-$mypy_source.out" adopt --dry-run \
+    --project "$ADOPT_MYPY_SOURCE"
+  if [ "$mypy_source" = missing ]; then
+    [ "$ADOPTION_STATUS" -eq 4 ] || fail "mypy task without tracked Python source was accepted"
+    assert_contains "$TMP_DIR/adopt-mypy-source-missing.out.err" \
+      'mypy evidence but no tracked regular Python source'
+  else
+    [ "$ADOPTION_STATUS" -eq 0 ] || fail "mypy task with tracked Python source was refused"
+    assert_contains "$TMP_DIR/adopt-mypy-source-tracked.out" \
+      'command = "python -m mypy ."'
+  fi
+done
 
 ADOPT_UV_BAD_LOCK="$TMP_DIR/adopt-uv-bad-lock"
 init_adoption_repo "$ADOPT_UV_BAD_LOCK"
