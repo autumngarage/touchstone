@@ -118,6 +118,10 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   assert_contains "$file" "Never manufacture an empty"
   assert_contains "$file" "trusted exact-head review evidence"
   assert_contains "$file" "merge on acceptance alone"
+  assert_contains "$file" "do not post a fourth request on the same"
+  assert_contains "$file" "implementation shape"
+  assert_contains "$file" "redesigned head produces another finding-bearing"
+  assert_contains "$file" "split or close the PR"
   assert_not_contains "$file" "retry until review"
 done
 
@@ -172,6 +176,9 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "boundary never permits the PR to ship its
 assert_contains "$GIT_WORKFLOW_GUIDE" "Repeated widening is a design signal"
 assert_contains "$GIT_WORKFLOW_GUIDE" "Do not grow the current PR one"
 assert_contains "$GIT_WORKFLOW_GUIDE" "scope containment is never permission to skip review"
+assert_contains "$GIT_WORKFLOW_GUIDE" "do not post a fourth request on the same"
+assert_contains "$GIT_WORKFLOW_GUIDE" "implementation shape"
+assert_contains "$GIT_WORKFLOW_GUIDE" "split or close the PR"
 # #801 review: this doc promised the gate emits `review_requested` and
 # `review_result` events and that review latency is measurable from them.
 # lib/events.sh and every emit call were deleted in #737, so the promise became
@@ -334,6 +341,22 @@ for file in \
   assert_contains "$file" "before the first review request"
   assert_contains "$file" "time-bounded migration shims"
   assert_contains "$file" "unmatched"
+done
+assert_contains "$TOUCHSTONE_ROOT/skills/touchstone-pre-impl/SKILL.md" \
+  "The seven questions"
+assert_not_contains "$TOUCHSTONE_ROOT/skills/touchstone-pre-impl/SKILL.md" \
+  "The six questions"
+for file in \
+  "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
+  "$TOUCHSTONE_ROOT/skills/touchstone-pre-impl/SKILL.md"; do
+  assert_contains "$file" "reviewable unit with adversarial boundary coverage"
+  assert_contains "$file" "serial test discovery"
+  assert_contains "$file" "effective"
+  assert_contains "$file" "where applicable"
+  assert_contains "$file" "domain can express"
+  assert_contains "$file" "non-filesystem"
+  assert_contains "$file" "symlink"
+  assert_contains "$file" "malformed"
 done
 assert_not_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
   "migration-state matrix"

@@ -307,7 +307,13 @@ scope containment is never permission to skip review.
 - **Split the PR** — the diff is carrying more than one concern, and each fragment restarts with a budget it will rarely need;
 - **Close it, preserving the corpus** on the tracking issue (the #706 pattern) — correct when successive fixes keep creating defects.
 
-Spending a fourth round is a decision to state out loud in the PR, with the reason, so it stays auditable.
+After a third finding-bearing review, **do not post a fourth request on the same
+implementation shape**. Stop, audit the repeated failure class, and put the
+chosen exit plus evidence in the PR. A fourth request is justified only after
+the diff has been materially narrowed, split, or redesigned around a class-level
+guardrail. If that redesigned head produces another finding-bearing round,
+split or close the PR; do not resume one-finding-at-a-time expansion. Exact-head
+review still applies to every replacement PR or redesigned head.
 
 AI review supplements deterministic checks; it does not replace lint, type checking, tests, or project-specific validators.
 
