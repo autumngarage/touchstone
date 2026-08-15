@@ -216,6 +216,37 @@ echo "==> No file invokes a touchstone CLI subcommand"
 # split: local green is what people trust. Both boundaries are now bracket
 # expressions, which behave identically on both platforms.
 CLI_PATTERN='touchstone [a-z][a-z-]*'
+SHELL_CLI_AWK='
+  /^[[:space:]]*#/ { next }
+  {
+    direct = "^[[:space:]]*(if[[:space:]]+|then[[:space:]]+|![[:space:]]*|command[[:space:]]+|exec[[:space:]]+)?touchstone [a-z][a-z-]*"
+    chained = "(&&|\\|\\||;)[[:space:]]*touchstone [a-z][a-z-]*"
+    instructed = "([Rr]un|[Ee]xecute)[[:space:]]+touchstone [a-z][a-z-]*"
+    if ($0 ~ direct || $0 ~ chained || $0 ~ instructed) print FILENAME ":" FNR ":" $0
+  }
+'
+YAML_CLI_AWK='
+  function indent(line, first) {
+    first = match(line, /[^ ]/)
+    return first ? first - 1 : length(line)
+  }
+  function invokes(line) {
+    return line ~ /^[[:space:]]*(\$[[:space:]]+)?(if[[:space:]]+|then[[:space:]]+|![[:space:]]*|command[[:space:]]+|exec[[:space:]]+)?touchstone [a-z][a-z-]*/ \
+      || line ~ /(&&|\|\||;)[[:space:]]*touchstone [a-z][a-z-]*/
+  }
+  {
+    if (in_run) {
+      if ($0 !~ /^[[:space:]]*$/ && indent($0) <= run_indent) in_run = 0
+      else if (invokes($0)) print FILENAME ":" FNR ":" $0
+    }
+    if ($0 ~ /^[ ]*(-[ ]+)?run:[ ]*[|>][-+]?[ ]*$/) {
+      run_indent = indent($0)
+      in_run = 1
+      next
+    }
+    if ($0 ~ /^[ ]*(-[ ]+)?run:[ ]*touchstone [a-z][a-z-]*/) print FILENAME ":" FNR ":" $0
+  }
+'
 
 # The check must be able to fail, and must be proven to on THIS platform
 # before its silence is allowed to mean anything.
@@ -225,12 +256,18 @@ probe_fence=0
 printf '```bash\ntouchstone retired-command\n```\n' \
   | awk '/^[[:space:]]*(\$[[:space:]]+)?touchstone [a-z][a-z-]*/ { found=1 } END { exit !found }' \
   && probe_fence=1
+probe_shell=0
+printf 'touchstone retired-command\n' | awk "$SHELL_CLI_AWK" | grep -q . && probe_shell=1
+probe_yaml=0
+printf '%s\n' 'steps:' '  - run: |' '      touchstone retired-command' \
+  | awk "$YAML_CLI_AWK" | grep -q . && probe_yaml=1
 probe_miss=0
 printf 'bash scripts/touchstone-run.sh validate\n' | grep -qE '(^|[[:space:]])touchstone [a-z]' || probe_miss=1
-if [ "$probe_hit" -eq 1 ] && [ "$probe_fence" -eq 1 ] && [ "$probe_miss" -eq 1 ]; then
-  echo "  OK: inline and fenced command syntax match while touchstone-run.sh is spared"
+if [ "$probe_hit" -eq 1 ] && [ "$probe_fence" -eq 1 ] \
+  && [ "$probe_shell" -eq 1 ] && [ "$probe_yaml" -eq 1 ] && [ "$probe_miss" -eq 1 ]; then
+  echo "  OK: inline, fenced, shell, and YAML-block commands match while touchstone-run.sh is spared"
 else
-  fail "the CLI-reference extractors are not working on this platform (inline=$probe_hit fenced=$probe_fence spared=$probe_miss)"
+  fail "the CLI-reference extractors are not working (inline=$probe_hit fenced=$probe_fence shell=$probe_shell yaml=$probe_yaml spared=$probe_miss)"
 fi
 
 cli_refs=$(
@@ -246,10 +283,12 @@ cli_refs=$(
               || text ~ /^[[:space:]]*(\$[[:space:]]+)?touchstone [a-z][a-z-]*/) print original
           }
         ' || true
-    git -C "$TOUCHSTONE_ROOT" grep -nE "([Rr]un|[Ee]xecute)[[:space:]]+$CLI_PATTERN" \
-      -- '*.sh' ':!tests' ':!audits' ':!feedback' 2>/dev/null || true
-    git -C "$TOUCHSTONE_ROOT" grep -nE "run:[[:space:]]+$CLI_PATTERN" \
-      -- '*.yml' '*.yaml' ':!tests' ':!audits' ':!feedback' 2>/dev/null || true
+    while IFS= read -r file; do
+      awk "$SHELL_CLI_AWK" "$TOUCHSTONE_ROOT/$file"
+    done < <(git -C "$TOUCHSTONE_ROOT" ls-files '*.sh' ':!tests' ':!audits' ':!feedback')
+    while IFS= read -r file; do
+      awk "$YAML_CLI_AWK" "$TOUCHSTONE_ROOT/$file"
+    done < <(git -C "$TOUCHSTONE_ROOT" ls-files '*.yml' '*.yaml' ':!tests' ':!audits' ':!feedback')
   }
 )
 if [ -n "$cli_refs" ]; then
