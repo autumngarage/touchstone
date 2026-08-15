@@ -1335,7 +1335,7 @@ cargo_workspace_contains() {
 }
 
 tasks_for_node() {
-  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" manager setup_directory setup_command npm_lock task found=false
+  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" manager setup_directory setup_command npm_lock="" task found=false
   [ -f "$directory/package.json" ] || contract_refusal "Node target '$target' has no package.json"
   node_package_manager "$directory" "$inherited"
   for task in validate verify lint typecheck test build; do

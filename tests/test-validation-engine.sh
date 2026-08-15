@@ -1188,6 +1188,15 @@ run_adoption "$TMP_DIR/adopt-npm-bad-lock.out" adopt --dry-run --project "$ADOPT
 assert_contains "$TMP_DIR/adopt-npm-bad-lock.out.err" \
   'npm lockfile outside the dependency-free portable subset'
 
+ADOPT_NPM_NO_LOCK="$TMP_DIR/adopt-npm-no-lock"
+init_adoption_repo "$ADOPT_NPM_NO_LOCK"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_NPM_NO_LOCK/package.json"
+commit_adoption_repo "$ADOPT_NPM_NO_LOCK" "fixture"
+git -C "$ADOPT_NPM_NO_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-npm-no-lock.out" adopt --dry-run --project "$ADOPT_NPM_NO_LOCK"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "dependency-free npm project without a lockfile was refused"
+assert_not_contains "$TMP_DIR/adopt-npm-no-lock.out" 'setup = '
+
 ADOPT_IGNORED_CONTRACT="$TMP_DIR/adopt-ignored-contract"
 init_adoption_repo "$ADOPT_IGNORED_CONTRACT"
 printf '%s\n' '.touchstone.toml' >"$ADOPT_IGNORED_CONTRACT/.gitignore"
