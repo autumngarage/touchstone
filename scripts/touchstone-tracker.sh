@@ -243,9 +243,23 @@ absolute_input_file() {
 
 same_repo_github_closers() {
   local text="$1" match normalized target matches
-  matches="$(printf '%s\n' "$text" \
-    | grep -Eoi '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved|closes-issue):?[[:space:]]*([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+([^[:alnum:]_]|$)' \
-    | sed -E 's/^[^[:alnum:]_]//; s/[^[:alnum:]_]$//' || true)"
+  matches="$(printf '%s\n' "$text" | awk '
+    {
+      original = $0
+      rest = tolower($0)
+      pattern = "(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved|closes-issue):?[[:space:]]*([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+([^[:alnum:]_]|$)"
+      while (match(rest, pattern)) {
+        found = substr(original, RSTART, RLENGTH)
+        next_at = RSTART + RLENGTH
+        if (found ~ /[^[:alnum:]_]$/) next_at--
+        sub(/^[^[:alnum:]_]/, "", found)
+        sub(/[^[:alnum:]_]$/, "", found)
+        print found
+        original = substr(original, next_at)
+        rest = substr(rest, next_at)
+      }
+    }
+  ')"
   [ -n "$matches" ] || return 0
   while IFS= read -r match; do
     normalized="$(printf '%s' "$match" | tr '[:upper:]' '[:lower:]')"

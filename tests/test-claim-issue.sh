@@ -490,6 +490,10 @@ EOF
   run_adapter "$TMP/out" validate 42 --disposition partial --body-file "$TMP/body" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reason":"body-valid"'
+  printf '%s\n' 'Refs #42' 'Closes #1,Closes #42' >"$TMP/body"
+  run_adapter "$TMP/out" validate 42 --disposition partial --body-file "$TMP/body" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"reason":"closing-nonfixed-issue"'
   assert_not_has "$ROOT/scripts/touchstone-tracker.sh" '\\b'
   printf '%s\n' 'Refs AUT-281' >"$TMP/body"
   run_adapter "$TMP/out" validate AUT-281 --disposition partial --body-file "$TMP/body" --project "$TMP/linear" --json
