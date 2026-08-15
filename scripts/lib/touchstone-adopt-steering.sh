@@ -12,6 +12,7 @@ render_consumer_markdown() {
     -e 's#Use the `touchstone-audit-weak-points` skill (Claude) or read `principles/audit-weak-points.md` (other drivers)\.#Read `principles/audit-weak-points.md`.#' \
     -e '/^Claude Code agents: the bundled `touchstone-\*` and `memory-audit` skills mirror this table in your session header\. Trust whichever surface fires first\.$/d' \
     -e 's#Use the `touchstone-audit-weak-points` skill\.#Follow `principles/audit-weak-points.md`.#' \
+    -e 's#bash scripts/touchstone-tracker\.sh claim#touchstone tracker claim#g' \
     -e 's#principles/#.touchstone/principles/#g' \
     "$source" >"$raw" || operational_failure "could not render consumer steering"
   awk '
@@ -23,7 +24,7 @@ render_consumer_markdown() {
       }
     ' "$raw" >"$output" || operational_failure "could not normalize consumer steering"
   rm -f -- "$raw" || operational_failure "could not remove intermediate steering"
-  if grep -Eq 'scripts/(claim-issue|respond-review|issue-claim-check)\.sh|hooks/branch-guard\.sh|\.github/workflows/|\.pre-commit-config\.yaml' "$output"; then
+  if grep -Eq 'scripts/(claim-issue|respond-review|issue-claim-check|touchstone-tracker)\.sh|hooks/branch-guard\.sh|\.github/workflows/|\.pre-commit-config\.yaml' "$output"; then
     operational_failure "consumer steering retained a repository-local implementation path"
   fi
 }

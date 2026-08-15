@@ -1199,6 +1199,7 @@ assert_contains "$MANUAL/AGENTS.md" '<!-- touchstone:steering:start -->'
 assert_contains "$MANUAL/.touchstone/TOUCHSTONE.md" 'A security-review quota notice is never a blocker'
 assert_not_contains "$MANUAL/.touchstone/TOUCHSTONE.md" 'scripts/respond-review.sh'
 assert_contains "$MANUAL/.touchstone/TOUCHSTONE.md" 'touchstone pr respond'
+assert_not_contains "$MANUAL/.touchstone/principles/git-workflow.md" 'scripts/touchstone-tracker.sh'
 assert_not_contains "$MANUAL/AGENTS.md" 'docs/pr-cli-contract.md'
 for route in agent-swarms.md ai-delivery-architecture.md audit-weak-points.md \
   documentation-ownership.md engineering-principles.md file-upstream-bugs.md \
