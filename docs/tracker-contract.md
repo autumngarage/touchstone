@@ -1,6 +1,6 @@
 # Tracker Adapter Contract
 
-This document owns Touchstone's version-1 claim boundary.
+This document owns Touchstone's version-1 claim and reconciliation boundary.
 The configured tracker owns issue state; the adapter only parses references,
 performs an available transport, and reports what it could verify.
 
@@ -26,14 +26,21 @@ selecting another tracker.
 
 ## Operations and outcomes
 
-`scripts/touchstone-tracker.sh` exposes the claim boundary that the versioned
-CLI sequences:
+`scripts/touchstone-tracker.sh` exposes the boundary that the versioned CLI
+sequences:
 
 ```text
 claim ISSUE [--project DIR] [--json]
+validate ISSUE --disposition fixed|partial|stale --body-file FILE
+  [--project DIR] [--json]
+reconcile ISSUE --disposition fixed|partial|stale --body-file FILE
+  [--note-file FILE] [--project DIR] [--json]
 ```
 
-Human and JSON output use the same three outcomes:
+`validate` is a pure preflight: it checks reference and body grammar without
+claiming that tracker state has changed. `reconcile` reads tracker state after
+delivery and only then reports the outcome. Human and JSON output use the same
+three outcomes:
 
 - `verified` means the available authority was re-read after any mutation.
 - `unverifiable` means the requested policy is known but the authority cannot
@@ -49,23 +56,35 @@ Linear transport. A driving agent may perform that action through its Linear
 API/MCP and must use Linear's returned state—not the adapter's instruction—as
 verification.
 
-## Reference and claim rules
+## Reference and reconciliation rules
 
 GitHub issues use bare `123` or quoted `'#123'` at the shell; Linear issues use
-the configured key, such as `AUT-123`. The adapter rejects an issue reference
-that does not belong to the configured tracker and prints the concrete
-replacement grammar. The GitHub
-adapter reuses the surviving claim script and verifies assignment after its
-mutation; authentication errors, unavailable transports, and partial
-mutations never produce `verified`.
+the configured key, such as `AUT-123`. Fixed work must appear in the PR body
+using the configured tracker's closing grammar (`Closes #123` or
+`Fixes AUT-123`). The adapter rejects a
+same-repository wrong-tracker close and prints the concrete replacement.
+The body reference is valid preflight input, not verified reconciliation:
+stacked PR merges do not close issues, so fixed GitHub work is `verified` only
+after the adapter re-reads the issue as closed following a default-branch
+merge.
+
+A qualified GitHub close such as `Closes owner/other#123` remains valid when it
+targets another repository. It does not change the current project's tracker
+or count as reconciliation of the local issue.
+
+Partial work remains open and receives a note naming shipped evidence and the
+remaining gap. Stale work receives an evidence note before closure. The
+GitHub adapter reuses the surviving claim script and verifies close state;
+authentication errors, unavailable transports, and partial mutations never
+produce `verified`.
 
 GitHub's documented `[skip-claim-check]` token bypasses only the GitHub
 assignment guard for an exceptional PR. It does not bypass tracker selection,
-reference parsing or claim verification, and it has no implicit
+reference parsing, closing grammar, or reconciliation, and it has no implicit
 Linear equivalent. A tracker-specific exception must remain visible in that
 tracker and in the PR.
 
-Claiming is delivery discipline, not merge adjudication. The future
-`touchstone pr` commands may sequence this adapter, but GitHub remains
+Claim and reconciliation are delivery discipline, not merge adjudication. The
+future `touchstone pr` commands may sequence this adapter, but GitHub remains
 the authority for PR checks, review evidence, conversation resolution, and the
 merge result.

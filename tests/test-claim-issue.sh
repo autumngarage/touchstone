@@ -255,7 +255,7 @@ echo "==> PASS: claim-issue.sh behaves correctly across 7 cases"
   assert_rc() { [ "$1" -eq "$2" ] || fail "expected rc $2, got $1"; }
   assert_json() { jq -e '.schema == "touchstone.tracker/v1" and (.status == "verified" or .status == "unverifiable" or .status == "failed")' "$1" >/dev/null || fail "$1 is not a valid v1 tracker result"; }
 
-  mkdir -p "$TMP/bin" "$TMP/github" "$TMP/linear"
+  mkdir -p "$TMP/bin" "$TMP/github" "$TMP/linear" "$TMP/unresolved-linear"
   git -C "$TMP/github" init -q
   git -C "$TMP/linear" init -q
   git -C "$TMP/github" remote add origin git@github.com:autumngarage/current.git
@@ -266,8 +266,10 @@ echo "==> PASS: claim-issue.sh behaves correctly across 7 cases"
     '' '[[validation.tasks]]' 'name = "test"' 'target = "root"' \
     'command = "touch contract-ran"' 'required = true' >"$TMP/github/.touchstone.toml"
   cp "$TMP/github/.touchstone.toml" "$TMP/linear/.touchstone.toml"
+  cp "$TMP/github/.touchstone.toml" "$TMP/unresolved-linear/.touchstone.toml"
   printf '%s\n' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone-tracker.toml"
   printf '%s\n' 'schema = 1' 'type = "linear"' 'key_prefix = "AUT"' >"$TMP/linear/.touchstone-tracker.toml"
+  cp "$TMP/linear/.touchstone-tracker.toml" "$TMP/unresolved-linear/.touchstone-tracker.toml"
 
   cat >"$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -276,10 +278,20 @@ printf '%s\n' "$*" >>"$GH_CALLS"
 case "$1 ${2:-}" in
   "auth status") [ "${GH_MODE:-ok}" != auth_fail ] ;;
 	"api user") printf '%s\n' henry ;;
+  "api --paginate")
+		[ "${GH_MODE:-ok}" != timeline_fail ] || exit 1
+		[ "${GH_MODE:-ok}" != comment_unverified ] || exit 0
+		printf '%s\n' 'https://github.com/autumngarage/current/issues/42#issuecomment-1'
+		;;
+  "repo view")
+		[ "${GH_MODE:-ok}" != repo_fail ] || exit 1
+		printf '%s\n' autumngarage/current
+		;;
   "issue view")
-    if printf '%s\n' "$*" | grep -q -- '--json state'; then
-      printf '%s\n' OPEN
-    elif [ "${GH_MODE:-ok}" = post_claim_read_fail ] && [ -s "$GH_STATE" ]; then
+		[ "${GH_MODE:-ok}" != state_fail ] || exit 1
+		if printf '%s\n' "$*" | grep -q -- '--json state'; then
+      if [ -f "$GH_CLOSED" ]; then printf '%s\n' CLOSED; else printf '%s\n' OPEN; fi
+		elif [ "${GH_MODE:-ok}" = post_claim_read_fail ] && [ -s "$GH_STATE" ]; then
 			exit 1
     elif [ -f "$GH_STATE" ]; then cat "$GH_STATE"
     fi
@@ -291,12 +303,19 @@ case "$1 ${2:-}" in
     fi
     printf '%s\n' henry >"$GH_STATE"
     ;;
-  "issue comment") ;;
+  "issue comment")
+    [ "${GH_MODE:-ok}" != comment_fail ] || exit 1
+    printf '%s\n' 'https://github.com/autumngarage/current/issues/42#issuecomment-1'
+    ;;
+  "issue close")
+    [ "${GH_MODE:-ok}" != close_fail ] || exit 1
+    printf '%s\n' CLOSED >"$GH_CLOSED"
+    ;;
   *) exit 1 ;;
 esac
 EOF
   chmod +x "$TMP/bin/gh"
-  export PATH="$TMP/bin:$PATH" GH_CALLS="$TMP/gh-calls" GH_STATE="$TMP/gh-state"
+  export PATH="$TMP/bin:$PATH" GH_REPO="autumngarage/current" GH_CALLS="$TMP/gh-calls" GH_STATE="$TMP/gh-state" GH_CLOSED="$TMP/gh-closed"
 
   run_adapter() {
     local output="$1"
@@ -393,6 +412,147 @@ EOF
   assert_has "$TMP/out" '"status":"unverifiable"'
   assert_has "$TMP/out" '"reason":"transport-unavailable"'
   assert_json "$TMP/out"
+  for option in --body-file --note-file --disposition; do
+    run_adapter "$TMP/out" validate 42 --json "$option"
+    assert_rc "$RUN_RC" 2
+    assert_has "$TMP/out" '"reason":"missing-option-value"'
+    assert_json "$TMP/out"
+    run_adapter "$TMP/out" validate 42 --json "$option" ''
+    assert_rc "$RUN_RC" 2
+    assert_has "$TMP/out" '"reason":"missing-option-value"'
+    assert_json "$TMP/out"
+  done
+
+  echo "==> fixed GitHub and Linear work require their own closing grammar"
+  printf '%s\n' 'Closes #42' >"$TMP/body"
+  run_adapter "$TMP/out" validate 42 --disposition fixed --body-file "$TMP/body" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reason":"body-valid"'
+  run_adapter "$TMP/out" reconcile 42 --disposition fixed --body-file "$TMP/body" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 3
+  assert_has "$TMP/out" '"status":"unverifiable"'
+  assert_has "$TMP/out" '"reason":"closing-reference-pending"'
+  assert_has "$TMP/out" 'verify again after the PR reaches the default branch'
+  printf '%s\n' CLOSED >"$GH_CLOSED"
+  run_adapter "$TMP/out" reconcile 42 --disposition fixed --body-file "$TMP/body" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"verified"'
+  rm -f "$GH_CLOSED"
+  printf '%s\n' 'Fixes AUT-281' >"$TMP/body"
+  run_adapter "$TMP/out" reconcile AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/linear" --json
+  assert_rc "$RUN_RC" 3
+  assert_has "$TMP/out" '"status":"unverifiable"'
+  printf '%s\n' 'Fixes AUT-281.' >"$TMP/body"
+  run_adapter "$TMP/out" reconcile AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/linear" --json
+  assert_rc "$RUN_RC" 3
+  assert_not_has "$TMP/out" 'missing-closing-reference'
+  printf '%s\n' '[skip-claim-check]' 'Closes #281' >"$TMP/body"
+  run_adapter "$TMP/out" reconcile AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/linear"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" "Replace 'Closes #281' with 'Fixes AUT-281'"
+  printf '%s\n' 'Fixes AUT-281' >"$TMP/body"
+  run_adapter "$TMP/out" reconcile 42 --disposition fixed --body-file "$TMP/body" --project "$TMP/github"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" "Add 'Closes #42'"
+  printf '%s\n' 'This fixes CVE-2026-1234.' 'Closes #42' >"$TMP/body"
+  run_adapter "$TMP/out" reconcile 42 --disposition fixed --body-file "$TMP/body" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 3
+  assert_not_has "$TMP/out" 'wrong-tracker-closing-syntax'
+  awk 'BEGIN { for (line = 1; line <= 4000; line++) print "Fixes AUT-123" }' >"$TMP/large-body"
+  run_adapter "$TMP/out" reconcile 42 --disposition fixed --body-file "$TMP/large-body" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"reason":"missing-closing-reference"'
+  assert_json "$TMP/out"
+
+  echo "==> cross-repository GitHub closes remain valid in Linear projects"
+  printf '%s\n' 'Fixes AUT-281' 'Closes autumngarage/other#77' >"$TMP/body"
+  run_adapter "$TMP/out" reconcile AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/linear" --json
+  assert_rc "$RUN_RC" 3
+  assert_not_has "$TMP/out" 'wrong-tracker-closing-syntax'
+  GH_REPO='' run_adapter "$TMP/out" reconcile AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/linear" --json
+  assert_rc "$RUN_RC" 3
+  assert_not_has "$TMP/out" 'wrong-tracker-closing-syntax'
+  GH_REPO='' GH_MODE=repo_fail run_adapter "$TMP/out" reconcile AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/unresolved-linear" --json
+  assert_rc "$RUN_RC" 3
+  assert_not_has "$TMP/out" 'wrong-tracker-closing-syntax'
+  printf '%s\n' 'Fixes AUT-281' 'Closes autumngarage/current#77' >"$TMP/body"
+  run_adapter "$TMP/out" reconcile AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/linear"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'qualify cross-repository GitHub closes'
+  GH_REPO='github.example.com/autumngarage/current' run_adapter "$TMP/out" reconcile AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/linear"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'qualify cross-repository GitHub closes'
+
+  echo "==> partial and stale reconciliations make partial mutation visible"
+  printf '%s\n' 'Refs #42' >"$TMP/body"
+  printf '%s\n' 'Evidence and remaining gap.' >"$TMP/note"
+  : >"$GH_CALLS"
+  run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"verified"'
+  assert_has "$GH_CALLS" 'issue comment 42 --body-file'
+  assert_has "$GH_CALLS" 'api --paginate repos/autumngarage/current/issues/42/comments'
+  printf '%s\n' 'Relative note from caller directory.' >"$TMP/relative-note"
+  relative_note_path="$(cd "$TMP" && pwd -P)/relative-note"
+  caller_directory="$PWD"
+  cd "$TMP"
+  run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" --note-file relative-note --project "$TMP/github" --json
+  cd "$caller_directory"
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" "issue comment 42 --body-file $relative_note_path"
+  GH_MODE=comment_unverified run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" '"reason":"github-comment-unverified"'
+  assert_has "$TMP/out" '"partial":true'
+  GH_MODE=timeline_fail run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" '"reason":"github-comment-verification-failed"'
+  assert_has "$TMP/out" '"partial":true'
+  printf '%s\n' CLOSED >"$GH_CLOSED"
+  run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" '"reason":"github-open-unverified"'
+  assert_has "$TMP/out" '"partial":true'
+  rm -f "$GH_CLOSED"
+  GH_MODE=close_fail run_adapter "$TMP/out" reconcile 42 --disposition stale --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" '"partial":true'
+  assert_has "$TMP/out" 'github-close-failed'
+  rm -f "$GH_CLOSED"
+  GH_MODE=state_fail run_adapter "$TMP/out" reconcile 42 --disposition stale --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'github-close-verification-failed'
+  rm -f "$GH_CLOSED"
+
+  echo "==> reconciliation evidence must contain a substantive note"
+  : >"$TMP/note"
+  run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'Provide a non-empty --note-file'
+  printf '%s\n' '   ' >"$TMP/note"
+  run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'Provide a non-empty --note-file'
+  printf '%s\n' 'Evidence and remaining gap.' >"$TMP/note"
+
+  echo "==> partial and stale work require non-closing PR references"
+  printf '%s\n' 'Summary only.' >"$TMP/body"
+  run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'Add '\''Refs #42'\'' to the PR body'
+  printf '%s\n' 'Refs #42' 'Closes #42' >"$TMP/body"
+  run_adapter "$TMP/out" reconcile 42 --disposition stale --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'Replace the closing reference for #42'
+
+  echo "==> Linear partial reconciliation names the MCP/API action and never calls gh"
+  : >"$GH_CALLS"
+  printf '%s\n' 'Refs AUT-281' >"$TMP/body"
+  run_adapter "$TMP/out" reconcile AUT-281 --disposition partial --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/linear" --json
+  assert_rc "$RUN_RC" 3
+  assert_has "$TMP/out" '"status":"unverifiable"'
+  assert_has "$TMP/out" 'verify the issue remains open'
+  [ ! -s "$GH_CALLS" ] || fail "Linear reconciliation invoked the GitHub transport"
 
   echo "==> malformed, old-compatible, and unsupported tracker declarations are explicit"
   cp "$TMP/github/.touchstone-tracker.toml" "$TMP/github/tracker-good"
@@ -449,5 +609,5 @@ EOF
     echo "==> FAIL: $ERRORS tracker adapter assertion(s) failed" >&2
     exit 1
   fi
-  echo "==> PASS: tracker adapter preserves claim semantics"
+  echo "==> PASS: tracker adapter preserves claim/reconciliation semantics"
 )
