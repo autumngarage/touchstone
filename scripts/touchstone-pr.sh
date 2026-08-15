@@ -156,6 +156,17 @@ read_with_retry() {
   done
 }
 
+json_lines_to_array() {
+  printf '%s\n' "$1" | awk '
+    BEGIN { printf "[" }
+    NF {
+      if (count++) printf ","
+      printf "%s", $0
+    }
+    END { print "]" }
+  '
+}
+
 read_repository() {
   (
     unset GH_REPO
@@ -437,27 +448,27 @@ findings_pr() {
   local query threads reviews
   # shellcheck disable=SC2016 # GraphQL variable references are intentionally literal.
   query='query($endCursor: String, $owner: String!, $name: String!, $pr: Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$pr) { reviewThreads(first:100,after:$endCursor) { nodes { id isResolved comments(first:1) { nodes { databaseId path body url } } } pageInfo { hasNextPage endCursor } } } } }'
-  read_with_retry gh api graphql --hostname "$REPO_HOST" --paginate --slurp \
+  read_with_retry gh api graphql --hostname "$REPO_HOST" --paginate \
     -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F pr="$PR_NUMBER" -f query="$query" \
-    --jq '[.[] | .data.repository.pullRequest.reviewThreads.nodes[] | {threadId:.id,resolved:.isResolved,commentId:.comments.nodes[0].databaseId,path:(.comments.nodes[0].path // null),body:.comments.nodes[0].body,url:.comments.nodes[0].url}]' \
+    --jq '.data.repository.pullRequest.reviewThreads.nodes[] | {threadId:.id,resolved:.isResolved,commentId:.comments.nodes[0].databaseId,path:(.comments.nodes[0].path // null),body:.comments.nodes[0].body,url:.comments.nodes[0].url} | @json' \
     || fail_operation "could not read paginated review threads: $READ_OUTPUT" "Retry after GitHub recovers."
-  threads="$READ_OUTPUT"
-  read_with_retry gh api --paginate --hostname "$REPO_HOST" --slurp "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
-    --jq '[.[][] | select((.body // "") != "") | {reviewId:.id,state:.state,body:.body,url:.html_url,commit:.commit_id}]' \
+  threads="$(json_lines_to_array "$READ_OUTPUT")"
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
+    --jq '.[] | select((.body // "") != "") | {reviewId:.id,state:.state,body:.body,url:.html_url,commit:.commit_id} | @json' \
     || fail_operation "could not read paginated review bodies: $READ_OUTPUT" "Retry after GitHub recovers."
-  reviews="$READ_OUTPUT"
+  reviews="$(json_lines_to_array "$READ_OUTPUT")"
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"findings","status":"observed","pullRequest":%s,"threads":%s,"reviews":%s}\n' \
       "$OUTPUT_SCHEMA" "$PR_NUMBER" "$threads" "$reviews"
   else
     printf 'PR #%s findings\n' "$PR_NUMBER"
-    read_with_retry gh api graphql --hostname "$REPO_HOST" --paginate --slurp \
+    read_with_retry gh api graphql --hostname "$REPO_HOST" --paginate \
       -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F pr="$PR_NUMBER" -f query="$query" \
-      --jq '.[] | .data.repository.pullRequest.reviewThreads.nodes[] | "  thread \(.comments.nodes[0].databaseId) [resolved=\(.isResolved)] \(.comments.nodes[0].path // \"-\")\n    \(.comments.nodes[0].body)\n    \(.comments.nodes[0].url)"' \
+      --jq '.data.repository.pullRequest.reviewThreads.nodes[] | "  thread \(.comments.nodes[0].databaseId) [resolved=\(.isResolved)] \(.comments.nodes[0].path // \"-\")\n    \(.comments.nodes[0].body)\n    \(.comments.nodes[0].url)"' \
       || fail_operation "could not render review threads: $READ_OUTPUT" "Retry after GitHub recovers."
     [ -z "$READ_OUTPUT" ] || printf '%s\n' "$READ_OUTPUT"
-    read_with_retry gh api --paginate --hostname "$REPO_HOST" --slurp "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
-      --jq '.[][] | select((.body // "") != "") | "  review \(.id) [\(.state)] at \(.commit_id)\n    \(.body)\n    \(.html_url)"' \
+    read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
+      --jq '.[] | select((.body // "") != "") | "  review \(.id) [\(.state)] at \(.commit_id)\n    \(.body)\n    \(.html_url)"' \
       || fail_operation "could not render review bodies: $READ_OUTPUT" "Retry after GitHub recovers."
     [ -z "$READ_OUTPUT" ] || printf '%s\n' "$READ_OUTPUT"
   fi

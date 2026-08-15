@@ -528,6 +528,11 @@ value_after() {
   return 1
 }
 
+if has '--slurp' "$@" && has '--jq' "$@"; then
+  printf '%s\n' 'the `--slurp` option is not supported with `--jq` or `--template`' >&2
+  exit 1
+fi
+
 case "$1 ${2:-}" in
   "auth status")
     [ "${GH_MODE:-ok}" != auth_fail ]
@@ -810,7 +815,12 @@ EOF
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"commentId":51'
   assert_has "$TMP/out" '"reviewId":61'
-  assert_has "$GH_CALLS" 'api graphql --hostname github.com --paginate --slurp'
+  jq -e '.threads | length == 1' "$TMP/out" >/dev/null \
+    || fail "findings did not emit one parseable thread"
+  jq -e '.reviews | length == 1' "$TMP/out" >/dev/null \
+    || fail "findings did not emit one parseable review"
+  assert_has "$GH_CALLS" 'api graphql --hostname github.com --paginate'
+  assert_not_has "$GH_CALLS" '--slurp'
   assert_has "$GH_CALLS" '/reviews?per_page=100'
 
   echo "==> respond reuses the existing reply/resolve path and is rerunnable"
