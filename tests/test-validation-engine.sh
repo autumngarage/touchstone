@@ -1083,18 +1083,42 @@ assert_not_contains "$TMP_DIR/adopt-yarn-standalone.json" \
   'command = \"COREPACK_ENABLE_NETWORK=0 yarn test\"'
 
 echo "==> Python adapter binds tasks to tracked executable evidence"
+PYTHON_TOOL_BIN="$TMP_DIR/python-tools"
+mkdir -p "$PYTHON_TOOL_BIN"
+cat >"$PYTHON_TOOL_BIN/uv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$*" = "--version" ]; then
+  printf '%s\n' 'uv 0.8.14'
+  exit 0
+fi
+[ "$*" = "lock --check --offline --no-config" ] || exit 8
+[ "${UV_NO_PROGRESS:-}" = 1 ] || exit 8
+[ "${UV_PYTHON_DOWNLOADS:-}" = never ] || exit 8
+EOF
+chmod +x "$PYTHON_TOOL_BIN/uv"
+PATH="$PYTHON_TOOL_BIN:$PATH"
+export PATH
 ADOPT_PYTHON="$TMP_DIR/adopt-python"
 init_node_adoption_repo "$ADOPT_PYTHON"
 mkdir -p "$ADOPT_PYTHON/tests"
-printf '%s\n' 'pytest==9.0.0' >"$ADOPT_PYTHON/requirements.txt"
+printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+  'requires-python = ">=3.11"' 'dependencies = ["pytest"]' \
+  >"$ADOPT_PYTHON/pyproject.toml"
+printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
+  '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
+  'source = { virtual = "." }' '' '[[package]]' 'name = "pytest"' \
+  'version = "9.0.0"' 'source = { registry = "https://pypi.org/simple" }' \
+  >"$ADOPT_PYTHON/uv.lock"
 printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_PYTHON/tests/test_fixture.py"
 commit_node_adoption_repo "$ADOPT_PYTHON"
 bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_PYTHON" \
   >"$TMP_DIR/adopt-python-plan.json"
 assert_contains "$TMP_DIR/adopt-python-plan.json" '"profile":"python"'
 assert_contains "$TMP_DIR/adopt-python-plan.json" \
-  'setup = \"python -m pip install --no-index -r requirements.txt\"'
-assert_contains "$TMP_DIR/adopt-python-plan.json" 'command = \"python -m pytest\"'
+  'uv 0.8.14'
+assert_contains "$TMP_DIR/adopt-python-plan.json" 'uv sync --no-config --offline --frozen'
+assert_contains "$TMP_DIR/adopt-python-plan.json" 'uv run --no-sync --no-config pytest'
 
 for python_evidence in ignored-test missing-source malformed-toml; do
   ADOPT_PYTHON_EVIDENCE="$TMP_DIR/adopt-python-$python_evidence"
@@ -1102,12 +1126,24 @@ for python_evidence in ignored-test missing-source malformed-toml; do
   case "$python_evidence" in
     ignored-test)
       mkdir -p "$ADOPT_PYTHON_EVIDENCE/.venv"
-      printf '%s\n' 'pytest==9.0.0' >"$ADOPT_PYTHON_EVIDENCE/requirements.txt"
+      printf '%s\n' '[project]' 'name = "fixture"' 'requires-python = ">=3.11"' \
+        'dependencies = ["pytest"]' >"$ADOPT_PYTHON_EVIDENCE/pyproject.toml"
+      printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
+        '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
+        'source = { virtual = "." }' '' '[[package]]' 'name = "pytest"' \
+        'version = "9.0.0"' 'source = { registry = "https://pypi.org/simple" }' \
+        >"$ADOPT_PYTHON_EVIDENCE/uv.lock"
       printf '%s\n' 'def test_hidden():' '    assert True' \
         >"$ADOPT_PYTHON_EVIDENCE/.venv/test_hidden.py"
       ;;
     missing-source)
-      printf '%s\n' 'mypy==1.20.2' >"$ADOPT_PYTHON_EVIDENCE/requirements.txt"
+      printf '%s\n' '[project]' 'name = "fixture"' 'requires-python = ">=3.11"' \
+        'dependencies = ["mypy"]' >"$ADOPT_PYTHON_EVIDENCE/pyproject.toml"
+      printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
+        '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
+        'source = { virtual = "." }' '' '[[package]]' 'name = "mypy"' \
+        'version = "1.20.2"' 'source = { registry = "https://pypi.org/simple" }' \
+        >"$ADOPT_PYTHON_EVIDENCE/uv.lock"
       ;;
     malformed-toml)
       printf '%s\n' '[project' 'name = "broken"' >"$ADOPT_PYTHON_EVIDENCE/pyproject.toml"
@@ -1127,5 +1163,73 @@ assert_contains "$TMP_DIR/adopt-python-ignored-test.err" \
 assert_contains "$TMP_DIR/adopt-python-missing-source.err" \
   'mypy evidence but no tracked regular Python source'
 assert_contains "$TMP_DIR/adopt-python-malformed-toml.err" 'pyproject.toml is malformed'
+
+for python_boundary in vcs-url poetry-python poetry-platform spaced-build-hook extras-before-url invalid-requirement uv-source requirements-without-lock; do
+  ADOPT_PYTHON_BOUNDARY="$TMP_DIR/adopt-python-$python_boundary"
+  init_node_adoption_repo "$ADOPT_PYTHON_BOUNDARY"
+  case "$python_boundary" in
+    vcs-url)
+      printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+        'dependencies = ["evil @ git+git://example.invalid/repo.git"]' \
+        >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
+      expected_python_boundary='remote direct dependency reference'
+      ;;
+    poetry-python | poetry-platform)
+      marker_key="${python_boundary#poetry-}"
+      printf '%s\n' '[tool.poetry]' 'name = "fixture"' 'version = "0.1.0"' \
+        '[tool.poetry.dependencies]' \
+        "evil = { version = \"^1\", $marker_key = \"blocked\" }" \
+        '[build-system]' 'requires = ["poetry-core"]' \
+        'build-backend = "poetry.core.masonry.api"' \
+        >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
+      expected_python_boundary='environment-marked dependency'
+      ;;
+    spaced-build-hook)
+      printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+        'dependencies = ["ruff"]' '[ build-system ]' \
+        'requires = ["setuptools"]' 'build-backend = "setuptools.build_meta"' \
+        'backend-path = ["."]' >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
+      expected_python_boundary='project build hook'
+      ;;
+    extras-before-url)
+      printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+        'dependencies = [' '  "foo[bar]",' \
+        '  "evil @ https://example.invalid/package.whl",' ']' \
+        >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
+      expected_python_boundary='remote direct dependency reference'
+      ;;
+    invalid-requirement)
+      printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+        'dependencies = ["ruff", "not a requirement!"]' \
+        >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
+      expected_python_boundary='outside the supported named-requirement subset'
+      ;;
+    uv-source)
+      printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+        'requires-python = ">=3.11"' 'dependencies = ["evil"]' \
+        '[tool.uv.sources]' 'evil = { path = "../outside" }' \
+        >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
+      printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
+        '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
+        'source = { virtual = "." }' '' '[[package]]' 'name = "evil"' \
+        'version = "1.0.0"' 'source = { directory = "../outside" }' \
+        >"$ADOPT_PYTHON_BOUNDARY/uv.lock"
+      expected_python_boundary='declares a uv source mapping'
+      ;;
+    requirements-without-lock)
+      printf '%s\n' 'pytest==0.0.0' >"$ADOPT_PYTHON_BOUNDARY/requirements.txt"
+      expected_python_boundary='requires uv.lock and an exact uv runtime'
+      ;;
+  esac
+  commit_node_adoption_repo "$ADOPT_PYTHON_BOUNDARY"
+  set +e
+  bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_PYTHON_BOUNDARY" \
+    >"$TMP_DIR/adopt-python-$python_boundary.out" \
+    2>"$TMP_DIR/adopt-python-$python_boundary.err"
+  ADOPTION_STATUS=$?
+  set -e
+  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$python_boundary dependency boundary was accepted"
+  assert_contains "$TMP_DIR/adopt-python-$python_boundary.err" "$expected_python_boundary"
+done
 
 echo "validation engine tests passed"
