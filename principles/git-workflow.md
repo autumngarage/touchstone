@@ -86,14 +86,32 @@ gh api graphql -f query='
   query($owner:String!, $repo:String!, $pr:Int!) {
     repository(owner:$owner, name:$repo) {
       pullRequest(number:$pr) {
-        reviewThreads(first:100) { nodes { id isResolved } }
+        reviewThreads(first:100) {
+          nodes {
+            id
+            isResolved
+            comments(first:100) { nodes { databaseId url } }
+          }
+        }
       }
     }
   }' -F owner=<owner> -F repo=<repo> -F pr=<n> \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)] | length'
+  --jq '.data.repository.pullRequest.reviewThreads.nodes
+    | map(select(.isResolved | not))
+    | {
+        unresolvedCount: length,
+        unresolvedThreads: map({
+          threadId: .id,
+          rootCommentId: .comments.nodes[0].databaseId,
+          rootCommentUrl: .comments.nodes[0].url
+        })
+      }'
 ```
 
-The last one is the count of unresolved threads. Zero is the requirement.
+The last result includes both the unresolved count and the `PRRT_` thread ID
+to root comment-ID mapping needed to answer and resolve each finding.
+Replies are deliberately omitted because `respond-review.sh --comment-id`
+accepts the root finding ID. Zero is the requirement.
 
 **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.** GitHub's review API can support approval for authorized integrations, but that is not this adapter's observed contract. Do not expect an approval here or treat its absence as a stalled review.
 
@@ -124,7 +142,8 @@ gh api graphql -f query='
   }' -F threadId=<PRRT_...>
 ```
 
-Thread IDs are the `PRRT_`-prefixed `id` values from the `reviewThreads` query above. The token needs Contents: read and write.
+Thread IDs and their numeric root review comment IDs come from the mapped
+`unresolvedThreads` result above. The token needs Contents: read and write.
 
 ## Merging
 
