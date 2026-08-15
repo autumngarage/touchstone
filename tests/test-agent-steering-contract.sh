@@ -110,6 +110,8 @@ assert_not_contains "$GIT_WORKFLOW_GUIDE" \
   'gh issue edit <n> --add-assignee'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
   "grep -F -- \"\$expected\""
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  '<configured closing reference, for example: Fixes AUT-123>'
 assert_not_contains "$GIT_WORKFLOW_GUIDE" \
   "grep -E '(Closes|Fixes|Resolves)"
 

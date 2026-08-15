@@ -47,7 +47,7 @@ git push -u origin HEAD
 gh pr create --title "<type>: <what changed>" --body-file <(cat <<'EOF'
 <what and why>
 
-Closes #123
+<configured closing reference, for example: Fixes AUT-123>
 EOF
 )
 ```
