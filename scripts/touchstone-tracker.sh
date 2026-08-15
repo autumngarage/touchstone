@@ -191,7 +191,25 @@ resolve_repo() {
   if [ -z "$resolved" ] && command -v gh >/dev/null 2>&1; then
     resolved="$(cd "$PROJECT_ROOT" && gh repo view --json nameWithOwner --jq '.nameWithOwner // empty' 2>/dev/null || true)"
   fi
+  resolved="${resolved%.git}"
+  case "$resolved" in
+    */*/*) resolved="${resolved#*/}" ;;
+  esac
   case "$resolved" in */*) CURRENT_REPO="$(printf '%s' "$resolved" | tr '[:upper:]' '[:lower:]')" ;; *) CURRENT_REPO="" ;; esac
+}
+
+absolute_input_file() {
+  local path="$1" directory
+  case "$path" in
+    /*) printf '%s\n' "$path" ;;
+    *)
+      directory="$(cd "$(dirname "$path")" 2>/dev/null && pwd -P)" || {
+        printf '%s\n' "$path"
+        return 0
+      }
+      printf '%s/%s\n' "$directory" "$(basename "$path")"
+      ;;
+  esac
 }
 
 same_repo_github_closers() {
@@ -403,6 +421,8 @@ else
   PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 fi
 SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
+[ -z "$BODY_FILE" ] || BODY_FILE="$(absolute_input_file "$BODY_FILE")"
+[ -z "$NOTE_FILE" ] || NOTE_FILE="$(absolute_input_file "$NOTE_FILE")"
 
 validate_project_contract
 load_tracker
