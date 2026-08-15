@@ -387,22 +387,59 @@ Merge a chain in order, parent first, repeating both steps for each next child.
 
 ## Claiming issues before agent dispatch
 
-Before spawning a coding agent — Claude Code subagent, Codex CLI, or any other — to work on a GitHub issue, **claim it first**. Set the assignee, post a one-line dispatch comment, then spawn the agent. The cost is ten seconds per issue; the cost of skipping it is two agents picking up the same issue and shipping competing PRs.
+Before spawning a coding agent — Claude Code subagent, Codex CLI, or any other — to work on an issue, **claim it first**. Verify sole ownership, post a one-line dispatch comment only after the claim is stable, then spawn the agent. The cost is ten seconds per issue; the cost of skipping it is two agents picking up the same issue and shipping competing PRs.
 
-**The mechanical steps.**
-
-```bash
-bash scripts/claim-issue.sh <n>
-```
-
-Under the hood this uses the same GitHub API flow (claim + dispatch comment), equivalent to:
+**The portable GitHub sequence.** Run it as a function whose body is a
+subshell. A contention or API failure then returns nonzero without terminating
+the caller's interactive shell. Supply the issue, branch, worktree, and agent
+label as arguments.
 
 ```bash
-gh issue edit <n> --add-assignee @me
-gh issue comment <n> --body "Dispatched. Branch \`<branch>\`, worktree at \`<path>\`. <agent type> implementing."
+claim_github_issue() (
+  issue="$1"
+  branch="$2"
+  worktree="$3"
+  agent="$4"
+  claim_added=false
+  me="$(gh api user --jq .login)" || exit 1
+  [ -n "$me" ] || exit 1
+  state="$(gh issue view "$issue" --json state --jq .state)" || exit 1
+  [ "$state" = OPEN ] || exit 1
+  owners="$(gh issue view "$issue" --json assignees --jq '.assignees[].login')" || exit 1
+  [ -z "$owners" ] || [ "$owners" = "$me" ] || exit 1
+  if [ "$owners" = "$me" ]; then
+    owners="$(gh issue view "$issue" --json assignees --jq '.assignees[].login')" || exit 1
+    [ "$owners" = "$me" ] || exit 1
+  else
+    gh issue edit "$issue" --add-assignee "$me" || exit 1
+    claim_added=true
+    owners="$(gh issue view "$issue" --json assignees --jq '.assignees[].login')" || {
+      gh issue edit "$issue" --remove-assignee "$me" >/dev/null 2>&1 || true
+      exit 1
+    }
+    if [ "$owners" != "$me" ]; then
+      gh issue edit "$issue" --remove-assignee "$me" >/dev/null 2>&1 || true
+      exit 1
+    fi
+  fi
+  gh issue comment "$issue" \
+    --body "Dispatched. Branch \`$branch\`, worktree at \`$worktree\`. $agent implementing." \
+    || {
+      [ "$claim_added" = false ] \
+        || gh issue edit "$issue" --remove-assignee "$me" >/dev/null 2>&1 || true
+      exit 1
+    }
+)
+
+claim_github_issue <n> '<branch>' '<path>' '<agent type>'
 ```
 
-The script is preferred because it detects races — another assignee appearing between the API read and write — and exits non-zero so the dispatching agent knows not to start work.
+The first read avoids disturbing an existing owner. An existing self-assignment
+is re-read before dispatch but is never removed by this invocation. After a
+newly added claim, the second read detects a race; the losing agent removes only
+the assignment this invocation created and publishes no false dispatch signal.
+For a non-GitHub tracker, use its configured adapter to perform the same claim,
+verification, and dispatch transition.
 
 Then start the agent. Not after.
 

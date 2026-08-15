@@ -54,7 +54,8 @@ for file in \
   assert_contains "$file" "scripts/respond-review.sh"
   assert_not_contains "$file" "touchstone worker"
   assert_contains "$file" "Claim issues before implementation"
-  assert_contains "$file" "bash scripts/claim-issue.sh <n>"
+  assert_contains "$file" "configured tracker's race-safe claim"
+  assert_contains "$file" "never assume a repository-local helper exists"
   assert_contains "$file" "Reconcile issues"
   assert_contains "$file" "Do not leave fixed issues open silently"
   assert_contains "$file" "Do not infer adoption from this document"
@@ -167,6 +168,122 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "unresolvedCount: 
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "threadId: .id"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "rootCommentId: .comments.nodes[0].databaseId"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Replies are deliberately omitted"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "claim_github_issue() ("
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "claim_added=false"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "An existing self-assignment"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "is re-read before dispatch"
+assert_not_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "scripts/claim-issue.sh"
+
+echo "==> portable claim sequence isolates contention and preserves prior ownership"
+CLAIM_SNIPPET="$TEST_DIR/claim-snippet.sh"
+awk '
+  /^claim_github_issue\(\) \($/ { capture=1 }
+  capture && /^claim_github_issue <n>/ { exit }
+  capture { print }
+' "$GIT_WORKFLOW_GUIDE" >"$CLAIM_SNIPPET"
+bash -n "$CLAIM_SNIPPET" || fail "portable claim snippet is not valid Bash"
+CLAIM_BIN="$TEST_DIR/claim-bin"
+CLAIM_CALLS="$TEST_DIR/claim-calls"
+CLAIM_READS="$TEST_DIR/claim-reads"
+mkdir -p "$CLAIM_BIN"
+cat >"$CLAIM_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$CLAIM_CALLS"
+case "$1 $2 ${3:-}" in
+  'api user --jq') printf 'me\n' ;;
+  'issue view 123')
+    case "$*" in
+      *'--json state'*) printf 'OPEN\n' ;;
+      *'--json assignees'*)
+        reads="$(cat "$CLAIM_READS")"
+        reads=$((reads + 1))
+        printf '%s\n' "$reads" >"$CLAIM_READS"
+        case "$CLAIM_MODE:$reads" in
+          self:*) printf 'me\n' ;;
+          selfrace:1) printf 'me\n' ;;
+          selfrace:2) printf 'me\nother\n' ;;
+          other:*) printf 'other\n' ;;
+          race:1) : ;;
+          race:2) printf 'me\nother\n' ;;
+          success:1 | commentfail:1) : ;;
+          success:2 | commentfail:2) printf 'me\n' ;;
+        esac
+        ;;
+    esac
+    ;;
+  'issue edit 123') : ;;
+  'issue comment 123') [ "$CLAIM_MODE" != commentfail ] ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$CLAIM_BIN/gh"
+# shellcheck disable=SC1090
+source "$CLAIM_SNIPPET"
+export CLAIM_CALLS CLAIM_READS
+ORIGINAL_PATH="$PATH"
+PATH="$CLAIM_BIN:$PATH"
+
+: >"$CLAIM_CALLS"
+printf '0\n' >"$CLAIM_READS"
+CLAIM_MODE=self
+export CLAIM_MODE
+claim_github_issue 123 branch path agent || fail "existing self-claim was not idempotent"
+assert_not_contains "$CLAIM_CALLS" "--add-assignee"
+assert_not_contains "$CLAIM_CALLS" "--remove-assignee"
+assert_contains "$CLAIM_CALLS" "issue comment 123"
+[ "$(cat "$CLAIM_READS")" -eq 2 ] || fail "existing self-claim was not reverified"
+
+: >"$CLAIM_CALLS"
+printf '0\n' >"$CLAIM_READS"
+CLAIM_MODE=selfrace
+export CLAIM_MODE
+if claim_github_issue 123 branch path agent; then
+  fail "portable claim sequence missed a race on an existing self-claim"
+fi
+assert_not_contains "$CLAIM_CALLS" "issue edit 123"
+assert_not_contains "$CLAIM_CALLS" "issue comment 123"
+
+: >"$CLAIM_CALLS"
+printf '0\n' >"$CLAIM_READS"
+CLAIM_MODE=other
+export CLAIM_MODE
+if claim_github_issue 123 branch path agent; then
+  fail "portable claim sequence accepted another owner"
+fi
+assert_not_contains "$CLAIM_CALLS" "issue edit 123"
+assert_not_contains "$CLAIM_CALLS" "issue comment 123"
+
+: >"$CLAIM_CALLS"
+printf '0\n' >"$CLAIM_READS"
+CLAIM_MODE=race
+export CLAIM_MODE
+if claim_github_issue 123 branch path agent; then
+  fail "portable claim sequence accepted a raced owner"
+fi
+assert_contains "$CLAIM_CALLS" "--add-assignee me"
+assert_contains "$CLAIM_CALLS" "--remove-assignee me"
+assert_not_contains "$CLAIM_CALLS" "issue comment 123"
+
+: >"$CLAIM_CALLS"
+printf '0\n' >"$CLAIM_READS"
+CLAIM_MODE=success
+export CLAIM_MODE
+claim_github_issue 123 branch path agent || fail "portable claim sequence rejected a stable claim"
+assert_contains "$CLAIM_CALLS" "--add-assignee me"
+assert_not_contains "$CLAIM_CALLS" "--remove-assignee me"
+assert_contains "$CLAIM_CALLS" "issue comment 123"
+
+: >"$CLAIM_CALLS"
+printf '0\n' >"$CLAIM_READS"
+CLAIM_MODE=commentfail
+export CLAIM_MODE
+if claim_github_issue 123 branch path agent; then
+  fail "portable claim sequence accepted a missing dispatch comment"
+fi
+assert_contains "$CLAIM_CALLS" "--add-assignee me"
+assert_contains "$CLAIM_CALLS" "--remove-assignee me"
+PATH="$ORIGINAL_PATH"
 
 echo "==> PR babysitting preserves approved scope"
 # PR #829 showed how individually reasonable findings can turn an exact-head

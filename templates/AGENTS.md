@@ -78,7 +78,7 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 
 1. **Pull.** `git pull --rebase` on the default branch.
 2. **Branch.** Before any edit that might become a commit.
-3. **Claim issues before implementation.** If the work starts from a GitHub issue, claim it before editing or dispatching an agent: `bash scripts/claim-issue.sh <n>`. Claim every issue in a multi-issue bundle so two agents do not ship competing fixes.
+3. **Claim issues before implementation.** Use the configured tracker's race-safe claim, verification, and dispatch sequence before editing. Claim every issue in a bundle; never assume a repository-local helper exists.
 4. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
 5. **Reconcile issues.** Before opening the PR, list every GitHub issue found, claimed, fixed, partially fixed, or made stale by the work. Fully fixed issues get closing trailers (`Closes-issue: #123` or `Closes #123`) so merge auto-closes them; partial/stale issues get a comment explaining the evidence or remaining gap. Do not leave fixed issues open silently.
 6. **Ship.** `git push -u origin HEAD`, then `gh pr create`. Put the closing reference (`Closes #123`) in the **PR body** — squash-merge reads the body, not the commit. Request review by commenting `@codex review` on the PR.
