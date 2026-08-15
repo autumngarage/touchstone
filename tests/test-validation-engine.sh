@@ -831,4 +831,91 @@ echo "==> local authoring guard remains installed"
 assert_contains "$ROOT/.pre-commit-config.yaml" "id: no-commit-to-branch"
 assert_contains "$ROOT/.pre-commit-config.yaml" "stages: [pre-commit]"
 
+echo "==> legacy adoption config preserves precedence and quoting"
+LEGACY_CONFIG="$TMP_DIR/legacy-config"
+(
+  operational_failure() {
+    printf 'failed: %s\n' "$*" >&2
+    exit 6
+  }
+  contract_refusal() {
+    printf 'refused: %s\n' "$*" >&2
+    exit 4
+  }
+  # shellcheck source=scripts/lib/touchstone-legacy-config.sh
+  source "$ROOT/scripts/lib/touchstone-legacy-config.sh"
+
+  [ ! -e "$LEGACY_CONFIG" ] || exit 11
+  set +e
+  legacy_config_value "$LEGACY_CONFIG" validate_command >/dev/null 2>&1
+  missing_status=$?
+  set -e
+  [ "$missing_status" -eq 1 ] || exit 12
+
+  printf '%s\n' \
+    '# ignored' \
+    'project_type=node' \
+    'profile=python' \
+    'validate_command=npm test' \
+    'validate_full_command="npm run test:all"' \
+    'full_validate_command=ignored lower-priority alias' \
+    >"$LEGACY_CONFIG"
+  [ "$(legacy_profile_value "$LEGACY_CONFIG")" = python ] || exit 13
+  [ "$(legacy_full_validation_command "$LEGACY_CONFIG")" = 'npm run test:all' ] || exit 14
+
+  printf '%s\n' \
+    'profile=python' \
+    'project_type=node' \
+    "full_validate_command='python -m pytest'" \
+    'validate_command_full=ignored lower-priority alias' \
+    'validate_command=python -m pytest tests/unit' \
+    >"$LEGACY_CONFIG"
+  [ "$(legacy_profile_value "$LEGACY_CONFIG")" = node ] || exit 15
+  [ "$(legacy_full_validation_command "$LEGACY_CONFIG")" = 'python -m pytest' ] || exit 16
+
+  printf '%s\n' \
+    'validate_command_full=go test ./...' \
+    'validate_command=go test ./pkg/...' \
+    >"$LEGACY_CONFIG"
+  [ "$(legacy_full_validation_command "$LEGACY_CONFIG")" = 'go test ./...' ] || exit 17
+
+  printf '%s\n' \
+    'validate_command=first' \
+    'malformed line' \
+    'validate_command=last' \
+    >"$LEGACY_CONFIG"
+  [ "$(legacy_full_validation_command "$LEGACY_CONFIG")" = last ] || exit 18
+
+  printf '%s' 'validate_command="unterminated' >"$LEGACY_CONFIG"
+  [ "$(legacy_full_validation_command "$LEGACY_CONFIG")" = '"unterminated' ] || exit 19
+
+  : >"$LEGACY_CONFIG"
+  line=1
+  while [ "$line" -le 5000 ]; do
+    printf '# padding %s\n' "$line" >>"$LEGACY_CONFIG"
+    line=$((line + 1))
+  done
+  printf 'validate_full_command=large-final-command\n' >>"$LEGACY_CONFIG"
+  [ "$(legacy_full_validation_command "$LEGACY_CONFIG")" = large-final-command ] || exit 20
+
+  command rm -f "$LEGACY_CONFIG"
+  printf 'validate_command=outside\n' >"$TMP_DIR/legacy-outside"
+  ln -s "$TMP_DIR/legacy-outside" "$LEGACY_CONFIG"
+  set +e
+  (legacy_full_validation_command "$LEGACY_CONFIG") >"$TMP_DIR/legacy-symlink.out" 2>&1
+  symlink_status=$?
+  set -e
+  [ "$symlink_status" -eq 4 ] || exit 21
+  grep -Fq 'must not be a symbolic link' "$TMP_DIR/legacy-symlink.out" || exit 22
+
+  command rm -f "$LEGACY_CONFIG"
+  command mkdir "$LEGACY_CONFIG"
+  set +e
+  (legacy_full_validation_command "$LEGACY_CONFIG") >"$TMP_DIR/legacy-directory.out" 2>&1
+  directory_status=$?
+  set -e
+  [ "$directory_status" -eq 4 ] || exit 23
+  grep -Fq 'legacy configuration is not a regular file' "$TMP_DIR/legacy-directory.out" || exit 24
+) || fail "legacy adoption config changed frozen precedence or quoting"
+
 echo "validation engine tests passed"
