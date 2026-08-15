@@ -163,6 +163,9 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "gh pr create"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "@codex review"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "--match-head-commit"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "resolveReviewThread"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "unresolvedCount: length"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "threadId: .id"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "commentId: .databaseId"
 
 echo "==> PR babysitting preserves approved scope"
 # PR #829 showed how individually reasonable findings can turn an exact-head
