@@ -955,6 +955,15 @@ echo "==> adoption planner handles fresh, repeat, and upgrade consumers"
   reset_planner_stage upgrade
   plan_steering true
   grep -Fq $'update\t.touchstone/TOUCHSTONE.md\ttouchstone-managed' "$CHANGES_FILE" || exit 55
+
+  PROJECT_ROOT="$TMP_DIR/planner-blocked-ancestor"
+  mkdir -p "$PROJECT_ROOT"
+  printf 'not a directory\n' >"$PROJECT_ROOT/.touchstone"
+  set +e
+  (reset_planner_stage blocked && plan_steering true) >/dev/null 2>&1
+  blocked_status=$?
+  set -e
+  [ "$blocked_status" -eq 2 ] || exit 56
 ) || fail "adoption planner changed fresh, repeat, or upgrade semantics"
 
 echo "==> repeat adoption validates declarations without executing tasks"

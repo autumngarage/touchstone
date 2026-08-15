@@ -54,6 +54,9 @@ safe_owned_path() {
     if [ -L "$parent" ]; then
       contract_refusal "managed path traverses a symlink: ${parent#"$PROJECT_ROOT"/}"
     fi
+    if [ -e "$parent" ] && [ ! -d "$parent" ]; then
+      contract_refusal "managed path traverses a non-directory: ${parent#"$PROJECT_ROOT"/}"
+    fi
     parent="$(dirname "$parent")"
   done
 }
