@@ -852,10 +852,13 @@ assert_contains "$TMP_DIR/adopt-manual-plan.json" \
   'command = \"bash scripts/check.sh --all\"'
 [ ! -e "$ADOPT_MANUAL/.touchstone.toml" ] || fail "adoption dry-run mutated the project"
 
-GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=color.ui GIT_CONFIG_VALUE_0=always \
+GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=color.ui GIT_CONFIG_VALUE_0=always \
+  GIT_CONFIG_KEY_1=diff.context GIT_CONFIG_VALUE_1=0 \
   bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_MANUAL" \
   --task 'verify=bash scripts/check.sh --all' >"$TMP_DIR/adopt-manual-color.json"
 assert_not_contains "$TMP_DIR/adopt-manual-color.json" $'\033'
+cmp -s "$TMP_DIR/adopt-manual-plan.json" "$TMP_DIR/adopt-manual-color.json" \
+  || fail "Git diff configuration changed the versioned adoption plan"
 
 bash "$ROOT/bin/touchstone" adopt --project "$ADOPT_MANUAL" \
   --task 'verify=bash scripts/check.sh --all' >"$TMP_DIR/adopt-manual-apply.out"
