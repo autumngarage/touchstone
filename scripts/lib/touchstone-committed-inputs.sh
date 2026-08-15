@@ -37,6 +37,24 @@ touchstone_reject_staged_input() {
   return 1
 }
 
+touchstone_reject_hidden_index_flags() {
+  local listing
+
+  listing="$(git -C "$1" ls-files -v -- "$2")" || {
+    touchstone_input_error "$2" git-state-unavailable
+    return 1
+  }
+  if awk '
+    substr($0, 1, 1) == "S" || substr($0, 1, 1) ~ /[a-z]/ { hidden=1 }
+    END { exit hidden ? 0 : 1 }
+  ' <<EOF; then
+$listing
+EOF
+    touchstone_input_error "$2" hidden-index-state
+    return 1
+  fi
+}
+
 touchstone_reject_dirty_input() {
   local status
 
@@ -78,6 +96,7 @@ touchstone_require_committed_file() {
     touchstone_input_error "$path" git-state-unavailable
     return 1
   }
+  touchstone_reject_hidden_index_flags "$repository" "$path" || return 1
   touchstone_reject_staged_input "$repository" "$path" || return 1
 
   entry="$(touchstone_head_entry "$repository" "$path")" || {
@@ -130,6 +149,7 @@ touchstone_require_committed_directory() {
     touchstone_input_error "$path" git-state-unavailable
     return 1
   }
+  touchstone_reject_hidden_index_flags "$repository" "$path" || return 1
   touchstone_reject_staged_input "$repository" "$path" || return 1
 
   root_entry="$(touchstone_head_entry "$repository" "$path")" || {

@@ -1118,6 +1118,18 @@ assert_input_rejected file .touchstone.toml dirty
 git -C "$INPUT_REPO" add .touchstone.toml
 git -C "$INPUT_REPO" commit -qm "dirty input"
 
+git -C "$INPUT_REPO" update-index --assume-unchanged .touchstone.toml
+printf 'hidden assume-unchanged edit\n' >"$INPUT_REPO/.touchstone.toml"
+assert_input_rejected file .touchstone.toml hidden-index-state
+git -C "$INPUT_REPO" update-index --no-assume-unchanged .touchstone.toml
+git -C "$INPUT_REPO" show HEAD:.touchstone.toml >"$INPUT_REPO/.touchstone.toml"
+
+git -C "$INPUT_REPO" update-index --skip-worktree .touchstone.toml
+printf 'hidden skip-worktree edit\n' >"$INPUT_REPO/.touchstone.toml"
+assert_input_rejected file .touchstone.toml hidden-index-state
+git -C "$INPUT_REPO" update-index --no-skip-worktree .touchstone.toml
+git -C "$INPUT_REPO" show HEAD:.touchstone.toml >"$INPUT_REPO/.touchstone.toml"
+
 printf 'untracked\n' >"$INPUT_REPO/untracked.txt"
 assert_input_rejected file untracked.txt untracked
 rm "$INPUT_REPO/untracked.txt"
