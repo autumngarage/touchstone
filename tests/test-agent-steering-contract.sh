@@ -57,7 +57,9 @@ for file in \
   assert_contains "$file" "bash scripts/claim-issue.sh <n>"
   assert_contains "$file" "Reconcile issues"
   assert_contains "$file" "Do not leave fixed issues open silently"
+  assert_contains "$file" 'legacy `Closes-issue:` claim alias does not auto-close'
   assert_contains "$file" "Do not infer adoption from this document"
+  assert_contains "$file" 'legacy `Closes-issue:` claim alias does not auto-close'
   assert_contains "$file" "missing enforcement is a rollout gap"
   assert_contains "$file" "A security-review quota notice is never a blocker"
   assert_contains "$file" "bounded stalled-request recovery"
@@ -166,6 +168,7 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "gh pr create"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "@codex review"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "--match-head-commit"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "resolveReviewThread"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "alias does not make GitHub auto-close"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "unresolvedCount: length"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "threadId: .id"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "rootCommentId: .comments.nodes[0].databaseId"

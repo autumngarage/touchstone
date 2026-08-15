@@ -420,8 +420,8 @@ EOF
   assert_has "$TMP/out" '"reason":"body-valid"'
   printf '%s\n' 'Closes-issue: #42' >"$TMP/body"
   run_adapter "$TMP/out" validate 42 --disposition fixed --body-file "$TMP/body" --project "$TMP/github" --json
-  assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"reason":"body-valid"'
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"reason":"missing-closing-reference"'
   printf '%s\n' 'Fixes AUT-281.' >"$TMP/body"
   run_adapter "$TMP/out" validate AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/linear" --json
   assert_rc "$RUN_RC" 0
