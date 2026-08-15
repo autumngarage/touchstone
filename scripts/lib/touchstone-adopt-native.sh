@@ -59,7 +59,31 @@ toml_has_local_path_reference() {
       line = $0
       sub(/[[:space:]]*#.*/, "", line)
       gsub(/[[:space:]"\047]/, "", line)
-      if (line ~ /(^|[,{])path=/) found=1
+      if (line ~ /(^|[,{.])path=/) found=1
+    }
+    END { exit !found }
+  ' "$file"
+}
+
+cargo_has_dependency_declaration() {
+  local file="$1"
+  awk '
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\][[:space:]]*$/, "", section)
+      gsub(/[[:space:]"\047]/, "", section)
+      dependency_table = section ~ /(^|[.])(dependencies|dev-dependencies|build-dependencies)$/
+      if (section ~ /(^|[.])(dependencies|dev-dependencies|build-dependencies)[.]/) found = 1
+      next
+    }
+    {
+      line = $0
+      sub(/[[:space:]]*#.*/, "", line)
+      if (dependency_table && line ~ /^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=/) found = 1
+      compact = line
+      gsub(/[[:space:]"\047]/, "", compact)
+      if (compact ~ /(^|[.])(dependencies|dev-dependencies|build-dependencies)[.][A-Za-z0-9_-]+=/) found = 1
     }
     END { exit !found }
   ' "$file"
@@ -183,6 +207,8 @@ rust_manifest_is_package() {
 require_tracked_rust_source() {
   local directory="$1" relative source
   reject_rust_execution_config "$directory"
+  cargo_has_dependency_declaration "$directory/Cargo.toml" \
+    && contract_refusal "Rust target '${directory#"$PROJECT_ROOT"/}' declares a dependency without a verified checkout-bound offline source; pass --task NAME=COMMAND"
   rust_manifest_is_package "$directory/Cargo.toml" || return 0
   if [ "$directory" = "$PROJECT_ROOT" ]; then relative=""; else relative="${directory#"$PROJECT_ROOT"/}/"; fi
   for source in src/lib.rs src/main.rs; do
@@ -196,11 +222,16 @@ require_tracked_rust_source() {
 }
 
 reject_rust_execution_config() {
-  local directory="$1" config ancestor
+  local directory="$1" config ancestor rust_manifest_status=1
   if [ -e "$directory/build.rs" ] || [ -L "$directory/build.rs" ]; then
     contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' has a build.rs program automatic validation cannot isolate; pass --task NAME=COMMAND"
   fi
   awk '
+    function value_of(line) {
+      sub(/^[^=]*=[[:space:]]*/, "", line)
+      sub(/[[:space:]]*(#.*)?$/, "", line)
+      return line
+    }
     /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
       section=$0
       sub(/^[[:space:]]*\[/, "", section)
@@ -208,14 +239,24 @@ reject_rust_execution_config() {
       next
     }
     section == "package" && /^[[:space:]]*build[[:space:]]*=/ {
-      line=$0
-      sub(/^[^=]*=[[:space:]]*/, "", line)
-      sub(/[[:space:]]*(#.*)?$/, "", line)
+      line=value_of($0)
       if (line != "false") unsafe=1
     }
-    END { exit !unsafe }
+    section == "package" && /^[[:space:]]*workspace[[:space:]]*=/ { external_workspace=1 }
+    section == "" && /^[[:space:]]*package[.][A-Za-z0-9_.-]+[[:space:]]*=/ { dotted_package=1 }
+    END {
+      if (unsafe) exit 10
+      if (external_workspace) exit 11
+      if (dotted_package) exit 12
+      exit 1
+    }
   ' "$directory/Cargo.toml" \
-    && contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' declares a custom build program automatic validation cannot isolate; pass --task NAME=COMMAND"
+    || rust_manifest_status=$?
+  case "${rust_manifest_status:-1}" in
+    10) contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' declares a custom build program automatic validation cannot isolate; pass --task NAME=COMMAND" ;;
+    11) contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' declares an explicit workspace root automatic validation cannot bind to this checkout; pass --task NAME=COMMAND" ;;
+    12) contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' uses dotted package keys this portable compiler cannot classify safely; pass --task NAME=COMMAND" ;;
+  esac
   ancestor="$directory"
   while :; do
     for config in "$ancestor/.cargo/config" "$ancestor/.cargo/config.toml"; do
@@ -271,14 +312,26 @@ require_tracked_go_source() {
 }
 
 verify_go_packages() {
-  local directory="$1" output detail
+  local directory="$1" output detail source relative selected=false verified=true
   command -v go >/dev/null 2>&1 \
     || contract_refusal "Go automatic adoption requires the Go tool to verify selected packages offline; install Go or pass --task NAME=COMMAND"
   if output="$(cd "$directory" \
     && GOENV=off GOTOOLCHAIN=local GOWORK=off GOPROXY=off GOSUMDB=off \
-      go list ./... 2>&1)"; then
-    [ -n "$(printf '%s' "$output" | awk 'NF { found=1 } END { if (found) print "yes" }')" ] \
-      && return 0
+      go list -f '{{range .GoFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .CgoFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .TestGoFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .XTestGoFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}{{range .EmbedFiles}}{{$.Dir}}/{{.}}{{"\n"}}{{end}}' ./... 2>&1)"; then
+    while IFS= read -r source; do
+      [ -n "$source" ] || continue
+      selected=true
+      case "$source" in "$PROJECT_ROOT"/*) ;; *)
+        verified=false
+        continue
+        ;;
+      esac
+      relative="${source#"$PROJECT_ROOT"/}"
+      [ -f "$source" ] && [ ! -L "$source" ] \
+        && git -C "$PROJECT_ROOT" ls-files --error-unmatch -- "$relative" >/dev/null 2>&1 \
+        || verified=false
+    done <<<"$output"
+    [ "$selected" = true ] && [ "$verified" = true ] && return 0
   fi
   detail="$(printf '%s\n' "$output" | awk '
     NF {
