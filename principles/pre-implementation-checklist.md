@@ -51,6 +51,12 @@ protocols, or parsers that can be validated independently, split them into
 separate review units. Shared plumbing may land first; breadth is not evidence
 that the behaviors belong in one PR.
 
+Bind that enumeration to a versioned source of truth. If scope is an installed
+fleet or portfolio, check in the supported inventory or a reproducible snapshot
+before writing detectors. A phrase such as "shapes currently in use" is not a
+boundary until the shapes are named. Inputs absent from that source take the
+explicit/manual path; they do not justify speculative parser branches.
+
 For every retained input domain, map the effective discovery roots and the
 inputs execution will actually observe. Derive the fixture matrix from states
 that domain can express: cover a representative normal case plus missing,
@@ -60,6 +66,13 @@ paths where those states exist. Do not invent meaningless filesystem fixtures
 for API payloads, database records, or other non-filesystem declarations. When
 static verification cannot prove the generated behavior will run from a clean
 checkout, refuse with a manual or explicit path instead of guessing.
+
+Fixtures that claim compatibility with an external format or tool must come
+from the authoritative implementation or a captured real artifact. A fake
+executable may test transport and failure handling, but it cannot define npm,
+uv, Cargo, GitHub, or another vendor's semantics. Keep live differential trials
+off the required offline gate, record their versions, and promote discovered
+artifacts into deterministic fixtures before the first review request.
 
 The reviewability test is concrete: a reviewer should be able to falsify one
 named invariant across a bounded fixture matrix. If the matrix keeps acquiring
