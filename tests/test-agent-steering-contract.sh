@@ -51,10 +51,10 @@ for file in \
   # a squash merge, because GitHub reads the PR body. Nothing warns you.
   assert_contains "$file" "PR body"
   assert_contains "$file" "Answer every piece of PR feedback before merging"
-  assert_contains "$file" "scripts/respond-review.sh"
+  assert_contains "$file" 'Policy may enforce resolution and `CHANGES_REQUESTED`'
   assert_not_contains "$file" "touchstone worker"
   assert_contains "$file" "Claim issues before implementation"
-  assert_contains "$file" "bash scripts/claim-issue.sh <n>"
+  assert_contains "$file" "race-safe sequence"
   assert_contains "$file" "Reconcile issues"
   assert_contains "$file" "Do not leave fixed issues open silently"
   assert_contains "$file" "Do not infer adoption from this document"
@@ -63,6 +63,9 @@ for file in \
   assert_contains "$file" "bounded stalled-request recovery"
   assert_not_contains "$file" "Review is an enforced gate."
 done
+assert_not_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "scripts/respond-review.sh"
+assert_not_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "scripts/claim-issue.sh"
+assert_not_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 'gh issue edit <n> --add-assignee @me'
 
 GIT_WORKFLOW_SKILL="$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md"
 assert_contains "$GIT_WORKFLOW_SKILL" "Inspect the repository's effective rules"
@@ -97,7 +100,7 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   # bind, and merge the ordinary review first.
   assert_contains "$file" 'gh pr comment <n> --body "@codex review"'
   assert_contains "$file" "headRefOid"
-  assert_contains "$file" "scripts/respond-review.sh"
+  assert_contains "$file" "resolveReviewThread"
   assert_contains "$file" "--match-head-commit"
   assert_contains "$file" "submitted, accepted, and completed states"
   assert_contains "$file" "PR conversation comments"
@@ -128,6 +131,9 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   assert_contains "$file" "split or close the PR"
   assert_not_contains "$file" "retry until review"
 done
+assert_contains "$GIT_WORKFLOW_GUIDE" "--paginate --slurp"
+assert_contains "$GIT_WORKFLOW_GUIDE" 'after:$endCursor'
+assert_contains "$GIT_WORKFLOW_GUIDE" "pageInfo { hasNextPage endCursor }"
 
 echo "==> Claude entry files import the TOUCHSTONE.md steering router"
 # CLAUDE.md uses @TOUCHSTONE.md (Claude Code resolves @-imports transitively),
@@ -163,6 +169,13 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "gh pr create"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "@codex review"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "--match-head-commit"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "resolveReviewThread"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Pull requests: write"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  'state="$(gh issue view <n> --json state --jq .state)" || exit 1'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  '[ "$state" = OPEN ] || exit 1'
+assert_not_contains "$TOUCHSTONE_ROOT/principles/file-upstream-bugs.md" \
+  '`principles/`, `hooks/`'
 
 echo "==> PR babysitting preserves approved scope"
 # PR #829 showed how individually reasonable findings can turn an exact-head

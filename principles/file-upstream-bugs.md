@@ -13,7 +13,7 @@ When to file:
 - **Discovered while doing unrelated work, not fixing now** → file an issue. Note it in the current PR description if relevant ("noticed in passing — see #123").
 - **Fixing in the current session** → file the issue first, then close it by putting `Closes #<n>` in the **PR body** (see `principles/git-workflow.md` — a commit trailer alone does not close anything on a squash merge).
 - **Suspect a bug but unsure** → file it as a question / "needs repro" issue rather than letting it sit in chat. Re-discovery later is more expensive than a wrong-flagged issue you close.
-- **Hard-won lesson worth capturing** → if the bug taught a generalizable lesson, file the issue and link it from `CLAUDE.md`'s "Hard-Won Lessons" section.
+- **Hard-won lesson worth capturing** → file the issue and record the lesson in durable project documentation.
 
 `gh issue create` (no `--repo` flag — it defaults to the current project's repo). Body shape:
 
@@ -44,7 +44,7 @@ This also applies to **workflow friction** caused by the tools, even when it is 
 
 The repos:
 
-- **touchstone** — the steering prose, `principles/`, `hooks/`, `scripts/`, and the delivery workflow → https://github.com/autumngarage/touchstone/issues
+- **touchstone** — its steering guides, hooks, scripts, and delivery workflow → https://github.com/autumngarage/touchstone/issues
 - **cortex** — `.cortex/journal/`, `.cortex/doctrine/`, the Cortex Protocol → https://github.com/autumngarage/cortex/issues
 
 `gh issue create --repo autumngarage/<tool>` with the same body shape as above. Search first: `gh issue list --repo autumngarage/<tool> --search "<keywords>"`. If a matching issue exists, comment with your repro instead of opening a duplicate.
