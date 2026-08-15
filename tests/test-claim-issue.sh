@@ -351,7 +351,7 @@ EOF
   assert_has "$TMP/out" 'Use a Linear issue key such as AUT-123'
   run_adapter "$TMP/out" claim AUT-281 --project "$TMP/github"
   assert_rc "$RUN_RC" 2
-  assert_has "$TMP/out" 'Use a GitHub issue number such as #123'
+  assert_has "$TMP/out" "Use a GitHub issue number such as 123, or quote '#123'"
   run_adapter "$TMP/out" claim 42 --project "$TMP/missing" --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" '"reason":"project-not-found"'

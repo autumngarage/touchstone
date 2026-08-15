@@ -148,7 +148,7 @@ normalize_reference() {
     github)
       raw="${raw#\#}"
       printf '%s' "$raw" | grep -Eq '^[0-9]+$' \
-        || fail_input wrong-tracker-reference "Use a GitHub issue number such as #123."
+        || fail_input wrong-tracker-reference "Use a GitHub issue number such as 123, or quote '#123'."
       REFERENCE="#$raw"
       ISSUE_ID="$raw"
       ;;

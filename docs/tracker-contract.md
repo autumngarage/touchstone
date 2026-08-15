@@ -51,9 +51,10 @@ verification.
 
 ## Reference and claim rules
 
-GitHub issues use `#123`; Linear issues use the configured key, such as
-`AUT-123`. The adapter rejects an issue reference that does not belong to the
-configured tracker and prints the concrete replacement grammar. The GitHub
+GitHub issues use bare `123` or quoted `'#123'` at the shell; Linear issues use
+the configured key, such as `AUT-123`. The adapter rejects an issue reference
+that does not belong to the configured tracker and prints the concrete
+replacement grammar. The GitHub
 adapter reuses the surviving claim script and verifies assignment after its
 mutation; authentication errors, unavailable transports, and partial
 mutations never produce `verified`.
