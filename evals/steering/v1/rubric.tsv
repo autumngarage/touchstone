@@ -1,0 +1,32 @@
+# schema=touchstone.steering-rubric/v1
+id	product_job	observed_failure	authoritative_owner	enforcement_layer	trigger	deduplication	context_cost	test_or_scenario	verdict
+role-division	constrain	Humans became a diff-reading merge gate	TOUCHSTONE.md	prose	Every change	Canonical purpose only	low	structural-universal	keep
+effective-policy	constrain	Docs were mistaken for installed protection	TOUCHSTONE.md	GitHub	Before delivery	Routed detail	medium	structural-universal	keep
+review-required	constrain	Approval count missed COMMENTED review evidence	TOUCHSTONE.md	GitHub+prose	Every PR	Details routed to git workflow	medium	delivery	keep
+no-band-aids	constrain	Symptom fixes accumulated repeated defects	principles/engineering-principles.md	prose	Every fix	Router summary only	low	authoring	keep
+narrow-interfaces	constrain	Vendor and storage details leaked across boundaries	principles/engineering-principles.md	prose	Public boundary design	Router summary only	low	authoring	keep
+derived-limits	constrain	Fixed thresholds failed at scale	principles/engineering-principles.md	prose	Threshold design	Router summary only	low	structural-size	keep
+derive-state	constrain	Derived caches drifted from source truth	principles/engineering-principles.md	prose	Persisting derived data	Router summary only	low	authoring	keep
+no-silent-failures	constrain	Exceptions hid incomplete work	principles/engineering-principles.md	prose	Error handling	Router summary only	low	validation	keep
+fix-regression	constrain	Bug fixes regressed without a failing test	principles/engineering-principles.md	CI	Every bug fix	Router summary only	low	authoring	keep
+invariants	constrain	Nontrivial logic lacked an asserted contract	principles/engineering-principles.md	prose	Nontrivial logic	Router summary only	low	authoring	keep
+one-code-path	constrain	Near-duplicate modes drifted	principles/engineering-principles.md	prose	Adding behavior modes	Router summary only	low	authoring	keep
+version-boundaries	constrain	Changed decision models mixed incompatible data	principles/engineering-principles.md	prose	Decision boundary changes	Router summary only	low	authoring	keep
+separate-tidying	legibility	Functional diffs were obscured by broad cleanup	principles/engineering-principles.md	prose	Behavior change	Router summary only	low	authoring	keep
+recoverability	constrain	Destructive mutations lacked rollback	principles/engineering-principles.md	prose	Irreversible action	Router summary only	low	delivery	keep
+compatibility	constrain	Public changes broke lagging consumers	principles/engineering-principles.md	prose	Boundary change	Router summary only	low	authoring	keep
+weak-point-audit	constrain	Structural bug classes recurred one case at a time	principles/audit-weak-points.md	prose	Structural bug found	Routed from router	low	authoring	keep
+subagent-isolation	constrain	Parallel file writers collided	principles/agent-swarms.md	prose	Parallel file-writing agents	Routed from router	low	structural-universal	keep
+tracked-bugs	legibility	Bugs were silently worked around	TOUCHSTONE.md	tracker	Bug discovered	Tracker-neutral wording	low	authoring	keep
+delivery-friction	legibility	Tool friction was normalized instead of fixed upstream	TOUCHSTONE.md	tracker	Repeated delivery drag	Single universal bullet	low	delivery	keep
+security-quota	constrain	Provider quota notices were treated as terminal review results	TOUCHSTONE.md	GitHub+prose	Quota notice	Detail routed to git workflow	medium	delivery	keep
+branch-first	constrain	Edits were committed on the default branch	TOUCHSTONE.md	hook+prose	Before first edit	One universal section	high	authoring	keep
+pull-first	legibility	Branches started from stale default heads	TOUCHSTONE.md	prose	Start delivery	Workflow list only	low	authoring	keep
+claim-first	legibility	Agents shipped competing issue fixes	TOUCHSTONE.md	tracker	Tracked implementation	Tracker-neutral wording	medium	authoring	keep
+atomic-commit	legibility	Unrelated concerns were committed together	TOUCHSTONE.md	prose	Before commit	Workflow list only	low	authoring	keep
+tracker-reconcile	legibility	Fixed items stayed open or squash lost closing trailers	TOUCHSTONE.md	tracker	Before PR	Tracker-neutral wording	medium	delivery	keep
+exact-head-request	constrain	Review evidence bound to stale heads	TOUCHSTONE.md	GitHub	After push	Details routed to git workflow	medium	delivery	keep
+answer-findings	constrain	Resolved threads lacked answers and body findings were missed	TOUCHSTONE.md	GitHub	Review feedback	Details routed to git workflow	medium	delivery	keep
+head-bound-merge	constrain	Head moved between review and merge	TOUCHSTONE.md	GitHub	Merge	Raw recovery command retained	medium	delivery	keep
+cleanup	legibility	Merged local branches accumulated	TOUCHSTONE.md	prose	After verified merge	Workflow list only	low	delivery	keep
+routing-table	carry	Rules were duplicated or stale in multiple prompts	TOUCHSTONE.md	prose	Named trigger	Canonical router	high	structural-routes	keep

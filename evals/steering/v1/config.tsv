@@ -1,0 +1,10 @@
+# schema=touchstone.steering-eval/v1
+setting	value
+repeat_count	1
+confidence_threshold_percent	80
+control_delta_percent	1
+max_runs	18
+claude_max_budget_usd	0.75
+evidence_expiry_days	90
+scenario_timeout_seconds	600
+termination_grace_seconds	5

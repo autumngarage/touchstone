@@ -1,0 +1,5 @@
+# schema=touchstone.steering-scenarios/v1
+id	group	rules	score_file
+authoring	typical	branch-first,preimplementation,ambiguity,stale-path	evals/steering/v1/behavioral/authoring/check.sh
+validation	small	validation,no-silent-success	evals/steering/v1/behavioral/validation/check.sh
+delivery	adversarial	head-binding,findings,security-quota,product-boundary	evals/steering/v1/behavioral/delivery/check.sh
