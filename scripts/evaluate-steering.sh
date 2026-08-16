@@ -209,7 +209,17 @@ run_agent() {
   esac
   pid=$!
   (
-    sleep "$timeout"
+    timer=""
+    stop_timer() {
+      [ -z "$timer" ] || kill "$timer" 2>/dev/null || true
+      [ -z "$timer" ] || wait "$timer" 2>/dev/null || true
+      timer=""
+    }
+    trap 'stop_timer; exit 0' HUP INT TERM
+    sleep "$timeout" &
+    timer=$!
+    wait "$timer"
+    timer=""
     kill -TERM "$pid" 2>/dev/null || true
   ) &
   watchdog=$!

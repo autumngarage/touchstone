@@ -608,7 +608,16 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
 
     ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
     TMP="$(mktemp -d -t touchstone-steering-test.XXXXXX)"
-    trap 'rm -rf "$TMP"' EXIT
+    TIMER_PIDS="$TMP/timer-pids"
+    cleanup_evaluation_test() {
+      if [ -f "$TIMER_PIDS" ]; then
+        while IFS= read -r timer_pid; do
+          [ -z "$timer_pid" ] || kill "$timer_pid" 2>/dev/null || true
+        done <"$TIMER_PIDS"
+      fi
+      rm -rf "$TMP"
+    }
+    trap cleanup_evaluation_test EXIT
     ERRORS=0
 
     fail() {
@@ -678,6 +687,16 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
 
     echo "==> behavioral orchestration is offline-testable without provider calls"
     mkdir -p "$TMP/bin" "$TMP/evidence"
+    TOUCHSTONE_TEST_REAL_SLEEP="$(command -v sleep)"
+    TOUCHSTONE_TEST_TIMER_PIDS="$TIMER_PIDS"
+    export TOUCHSTONE_TEST_REAL_SLEEP TOUCHSTONE_TEST_TIMER_PIDS
+    cat >"$TMP/bin/sleep" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$$" >>"$TOUCHSTONE_TEST_TIMER_PIDS"
+exec "$TOUCHSTONE_TEST_REAL_SLEEP" "$@"
+EOF
+    chmod +x "$TMP/bin/sleep"
     cat >"$TMP/bin/codex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -724,6 +743,11 @@ EOF
       --driver gemini --scenario validation --mode steered --repeat 1 >"$TMP/unavailable.out"
     awk -F '\t' 'NR == 2 && $13 == "infrastructure-unavailable" { found=1 } END { exit !found }' \
       "$TMP/unavailable-evidence/summary.tsv" || fail "authentication failure was scored as agent behavior"
+    while IFS= read -r timer_pid; do
+      if [ -n "$timer_pid" ] && kill -0 "$timer_pid" 2>/dev/null; then
+        fail "behavioral evaluator left watchdog timer $timer_pid running"
+      fi
+    done <"$TIMER_PIDS"
 
     if [ "$ERRORS" -gt 0 ]; then
       echo "==> FAIL: $ERRORS steering evaluation assertion(s) failed" >&2
