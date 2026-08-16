@@ -1111,6 +1111,17 @@ parsed_scripts="$(awk -f "$ROOT/scripts/lib/touchstone-package-json.awk" "$PACKA
 [ "$parsed_scripts" = "$(printf '%s\n' verify typecheck build)" ] \
   || fail "portable package.json parser did not emit supported scripts in preference order"
 
+printf '{"metadata":"\177","scripts":{"test":"true"}}\n' >"$PACKAGE_JSON_CASES/del.json"
+[ "$(awk -f "$ROOT/scripts/lib/touchstone-package-json.awk" "$PACKAGE_JSON_CASES/del.json")" = test ] \
+  || fail "portable package.json parser rejected JSON-valid DEL content"
+printf '{"metadata":"\037","scripts":{"test":"true"}}\n' >"$PACKAGE_JSON_CASES/raw-control.json"
+set +e
+awk -f "$ROOT/scripts/lib/touchstone-package-json.awk" \
+  "$PACKAGE_JSON_CASES/raw-control.json" >"$PACKAGE_JSON_CASES/raw-control.out" 2>&1
+raw_control_status=$?
+set -e
+[ "$raw_control_status" -ne 0 ] || fail "portable package.json parser accepted a forbidden raw control"
+
 for malformed_case in nested-only duplicate-root duplicate-script non-object trailing bad-surrogate; do
   case "$malformed_case" in
     nested-only) printf '%s\n' '{"nested":{"scripts":{"test":"true"}}}' ;;

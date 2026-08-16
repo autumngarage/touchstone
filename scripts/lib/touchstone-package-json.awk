@@ -11,6 +11,11 @@ function json_space(character) {
   return character == " " || character == "\t" || character == "\r" || character == "\n"
 }
 
+function forbidden_json_control(character,    code) {
+  for (code = 0; code < 32; code++) if (character == sprintf("%c", code)) return 1
+  return 0
+}
+
 function skip_space() {
   while (position <= document_length && json_space(substr(document, position, 1))) position++
 }
@@ -29,7 +34,7 @@ function hex_value(character) {
 
 function append_string(character) {
   parsed_string = parsed_string character
-  if (!json_space(character) && character !~ /[[:cntrl:]]/) string_has_content = 1
+  if (!json_space(character)) string_has_content = 1
 }
 
 function parse_hex_escape(    offset, value, digit, low_value) {
@@ -82,7 +87,7 @@ function parse_string(    character, escape) {
       else if (escape == "t") append_string("\t")
       else fail("invalid string escape")
     } else {
-      if (character ~ /[[:cntrl:]]/) fail("unescaped control character")
+      if (forbidden_json_control(character)) fail("unescaped control character")
       append_string(character)
     }
   }
