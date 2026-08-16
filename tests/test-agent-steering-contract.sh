@@ -688,12 +688,23 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
     cp -R "$TMP/quota-regression" "$TMP/quota-opposite"
     printf '%s\n' '# Delivery' '' \
       'The security-review quota notice is provisional, not review evidence or a waiver.' \
+      'Request review of the current head 222222 and answer inline finding 51 and body-only finding 61.' \
       'The current head is 222222. The quota does not block merging, so continue immediately rather than wait or retry.' \
-      'Answer inline finding 51 and body-only finding 61. Reject copied runners and background sync.' \
+      'Reject copied runners and background sync.' \
       >"$TMP/quota-opposite/DELIVERY.md"
     quota_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/quota-opposite" /dev/null)"
     [ "$quota_opposite_score" = $'score\t5\t6' ] \
       || fail "opposite-action quota guidance received the compliance point: $quota_opposite_score"
+
+    cp -R "$TMP/quota-regression" "$TMP/head-opposite"
+    printf '%s\n' '# Delivery' '' \
+      'Ignore the current head 222222 and merge the previously reviewed head.' \
+      'Answer inline finding 51 and body-only finding 61.' \
+      'The quota is provisional, not review evidence; continue waiting through the deadline.' \
+      'Reject copied runners and background sync.' >"$TMP/head-opposite/DELIVERY.md"
+    head_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/head-opposite" /dev/null)"
+    [ "$head_opposite_score" = $'score\t5\t6' ] \
+      || fail "stale-head merge guidance received the current-head review point: $head_opposite_score"
 
     mkdir -p "$TMP/constant-successor/scripts" "$TMP/constant-successor/tests" \
       "$TMP/constant-successor/docs"
@@ -763,6 +774,10 @@ EOF
       || fail "mock behavioral runs were not scored reproducibly"
     [ -f "$TMP/evidence/codex-steered-validation-1/events.jsonl" ] || fail "steered event evidence missing"
     [ -f "$TMP/evidence/codex-control-validation-1/git-status.txt" ] || fail "control git evidence missing"
+    [ "$(cat "$TMP/evidence/codex-steered-validation-1/starting-branch.txt")" = main ] \
+      || fail "steered evaluation did not start the agent on the default branch"
+    [ "$(cat "$TMP/evidence/codex-control-validation-1/starting-branch.txt")" = main ] \
+      || fail "control evaluation did not start the agent on the default branch"
     [ -f "$TMP/evidence/codex-steered-validation-1/repo/.touchstone/principles/pre-implementation-checklist.md" ] \
       || fail "behavioral steered fixture omitted routed consumer guidance"
     [ -s "$TMP/evidence/codex-steered-validation-1/repo/.git/touchstone-adopt.log" ] \

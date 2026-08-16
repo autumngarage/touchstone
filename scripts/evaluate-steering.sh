@@ -164,11 +164,14 @@ config_value() {
 }
 
 install_steering() {
-  local mode="$2" repo="$3" branch adopt_log
+  local mode="$2" repo="$3" branch adopt_log adoption_branch=""
   [ "$mode" = steered ] || return 0
   branch="$(git -C "$repo" branch --show-current)"
   case "$branch" in
-    main | master) git -C "$repo" switch -qc chore/touchstone-steering ;;
+    main | master)
+      adoption_branch=chore/touchstone-steering
+      git -C "$repo" switch -qc "$adoption_branch"
+      ;;
   esac
   adopt_log="$repo/.git/touchstone-adopt.log"
   if [ -f "$repo/.touchstone.toml" ]; then
@@ -186,6 +189,11 @@ install_steering() {
   git -C "$repo" add .touchstone.toml .touchstone-tracker.toml .touchstone \
     AGENTS.md CLAUDE.md GEMINI.md
   git -C "$repo" commit -qm steering
+  if [ -n "$adoption_branch" ]; then
+    git -C "$repo" branch -f "$branch" HEAD
+    git -C "$repo" switch -q "$branch"
+    git -C "$repo" branch -D "$adoption_branch" >/dev/null
+  fi
 }
 
 run_agent() {
@@ -338,6 +346,7 @@ behavioral_evaluation() {
           mkdir -p "$repo"
           bash "$EVAL_ROOT/behavioral/$item/setup.sh" "$repo"
           install_steering "$driver" "$mode" "$repo"
+          git -C "$repo" branch --show-current >"$run_dir/starting-branch.txt"
           started="$(date +%s)"
           status=0
           PATH="$ROOT/bin:$PATH" run_agent "$driver" "$repo" "$events" "$prompt" || status=$?
