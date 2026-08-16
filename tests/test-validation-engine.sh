@@ -1680,16 +1680,48 @@ assert_contains "$ADOPTION/hidden-tracked.out.err" 'apply does not accept assume
 [ ! -e "$HIDDEN_TRACKED_REPO/.touchstone.toml" ] || fail "hidden tracked-file refusal mutated the repository"
 git -C "$HIDDEN_TRACKED_REPO" update-index --no-assume-unchanged AGENTS.md
 
-LOCKED_REPO="$ADOPTION/locked"
-new_adoption_repo "$LOCKED_REPO"
-git -C "$LOCKED_REPO" switch -qc feat/adopt
-LOCKED_GIT_DIR="$(git -C "$LOCKED_REPO" rev-parse --absolute-git-dir)"
-mkdir "$LOCKED_GIT_DIR/touchstone-adopt.lock"
-run_adoption "$ADOPTION/locked.out" adopt --project "$LOCKED_REPO" --task 'verify=true'
-[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply did not serialize against an active repository apply"
-assert_contains "$ADOPTION/locked.out.err" 'another Touchstone adoption apply is active'
-[ ! -e "$LOCKED_REPO/.touchstone.toml" ] || fail "locked apply mutated the repository"
-rmdir "$LOCKED_GIT_DIR/touchstone-adopt.lock"
+FOREIGN_LOCK_REPO="$ADOPTION/foreign-index-lock"
+new_adoption_repo "$FOREIGN_LOCK_REPO"
+git -C "$FOREIGN_LOCK_REPO" switch -qc feat/adopt
+FOREIGN_GIT_DIR="$(git -C "$FOREIGN_LOCK_REPO" rev-parse --absolute-git-dir)"
+printf 'foreign index lock\n' >"$FOREIGN_GIT_DIR/index.lock"
+run_adoption "$ADOPTION/foreign-index-lock.out" adopt --project "$FOREIGN_LOCK_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply accepted a foreign Git index lock"
+assert_contains "$ADOPTION/foreign-index-lock.out.err" 'Git index lock already exists and was preserved'
+[ "$(cat "$FOREIGN_GIT_DIR/index.lock")" = 'foreign index lock' ] \
+  || fail "apply changed a foreign Git index lock"
+[ ! -e "$FOREIGN_LOCK_REPO/.touchstone.toml" ] || fail "foreign-lock refusal mutated the repository"
+rm -f "$FOREIGN_GIT_DIR/index.lock"
+
+CMP_RACE_BIN="$ADOPTION/cmp-race-bin"
+mkdir -p "$CMP_RACE_BIN"
+cat >"$CMP_RACE_BIN/cmp" <<'EOF'
+#!/usr/bin/env bash
+if [ -e "$TOUCHSTONE_RACE_GIT_DIR/index.lock" ] && [ ! -e "$TOUCHSTONE_RACE_RECORD" ]; then
+  if git -C "$TOUCHSTONE_RACE_REPO" switch -q main >/dev/null 2>&1; then
+    printf 'switched\n' >"$TOUCHSTONE_RACE_RECORD"
+  else
+    printf 'blocked\n' >"$TOUCHSTONE_RACE_RECORD"
+  fi
+fi
+exec "$TOUCHSTONE_REAL_CMP" "$@"
+EOF
+chmod +x "$CMP_RACE_BIN/cmp"
+VERIFY_RACE_REPO="$ADOPTION/verification-branch-race"
+VERIFY_RACE_RECORD="$ADOPTION/verification-branch-race.result"
+new_adoption_repo "$VERIFY_RACE_REPO"
+git -C "$VERIFY_RACE_REPO" switch -qc feat/adopt
+VERIFY_RACE_GIT_DIR="$(git -C "$VERIFY_RACE_REPO" rev-parse --absolute-git-dir)"
+PATH="$CMP_RACE_BIN:$PATH" TOUCHSTONE_REAL_CMP="$(command -v cmp)" \
+TOUCHSTONE_RACE_GIT_DIR="$VERIFY_RACE_GIT_DIR" TOUCHSTONE_RACE_REPO="$VERIFY_RACE_REPO" \
+TOUCHSTONE_RACE_RECORD="$VERIFY_RACE_RECORD" \
+  run_adoption "$ADOPTION/verification-branch-race.out" adopt \
+  --project "$VERIFY_RACE_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "Git-native apply transaction failed during verification race"
+[ "$(cat "$VERIFY_RACE_RECORD")" = blocked ] || fail "checkout moved the branch during final verification"
+[ "$(git -C "$VERIFY_RACE_REPO" branch --show-current)" = feat/adopt ] \
+  || fail "verification race moved adoption onto the default branch"
+[ -f "$VERIFY_RACE_REPO/.touchstone.toml" ] || fail "verification-race apply omitted the project contract"
 
 FAIL_GIT_BIN="$ADOPTION/fail-git-bin"
 mkdir -p "$FAIL_GIT_BIN"

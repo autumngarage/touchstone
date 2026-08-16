@@ -19,12 +19,13 @@ DETECTED_PROFILE=""
 PLAN_STATUS=""
 KEEP_PLAN=false
 PLAN_ROOT=""
-APPLY_LOCK=""
 TAB="$(printf '\t')"
 CR="$(printf '\r')"
 LF="$(printf '\n_')"
 LF="${LF%_}"
 SCRIPT_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+# shellcheck disable=SC1091 # installed CLI modules resolve from SCRIPT_ROOT.
+source "$SCRIPT_ROOT/scripts/lib/touchstone-worktree-lock.sh"
 
 usage() {
   cat >&2 <<'EOF'
@@ -101,7 +102,11 @@ require_option_value() {
 }
 
 cleanup() {
-  [ -z "$APPLY_LOCK" ] || rmdir -- "$APPLY_LOCK" 2>/dev/null || true
+  if [ -n "$TOUCHSTONE_WORKTREE_LOCK_DIR" ] \
+    && ! touchstone_worktree_lock_release; then
+    printf 'ERROR: could not release adoption transaction: %s\n' \
+      "$TOUCHSTONE_WORKTREE_LOCK_ERROR" >&2
+  fi
   [ -z "$PLAN_ROOT" ] || [ "$KEEP_PLAN" = true ] || rm -rf -- "$PLAN_ROOT"
 }
 trap cleanup EXIT
@@ -451,15 +456,17 @@ case "$MODE" in
     fi
     [ "$branch" != "$default_branch" ] \
       || safety_refusal "adoption cannot apply on the default branch '$branch'"
-    apply_git_dir="$(git -C "$PROJECT_ROOT" rev-parse --absolute-git-dir)" \
-      || operational_failure "could not locate repository metadata"
-    APPLY_LOCK="$apply_git_dir/touchstone-adopt.lock"
-    if ! mkdir -- "$APPLY_LOCK" 2>/dev/null; then
-      [ -d "$APPLY_LOCK" ] \
-        || operational_failure "could not create the repository apply lock"
-      APPLY_LOCK=""
-      safety_refusal "another Touchstone adoption apply is active"
-    fi
+    lock_status=0
+    touchstone_worktree_lock_acquire "$PROJECT_ROOT" || lock_status=$?
+    case "$lock_status" in
+      0) ;;
+      "$TOUCHSTONE_WORKTREE_LOCK_REFUSED") safety_refusal "$TOUCHSTONE_WORKTREE_LOCK_ERROR" ;;
+      *) operational_failure "$TOUCHSTONE_WORKTREE_LOCK_ERROR" ;;
+    esac
+    locked_branch="$(git -C "$PROJECT_ROOT" branch --show-current)" \
+      || operational_failure "could not bind the feature branch after locking"
+    [ "$locked_branch" = "$branch" ] \
+      || safety_refusal "repository branch changed before the apply transaction was locked"
     if ! worktree_status="$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=all)"; then
       operational_failure "could not verify that the worktree is clean"
     fi
@@ -477,6 +484,8 @@ case "$MODE" in
     printf '==> complete accepted plan before writes\n' >&2
     printf '%s\n' "$(<"$DIFF_FILE")" >&2
     apply_plan
+    touchstone_worktree_lock_release \
+      || operational_failure "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
     emit_result applied
     ;;
 esac
