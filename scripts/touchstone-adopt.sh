@@ -208,6 +208,15 @@ require_head_file() {
 
 detect_profile() {
   local facts="" count=0
+  if [ -e "$PROJECT_ROOT/package.json" ] || [ -L "$PROJECT_ROOT/package.json" ] \
+    || [ -e "$PROJECT_ROOT/package-lock.json" ] || [ -L "$PROJECT_ROOT/package-lock.json" ]; then
+    if { [ ! -e "$PROJECT_ROOT/package.json" ] && [ ! -L "$PROJECT_ROOT/package.json" ]; } \
+      || { [ ! -e "$PROJECT_ROOT/package-lock.json" ] && [ ! -L "$PROJECT_ROOT/package-lock.json" ]; }; then
+      contract_refusal "npm adoption requires both package.json and package-lock.json"
+    fi
+    facts="${facts:+$facts,}npm"
+    count=$((count + 1))
+  fi
   if [ -e "$PROJECT_ROOT/pyproject.toml" ]; then
     facts="${facts:+$facts,}python"
     count=$((count + 1))
@@ -241,6 +250,34 @@ compile_legacy_plan() {
     fi
   done
   [ "$found" = true ]
+}
+
+compile_npm_plan() {
+  local script scripts found=false
+  require_head_file package.json
+  require_head_file package-lock.json
+  scripts="$(awk -f "$SCRIPT_ROOT/scripts/lib/touchstone-package-json.awk" \
+    "$PROJECT_ROOT/package.json" 2>/dev/null)" \
+    || contract_refusal "package.json is malformed or has no usable top-level scripts object"
+  [ -n "$scripts" ] \
+    || contract_refusal "package.json declares no non-empty validate, verify, lint, typecheck, test, or build script"
+  record_plan_target root . npm
+  record_plan_setup "$PROJECT_ROOT" 'npm ci --ignore-scripts'
+  for script in validate verify; do
+    if printf '%s\n' "$scripts" | grep -Fx "$script" >/dev/null; then
+      record_plan_task "$script" root "npm run $script"
+      PROFILE=npm
+      return 0
+    fi
+  done
+  for script in lint typecheck test build; do
+    if printf '%s\n' "$scripts" | grep -Fx "$script" >/dev/null; then
+      record_plan_task "$script" root "npm run $script"
+      found=true
+    fi
+  done
+  [ "$found" = true ] || contract_refusal "package.json has no supported validation script"
+  PROFILE=npm
 }
 
 compile_python_plan() {
@@ -297,12 +334,12 @@ compile_new_contract() {
     if compile_legacy_plan; then :; else
       detect_profile
       detected="$DETECTED_PROFILE"
-      case "$detected" in python) compile_python_plan ;; swift) compile_swift_plan ;; esac
+      case "$detected" in npm) compile_npm_plan ;; python) compile_python_plan ;; swift) compile_swift_plan ;; esac
     fi
   else
     detect_profile
     detected="$DETECTED_PROFILE"
-    case "$detected" in python) compile_python_plan ;; swift) compile_swift_plan ;; esac
+    case "$detected" in npm) compile_npm_plan ;; python) compile_python_plan ;; swift) compile_swift_plan ;; esac
   fi
   render_contract "$proposed"
   plan_file .touchstone.toml "$proposed" project-contract

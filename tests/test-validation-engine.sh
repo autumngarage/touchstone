@@ -1087,6 +1087,45 @@ mkdir -p "$PLAN_RECORDS/project/packages/web"
   }
 ) || fail "adoption plan-record invariant failed"
 
+echo "==> portable package.json parsing validates the full document and top-level scripts"
+PACKAGE_JSON_CASES="$TMP_DIR/package-json-cases"
+mkdir -p "$PACKAGE_JSON_CASES"
+cat >"$PACKAGE_JSON_CASES/valid.json" <<'EOF'
+{
+  "nested": {"scripts": {"validate": "must-not-count"}},
+  "scripts": {
+    "build": "npm run compile",
+    "test": "\t",
+    "\u0076erify": "npm run lint && npm test",
+    "lint": false,
+    "typecheck": " npm run types "
+  },
+  "number": -12.5e+2,
+  "array": [true, false, null, {"quote": "\\\""}]
+}
+EOF
+parsed_scripts="$(awk -f "$ROOT/scripts/lib/touchstone-package-json.awk" "$PACKAGE_JSON_CASES/valid.json")" \
+  || fail "portable package.json parser refused valid JSON"
+[ "$parsed_scripts" = "$(printf '%s\n' verify typecheck build)" ] \
+  || fail "portable package.json parser did not emit supported scripts in preference order"
+
+for malformed_case in nested-only duplicate-root duplicate-script non-object trailing bad-surrogate; do
+  case "$malformed_case" in
+    nested-only) printf '%s\n' '{"nested":{"scripts":{"test":"true"}}}' ;;
+    duplicate-root) printf '%s\n' '{"scripts":{"test":"true"},"scripts":{"build":"true"}}' ;;
+    duplicate-script) printf '%s\n' '{"scripts":{"test":"true","test":"false"}}' ;;
+    non-object) printf '%s\n' '{"scripts":["test"]}' ;;
+    trailing) printf '%s\n' '{"scripts":{"test":"true"}} false' ;;
+    bad-surrogate) printf '%s\n' '{"scripts":{"\uD800":"true"}}' ;;
+  esac >"$PACKAGE_JSON_CASES/$malformed_case.json"
+  set +e
+  awk -f "$ROOT/scripts/lib/touchstone-package-json.awk" \
+    "$PACKAGE_JSON_CASES/$malformed_case.json" >"$PACKAGE_JSON_CASES/$malformed_case.out" 2>&1
+  package_status=$?
+  set -e
+  [ "$package_status" -ne 0 ] || fail "portable package.json parser accepted $malformed_case input"
+done
+
 echo "==> adoption plans once without writes and compiles only portfolio evidence"
 ADOPTION="$TMP_DIR/adoption"
 mkdir -p "$ADOPTION"
@@ -1106,7 +1145,7 @@ run_adoption() {
   local output="$1"
   shift
   set +e
-  bash "$ROOT/scripts/touchstone-adopt.sh" "$@" >"$output" 2>"$output.err"
+  bash "$ROOT/bin/touchstone" "$@" >"$output" 2>"$output.err"
   ADOPTION_STATUS=$?
   set -e
 }
@@ -1220,6 +1259,28 @@ run_adoption "$ADOPTION/older-v1.json" adopt --dry-run --json --project "$OLDER_
   || fail "adoption planning rewrote an older valid v1 contract"
 assert_contains "$ADOPTION/older-v1.json" '"path":".touchstone-tracker.toml"'
 
+NPM="$ADOPTION/npm"
+new_adoption_repo "$NPM"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package.json" "$NPM/package.json"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package-lock.json" "$NPM/package-lock.json"
+git -C "$NPM" add package.json package-lock.json
+git -C "$NPM" commit -qm npm
+run_adoption "$ADOPTION/npm.json" adopt --dry-run --json --project "$NPM"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "captured npm profile did not compile without a project runtime"
+assert_contains "$ADOPTION/npm.json" '"profile":"npm"'
+assert_contains "$ADOPTION/npm.json" 'npm ci --ignore-scripts'
+assert_contains "$ADOPTION/npm.json" 'npm run verify'
+assert_not_contains "$ROOT/scripts/touchstone-adopt.sh" 'command -v node'
+
+LOCK_ONLY="$ADOPTION/lock-only"
+new_adoption_repo "$LOCK_ONLY"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package-lock.json" "$LOCK_ONLY/package-lock.json"
+git -C "$LOCK_ONLY" add package-lock.json
+git -C "$LOCK_ONLY" commit -qm lock-only
+run_adoption "$ADOPTION/lock-only.out" adopt --dry-run --project "$LOCK_ONLY"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "npm profile accepted a package lock without package.json"
+assert_contains "$ADOPTION/lock-only.out.err" 'requires both package.json and package-lock.json'
+
 PYTHON="$ADOPTION/python"
 new_adoption_repo "$PYTHON"
 cp "$ROOT/tests/fixtures/adoption-v1/repositories/arpeggio/pyproject.toml" "$PYTHON/pyproject.toml"
@@ -1253,6 +1314,22 @@ run_adoption "$ADOPTION/legacy.json" adopt --dry-run --json --project "$LEGACY"
 assert_contains "$ADOPTION/legacy.json" '"profile":"legacy"'
 assert_contains "$ADOPTION/legacy.json" 'uv run ruff check src/ tests/'
 assert_contains "$ADOPTION/legacy.json" 'uv run pytest'
+
+AMBIGUOUS="$ADOPTION/ambiguous"
+new_adoption_repo "$AMBIGUOUS"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package.json" "$AMBIGUOUS/package.json"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package-lock.json" "$AMBIGUOUS/package-lock.json"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/arpeggio/pyproject.toml" "$AMBIGUOUS/pyproject.toml"
+git -C "$AMBIGUOUS" add package.json package-lock.json pyproject.toml
+git -C "$AMBIGUOUS" commit -qm ambiguous
+run_adoption "$ADOPTION/ambiguous.out" adopt --dry-run --project "$AMBIGUOUS"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "competing profile evidence did not fail closed"
+assert_contains "$ADOPTION/ambiguous.out.err" 'competing project evidence found: npm,python'
+run_adoption "$ADOPTION/ambiguous.json" adopt --dry-run --json --project "$AMBIGUOUS"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "JSON competing profile evidence did not fail closed"
+assert_contains "$ADOPTION/ambiguous.json" '"schema":"touchstone.adoption/v1"'
+assert_contains "$ADOPTION/ambiguous.json" '"status":"contract-refusal"'
+assert_contains "$ADOPTION/ambiguous.json" 'competing project evidence found: npm,python'
 
 UNSUPPORTED="$ADOPTION/unsupported"
 new_adoption_repo "$UNSUPPORTED"

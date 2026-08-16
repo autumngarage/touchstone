@@ -52,8 +52,9 @@ touchstone/
 The broad legacy CLI, bootstrap, and auto-update machinery was deleted with the
 propagation channel: cutting propagation froze downstream projects safely on
 their existing committed copies. The repository now contains the narrow
-versioned CLI entrypoint. Homebrew distribution and plan-first adoption are
-separate replacement capabilities; neither may restore background propagation.
+versioned CLI entrypoint, including read-only plan-first adoption and explicit
+upgrade planning. Homebrew distribution remains a separate replacement
+capability; neither may restore background propagation.
 The organization-required workflow remains pinned to an immutable Touchstone
 revision outside the consumer PR and executes the same project contract.
 
