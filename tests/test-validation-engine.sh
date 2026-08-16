@@ -1981,9 +1981,18 @@ EOF
 
     run_cli "$TMP/$id-apply" "${args[@]}"
     [ "$RUN_STATUS" -eq 0 ] || fail "$id apply failed"
+    expected_adoption_status=' M AGENTS.md
+ M CLAUDE.md
+ M GEMINI.md
+?? .touchstone-tracker.toml
+?? .touchstone.toml
+?? .touchstone/'
+    [ "$(git -C "$repo" status --porcelain=v1 | LC_ALL=C sort)" = "$expected_adoption_status" ] \
+      || fail "$id adoption changed files outside the declared consumer boundary"
     git -C "$repo" add .touchstone.toml .touchstone-tracker.toml .touchstone \
       AGENTS.md CLAUDE.md GEMINI.md
     git -C "$repo" commit -qm "adopt Touchstone"
+    assert_clean "$repo" "$id committed adoption"
     run_cli "$TMP/$id-repeat" adopt --project "$repo" --check --json
     if [ "$RUN_STATUS" -ne 0 ]; then
       cat "$TMP/$id-repeat" "$TMP/$id-repeat.err" >&2
@@ -2178,14 +2187,18 @@ EOF
   mkdir -p "$safety_repo"
   cp -R "$FIXTURES/node/." "$safety_repo/"
   init_repo "$safety_repo"
+  default_status_before="$(git -C "$safety_repo" status --porcelain=v1)"
   run_cli "$TMP/default-apply" adopt --project "$safety_repo"
   [ "$RUN_STATUS" -eq 5 ] || fail "default-branch apply did not refuse"
-  [ ! -e "$safety_repo/.touchstone.toml" ] || fail "default-branch refusal partially wrote"
+  [ "$(git -C "$safety_repo" status --porcelain=v1)" = "$default_status_before" ] \
+    || fail "default-branch refusal partially wrote"
   git -C "$safety_repo" switch -q -c feat/dirty
   printf '%s\n' dirty >"$safety_repo/README.md"
+  dirty_status_before="$(git -C "$safety_repo" status --porcelain=v1)"
   run_cli "$TMP/dirty-apply" adopt --project "$safety_repo"
   [ "$RUN_STATUS" -eq 5 ] || fail "dirty apply did not refuse"
-  [ ! -e "$safety_repo/.touchstone.toml" ] || fail "dirty refusal partially wrote"
+  [ "$(git -C "$safety_repo" status --porcelain=v1)" = "$dirty_status_before" ] \
+    || fail "dirty refusal partially wrote"
 
   echo "==> fresh consumers reuse the versioned steering-resolution fixtures"
   structural="$(bash "$ROOT/scripts/evaluate-steering.sh" structural --json)"
