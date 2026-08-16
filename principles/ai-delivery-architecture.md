@@ -79,7 +79,7 @@ Human user
 - PR creation is the review coordination surface. It should happen early enough for CI and any PR-visible agentic reviewers to work against visible PR state.
 - Feature-branch push is not the expensive gate. It should preserve cheap local guardrails without running full test suites or LLM review by default.
 - Merge is allowed only after PR-visible review and check approval: required checks green, a review bound to the current head with every thread answered, and no active `CHANGES_REQUESTED`.
-- The head binding is `gh pr merge --squash --match-head-commit <reviewed-sha>`. It is the whole mechanism — GitHub refuses the merge if the head moved, which is the race that would otherwise let an unreviewed commit in behind a passing review.
+- The merge path binds the exact reviewed head. Use a project-documented executable merge boundary when present; otherwise use `gh pr merge --squash --match-head-commit <reviewed-sha>`. Both rely on GitHub refusing a moved head, which prevents an unreviewed commit from slipping behind a passing review.
 - **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.**
   `required_approving_review_count` therefore does not express this review
   contract. Where the repository's effective policy requires `review-binding`,

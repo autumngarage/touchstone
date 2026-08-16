@@ -12,6 +12,7 @@ PROJECT_ARG=""
 TITLE=""
 BODY_FILE=""
 BASE_REF=""
+EXPECTED_HEAD=""
 OPERATION="${1:-}"
 PR_NUMBER=""
 CAPTURE_STDERR_TEMP=""
@@ -42,6 +43,7 @@ usage() {
 Usage:
   touchstone pr open --title TITLE --body-file FILE [--base BRANCH] [--project DIR] [--json]
   touchstone pr status PR [--project DIR] [--json]
+  touchstone pr merge PR --head SHA [--project DIR] [--json]
 EOF
   exit 2
 }
@@ -185,7 +187,7 @@ require_option_value() {
 }
 
 case "$OPERATION" in
-  status)
+  status | merge)
     [ "$#" -ge 2 ] || usage
     PR_NUMBER="$2"
     case "$PR_NUMBER" in "" | *[!0-9]*) usage ;; esac
@@ -221,6 +223,11 @@ while [ "$#" -gt 0 ]; do
       BASE_REF="$2"
       shift 2
       ;;
+    --head)
+      require_option_value "$@"
+      EXPECTED_HEAD="$2"
+      shift 2
+      ;;
     -h | --help) usage ;;
     *) fail_input "unknown argument '$1'" "Run 'touchstone pr $OPERATION --help' for the supported interface." ;;
   esac
@@ -228,11 +235,16 @@ done
 
 case "$OPERATION" in
   open)
-    :
+    [ -z "$EXPECTED_HEAD" ] \
+      || fail_input "open received an option for another operation" "Use only --title, --body-file, and --base."
     ;;
   status)
-    [ -z "$TITLE$BODY_FILE$BASE_REF" ] \
+    [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_HEAD" ] \
       || fail_input "$OPERATION does not accept mutation options" "Pass only PR, --project, and --json."
+    ;;
+  merge)
+    [ -z "$TITLE$BODY_FILE$BASE_REF" ] \
+      || fail_input "merge received an option for another operation" "Use only --head."
     ;;
 esac
 
@@ -449,7 +461,53 @@ status_pr() {
   fi
 }
 
+merge_pr() {
+  local number state url head base base_sha merge_state draft merge_output merge_status=0
+  local merge_diagnostic final_state final_row final_head auto_merge queue_state
+  [ -n "$EXPECTED_HEAD" ] \
+    || fail_input "merge requires --head SHA" "Pass the exact reviewed head from GitHub."
+  read_pr_row
+  IFS="$(printf '\t')" read -r number state url head base base_sha merge_state draft <<<"$PR_ROW"
+  [ "$EXPECTED_HEAD" = "$head" ] \
+    || fail_input "expected head $EXPECTED_HEAD but PR #$PR_NUMBER is at $head" "Re-review the live head."
+  if [ "$state" = MERGED ]; then
+    final_state=already-merged
+  else
+    [ "$state" = OPEN ] || fail_input "PR #$PR_NUMBER is $state" "Only an open or merged PR is supported."
+    merge_output="$(cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash \
+      --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
+    merge_diagnostic="$(clean_diagnostic "$merge_output")"
+    read_with_retry gh api graphql --hostname "$REPO_HOST" \
+      -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F pr="$PR_NUMBER" \
+      -f query='query($owner: String!, $name: String!, $pr: Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$pr) { state url headRefOid autoMergeRequest { enabledAt } mergeQueueEntry { state } } } }' \
+      --jq '[.data.repository.pullRequest.state,.data.repository.pullRequest.url,.data.repository.pullRequest.headRefOid,(.data.repository.pullRequest.autoMergeRequest != null),(.data.repository.pullRequest.mergeQueueEntry.state // "")] | @tsv' \
+      || fail_operation "merge returned $merge_status (${merge_diagnostic:-no diagnostic}) and final state could not be read: $READ_OUTPUT" "Inspect GitHub."
+    final_row="$READ_OUTPUT"
+    IFS="$(printf '\t')" read -r state _ final_head auto_merge queue_state <<<"$final_row"
+    [ "$final_head" = "$EXPECTED_HEAD" ] \
+      || fail_operation "PR #$PR_NUMBER moved to $final_head during merge reconciliation" "Inspect and review the live head."
+    if [ "$state" = MERGED ]; then
+      final_state=merged
+    elif [ "$state" = OPEN ] && [ -n "$queue_state" ]; then
+      final_state=queued
+    elif [ "$state" = OPEN ] && [ "$auto_merge" = true ]; then
+      final_state=auto-merge-enabled
+    else
+      fail_operation "GitHub did not accept merge for PR #$PR_NUMBER: $merge_diagnostic" "The repository ruleset remains authoritative."
+    fi
+  fi
+  if [ "$JSON_MODE" = true ]; then
+    printf '{"schema":"%s","operation":"merge","status":"%s","pullRequest":%s,"head":' \
+      "$OUTPUT_SCHEMA" "$final_state" "$PR_NUMBER"
+    json_string "$EXPECTED_HEAD"
+    printf '}\n'
+  else
+    printf 'PR #%s: %s at %s\n' "$PR_NUMBER" "$final_state" "$EXPECTED_HEAD"
+  fi
+}
+
 case "$OPERATION" in
   open) open_pr ;;
   status) status_pr ;;
+  merge) merge_pr ;;
 esac

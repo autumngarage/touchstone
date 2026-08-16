@@ -185,7 +185,7 @@ done
 
 echo "==> canonical git workflow describes the PR-visible review loop"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Agentic PR Review Loop"
-# The canonical doc must carry the whole mechanism in raw commands: how to open
+# The canonical doc must carry the portable recovery mechanism: how to open
 # the PR, how to bind the review to the head being merged, and how to resolve a
 # thread. These are the four gaps that made the prose unusable without a wrapper.
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "gh pr create"
@@ -381,6 +381,8 @@ echo "==> canonical AI delivery architecture describes the PR review loop"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Agentic PR Review Loop"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "PR creation is not completion"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Merge is allowed only after PR-visible review and check approval"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "project-documented executable merge boundary"
+assert_not_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "It is the whole mechanism"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Parallel file-writing agents use worktrees by default"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Touchstone does not invoke a local semantic reviewer or model router"
 

@@ -7,7 +7,9 @@ description: Use when committing, branching, opening a PR, watching PR reviews/c
 
 Every change goes through a feature branch + PR + PR-visible review loop + squash-merge. Local hooks stop common mistakes. Inspect the repository's effective rules before claiming server enforcement; do not infer ruleset adoption from this skill.
 
-**There is no wrapper.** Every command below is raw `git` or `gh`. Run them and verify what GitHub actually says.
+The raw `git` and `gh` commands below remain the portable recovery surface.
+When repository-specific guidance names an executable boundary for one
+operation, use it, then verify what GitHub actually says.
 
 ## When to invoke
 
@@ -40,7 +42,7 @@ Your unstaged changes carry over. The trigger is *edit time*, not commit time �
 4. `git push -u origin HEAD`, then `gh pr create` — put the configured close (`Closes #123` or `Fixes AUT-123`) in the PR body, not only a commit
 5. Request review: `gh pr comment <n> --body "@codex review"` — against the head that actually landed on the remote
 6. Answer findings with `bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file>`; prove none remain with `--all-resolved-check`
-7. `gh pr merge <n> --squash --match-head-commit <reviewed-sha>`, then confirm `state == MERGED`
+7. Use the repository's declared merge boundary with `<reviewed-sha>`, or the raw `gh pr merge <n> --squash --match-head-commit <reviewed-sha>` fallback; then confirm `state == MERGED`
 8. Clean up locally (`git branch -d <feature>`, or `-D` after confirming the content landed)
 
 ## Quick rules
