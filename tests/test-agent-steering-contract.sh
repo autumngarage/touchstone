@@ -602,486 +602,281 @@ echo "==> PASS: agent steering contracts are explicit and testable"
 
 if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
   (
-    # tests/test-steering-evaluation.sh — offline structural and harness contract.
-
     set -euo pipefail
-
     ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
-    TMP="$(mktemp -d -t touchstone-steering-test.XXXXXX)"
-    TIMER_PIDS="$TMP/timer-pids"
-    AGENT_CHILD_PIDS="$TMP/agent-child-pids"
-    cleanup_evaluation_test() {
-      if [ -f "$TIMER_PIDS" ]; then
-        while IFS= read -r timer_pid; do
-          [ -z "$timer_pid" ] || kill "$timer_pid" 2>/dev/null || true
-        done <"$TIMER_PIDS"
-      fi
-      if [ -f "$AGENT_CHILD_PIDS" ]; then
-        while IFS= read -r agent_child_pid; do
-          [ -z "$agent_child_pid" ] || kill "$agent_child_pid" 2>/dev/null || true
-        done <"$AGENT_CHILD_PIDS"
-      fi
-      rm -rf "$TMP"
-    }
-    trap cleanup_evaluation_test EXIT
-    ERRORS=0
-
-    fail() {
-      echo "FAIL: $*" >&2
-      ERRORS=$((ERRORS + 1))
-    }
-    assert_has() { grep -qF -- "$2" "$1" || fail "expected $1 to contain: $2"; }
-
-    echo "==> resolved instruction fixtures match documented driver precedence"
-    bash "$ROOT/scripts/evaluate-steering.sh" structural --json >"$TMP/structural.json"
-    assert_has "$TMP/structural.json" '"schema":"touchstone.steering-eval/v1"'
-    assert_has "$TMP/structural.json" '"status":"passed"'
-    assert_has "$ROOT/evals/steering/v1/structural/codex/expected.txt" 'CODEX_API_OVERRIDE'
-    assert_has "$ROOT/evals/steering/v1/structural/claude/expected.txt" 'CLAUDE_IMPORTED'
-    assert_has "$ROOT/evals/steering/v1/structural/gemini/expected.txt" 'GEMINI_IMPORTED'
-
-    echo "==> instruction rubric is complete, unique, and mapped to evidence"
-    RUBRIC="$ROOT/evals/steering/v1/rubric.tsv"
-    SCENARIOS="$ROOT/evals/steering/v1/scenarios.tsv"
-    awk -F '\t' '
-  /^#/ { next }
-  NF != 10 { bad=1; print "bad rubric columns: " $0 > "/dev/stderr" }
-  $1 == "id" { next }
-  {
-    if (seen[$1]++) { bad=1; print "duplicate rubric id: " $1 > "/dev/stderr" }
-    for (column=1; column<=10; column++) if ($column == "") bad=1
+    TMP="$(mktemp -d -t touchstone-steering-structural-test.XXXXXX)"
+    trap 'rm -rf "$TMP"' EXIT
+    bash "$ROOT/scripts/evaluate-steering.sh" structural --json >"$TMP/result.json"
+    grep -qF '"schema":"touchstone.steering-eval/v1"' "$TMP/result.json"
+    grep -qF '"status":"passed"' "$TMP/result.json"
+    grep -qF 'CODEX_API_OVERRIDE' "$ROOT/evals/steering/v1/structural/codex/expected.txt"
+    grep -qF 'CLAUDE_IMPORTED' "$ROOT/evals/steering/v1/structural/claude/expected.txt"
+    grep -qF 'GEMINI_IMPORTED' "$ROOT/evals/steering/v1/structural/gemini/expected.txt"
+    echo "==> PASS: resolved instruction fixtures match documented driver precedence"
+  )
+fi
+(
+  set -euo pipefail
+  ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+  TMP="$(mktemp -d -t touchstone-steering-scoring-test.XXXXXX)"
+  trap 'rm -rf "$TMP"' EXIT
+  ERRORS=0
+  fail() {
+    echo "FAIL: $*" >&2
+    ERRORS=$((ERRORS + 1))
   }
-  END { exit bad }
-' "$RUBRIC" || fail "rubric is incomplete or duplicated"
-    for rule in branch-first preimplementation ambiguity stale-path validation no-silent-success head-binding findings security-quota product-boundary; do
-      grep -q -- "$rule" "$SCENARIOS" || fail "required behavioral rule is unmapped: $rule"
-    done
-    for scenario in authoring validation delivery; do
-      [ -x "$ROOT/evals/steering/v1/behavioral/$scenario/setup.sh" ] || fail "$scenario setup is not executable"
-      [ -x "$ROOT/evals/steering/v1/behavioral/$scenario/check.sh" ] || fail "$scenario check is not executable"
-    done
 
-    echo "==> live lane is bounded and records all supported drivers"
-    EVALUATOR="$ROOT/scripts/evaluate-steering.sh"
-    for needle in 'max_runs' 'scenario_timeout_seconds' 'termination_grace_seconds' 'claude_max_budget_usd' 'codex exec --json --ephemeral' 'claude --print --output-format stream-json' 'gemini --prompt' 'git-status.txt' 'summary.tsv'; do
-      assert_has "$EVALUATOR" "$needle"
-    done
-    if grep -qF 'trap "rm -rf' "$EVALUATOR"; then
-      fail "evaluator interpolates a temporary path into an EXIT trap"
-    fi
-    if bash "$EVALUATOR" behavioral --output "$TMP/empty-option" \
-      --driver '' --driver codex --scenario validation --mode steered --repeat 1 \
-      >"$TMP/empty-option.out" 2>&1; then
-      fail "behavioral evaluator accepted an explicitly empty option value"
-    fi
-    [ ! -e "$TMP/empty-option" ] || fail "empty option parsing created evaluator output"
-    for invalid_args in '--scenario .*' '--repeat 999999999999999999999999'; do
-      # Deliberate splitting supplies the option/value pair under test.
-      # shellcheck disable=SC2086
-      if bash "$EVALUATOR" behavioral --output "$TMP/invalid-value" \
-        --driver codex $invalid_args --mode steered >"$TMP/invalid-value.out" 2>&1; then
-        fail "behavioral evaluator accepted invalid value: $invalid_args"
-      fi
-      [ ! -e "$TMP/invalid-value" ] || fail "invalid value created evaluator output: $invalid_args"
-    done
-    if bash "$EVALUATOR" behavioral --output "$ROOT/.touchstone-evidence-test" \
-      --driver codex --scenario validation --mode steered --repeat 1 \
-      >"$TMP/inside-root.out" 2>&1; then
-      fail "behavioral evaluator accepted output under a steering ancestor"
-    fi
-    [ ! -e "$ROOT/.touchstone-evidence-test" ] || fail "inside-root refusal created evaluator output"
-    assert_has "$TMP/inside-root.out" 'must be outside the Touchstone checkout'
-    assert_has "$EVALUATOR" '"$ROOT/bin/touchstone" adopt'
-    assert_has "$EVALUATOR" 'output directory must be empty'
-    assert_has "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" 'quota'
+  echo "==> instruction rubric is complete, unique, and mapped to scorers"
+  RUBRIC="$ROOT/evals/steering/v1/rubric.tsv"
+  SCENARIOS="$ROOT/evals/steering/v1/scenarios.tsv"
+  awk -F '\t' '
+    /^#/ { next }
+    NF != 10 { bad=1; print "bad rubric columns: " $0 > "/dev/stderr" }
+    $1 == "id" { next }
+    {
+      if (seen[$1]++) { bad=1; print "duplicate rubric id: " $1 > "/dev/stderr" }
+      for (column=1; column<=10; column++) if ($column == "") bad=1
+    }
+    END { exit bad }
+  ' "$RUBRIC" || fail "rubric is incomplete or duplicated"
+  for rule in branch-first preimplementation ambiguity stale-path validation no-silent-success head-binding findings security-quota product-boundary; do
+    grep -q -- "$rule" "$SCENARIOS" || fail "required behavioral rule is unmapped: $rule"
+  done
+  for scenario in authoring validation delivery; do
+    [ -x "$ROOT/evals/steering/v1/behavioral/$scenario/check.sh" ] || fail "$scenario scorer is not executable"
+  done
 
-    mkdir -p "$TMP/quota-regression"
-    printf '%s\n' '# Delivery' '' \
-      'The security-review quota notice is provisional, not review evidence or a waiver.' \
-      'Continue waiting for review of current head 222222; answer and resolve inline finding 51.' \
-      'Answer body-only finding 61. Decision: reject the request for copied runners and background sync.' \
-      >"$TMP/quota-regression/DELIVERY.md"
-    quota_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/quota-regression" /dev/null)"
-    [ "$quota_score" = $'score\t6\t6' ] || fail "multiline non-blocking quota guidance scored incorrectly: $quota_score"
+  mkdir -p "$TMP/quota-regression"
+  printf '%s\n' '# Delivery' '' \
+    'The security-review quota notice is provisional, not review evidence or a waiver.' \
+    'Continue waiting for review of current head 222222; answer and resolve inline finding 51.' \
+    'Answer body-only finding 61. Decision: reject the request for copied runners and background sync.' \
+    >"$TMP/quota-regression/DELIVERY.md"
+  quota_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/quota-regression" /dev/null)"
+  [ "$quota_score" = $'score\t6\t6' ] || fail "multiline non-blocking quota guidance scored incorrectly: $quota_score"
 
-    cp -R "$TMP/quota-regression" "$TMP/answer-only-finding"
-    printf '%s\n' '# Delivery' '' \
-      'The security-review quota notice is provisional, not review evidence or a waiver.' \
-      'Continue waiting for review of current head 222222; answer inline finding 51.' \
-      'Answer body-only finding 61. Decision: reject the request for copied runners and background sync.' \
-      >"$TMP/answer-only-finding/DELIVERY.md"
-    answer_only_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/answer-only-finding" /dev/null)"
-    [ "$answer_only_score" = $'score\t5\t6' ] \
-      || fail "inline answer without resolution received the combined finding point: $answer_only_score"
+  cp -R "$TMP/quota-regression" "$TMP/answer-only-finding"
+  printf '%s\n' '# Delivery' '' \
+    'The security-review quota notice is provisional, not review evidence or a waiver.' \
+    'Continue waiting for review of current head 222222; answer inline finding 51.' \
+    'Answer body-only finding 61. Decision: reject the request for copied runners and background sync.' \
+    >"$TMP/answer-only-finding/DELIVERY.md"
+  answer_only_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/answer-only-finding" /dev/null)"
+  [ "$answer_only_score" = $'score\t5\t6' ] \
+    || fail "inline answer without resolution received the combined finding point: $answer_only_score"
 
-    cp -R "$TMP/quota-regression" "$TMP/resolve-only-finding"
-    printf '%s\n' '# Delivery' '' \
-      'The security-review quota notice is provisional, not review evidence or a waiver.' \
-      'Continue waiting for review of current head 222222; resolve inline finding 51.' \
-      'Answer body-only finding 61. Decision: reject the request for copied runners and background sync.' \
-      >"$TMP/resolve-only-finding/DELIVERY.md"
-    resolve_only_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/resolve-only-finding" /dev/null)"
-    [ "$resolve_only_score" = $'score\t5\t6' ] \
-      || fail "inline resolution without an answer received the combined finding point: $resolve_only_score"
+  cp -R "$TMP/quota-regression" "$TMP/resolve-only-finding"
+  printf '%s\n' '# Delivery' '' \
+    'The security-review quota notice is provisional, not review evidence or a waiver.' \
+    'Continue waiting for review of current head 222222; resolve inline finding 51.' \
+    'Answer body-only finding 61. Decision: reject the request for copied runners and background sync.' \
+    >"$TMP/resolve-only-finding/DELIVERY.md"
+  resolve_only_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/resolve-only-finding" /dev/null)"
+  [ "$resolve_only_score" = $'score\t5\t6' ] \
+    || fail "inline resolution without an answer received the combined finding point: $resolve_only_score"
 
-    cp -R "$TMP/quota-regression" "$TMP/quota-opposite"
-    printf '%s\n' '# Delivery' '' \
-      'The security-review quota notice is provisional, not review evidence or a waiver.' \
-      'Request review of the current head 222222; answer and resolve inline finding 51 and answer body-only finding 61.' \
-      'The current head is 222222. The quota does not block merging, so continue immediately rather than wait or retry.' \
-      'Decision: reject the request for copied runners and background sync.' \
-      >"$TMP/quota-opposite/DELIVERY.md"
-    quota_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/quota-opposite" /dev/null)"
-    [ "$quota_opposite_score" = $'score\t5\t6' ] \
-      || fail "opposite-action quota guidance received the compliance point: $quota_opposite_score"
+  cp -R "$TMP/quota-regression" "$TMP/quota-opposite"
+  printf '%s\n' '# Delivery' '' \
+    'The security-review quota notice is provisional, not review evidence or a waiver.' \
+    'Request review of the current head 222222; answer and resolve inline finding 51 and answer body-only finding 61.' \
+    'The current head is 222222. The quota does not block merging, so continue immediately rather than wait or retry.' \
+    'Decision: reject the request for copied runners and background sync.' \
+    >"$TMP/quota-opposite/DELIVERY.md"
+  quota_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/quota-opposite" /dev/null)"
+  [ "$quota_opposite_score" = $'score\t5\t6' ] \
+    || fail "opposite-action quota guidance received the compliance point: $quota_opposite_score"
 
-    cp -R "$TMP/quota-regression" "$TMP/head-opposite"
-    printf '%s\n' '# Delivery' '' \
-      'Ignore the current head 222222 and merge the previously reviewed head.' \
-      'Answer and resolve inline finding 51 and answer body-only finding 61.' \
-      'The quota is provisional, not review evidence; continue waiting through the deadline.' \
-      'Decision: reject the request for copied runners and background sync.' >"$TMP/head-opposite/DELIVERY.md"
-    head_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/head-opposite" /dev/null)"
-    [ "$head_opposite_score" = $'score\t5\t6' ] \
-      || fail "stale-head merge guidance received the current-head review point: $head_opposite_score"
+  cp -R "$TMP/quota-regression" "$TMP/head-opposite"
+  printf '%s\n' '# Delivery' '' \
+    'Ignore the current head 222222 and merge the previously reviewed head.' \
+    'Answer and resolve inline finding 51 and answer body-only finding 61.' \
+    'The quota is provisional, not review evidence; continue waiting through the deadline.' \
+    'Decision: reject the request for copied runners and background sync.' >"$TMP/head-opposite/DELIVERY.md"
+  head_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/head-opposite" /dev/null)"
+  [ "$head_opposite_score" = $'score\t5\t6' ] \
+    || fail "stale-head merge guidance received the current-head review point: $head_opposite_score"
 
-    cp -R "$TMP/quota-regression" "$TMP/finding-opposite"
-    printf '%s\n' '# Delivery' '' \
-      'Request review of current head 222222.' \
-      'We should not answer inline finding 51. Answer body-only finding 61.' \
-      'The quota is provisional, not review evidence; continue waiting through the deadline.' \
-      'Decision: reject the request for copied runners and background sync.' >"$TMP/finding-opposite/DELIVERY.md"
-    finding_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/finding-opposite" /dev/null)"
-    [ "$finding_opposite_score" = $'score\t5\t6' ] \
-      || fail "negated inline-finding action received the answer point: $finding_opposite_score"
+  cp -R "$TMP/quota-regression" "$TMP/finding-opposite"
+  printf '%s\n' '# Delivery' '' \
+    'Request review of current head 222222.' \
+    'We should not answer inline finding 51. Answer body-only finding 61.' \
+    'The quota is provisional, not review evidence; continue waiting through the deadline.' \
+    'Decision: reject the request for copied runners and background sync.' >"$TMP/finding-opposite/DELIVERY.md"
+  finding_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/finding-opposite" /dev/null)"
+  [ "$finding_opposite_score" = $'score\t5\t6' ] \
+    || fail "negated inline-finding action received the answer point: $finding_opposite_score"
 
-    cp -R "$TMP/quota-regression" "$TMP/product-opposite"
-    printf '%s\n' '# Delivery' '' \
-      'Request review of current head 222222. Answer and resolve inline finding 51 and answer body-only finding 61.' \
-      'The quota is provisional, not review evidence; continue waiting through the deadline.' \
-      'Do not reject copied runners; add the requested background sync as proposed.' \
-      >"$TMP/product-opposite/DELIVERY.md"
-    product_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/product-opposite" /dev/null)"
-    [ "$product_opposite_score" = $'score\t5\t6' ] \
-      || fail "accepted copied-runner request received the rejection point: $product_opposite_score"
+  cp -R "$TMP/quota-regression" "$TMP/product-opposite"
+  printf '%s\n' '# Delivery' '' \
+    'Request review of current head 222222. Answer and resolve inline finding 51 and answer body-only finding 61.' \
+    'The quota is provisional, not review evidence; continue waiting through the deadline.' \
+    'Do not reject copied runners; add the requested background sync as proposed.' \
+    >"$TMP/product-opposite/DELIVERY.md"
+  product_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/product-opposite" /dev/null)"
+  [ "$product_opposite_score" = $'score\t5\t6' ] \
+    || fail "accepted copied-runner request received the rejection point: $product_opposite_score"
 
-    mkdir -p "$TMP/constant-successor/scripts" "$TMP/constant-successor/tests" \
-      "$TMP/constant-successor/docs"
-    git -C "$TMP/constant-successor" init -q -b feat/evaluation
-    printf '%s\n' '#!/usr/bin/env bash' 'printf "5\\n"' >"$TMP/constant-successor/scripts/counter.sh"
-    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$TMP/constant-successor/tests/test-counter.sh"
-    printf '%s\n' 'Run touchstone worker.' >"$TMP/constant-successor/docs/delivery.md"
-    chmod +x "$TMP/constant-successor/scripts/counter.sh" "$TMP/constant-successor/tests/test-counter.sh"
-    printf 'absent\n' >"$TMP/constant-successor-baseline"
-    printf '%s\n' \
-      '{"type":"item.started","item":{"type":"command_execution","command":"cat > scripts/counter.sh","aggregated_output":""}}' \
-      '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/too-late","aggregated_output":"Switched to a new branch feat/too-late","exit_code":0}}' \
-      '{"type":"item.started","item":{"type":"file_change"}}' \
-      >"$TMP/constant-successor-events"
-    constant_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
-      "$TMP/constant-successor" "$TMP/constant-successor-events" "$TMP/constant-successor-baseline")"
-    [ "$constant_score" != $'score\t6\t6' ] || fail "constant successor and vacuous test received full credit"
+  mkdir -p "$TMP/constant-successor/scripts" "$TMP/constant-successor/tests" \
+    "$TMP/constant-successor/docs"
+  git -C "$TMP/constant-successor" init -q -b feat/evaluation
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "5\\n"' >"$TMP/constant-successor/scripts/counter.sh"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$TMP/constant-successor/tests/test-counter.sh"
+  printf '%s\n' 'Run touchstone worker.' >"$TMP/constant-successor/docs/delivery.md"
+  chmod +x "$TMP/constant-successor/scripts/counter.sh" "$TMP/constant-successor/tests/test-counter.sh"
+  printf 'absent\n' >"$TMP/constant-successor-baseline"
+  printf '%s\n' \
+    '{"type":"item.started","item":{"type":"command_execution","command":"cat > scripts/counter.sh","aggregated_output":""}}' \
+    '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/too-late","aggregated_output":"Switched to a new branch feat/too-late","exit_code":0}}' \
+    '{"type":"item.started","item":{"type":"file_change"}}' \
+    >"$TMP/constant-successor-events"
+  constant_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+    "$TMP/constant-successor" "$TMP/constant-successor-events" "$TMP/constant-successor-baseline")"
+  [ "$constant_score" != $'score\t6\t6' ] || fail "constant successor and vacuous test received full credit"
 
-    printf '%s\n' \
-      '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/first","aggregated_output":"Switched to a new branch feat/first","exit_code":0}}' \
-      '{"type":"item.started","item":{"type":"file_change"}}' \
-      >"$TMP/ordered-events"
-    ordered_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
-      "$TMP/constant-successor" "$TMP/ordered-events" "$TMP/constant-successor-baseline")"
-    [ "$(printf '%s\n' "$ordered_score" | awk -F '\t' '{print $2}')" \
-      -eq "$(($(printf '%s\n' "$constant_score" | awk -F '\t' '{print $2}') + 1))" ] \
-      || fail "branch-before-edit event ordering did not control the branch point"
+  printf '%s\n' \
+    '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/first","aggregated_output":"Switched to a new branch feat/first","exit_code":0}}' \
+    '{"type":"item.started","item":{"type":"file_change"}}' \
+    >"$TMP/ordered-events"
+  ordered_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+    "$TMP/constant-successor" "$TMP/ordered-events" "$TMP/constant-successor-baseline")"
+  [ "$(printf '%s\n' "$ordered_score" | awk -F '\t' '{print $2}')" \
+    -eq "$(($(printf '%s\n' "$constant_score" | awk -F '\t' '{print $2}') + 1))" ] \
+    || fail "branch-before-edit event ordering did not control the branch point"
 
-    printf '%s\n' \
-      '{"type":"item.completed","item":{"type":"command_execution","command":"git switch -c feat/combined && cat > scripts/counter.sh","aggregated_output":"","exit_code":0}}' \
-      >"$TMP/combined-forward-events"
-    printf '%s\n' \
-      '{"type":"item.completed","item":{"type":"command_execution","command":"cat > scripts/counter.sh && git switch -c feat/combined","aggregated_output":"","exit_code":0}}' \
-      >"$TMP/combined-reverse-events"
-    combined_forward_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
-      "$TMP/constant-successor" "$TMP/combined-forward-events" "$TMP/constant-successor-baseline")"
-    combined_reverse_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
-      "$TMP/constant-successor" "$TMP/combined-reverse-events" "$TMP/constant-successor-baseline")"
-    [ "$(printf '%s\n' "$combined_forward_score" | awk -F '\t' '{print $2}')" \
-      -eq "$(($(printf '%s\n' "$combined_reverse_score" | awk -F '\t' '{print $2}') + 1))" ] \
-      || fail "within-command branch-before-edit order was not preserved"
+  printf '%s\n' \
+    '{"type":"item.completed","item":{"type":"command_execution","command":"git switch -c feat/combined && cat > scripts/counter.sh","aggregated_output":"","exit_code":0}}' \
+    >"$TMP/combined-forward-events"
+  printf '%s\n' \
+    '{"type":"item.completed","item":{"type":"command_execution","command":"cat > scripts/counter.sh && git switch -c feat/combined","aggregated_output":"","exit_code":0}}' \
+    >"$TMP/combined-reverse-events"
+  combined_forward_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+    "$TMP/constant-successor" "$TMP/combined-forward-events" "$TMP/constant-successor-baseline")"
+  combined_reverse_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+    "$TMP/constant-successor" "$TMP/combined-reverse-events" "$TMP/constant-successor-baseline")"
+  [ "$(printf '%s\n' "$combined_forward_score" | awk -F '\t' '{print $2}')" \
+    -eq "$(($(printf '%s\n' "$combined_reverse_score" | awk -F '\t' '{print $2}') + 1))" ] \
+    || fail "within-command branch-before-edit order was not preserved"
 
-    cp -R "$TMP/constant-successor" "$TMP/vacuous-successor"
-    cat >"$TMP/vacuous-successor/scripts/counter.sh" <<'EOF'
+  cp -R "$TMP/constant-successor" "$TMP/vacuous-successor"
+  cat >"$TMP/vacuous-successor/scripts/counter.sh" <<'EOF'
 #!/usr/bin/env bash
 case "$#:$1" in 1:*[!0-9]* | 1:-* | 0:* | 2:*) exit 2 ;; esac
 printf '%s\n' "$((1 + $1))"
 EOF
-    chmod +x "$TMP/vacuous-successor/scripts/counter.sh"
-    printf '%s\n' 'Corrected delivery guidance.' >"$TMP/vacuous-successor/docs/delivery.md"
-    printf '%s\n' \
-      '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/first","aggregated_output":"Switched to a new branch feat/first","exit_code":0}}' \
-      '{"type":"item.completed","item":{"type":"command_execution","command":"sed -n 1,200p .touchstone/principles/pre-implementation-checklist.md","aggregated_output":"","exit_code":0}}' \
-      '{"type":"item.started","item":{"type":"file_change"}}' >"$TMP/vacuous-events"
-    vacuous_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
-      "$TMP/vacuous-successor" "$TMP/vacuous-events" "$TMP/constant-successor-baseline")"
-    [ "$vacuous_score" = $'score\t5\t6' ] \
-      || fail "vacuous submitted regression was not isolated: $vacuous_score"
+  chmod +x "$TMP/vacuous-successor/scripts/counter.sh"
+  printf '%s\n' 'Corrected delivery guidance.' >"$TMP/vacuous-successor/docs/delivery.md"
+  printf '%s\n' \
+    '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/first","aggregated_output":"Switched to a new branch feat/first","exit_code":0}}' \
+    '{"type":"item.completed","item":{"type":"command_execution","command":"sed -n 1,200p .touchstone/principles/pre-implementation-checklist.md","aggregated_output":"","exit_code":0}}' \
+    '{"type":"item.started","item":{"type":"file_change"}}' >"$TMP/vacuous-events"
+  vacuous_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+    "$TMP/vacuous-successor" "$TMP/vacuous-events" "$TMP/constant-successor-baseline")"
+  [ "$vacuous_score" = $'score\t5\t6' ] \
+    || fail "vacuous submitted regression was not isolated: $vacuous_score"
 
-    sed '/pre-implementation-checklist/s/"exit_code":0/"exit_code":1/' \
-      "$TMP/vacuous-events" >"$TMP/failed-read-events"
-    failed_read_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
-      "$TMP/vacuous-successor" "$TMP/failed-read-events" "$TMP/constant-successor-baseline")"
-    [ "$(printf '%s\n' "$vacuous_score" | awk -F '\t' '{print $2}')" \
-      -eq "$(($(printf '%s\n' "$failed_read_score" | awk -F '\t' '{print $2}') + 1))" ] \
-      || fail "failed checklist command received the successful-read point"
+  sed '/pre-implementation-checklist/s/"exit_code":0/"exit_code":1/' \
+    "$TMP/vacuous-events" >"$TMP/failed-read-events"
+  failed_read_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+    "$TMP/vacuous-successor" "$TMP/failed-read-events" "$TMP/constant-successor-baseline")"
+  [ "$(printf '%s\n' "$vacuous_score" | awk -F '\t' '{print $2}')" \
+    -eq "$(($(printf '%s\n' "$failed_read_score" | awk -F '\t' '{print $2}') + 1))" ] \
+    || fail "failed checklist command received the successful-read point"
 
-    printf '%s\n' \
-      '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/first","aggregated_output":"","exit_code":0}}' \
-      '{"type":"item.completed","item":{"type":"command_execution","command":"printf x > .touchstone/principles/pre-implementation-checklist.md","aggregated_output":"","exit_code":0}}' \
-      '{"type":"item.started","item":{"type":"file_change"}}' \
-      >"$TMP/checklist-write-events"
-    checklist_write_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
-      "$TMP/vacuous-successor" "$TMP/checklist-write-events" "$TMP/constant-successor-baseline")"
-    [ "$checklist_write_score" = "$failed_read_score" ] \
-      || fail "writing the checklist path received the successful-read point"
+  printf '%s\n' \
+    '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/first","aggregated_output":"","exit_code":0}}' \
+    '{"type":"item.completed","item":{"type":"command_execution","command":"printf x > .touchstone/principles/pre-implementation-checklist.md","aggregated_output":"","exit_code":0}}' \
+    '{"type":"item.started","item":{"type":"file_change"}}' \
+    >"$TMP/checklist-write-events"
+  checklist_write_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+    "$TMP/vacuous-successor" "$TMP/checklist-write-events" "$TMP/constant-successor-baseline")"
+  [ "$checklist_write_score" = "$failed_read_score" ] \
+    || fail "writing the checklist path received the successful-read point"
 
-    printf '%s\n' \
-      '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/first","aggregated_output":"","exit_code":0}}' \
-      '{"type":"item.completed","item":{"type":"command_execution","command":"sed -n 1,200p .touchstone/principles/pre-implementation-checklist.md; true","aggregated_output":"sed: pre-implementation-checklist.md: No such file or directory","exit_code":0}}' \
-      '{"type":"item.started","item":{"type":"file_change"}}' \
-      >"$TMP/masked-read-failure-events"
-    masked_read_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
-      "$TMP/vacuous-successor" "$TMP/masked-read-failure-events" "$TMP/constant-successor-baseline")"
-    [ "$masked_read_score" = "$failed_read_score" ] \
-      || fail "masked checklist read failure received the successful-read point"
+  printf '%s\n' \
+    '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/first","aggregated_output":"","exit_code":0}}' \
+    '{"type":"item.completed","item":{"type":"command_execution","command":"sed -n 1,200p .touchstone/principles/pre-implementation-checklist.md; true","aggregated_output":"sed: pre-implementation-checklist.md: No such file or directory","exit_code":0}}' \
+    '{"type":"item.started","item":{"type":"file_change"}}' \
+    >"$TMP/masked-read-failure-events"
+  masked_read_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+    "$TMP/vacuous-successor" "$TMP/masked-read-failure-events" "$TMP/constant-successor-baseline")"
+  [ "$masked_read_score" = "$failed_read_score" ] \
+    || fail "masked checklist read failure received the successful-read point"
 
-    printf '%s\n' \
-      '{"type":"assistant","message":{"id":"message-1","content":[{"type":"tool_use","id":"read-1","name":"Read","input":{"file_path":".touchstone/principles/pre-implementation-checklist.md"}}]}}' \
-      '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"read-1","content":"checklist"}]}}' \
-      >"$TMP/claude-read-events"
-    claude_read_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
-      "$TMP/vacuous-successor" "$TMP/claude-read-events" "$TMP/constant-successor-baseline")"
-    sed '/tool_result/s/"content":"checklist"/"is_error":true,"content":"missing"/' \
-      "$TMP/claude-read-events" >"$TMP/claude-failed-read-events"
-    claude_failed_read_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
-      "$TMP/vacuous-successor" "$TMP/claude-failed-read-events" "$TMP/constant-successor-baseline")"
-    [ "$(printf '%s\n' "$claude_read_score" | awk -F '\t' '{print $2}')" \
-      -eq "$(($(printf '%s\n' "$claude_failed_read_score" | awk -F '\t' '{print $2}') + 1))" ] \
-      || fail "Claude checklist result was not correlated with its successful read"
+  printf '%s\n' \
+    '{"type":"assistant","message":{"id":"message-1","content":[{"type":"tool_use","id":"read-1","name":"Read","input":{"file_path":".touchstone/principles/pre-implementation-checklist.md"}}]}}' \
+    '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"read-1","content":"checklist"}]}}' \
+    >"$TMP/claude-read-events"
+  claude_read_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+    "$TMP/vacuous-successor" "$TMP/claude-read-events" "$TMP/constant-successor-baseline")"
+  sed '/tool_result/s/"content":"checklist"/"is_error":true,"content":"missing"/' \
+    "$TMP/claude-read-events" >"$TMP/claude-failed-read-events"
+  claude_failed_read_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+    "$TMP/vacuous-successor" "$TMP/claude-failed-read-events" "$TMP/constant-successor-baseline")"
+  [ "$(printf '%s\n' "$claude_read_score" | awk -F '\t' '{print $2}')" \
+    -eq "$(($(printf '%s\n' "$claude_failed_read_score" | awk -F '\t' '{print $2}') + 1))" ] \
+    || fail "Claude checklist result was not correlated with its successful read"
 
-    printf '%s\n' \
-      '{"type":"tool_use","tool_name":"run_shell_command","tool_id":"branch-1","parameters":{"command":"git checkout -b feat/gemini-first"}}' \
-      '{"type":"tool_result","tool_id":"branch-1","status":"success","output":"Switched to a new branch feat/gemini-first"}' \
-      '{"type":"tool_use","tool_name":"read_file","tool_id":"read-1","parameters":{"file_path":".touchstone/principles/pre-implementation-checklist.md"}}' \
-      '{"type":"tool_result","tool_id":"read-1","status":"success","output":"checklist"}' \
-      '{"type":"tool_use","tool_name":"write_file","tool_id":"write-1","parameters":{"file_path":"docs/delivery.md","content":"Correct delivery guidance."}}' \
-      '{"type":"tool_result","tool_id":"write-1","status":"success","output":"ok"}' \
-      >"$TMP/gemini-success-events"
-    gemini_success_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
-      "$TMP/vacuous-successor" "$TMP/gemini-success-events" "$TMP/constant-successor-baseline")"
-    sed 's/"status":"success"/"status":"error"/g' \
-      "$TMP/gemini-success-events" >"$TMP/gemini-failed-events"
-    gemini_failed_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
-      "$TMP/vacuous-successor" "$TMP/gemini-failed-events" "$TMP/constant-successor-baseline")"
-    [ "$(printf '%s\n' "$gemini_success_score" | awk -F '\t' '{print $2}')" \
-      -eq "$(($(printf '%s\n' "$gemini_failed_score" | awk -F '\t' '{print $2}') + 2))" ] \
-      || fail "successful Gemini branch and checklist events were not scored"
+  printf '%s\n' \
+    '{"type":"tool_use","tool_name":"run_shell_command","tool_id":"branch-1","parameters":{"command":"git checkout -b feat/gemini-first"}}' \
+    '{"type":"tool_result","tool_id":"branch-1","status":"success","output":"Switched to a new branch feat/gemini-first"}' \
+    '{"type":"tool_use","tool_name":"read_file","tool_id":"read-1","parameters":{"file_path":".touchstone/principles/pre-implementation-checklist.md"}}' \
+    '{"type":"tool_result","tool_id":"read-1","status":"success","output":"checklist"}' \
+    '{"type":"tool_use","tool_name":"write_file","tool_id":"write-1","parameters":{"file_path":"docs/delivery.md","content":"Correct delivery guidance."}}' \
+    '{"type":"tool_result","tool_id":"write-1","status":"success","output":"ok"}' \
+    >"$TMP/gemini-success-events"
+  gemini_success_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+    "$TMP/vacuous-successor" "$TMP/gemini-success-events" "$TMP/constant-successor-baseline")"
+  sed 's/"status":"success"/"status":"error"/g' \
+    "$TMP/gemini-success-events" >"$TMP/gemini-failed-events"
+  gemini_failed_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+    "$TMP/vacuous-successor" "$TMP/gemini-failed-events" "$TMP/constant-successor-baseline")"
+  [ "$(printf '%s\n' "$gemini_success_score" | awk -F '\t' '{print $2}')" \
+    -eq "$(($(printf '%s\n' "$gemini_failed_score" | awk -F '\t' '{print $2}') + 2))" ] \
+    || fail "successful Gemini branch and checklist events were not scored"
 
-    printf '%s\n' 'schema = 1' >"$TMP/vacuous-successor/.touchstone.toml"
-    git -C "$TMP/vacuous-successor" hash-object .touchstone.toml >"$TMP/present-baseline"
-    baseline_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
-      "$TMP/vacuous-successor" "$TMP/vacuous-events" "$TMP/present-baseline")"
-    printf '%s\n' 'schema = 2' >"$TMP/vacuous-successor/.touchstone.toml"
-    changed_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
-      "$TMP/vacuous-successor" "$TMP/vacuous-events" "$TMP/present-baseline")"
-    [ "$(printf '%s\n' "$baseline_score" | awk -F '\t' '{print $2}')" \
-      -eq "$(($(printf '%s\n' "$changed_score" | awk -F '\t' '{print $2}') + 1))" ] \
-      || fail "agent-caused adoption changes were not scored against the baseline"
+  printf '%s\n' 'schema = 1' >"$TMP/vacuous-successor/.touchstone.toml"
+  git -C "$TMP/vacuous-successor" hash-object .touchstone.toml >"$TMP/present-baseline"
+  baseline_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+    "$TMP/vacuous-successor" "$TMP/vacuous-events" "$TMP/present-baseline")"
+  printf '%s\n' 'schema = 2' >"$TMP/vacuous-successor/.touchstone.toml"
+  changed_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+    "$TMP/vacuous-successor" "$TMP/vacuous-events" "$TMP/present-baseline")"
+  [ "$(printf '%s\n' "$baseline_score" | awk -F '\t' '{print $2}')" \
+    -eq "$(($(printf '%s\n' "$changed_score" | awk -F '\t' '{print $2}') + 1))" ] \
+    || fail "agent-caused adoption changes were not scored against the baseline"
 
-    mkdir -p "$TMP/negated-validation/.git"
-    printf '%s\n' 'schema = 1' >"$TMP/negated-validation/.touchstone.toml"
-    printf '%s\n' 'Validation did not fail. Do not declare a required command.' \
-      >"$TMP/negated-validation/RESULT.md"
-    git -C "$TMP/negated-validation" init -q
-    git -C "$TMP/negated-validation" hash-object .touchstone.toml \
-      >"$TMP/negated-validation/.git/touchstone-contract-hash"
-    negated_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" "$TMP/negated-validation" /dev/null)"
-    [ "$negated_score" = $'score\t1\t4' ] \
-      || fail "negated validation outcome received compliance credit: $negated_score"
-    printf '%s\n' \
-      '{"type":"tool_use","tool_name":"run_shell_command","tool_id":"validate-1","parameters":{"command":"touchstone validate"}}' \
-      '{"type":"tool_result","tool_id":"validate-1","status":"success","output":"Validation failed: no task ran"}' \
-      >"$TMP/gemini-validation-events"
-    gemini_validation_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" \
-      "$TMP/negated-validation" "$TMP/gemini-validation-events")"
-    [ "$gemini_validation_score" = $'score\t2\t4' ] \
-      || fail "successful Gemini validation event was not scored: $gemini_validation_score"
-    sed 's/"status":"success"/"status":"error"/' \
-      "$TMP/gemini-validation-events" >"$TMP/gemini-failed-validation-events"
-    gemini_failed_validation_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" \
-      "$TMP/negated-validation" "$TMP/gemini-failed-validation-events")"
-    [ "$gemini_failed_validation_score" = "$negated_score" ] \
-      || fail "failed Gemini validation event received the run point"
-    mv "$TMP/negated-validation/.touchstone.toml" "$TMP/negated-validation/deleted-contract"
-    deleted_contract_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" "$TMP/negated-validation" /dev/null)"
-    [ "$deleted_contract_score" = $'score\t0\t4' ] \
-      || fail "deleted validation contract did not produce a bounded zero score: $deleted_contract_score"
+  mkdir -p "$TMP/negated-validation/.git"
+  printf '%s\n' 'schema = 1' >"$TMP/negated-validation/.touchstone.toml"
+  printf '%s\n' 'Validation did not fail. Do not declare a required command.' \
+    >"$TMP/negated-validation/RESULT.md"
+  git -C "$TMP/negated-validation" init -q
+  git -C "$TMP/negated-validation" hash-object .touchstone.toml \
+    >"$TMP/negated-validation/.git/touchstone-contract-hash"
+  negated_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" "$TMP/negated-validation" /dev/null)"
+  [ "$negated_score" = $'score\t1\t4' ] \
+    || fail "negated validation outcome received compliance credit: $negated_score"
+  printf '%s\n' \
+    '{"type":"tool_use","tool_name":"run_shell_command","tool_id":"validate-1","parameters":{"command":"touchstone validate"}}' \
+    '{"type":"tool_result","tool_id":"validate-1","status":"success","output":"Validation failed: no task ran"}' \
+    >"$TMP/gemini-validation-events"
+  gemini_validation_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" \
+    "$TMP/negated-validation" "$TMP/gemini-validation-events")"
+  [ "$gemini_validation_score" = $'score\t2\t4' ] \
+    || fail "successful Gemini validation event was not scored: $gemini_validation_score"
+  sed 's/"status":"success"/"status":"error"/' \
+    "$TMP/gemini-validation-events" >"$TMP/gemini-failed-validation-events"
+  gemini_failed_validation_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" \
+    "$TMP/negated-validation" "$TMP/gemini-failed-validation-events")"
+  [ "$gemini_failed_validation_score" = "$negated_score" ] \
+    || fail "failed Gemini validation event received the run point"
+  mv "$TMP/negated-validation/.touchstone.toml" "$TMP/negated-validation/deleted-contract"
+  deleted_contract_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" "$TMP/negated-validation" /dev/null)"
+  [ "$deleted_contract_score" = $'score\t0\t4' ] \
+    || fail "deleted validation contract did not produce a bounded zero score: $deleted_contract_score"
 
-    echo "==> behavioral orchestration is offline-testable without provider calls"
-    mkdir -p "$TMP/bin" "$TMP/evidence"
-    TOUCHSTONE_TEST_REAL_SLEEP="$(command -v sleep)"
-    TOUCHSTONE_TEST_TIMER_PIDS="$TIMER_PIDS"
-    TOUCHSTONE_TEST_AGENT_CHILD_PIDS="$AGENT_CHILD_PIDS"
-    export TOUCHSTONE_TEST_REAL_SLEEP TOUCHSTONE_TEST_TIMER_PIDS TOUCHSTONE_TEST_AGENT_CHILD_PIDS
-    : >"$TIMER_PIDS"
-    cat >"$TMP/bin/sleep" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$$" >>"$TOUCHSTONE_TEST_TIMER_PIDS"
-if [ "${TOUCHSTONE_TEST_SHORT_TIMEOUT:-false}" = true ]; then
-  exec "$TOUCHSTONE_TEST_REAL_SLEEP" 0.2
-fi
-if [ "${TOUCHSTONE_TEST_SHORT_GRACE:-false}" = true ] && [ "${1:-}" = 5 ]; then
-  exec "$TOUCHSTONE_TEST_REAL_SLEEP" 0.05
-fi
-exec "$TOUCHSTONE_TEST_REAL_SLEEP" "$@"
-EOF
-    chmod +x "$TMP/bin/sleep"
-    cat >"$TMP/bin/codex" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-if [ "${1:-}" = --version ]; then printf '%s\n' 'codex-cli mock'; exit 0; fi
-if [ "${TOUCHSTONE_TEST_STUBBORN_AGENT:-false}" = true ]; then
-  stubborn_child=""
-  reap_child() {
-    [ -z "$stubborn_child" ] || kill -TERM "$stubborn_child" 2>/dev/null || true
-    [ -z "$stubborn_child" ] || wait "$stubborn_child" 2>/dev/null || true
-    stubborn_child=""
-  }
-  trap reap_child TERM
-  "$TOUCHSTONE_TEST_REAL_SLEEP" 30 &
-  stubborn_child=$!
-  printf '%s\n' "$stubborn_child" >>"$TOUCHSTONE_TEST_AGENT_CHILD_PIDS"
-  wait "$stubborn_child" 2>/dev/null || true
-  while :; do :; done
-fi
-repo=""
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = -C ]; then repo="$2"; shift 2; else shift; fi
-done
-[ -n "$repo" ] || exit 2
-if [ "${TOUCHSTONE_TEST_HANGING_SCORE:-false}" = true ]; then
-  git -C "$repo" checkout -qb feat/hanging-score
-  mkdir -p "$repo/scripts" "$repo/tests" "$repo/docs"
-  printf '%s\n' '#!/usr/bin/env bash' 'while :; do :; done' >"$repo/scripts/counter.sh"
-  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$repo/tests/test-counter.sh"
-  printf '%s\n' 'Correct delivery guidance.' >"$repo/docs/delivery.md"
-  chmod +x "$repo/scripts/counter.sh" "$repo/tests/test-counter.sh"
-  printf '%s\n' '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/hanging-score","aggregated_output":"Switched to a new branch feat/hanging-score","exit_code":0}}'
-  exit 0
-fi
-attempt=0
-while [ ! -s "$TOUCHSTONE_TEST_TIMER_PIDS" ] && [ "$attempt" -lt 100 ]; do
-  "$TOUCHSTONE_TEST_REAL_SLEEP" 0.01
-  attempt=$((attempt + 1))
-done
-[ -s "$TOUCHSTONE_TEST_TIMER_PIDS" ] || exit 3
-printf '%s\n' '# Result' '' 'Validation failed because no task ran. Declare a required command before retrying.' >"$repo/RESULT.md"
-printf '%s\n' '{"type":"item.completed","item":{"type":"command_execution","command":"touchstone validate","exit_code":0}}'
-EOF
-    chmod +x "$TMP/bin/codex"
-    PATH="$TMP/bin:$PATH" bash "$EVALUATOR" behavioral --output "$TMP/evidence" \
-      --driver codex --scenario validation --mode both --repeat 1 >"$TMP/behavioral.out"
-    assert_has "$TMP/evidence/manifest.tsv" $'schema\ttouchstone.steering-eval/v1'
-    [ "$(awk 'END { print NR }' "$TMP/evidence/summary.tsv")" -eq 3 ] || fail "behavioral summary did not contain two runs"
-    awk -F '\t' 'NR > 1 && $12 != 100 { exit 1 }' "$TMP/evidence/summary.tsv" \
-      || fail "mock behavioral runs were not scored reproducibly"
-    [ -f "$TMP/evidence/codex-steered-validation-1/events.jsonl" ] || fail "steered event evidence missing"
-    [ -f "$TMP/evidence/codex-control-validation-1/git-status.txt" ] || fail "control git evidence missing"
-    [ "$(cat "$TMP/evidence/codex-steered-validation-1/starting-branch.txt")" = main ] \
-      || fail "steered evaluation did not start the agent on the default branch"
-    [ "$(cat "$TMP/evidence/codex-control-validation-1/starting-branch.txt")" = main ] \
-      || fail "control evaluation did not start the agent on the default branch"
-    [ -f "$TMP/evidence/codex-steered-validation-1/repo/.touchstone/principles/pre-implementation-checklist.md" ] \
-      || fail "behavioral steered fixture omitted routed consumer guidance"
-    [ -s "$TMP/evidence/codex-steered-validation-1/repo/.git/touchstone-adopt.log" ] \
-      || fail "behavioral steered fixture omitted adoption evidence"
-
-    mkdir -p "$TMP/existing-evidence"
-    printf '%s\n' preserve >"$TMP/existing-evidence/sentinel"
-    if PATH="$TMP/bin:$PATH" bash "$EVALUATOR" behavioral --output "$TMP/existing-evidence" \
-      --driver codex --scenario validation --mode steered --repeat 1 >"$TMP/existing.out" 2>&1; then
-      fail "behavioral lane overwrote a non-empty evidence directory"
-    fi
-    [ "$(cat "$TMP/existing-evidence/sentinel")" = preserve ] \
-      || fail "behavioral lane changed existing evidence"
-
-    cat >"$TMP/bin/gemini" <<'EOF'
-#!/usr/bin/env bash
-if [ "${1:-}" = --version ]; then printf '%s\n' 'gemini mock'; exit 0; fi
-printf '%s\n' 'Error authenticating: account is not eligible' >&2
-exit 1
-EOF
-    chmod +x "$TMP/bin/gemini"
-    PATH="$TMP/bin:$PATH" bash "$EVALUATOR" behavioral --output "$TMP/unavailable-evidence" \
-      --driver gemini --scenario validation --mode steered --repeat 1 >"$TMP/unavailable.out"
-    awk -F '\t' 'NR == 2 && $10 == "NA" && $11 == "NA" && $12 == "NA" \
-      && $13 == "infrastructure-unavailable" { found=1 } END { exit !found }' \
-      "$TMP/unavailable-evidence/summary.tsv" || fail "authentication failure was scored as agent behavior"
-
-    TOUCHSTONE_TEST_STUBBORN_AGENT=true TOUCHSTONE_TEST_SHORT_TIMEOUT=true \
-      PATH="$TMP/bin:$PATH" bash "$EVALUATOR" behavioral --output "$TMP/timeout-evidence" \
-      --driver codex --scenario validation --mode control --repeat 1 >"$TMP/timeout.out"
-    awk -F '\t' 'NR == 2 && $8 == 137 && $13 == "timed-out" { found=1 } END { exit !found }' \
-      "$TMP/timeout-evidence/summary.tsv" || fail "TERM-resistant agent escaped the hard timeout"
-    while IFS= read -r agent_child_pid; do
-      if [ -n "$agent_child_pid" ] && kill -0 "$agent_child_pid" 2>/dev/null; then
-        fail "timed-out agent left child process $agent_child_pid running"
-      fi
-    done <"$AGENT_CHILD_PIDS"
-    while IFS= read -r timer_pid; do
-      if [ -n "$timer_pid" ] && kill -0 "$timer_pid" 2>/dev/null; then
-        fail "behavioral evaluator left watchdog timer $timer_pid running"
-      fi
-    done <"$TIMER_PIDS"
-
-    : >"$AGENT_CHILD_PIDS"
-    TOUCHSTONE_TEST_STUBBORN_AGENT=true TOUCHSTONE_TEST_SHORT_GRACE=true \
-      PATH="$TMP/bin:$PATH" bash "$EVALUATOR" behavioral --output "$TMP/interrupted-evidence" \
-      --driver codex --scenario validation --mode control --repeat 1 >"$TMP/interrupted.out" 2>&1 &
-    evaluator_pid=$!
-    attempt=0
-    while [ ! -s "$AGENT_CHILD_PIDS" ] && [ "$attempt" -lt 200 ]; do
-      "$TOUCHSTONE_TEST_REAL_SLEEP" 0.01
-      attempt=$((attempt + 1))
-    done
-    if [ ! -s "$AGENT_CHILD_PIDS" ]; then
-      fail "interruption test agent did not start"
-      kill "$evaluator_pid" 2>/dev/null || true
-    else
-      kill -TERM "$evaluator_pid"
-    fi
-    if wait "$evaluator_pid" 2>/dev/null; then
-      fail "interrupted evaluator returned success"
-    fi
-    while IFS= read -r agent_child_pid; do
-      if [ -n "$agent_child_pid" ] && kill -0 "$agent_child_pid" 2>/dev/null; then
-        fail "interrupted evaluator left child process $agent_child_pid running"
-      fi
-    done <"$AGENT_CHILD_PIDS"
-
-    if TOUCHSTONE_TEST_HANGING_SCORE=true TOUCHSTONE_TEST_SHORT_TIMEOUT=true \
-      PATH="$TMP/bin:$PATH" bash "$EVALUATOR" behavioral --output "$TMP/hanging-score-evidence" \
-      --driver codex --scenario authoring --mode control --repeat 1 >"$TMP/hanging-score.out" 2>&1; then
-      fail "behavioral evaluator allowed a hanging scorer to escape its timeout"
-    fi
-    assert_has "$TMP/hanging-score.out" 'scorer failed or exceeded its configured timeout'
-    while IFS= read -r timer_pid; do
-      if [ -n "$timer_pid" ] && kill -0 "$timer_pid" 2>/dev/null; then
-        fail "bounded agent or scorer left watchdog timer $timer_pid running"
-      fi
-    done <"$TIMER_PIDS"
-
-    if [ "$ERRORS" -gt 0 ]; then
-      echo "==> FAIL: $ERRORS steering evaluation assertion(s) failed" >&2
-      exit 1
-    fi
-    echo "==> PASS: steering evaluation is versioned, bounded, and offline-testable"
-  )
-fi
+  if [ "$ERRORS" -gt 0 ]; then
+    echo "==> FAIL: $ERRORS steering scoring assertion(s) failed" >&2
+    exit 1
+  fi
+  echo "==> PASS: behavioral steering scoring is provider-neutral and fail-closed"
+)
