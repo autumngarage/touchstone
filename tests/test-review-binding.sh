@@ -423,11 +423,12 @@ if grep -Eq '^[[:space:]]+(name: review-binding|review-binding:)$' "$WORKFLOW"; 
 else
   ok "manual check-run is the only review-binding identity"
 fi
-if grep -Fq 'cancel-in-progress: false' "$WORKFLOW" \
-  && grep -Fq 'newest_run' "$WORKFLOW"; then
-  ok "superseded runs self-neutralize without a red cancelled Actions job"
+if grep -Eq '^concurrency:' "$WORKFLOW"; then
+  fail "review evidence events must not share GitHub's one-pending-run concurrency queue"
+elif grep -Fq 'newest_run' "$WORKFLOW"; then
+  ok "every evidence event runs while superseded verdicts self-neutralize"
 else
-  fail "stale-run safety must use the newer-run guard without force-cancelling jobs"
+  fail "stale-run safety must use the newer-run guard without workflow concurrency"
 fi
 if grep -Fq 'updated_at: .updatedAt' "$WORKFLOW" \
   && grep -Fq '$finding.updated_at // $finding.submitted_at' "$EVALUATOR" \
