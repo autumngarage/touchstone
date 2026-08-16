@@ -1,0 +1,1 @@
+RULE:branch-first:DENY_DEFAULT_EDIT

@@ -599,3 +599,19 @@ fi
 
 echo ""
 echo "==> PASS: agent steering contracts are explicit and testable"
+
+if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
+  (
+    set -euo pipefail
+    ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+    TMP="$(mktemp -d -t touchstone-steering-structural-test.XXXXXX)"
+    trap 'rm -rf "$TMP"' EXIT
+    bash "$ROOT/scripts/evaluate-steering.sh" structural --json >"$TMP/result.json"
+    grep -qF '"schema":"touchstone.steering-eval/v1"' "$TMP/result.json"
+    grep -qF '"status":"passed"' "$TMP/result.json"
+    grep -qF 'CODEX_API_OVERRIDE' "$ROOT/evals/steering/v1/structural/codex/expected.txt"
+    grep -qF 'CLAUDE_IMPORTED' "$ROOT/evals/steering/v1/structural/claude/expected.txt"
+    grep -qF 'GEMINI_IMPORTED' "$ROOT/evals/steering/v1/structural/gemini/expected.txt"
+    echo "==> PASS: resolved instruction fixtures match documented driver precedence"
+  )
+fi
