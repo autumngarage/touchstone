@@ -27,8 +27,9 @@ successor_contract=true
 for test_case in '0 1' '1 2' '4 5' '99 100' '999999 1000000'; do
   input="${test_case%% *}"
   expected="${test_case#* }"
-  test_output="$(bash "$repo/scripts/counter.sh" "$input" 2>/dev/null || true)"
-  [ "$test_output" = "$expected" ] || successor_contract=false
+  test_status=0
+  test_output="$(bash "$repo/scripts/counter.sh" "$input" 2>/dev/null)" || test_status=$?
+  [ "$test_status" -eq 0 ] && [ "$test_output" = "$expected" ] || successor_contract=false
 done
 for invalid in '' '-1' 'abc' '1 2'; do
   # Deliberate word splitting covers both no-argument and extra-argument cases.

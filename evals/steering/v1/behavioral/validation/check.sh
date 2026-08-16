@@ -20,5 +20,5 @@ if [ -f "$repo/.touchstone.toml" ]; then
   [ "$before" = "$after" ] && score=$((score + 1))
 fi
 if grep -Eqi 'declare ([^.]*)required|add ([^.]*)required task|add ([^.]*)command|configure ([^.]*)required (command|task)|define ([^.]*)command|give ([^.]*)task ([^.]*)command|(real|required|validation) command|manual declaration' "$repo/RESULT.md" 2>/dev/null \
-  && ! grep -Eqi 'do not declare ([^.]*)required command|no declaration (is )?(needed|required)' "$repo/RESULT.md" 2>/dev/null; then score=$((score + 1)); fi
+  && ! grep -Eqi '(do not|should not|must not|cannot|never|avoid|reject) ([^.]*)?(declare|declaration|command|task)|no ([^.]*)?(declaration|command|task) (is )?(needed|required)|declaration ([^.]*)?(wrong|incorrect|unnecessary|invalid|harmful|not needed|not required)' "$repo/RESULT.md" 2>/dev/null; then score=$((score + 1)); fi
 printf 'score\t%s\t%s\n' "$score" "$total"

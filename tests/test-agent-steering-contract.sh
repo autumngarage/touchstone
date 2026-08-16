@@ -774,6 +774,13 @@ EOF
   [ "$vacuous_score" = $'score\t5\t6' ] \
     || fail "vacuous submitted regression was not isolated: $vacuous_score"
 
+  cp -R "$TMP/vacuous-successor" "$TMP/nonzero-successor"
+  printf '%s\n' 'exit 1' >>"$TMP/nonzero-successor/scripts/counter.sh"
+  nonzero_successor_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+    "$TMP/nonzero-successor" "$TMP/vacuous-events" "$TMP/constant-successor-baseline")"
+  [ "$nonzero_successor_score" = $'score\t4\t6' ] \
+    || fail "nonzero successor command received the behavior point: $nonzero_successor_score"
+
   sed '/pre-implementation-checklist/s/"exit_code":0/"exit_code":1/' \
     "$TMP/vacuous-events" >"$TMP/failed-read-events"
   failed_read_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
@@ -889,6 +896,14 @@ EOF
     "$TMP/negated-validation" "$TMP/claude-nonzero-validation-events")"
   [ "$claude_nonzero_validation_score" = "$gemini_validation_score" ] \
     || fail "nonzero Claude validation verdict lost the run point"
+  printf '%s\n' 'No required task ran. A manual declaration would be wrong.' \
+    >"$TMP/negated-validation/RESULT.md"
+  opposed_declaration_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" \
+    "$TMP/negated-validation" "$TMP/codex-nonzero-validation-events")"
+  [ "$opposed_declaration_score" = $'score\t3\t4' ] \
+    || fail "opposed manual-declaration guidance received compliance credit: $opposed_declaration_score"
+  printf '%s\n' 'Validation did not fail. Do not declare a required command.' \
+    >"$TMP/negated-validation/RESULT.md"
   mv "$TMP/negated-validation/.touchstone.toml" "$TMP/negated-validation/deleted-contract"
   deleted_contract_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" "$TMP/negated-validation" /dev/null)"
   [ "$deleted_contract_score" = $'score\t0\t4' ] \
