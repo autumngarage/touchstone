@@ -238,8 +238,12 @@ capture_missing_directories() {
 apply_plan() {
   local apply_output apply_status=0 action relative _ownership destination
   capture_missing_directories
+  apply_binding_matches \
+    || safety_refusal "repository branch or HEAD changed after planning"
   git -C "$PROJECT_ROOT" apply --check "$DIFF_FILE" >/dev/null 2>&1 \
     || safety_refusal "repository bytes changed after planning; run adoption again"
+  apply_binding_matches \
+    || safety_refusal "repository branch or HEAD changed at the write boundary"
   apply_output="$(git -C "$PROJECT_ROOT" apply "$DIFF_FILE" 2>&1)" || apply_status=$?
   if [ "$apply_status" -ne 0 ]; then
     if ! restore_plan_after_failure; then
@@ -247,6 +251,13 @@ apply_plan() {
       operational_failure "apply failed and unexpected concurrent content was preserved; recovery snapshots remain at $PLAN_ROOT"
     fi
     operational_failure "apply failed without retaining a partial Touchstone write: $apply_output"
+  fi
+  if ! apply_binding_matches; then
+    if ! restore_plan_after_failure; then
+      KEEP_PLAN=true
+      operational_failure "repository binding changed during apply and unexpected content was preserved; recovery snapshots remain at $PLAN_ROOT"
+    fi
+    operational_failure "repository binding changed during apply; the original files were restored"
   fi
   while IFS="$(printf '\t')" read -r action relative _ownership; do
     [ -n "$relative" ] || continue

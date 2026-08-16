@@ -1553,11 +1553,24 @@ new_adoption_repo "$LOCKED_REPO"
 git -C "$LOCKED_REPO" switch -qc feat/adopt
 LOCKED_GIT_DIR="$(git -C "$LOCKED_REPO" rev-parse --absolute-git-dir)"
 mkdir "$LOCKED_GIT_DIR/touchstone-adopt.lock"
+printf '%s\n' "$$" >"$LOCKED_GIT_DIR/touchstone-adopt.lock/owner"
 run_adoption "$ADOPTION/locked.out" adopt --project "$LOCKED_REPO" --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 5 ] || fail "apply did not serialize against an active repository apply"
 assert_contains "$ADOPTION/locked.out.err" 'another Touchstone adoption apply is active'
 [ ! -e "$LOCKED_REPO/.touchstone.toml" ] || fail "locked apply mutated the repository"
+rm "$LOCKED_GIT_DIR/touchstone-adopt.lock/owner"
 rmdir "$LOCKED_GIT_DIR/touchstone-adopt.lock"
+
+STALE_LOCK_REPO="$ADOPTION/stale-lock"
+new_adoption_repo "$STALE_LOCK_REPO"
+git -C "$STALE_LOCK_REPO" switch -qc feat/adopt
+STALE_GIT_DIR="$(git -C "$STALE_LOCK_REPO" rev-parse --absolute-git-dir)"
+mkdir "$STALE_GIT_DIR/touchstone-adopt.lock"
+printf '%s\n' 999999 >"$STALE_GIT_DIR/touchstone-adopt.lock/owner"
+run_adoption "$ADOPTION/stale-lock.out" adopt --project "$STALE_LOCK_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "apply did not recover a verifiably stale lock"
+[ ! -e "$STALE_GIT_DIR/touchstone-adopt.lock" ] || fail "recovered apply left its lock behind"
+[ -f "$STALE_LOCK_REPO/.touchstone.toml" ] || fail "stale-lock recovery did not apply the plan"
 
 FAIL_GIT_BIN="$ADOPTION/fail-git-bin"
 mkdir -p "$FAIL_GIT_BIN"
@@ -1572,11 +1585,20 @@ fi
 if [ "${1:-}" = status ] && [ "${TOUCHSTONE_STATUS_FAILURE:-false}" = true ]; then
   exit 92
 fi
+if [ "${1:-}" = status ] && [ "${TOUCHSTONE_SWITCH_DURING_STATUS:-false}" = true ]; then
+  "$TOUCHSTONE_REAL_GIT" "${arguments[@]}" || exit $?
+  "$TOUCHSTONE_REAL_GIT" -C "$project" switch -q main
+  exit 0
+fi
 if [ "${1:-}" = symbolic-ref ] && [ "${TOUCHSTONE_SYMBOLIC_REF_FAILURE:-false}" = true ]; then
   exit 92
 fi
 if [ "${1:-}" = apply ] && [ "${2:-}" != --check ]; then
   "$TOUCHSTONE_REAL_GIT" "${arguments[@]}" || exit $?
+  if [ "${TOUCHSTONE_SWITCH_AFTER_APPLY:-false}" = true ]; then
+    "$TOUCHSTONE_REAL_GIT" -C "$project" switch -q main
+    exit 0
+  fi
   if [ "${TOUCHSTONE_CONCURRENT_WRITE:-false}" = true ]; then
     printf 'concurrent content\n' >"$project/AGENTS.md"
   fi
@@ -1615,6 +1637,29 @@ PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" TOUCHSTONE_SYMBOLIC_R
 assert_contains "$ADOPTION/default-ref-failure.out.err" 'could not inspect the repository default branch'
 [ ! -e "$DEFAULT_REF_FAILURE_REPO/.touchstone.toml" ] \
   || fail "default-ref inspection failure mutated the repository"
+
+BRANCH_RACE_REPO="$ADOPTION/branch-race"
+new_adoption_repo "$BRANCH_RACE_REPO"
+git -C "$BRANCH_RACE_REPO" switch -qc feat/adopt
+PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" TOUCHSTONE_SWITCH_DURING_STATUS=true \
+  run_adoption "$ADOPTION/branch-race.out" adopt --project "$BRANCH_RACE_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "branch movement before the write boundary did not refuse"
+[ "$(git -C "$BRANCH_RACE_REPO" branch --show-current)" = main ] || fail "branch-race fixture did not move branches"
+[ ! -e "$BRANCH_RACE_REPO/.touchstone.toml" ] || fail "branch movement before write mutated the default branch"
+
+POST_APPLY_BRANCH_RACE_REPO="$ADOPTION/post-apply-branch-race"
+new_adoption_repo "$POST_APPLY_BRANCH_RACE_REPO"
+git -C "$POST_APPLY_BRANCH_RACE_REPO" switch -qc feat/adopt
+PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" TOUCHSTONE_SWITCH_AFTER_APPLY=true \
+  run_adoption "$ADOPTION/post-apply-branch-race.out" adopt --project "$POST_APPLY_BRANCH_RACE_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "branch movement during apply did not fail"
+[ "$(git -C "$POST_APPLY_BRANCH_RACE_REPO" branch --show-current)" = main ] \
+  || fail "post-apply branch-race fixture did not move branches"
+[ ! -e "$POST_APPLY_BRANCH_RACE_REPO/.touchstone.toml" ] \
+  || fail "branch movement during apply left changes on the default branch"
+[ -z "$(git -C "$POST_APPLY_BRANCH_RACE_REPO" status --porcelain --untracked-files=all)" ] \
+  || fail "branch movement during apply left the default branch dirty"
+assert_contains "$ADOPTION/post-apply-branch-race.out.err" 'repository binding changed during apply'
 
 ROLLBACK_REPO="$ADOPTION/rollback"
 new_adoption_repo "$ROLLBACK_REPO"

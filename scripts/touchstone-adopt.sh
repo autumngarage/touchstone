@@ -20,6 +20,8 @@ PLAN_STATUS=""
 KEEP_PLAN=false
 PLAN_ROOT=""
 APPLY_LOCK=""
+APPLY_HEAD_REF=""
+APPLY_HEAD_OID=""
 TAB="$(printf '\t')"
 CR="$(printf '\r')"
 LF="$(printf '\n_')"
@@ -101,10 +103,73 @@ require_option_value() {
 }
 
 cleanup() {
-  [ -z "$APPLY_LOCK" ] || rmdir -- "$APPLY_LOCK" 2>/dev/null || true
+  release_apply_lock
   [ -z "$PLAN_ROOT" ] || [ "$KEEP_PLAN" = true ] || rm -rf -- "$PLAN_ROOT"
 }
 trap cleanup EXIT
+
+release_apply_lock() {
+  local owner=""
+  [ -n "$APPLY_LOCK" ] || return 0
+  if [ -f "$APPLY_LOCK/owner" ] && [ ! -L "$APPLY_LOCK/owner" ]; then
+    IFS= read -r owner <"$APPLY_LOCK/owner" || owner=""
+  fi
+  if [ "$owner" = "$$" ]; then
+    rm -f -- "$APPLY_LOCK/owner" 2>/dev/null || true
+    rmdir -- "$APPLY_LOCK" 2>/dev/null || true
+  fi
+  APPLY_LOCK=""
+}
+
+acquire_apply_lock() {
+  local git_dir="$1" owner="" stale_lock
+  APPLY_LOCK="$git_dir/touchstone-adopt.lock"
+  if mkdir -- "$APPLY_LOCK" 2>/dev/null; then
+    if ! printf '%s\n' "$$" >"$APPLY_LOCK/owner"; then
+      rmdir -- "$APPLY_LOCK" 2>/dev/null || true
+      APPLY_LOCK=""
+      operational_failure "could not record repository apply-lock ownership"
+    fi
+    return 0
+  fi
+  [ -d "$APPLY_LOCK" ] \
+    || operational_failure "could not create the repository apply lock"
+  if [ -f "$APPLY_LOCK/owner" ] && [ ! -L "$APPLY_LOCK/owner" ]; then
+    IFS= read -r owner <"$APPLY_LOCK/owner" || owner=""
+  fi
+  case "$owner" in '' | *[!0-9]*)
+    stale_lock="$APPLY_LOCK"
+    APPLY_LOCK=""
+    safety_refusal "apply lock has no verifiable owner; after confirming no adoption is active, remove $stale_lock"
+    ;;
+  esac
+  if kill -0 "$owner" 2>/dev/null; then
+    APPLY_LOCK=""
+    safety_refusal "another Touchstone adoption apply is active (pid $owner)"
+  fi
+  stale_lock="$APPLY_LOCK.stale.$$"
+  mv -- "$APPLY_LOCK" "$stale_lock" 2>/dev/null \
+    || safety_refusal "repository apply-lock ownership changed; rerun adoption"
+  mkdir -- "$APPLY_LOCK" \
+    || operational_failure "could not replace a stale repository apply lock"
+  if ! printf '%s\n' "$$" >"$APPLY_LOCK/owner"; then
+    rmdir -- "$APPLY_LOCK" 2>/dev/null || true
+    mv -- "$stale_lock" "$APPLY_LOCK" 2>/dev/null || true
+    APPLY_LOCK=""
+    operational_failure "could not record replacement apply-lock ownership"
+  fi
+  rm -f -- "$stale_lock/owner" \
+    || operational_failure "could not remove stale apply-lock ownership"
+  rmdir -- "$stale_lock" \
+    || operational_failure "stale apply lock contains unexpected state: $stale_lock"
+}
+
+apply_binding_matches() {
+  local current_ref current_oid
+  current_ref="$(git -C "$PROJECT_ROOT" symbolic-ref --quiet HEAD)" || return 1
+  current_oid="$(git -C "$PROJECT_ROOT" rev-parse --verify HEAD)" || return 1
+  [ "$current_ref" = "$APPLY_HEAD_REF" ] && [ "$current_oid" = "$APPLY_HEAD_OID" ]
+}
 
 case "$OPERATION" in adopt | upgrade) ;; -h | --help | help) usage ;; *) usage ;; esac
 
@@ -453,13 +518,13 @@ case "$MODE" in
       || safety_refusal "adoption cannot apply on the default branch '$branch'"
     apply_git_dir="$(git -C "$PROJECT_ROOT" rev-parse --absolute-git-dir)" \
       || operational_failure "could not locate repository metadata"
-    APPLY_LOCK="$apply_git_dir/touchstone-adopt.lock"
-    if ! mkdir -- "$APPLY_LOCK" 2>/dev/null; then
-      [ -d "$APPLY_LOCK" ] \
-        || operational_failure "could not create the repository apply lock"
-      APPLY_LOCK=""
-      safety_refusal "another Touchstone adoption apply is active"
-    fi
+    acquire_apply_lock "$apply_git_dir"
+    APPLY_HEAD_REF="$(git -C "$PROJECT_ROOT" symbolic-ref --quiet HEAD)" \
+      || safety_refusal "repository branch changed before apply"
+    APPLY_HEAD_OID="$(git -C "$PROJECT_ROOT" rev-parse --verify HEAD)" \
+      || operational_failure "could not bind the repository HEAD before apply"
+    [ "$APPLY_HEAD_REF" = "refs/heads/$branch" ] \
+      || safety_refusal "repository branch changed before apply"
     if ! worktree_status="$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=all)"; then
       operational_failure "could not verify that the worktree is clean"
     fi
