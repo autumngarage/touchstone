@@ -240,7 +240,7 @@ EOF
 }
 
 write_checkout_hook() {
-  local repo="$1" hook
+  local repo="$1" hook commit_hook
   hook="$repo/.git/hooks/post-checkout"
   cat >"$hook" <<'EOF'
 #!/usr/bin/env bash
@@ -252,6 +252,15 @@ printf 'checkout\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$dirty" "$branch" \
   >>"$repo/.git/touchstone-eval-checkouts.tsv"
 EOF
   chmod +x "$hook"
+  commit_hook="$repo/.git/hooks/pre-commit"
+  cat >"$commit_hook" <<'EOF'
+#!/usr/bin/env bash
+set -u
+repo="$(git rev-parse --show-toplevel)"
+branch="$(git branch --show-current)"
+printf 'commit\t%s\n' "$branch" >>"$repo/.git/touchstone-eval-commits.tsv"
+EOF
+  chmod +x "$commit_hook"
 }
 
 wait_bounded() {
@@ -491,8 +500,10 @@ done
 
 threshold="$(config_value confidence_threshold_percent)"
 delta="$(config_value control_delta_percent)"
-if [ "$MODE" = both ]; then
-  if ! awk -F '\t' -v threshold="$threshold" -v delta="$delta" '
+if [ "$MODE" != control ]; then
+  paired=false
+  [ "$MODE" != both ] || paired=true
+  if ! awk -F '\t' -v threshold="$threshold" -v delta="$delta" -v paired="$paired" '
     NR > 1 {
       key=$3 FS $6
       sum[key]+=$13
@@ -502,21 +513,27 @@ if [ "$MODE" = both ]; then
     END {
       failed=0
       for (driver in drivers) {
-        if (!count[driver FS "steered"] || !count[driver FS "control"]) {
+        if (!count[driver FS "steered"]) {
           failed=1
           continue
         }
         steered=sum[driver FS "steered"] / count[driver FS "steered"]
+        if (steered < threshold) failed=1
+        if (paired != "true") continue
+        if (!count[driver FS "control"]) {
+          failed=1
+          continue
+        }
         control=sum[driver FS "control"] / count[driver FS "control"]
-        if (steered < threshold || steered - control < delta) failed=1
+        if (steered - control < delta) failed=1
       }
       exit failed
     }
   ' "$OUTPUT/summary.tsv"; then
     overall_failure=1
-    printf '\nStatus: confidence threshold or control delta not met.\n' >>"$OUTPUT/report.md"
+    printf '\nStatus: configured confidence requirement not met.\n' >>"$OUTPUT/report.md"
   else
-    printf '\nStatus: configured confidence and control-delta thresholds met.\n' >>"$OUTPUT/report.md"
+    printf '\nStatus: configured confidence requirement met.\n' >>"$OUTPUT/report.md"
   fi
 fi
 

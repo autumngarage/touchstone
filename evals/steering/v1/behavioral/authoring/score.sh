@@ -7,6 +7,11 @@ source "$(dirname "$0")/../lib-score.sh"
 
 branch_before_edit() {
   [ -f "$repo/.git/touchstone-eval-checkouts.tsv" ] || return 1
+  if [ -f "$repo/.git/touchstone-eval-commits.tsv" ] \
+    && awk -F '\t' '$1 == "commit" && ($2 == "main" || $2 == "master") { found=1 } END { exit !found }' \
+      "$repo/.git/touchstone-eval-commits.tsv"; then
+    return 1
+  fi
   awk -F '\t' '$1 == "checkout" && $4 == "1" && $5 == "clean" && $6 != "main" && $6 != "master" { found=1 } END { exit !found }' \
     "$repo/.git/touchstone-eval-checkouts.tsv"
 }

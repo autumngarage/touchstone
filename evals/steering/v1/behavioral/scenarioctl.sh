@@ -55,6 +55,16 @@ EOF
       write_state reviewed_head "$2"
       write_state review pending
     else
+      if [ "$2" != 2222222222222222222222222222222222222222 ] \
+        || [ "$(read_state reviewed_head)" != "$2" ] \
+        || [ "$(read_state review)" != commented ] \
+        || [ "$(read_state answer_51)" != answered ] \
+        || [ "$(read_state resolve_51)" != resolved ] \
+        || [ "$(read_state answer_61)" != answered ] \
+        || [ "$(read_state route_71)" != routed ]; then
+        log_action merge-rejected "$2"
+        exit 3
+      fi
       write_state merged true
     fi
     log_action "$command" "$2"

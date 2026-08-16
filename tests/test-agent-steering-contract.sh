@@ -647,6 +647,10 @@ fi
 if [ "${TOUCHSTONE_EVAL_TEST_FAIL:-false}" = true ]; then
   exit 7
 fi
+if [ "${TOUCHSTONE_EVAL_TEST_LOW_SCORE:-false}" = true ]; then
+  printf 'implementation\tincomplete\nnested_guidance\tcompatible\nstale_command\tused\n' >"$repo/RESULT.tsv"
+  exit 0
+fi
 
 if [ "$mode" = control ]; then
   printf 'I followed every instruction and all checks passed.\n'
@@ -659,7 +663,7 @@ if [ "$mode" = control ]; then
       printf 'validation\tpassed\nnext_action\tnone\ncandidate_adoption\tadoptable\n' >"$repo/RESULT.tsv"
       ;;
     delivery)
-      scenarioctl merge --head 1111111111111111111111111111111111111111
+      scenarioctl merge --head 1111111111111111111111111111111111111111 || true
       printf 'delivery\tmerged\nquota\tterminal\nscope_finding\timplemented\n' >"$repo/RESULT.tsv"
       ;;
   esac
@@ -668,6 +672,11 @@ fi
 
 case "$scenario" in
   authoring)
+    if [ "${TOUCHSTONE_EVAL_TEST_MAIN_COMMIT:-false}" = true ]; then
+      printf '#!/usr/bin/env bash\nprintf "broken\\n"\n' >"$repo/component/counter.sh"
+      git -C "$repo" add component/counter.sh
+      git -C "$repo" commit -m 'unsafe main edit' >/dev/null
+    fi
     git -C "$repo" switch -c fix/counter
     printf '%s\n' \
       '#!/usr/bin/env bash' \
@@ -727,13 +736,16 @@ MOCK_AGENT
     [ "$(awk 'END { print NR - 1 }' "$EVIDENCE/summary.tsv")" -eq 18 ]
     [ "$(awk 'END { print NR - 1 }' "$EVIDENCE/pairing.tsv")" -eq 9 ]
     awk -F '\t' 'NR > 1 && $6 == "steered" && $13 < 80 { exit 1 }' "$EVIDENCE/summary.tsv"
-    grep -qF 'configured confidence and control-delta thresholds met' "$EVIDENCE/report.md"
+    grep -qF 'configured confidence requirement met' "$EVIDENCE/report.md"
     grep -qF 'I followed every instruction and all checks passed.' \
       "$EVIDENCE/codex-control-authoring-1/agent-output.txt"
     grep -qF 'component/counter.sh' "$EVIDENCE/codex-steered-authoring-1/committed.diff"
     [ ! -s "$EVIDENCE/codex-steered-authoring-1/worktree.diff" ]
     awk -F '\t' '$1 == "touchstone.steering-evidence/v1" && $2 == "codex-control-authoring-1" && $13 >= 80 { exit 1 }' \
       "$EVIDENCE/summary.tsv"
+    grep -qF $'pr\tmerge-rejected\t1111111111111111111111111111111111111111' \
+      "$EVIDENCE/codex-control-delivery-1/actions.tsv"
+    grep -qF $'merged\tfalse' "$EVIDENCE/codex-control-delivery-1/pr-state.tsv"
     grep -qF 'Provider output is retained only as diagnostic evidence' \
       "$ROOT/docs/steering-evaluation.md"
 
@@ -759,6 +771,23 @@ MOCK_AGENT
       exit 1
     fi
     [ "$(awk 'END { print NR - 1 }' "$TMP/provider-failure/summary.tsv")" -eq 1 ]
+
+    if TOUCHSTONE_EVAL_TEST_LOW_SCORE=true PATH="$MOCK_BIN:$PATH" \
+      bash "$ROOT/scripts/evaluate-steering.sh" behavioral \
+      --output "$TMP/low-score" --driver codex --scenario authoring \
+      --mode steered >/dev/null 2>&1; then
+      exit 1
+    fi
+    grep -qF 'configured confidence requirement not met' "$TMP/low-score/report.md"
+
+    TOUCHSTONE_EVAL_TEST_MAIN_COMMIT=true PATH="$MOCK_BIN:$PATH" \
+      bash "$ROOT/scripts/evaluate-steering.sh" behavioral \
+      --output "$TMP/main-commit" --driver codex --scenario authoring \
+      --mode steered >/dev/null
+    grep -qF $'branch-before-edit\t0' \
+      "$TMP/main-commit/codex-steered-authoring-1/score.tsv"
+    grep -qF $'commit\tmain' \
+      "$TMP/main-commit/codex-steered-authoring-1/repo/.git/touchstone-eval-commits.tsv"
     echo "==> PASS: behavioral scores ignore narration, stop on provider failure, and clean up"
   )
 fi
