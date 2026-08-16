@@ -73,7 +73,9 @@ security quota, and requests for copied/background-sync machinery.
 
 Steered fixtures invoke the real `touchstone adopt` compiler; the evaluation
 does not carry a second steering renderer. The explicit output directory must
-be absent or empty so a run cannot overwrite earlier evidence.
+be absent or empty so a run cannot overwrite earlier evidence, and it must be
+outside the Touchstone checkout so control agents cannot inherit the checkout's
+ancestor steering.
 
 Each run records the exact CLI version, UTC date, mode, scenario, repetition,
 exit status, duration, deterministic score, raw JSONL event stream, final git

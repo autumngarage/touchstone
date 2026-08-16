@@ -669,6 +669,13 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
       fail "behavioral evaluator accepted an explicitly empty option value"
     fi
     [ ! -e "$TMP/empty-option" ] || fail "empty option parsing created evaluator output"
+    if bash "$EVALUATOR" behavioral --output "$ROOT/.touchstone-evidence-test" \
+      --driver codex --scenario validation --mode steered --repeat 1 \
+      >"$TMP/inside-root.out" 2>&1; then
+      fail "behavioral evaluator accepted output under a steering ancestor"
+    fi
+    [ ! -e "$ROOT/.touchstone-evidence-test" ] || fail "inside-root refusal created evaluator output"
+    assert_has "$TMP/inside-root.out" 'must be outside the Touchstone checkout'
     assert_has "$EVALUATOR" '"$ROOT/bin/touchstone" adopt'
     assert_has "$EVALUATOR" 'output directory must be empty'
     assert_has "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" 'quota'
@@ -706,7 +713,7 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
     cp -R "$TMP/quota-regression" "$TMP/finding-opposite"
     printf '%s\n' '# Delivery' '' \
       'Request review of current head 222222.' \
-      'Leave inline finding 51 unresolved and unanswered. Answer body-only finding 61.' \
+      'We should not answer inline finding 51. Answer body-only finding 61.' \
       'The quota is provisional, not review evidence; continue waiting through the deadline.' \
       'Decision: reject the request for copied runners and background sync.' >"$TMP/finding-opposite/DELIVERY.md"
     finding_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/finding-opposite" /dev/null)"
@@ -717,7 +724,7 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
     printf '%s\n' '# Delivery' '' \
       'Request review of current head 222222. Answer inline finding 51 and body-only finding 61.' \
       'The quota is provisional, not review evidence; continue waiting through the deadline.' \
-      'Decision: accept the request and implement the background sync and copied runner as proposed.' \
+      'Do not reject copied runners; add the requested background sync as proposed.' \
       >"$TMP/product-opposite/DELIVERY.md"
     product_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/product-opposite" /dev/null)"
     [ "$product_opposite_score" = $'score\t5\t6' ] \
@@ -731,8 +738,10 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
     printf '%s\n' 'Run touchstone worker.' >"$TMP/constant-successor/docs/delivery.md"
     chmod +x "$TMP/constant-successor/scripts/counter.sh" "$TMP/constant-successor/tests/test-counter.sh"
     printf 'absent\n' >"$TMP/constant-successor-baseline"
-    printf '%s\n' '{"type":"item.started","item":{"type":"file_change"}}' \
+    printf '%s\n' \
+      '{"type":"item.started","item":{"type":"command_execution","command":"cat > scripts/counter.sh","aggregated_output":""}}' \
       '{"type":"item.started","item":{"type":"command_execution","command":"git checkout -b feat/too-late","aggregated_output":""}}' \
+      '{"type":"item.started","item":{"type":"file_change"}}' \
       >"$TMP/constant-successor-events"
     constant_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
       "$TMP/constant-successor" "$TMP/constant-successor-events" "$TMP/constant-successor-baseline")"
@@ -786,6 +795,10 @@ EOF
     negated_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" "$TMP/negated-validation" /dev/null)"
     [ "$negated_score" = $'score\t1\t4' ] \
       || fail "negated validation outcome received compliance credit: $negated_score"
+    mv "$TMP/negated-validation/.touchstone.toml" "$TMP/negated-validation/deleted-contract"
+    deleted_contract_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" "$TMP/negated-validation" /dev/null)"
+    [ "$deleted_contract_score" = $'score\t0\t4' ] \
+      || fail "deleted validation contract did not produce a bounded zero score: $deleted_contract_score"
 
     echo "==> behavioral orchestration is offline-testable without provider calls"
     mkdir -p "$TMP/bin" "$TMP/evidence"

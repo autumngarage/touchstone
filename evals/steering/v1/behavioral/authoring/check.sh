@@ -14,7 +14,8 @@ branch_before_edit() {
       sub(/"aggregated_output".*/, "", command)
       is_command=(index(line, "\"type\":\"command_execution\"") || index(line, "\"name\":\"Bash\""))
       if (!branch && is_command && command ~ /git (checkout|switch)[^"]* (-b|-c|--create) /) branch=NR
-      if (!edit && (index(line, "\"type\":\"file_change\"") || line ~ /"name":"(Write|Edit)"/)) edit=NR
+      shell_edit=(is_command && (command ~ /(cat|printf|echo)[^"]*(>|>>)/ || command ~ /sed [^"]*-i/ || command ~ /(^|[ ;])(tee|touch|cp|mv|chmod|install) /))
+      if (!edit && (index(line, "\"type\":\"file_change\"") || line ~ /"name":"(Write|Edit)"/ || shell_edit)) edit=NR
     }
     END { exit !(branch && edit && branch < edit) }
   ' "$events"

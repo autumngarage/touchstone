@@ -262,7 +262,7 @@ require_option_value() {
 }
 
 behavioral_evaluation() {
-  local output="" driver=all scenario=all mode=both repeat
+  local output="" driver=all scenario=all mode=both repeat output_parent output_name output_candidate
   local drivers modes scenarios item run_id run_dir repo events prompt status started ended score total percent baseline
   local run_index planned_runs driver_count mode_count scenario_count max_runs outcome
   local existing_entries=()
@@ -313,6 +313,15 @@ behavioral_evaluation() {
   planned_runs=$((driver_count * mode_count * scenario_count * repeat))
   max_runs="$(config_value max_runs)"
   [ "$planned_runs" -le "$max_runs" ] || fail "planned $planned_runs runs exceed configured max_runs=$max_runs"
+  if [ -d "$output" ]; then
+    output_candidate="$(cd "$output" && pwd -P)"
+  else
+    output_parent="$(dirname "$output")"
+    output_name="$(basename "$output")"
+    [ -d "$output_parent" ] || fail "output parent directory does not exist: $output_parent"
+    output_candidate="$(cd "$output_parent" && pwd -P)/$output_name"
+  fi
+  case "$output_candidate" in "$ROOT" | "$ROOT"/*) fail "output directory must be outside the Touchstone checkout: $output" ;; esac
   [ ! -e "$output" ] || [ -d "$output" ] || fail "output path is not a directory: $output"
   if [ -d "$output" ]; then
     shopt -s nullglob dotglob
