@@ -275,6 +275,143 @@ if grep -rn "review_requested\|review_result" "$TOUCHSTONE_ROOT/principles/" >/d
   grep -rn "review_requested\|review_result" "$TOUCHSTONE_ROOT/principles/" >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
+  (
+    set -euo pipefail
+    ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+    NORMALIZER="$ROOT/evals/steering/v1/normalize-events.sh"
+    TMP="$(mktemp -d -t touchstone-steering-events-test.XXXXXX)"
+    trap 'rm -rf "$TMP"' EXIT
+
+    normalize() { bash "$NORMALIZER" "$1" >"$2"; }
+    has_fact() { grep -Eq "^$2($|[[:space:]])" "$1"; }
+    no_fact() { ! has_fact "$1" "$2"; }
+    fact_before() {
+      awk -F '\t' -v first="$2" -v second="$3" '
+        $1 == first && (!first_seen || $2 < first_sequence || ($2 == first_sequence && $3 < first_position)) {
+          first_seen=1; first_sequence=$2; first_position=$3
+        }
+        $1 == second && (!second_seen || $2 < second_sequence || ($2 == second_sequence && $3 < second_position)) {
+          second_seen=1; second_sequence=$2; second_position=$3
+        }
+        END {
+          exit !(first_seen && second_seen \
+            && (first_sequence < second_sequence \
+              || (first_sequence == second_sequence && first_position < second_position)))
+        }
+      ' "$1"
+    }
+
+    echo "==> provider events require correlated terminal results"
+    printf '%s\n' \
+      '{"type":"item.completed","item":{"type":"command_execution","command":"git switch -c feat/first","aggregated_output":"","exit_code":0}}' \
+      '{"type":"item.started","item":{"type":"file_change"}}' \
+      >"$TMP/codex-interrupted.jsonl"
+    normalize "$TMP/codex-interrupted.jsonl" "$TMP/codex-interrupted.facts"
+    has_fact "$TMP/codex-interrupted.facts" branch
+    no_fact "$TMP/codex-interrupted.facts" edit
+
+    printf '%s\n' \
+      '{"type":"item.completed","item":{"type":"command_execution","command":"git switch -c feat/first","aggregated_output":"","exit_code":0}}' \
+      '{"type":"item.completed","item":{"type":"file_change"}}' \
+      >"$TMP/codex-completed.jsonl"
+    normalize "$TMP/codex-completed.jsonl" "$TMP/codex-completed.facts"
+    fact_before "$TMP/codex-completed.facts" branch edit
+
+    printf '%s\n' \
+      '{"type":"item.completed","item":{"type":"command_execution","command":"printf x > changed","aggregated_output":"failed","exit_code":1}}' \
+      >"$TMP/codex-failed-write.jsonl"
+    normalize "$TMP/codex-failed-write.jsonl" "$TMP/codex-failed-write.facts"
+    no_fact "$TMP/codex-failed-write.facts" edit
+    sed 's/"exit_code":1/"exit_code":0/' "$TMP/codex-failed-write.jsonl" \
+      >"$TMP/codex-successful-write.jsonl"
+    normalize "$TMP/codex-successful-write.jsonl" "$TMP/codex-successful-write.facts"
+    has_fact "$TMP/codex-successful-write.facts" edit
+
+    printf '%s\n' \
+      '{"type":"item.completed","item":{"type":"command_execution","command":"git switch -c feat/combined && cat > changed","aggregated_output":"","exit_code":0}}' \
+      >"$TMP/combined-forward.jsonl"
+    printf '%s\n' \
+      '{"type":"item.completed","item":{"type":"command_execution","command":"cat > changed && git switch -c feat/combined","aggregated_output":"","exit_code":0}}' \
+      >"$TMP/combined-reverse.jsonl"
+    normalize "$TMP/combined-forward.jsonl" "$TMP/combined-forward.facts"
+    normalize "$TMP/combined-reverse.jsonl" "$TMP/combined-reverse.facts"
+    fact_before "$TMP/combined-forward.facts" branch edit
+    fact_before "$TMP/combined-reverse.facts" edit branch
+
+    printf '%s\n' \
+      '{"type":"item.completed","item":{"type":"command_execution","command":"sed -n 1,200p .touchstone/principles/pre-implementation-checklist.md","aggregated_output":"checklist","exit_code":0}}' \
+      >"$TMP/codex-read.jsonl"
+    normalize "$TMP/codex-read.jsonl" "$TMP/codex-read.facts"
+    has_fact "$TMP/codex-read.facts" checklist-read
+    sed 's/"exit_code":0/"exit_code":1/' "$TMP/codex-read.jsonl" >"$TMP/codex-failed-read.jsonl"
+    normalize "$TMP/codex-failed-read.jsonl" "$TMP/codex-failed-read.facts"
+    no_fact "$TMP/codex-failed-read.facts" checklist-read
+    sed 's/"aggregated_output":"checklist"/"aggregated_output":"No such file or directory"/' \
+      "$TMP/codex-read.jsonl" >"$TMP/codex-masked-read.jsonl"
+    normalize "$TMP/codex-masked-read.jsonl" "$TMP/codex-masked-read.facts"
+    no_fact "$TMP/codex-masked-read.facts" checklist-read
+    sed 's/sed -n 1,200p/printf x >/' "$TMP/codex-read.jsonl" >"$TMP/codex-checklist-write.jsonl"
+    normalize "$TMP/codex-checklist-write.jsonl" "$TMP/codex-checklist-write.facts"
+    no_fact "$TMP/codex-checklist-write.facts" checklist-read
+
+    printf '%s\n' \
+      '{"type":"item.completed","item":{"type":"command_execution","command":"touchstone validate","aggregated_output":"no required task","exit_code":3}}' \
+      >"$TMP/codex-validation.jsonl"
+    normalize "$TMP/codex-validation.jsonl" "$TMP/codex-validation.facts"
+    has_fact "$TMP/codex-validation.facts" validation-run
+    sed 's/item.completed/item.started/' "$TMP/codex-validation.jsonl" >"$TMP/codex-incomplete-validation.jsonl"
+    normalize "$TMP/codex-incomplete-validation.jsonl" "$TMP/codex-incomplete-validation.facts"
+    no_fact "$TMP/codex-incomplete-validation.facts" validation-run
+
+    printf '%s\n' \
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"read-1","name":"Read","input":{"file_path":".touchstone/principles/pre-implementation-checklist.md"}}]}}' \
+      '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"read-1","content":"checklist"}]}}' \
+      >"$TMP/claude-read.jsonl"
+    normalize "$TMP/claude-read.jsonl" "$TMP/claude-read.facts"
+    has_fact "$TMP/claude-read.facts" checklist-read
+    sed '/tool_result/s/"content":"checklist"/"is_error":true,"content":"missing"/' \
+      "$TMP/claude-read.jsonl" >"$TMP/claude-failed-read.jsonl"
+    normalize "$TMP/claude-failed-read.jsonl" "$TMP/claude-failed-read.facts"
+    no_fact "$TMP/claude-failed-read.facts" checklist-read
+    printf '%s\n' \
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"validate-1","name":"Bash","input":{"command":"touchstone validate"}}]}}' \
+      '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"validate-1","is_error":true,"content":"no required task"}]}}' \
+      >"$TMP/claude-validation.jsonl"
+    normalize "$TMP/claude-validation.jsonl" "$TMP/claude-validation.facts"
+    has_fact "$TMP/claude-validation.facts" validation-run
+    head -n 1 "$TMP/claude-validation.jsonl" >"$TMP/claude-incomplete-validation.jsonl"
+    normalize "$TMP/claude-incomplete-validation.jsonl" "$TMP/claude-incomplete-validation.facts"
+    no_fact "$TMP/claude-incomplete-validation.facts" validation-run
+
+    printf '%s\n' \
+      '{"type":"tool_use","tool_name":"read_file","tool_id":"read-1","parameters":{"file_path":".touchstone/principles/pre-implementation-checklist.md"}}' \
+      '{"type":"tool_result","tool_id":"read-1","status":"success","output":"checklist"}' \
+      '{"type":"tool_use","tool_name":"write_file","tool_id":"write-1","parameters":{"file_path":"changed","content":"x"}}' \
+      '{"type":"tool_result","tool_id":"write-1","status":"success","output":"ok"}' \
+      >"$TMP/gemini-success.jsonl"
+    normalize "$TMP/gemini-success.jsonl" "$TMP/gemini-success.facts"
+    has_fact "$TMP/gemini-success.facts" checklist-read
+    has_fact "$TMP/gemini-success.facts" edit
+    sed 's/"status":"success"/"status":"error"/g' "$TMP/gemini-success.jsonl" \
+      >"$TMP/gemini-error.jsonl"
+    normalize "$TMP/gemini-error.jsonl" "$TMP/gemini-error.facts"
+    no_fact "$TMP/gemini-error.facts" checklist-read
+    no_fact "$TMP/gemini-error.facts" edit
+    printf '%s\n' \
+      '{"type":"tool_use","tool_name":"run_shell_command","tool_id":"validate-1","parameters":{"command":"touchstone validate"}}' \
+      '{"type":"tool_result","tool_id":"validate-1","status":"error","output":"no required task"}' \
+      >"$TMP/gemini-validation.jsonl"
+    normalize "$TMP/gemini-validation.jsonl" "$TMP/gemini-validation.facts"
+    has_fact "$TMP/gemini-validation.facts" validation-run
+    head -n 1 "$TMP/gemini-validation.jsonl" >"$TMP/gemini-incomplete-validation.jsonl"
+    normalize "$TMP/gemini-incomplete-validation.jsonl" "$TMP/gemini-incomplete-validation.facts"
+    no_fact "$TMP/gemini-incomplete-validation.facts" validation-run
+
+    echo "==> PASS: provider events are normalized only from terminal results"
+  )
+fi
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Codex merge review"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "codex exec --full-auto"
 

@@ -45,3 +45,16 @@ offline, and uses no provider quota.
 Behavioral evaluation is the separate follow-up lane in AUT-284. It consumes
 these versioned structural fixtures, but live-agent orchestration, controls,
 scoring, budgets, and evidence expiry are outside this deterministic boundary.
+
+## Event normalization boundary
+
+`evals/steering/v1/normalize-events.sh` converts Codex, Claude, and Gemini
+JSONL into provider-neutral action facts. A read or mutation is emitted only
+after its correlated terminal result reports success. A validation invocation
+instead requires a terminal result regardless of verdict, because the expected
+no-task result is nonzero. An interrupted request emits nothing.
+
+Ordered facts carry their transcript position, including the relative position
+of actions combined in one successful shell command. This normalizer owns only
+transport semantics; final repository artifacts and behavioral scoring are a
+separate boundary.
