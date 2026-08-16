@@ -90,41 +90,45 @@ If they differ, push again before requesting review — otherwise the review bin
 
 ## Checking the gate
 
-What the merge gate says right now, in three commands:
+What the merge gate says right now, in three checks:
 
 ```bash
 gh pr checks <n>                                          # required checks
 gh pr view <n> --json reviews --jq '.reviews[-1].state'   # latest review state
-gh api graphql -f query='
-  query($owner:String!, $repo:String!, $pr:Int!) {
+unresolved_threads="$(
+  gh api graphql --paginate -f query='
+  query($owner:String!, $repo:String!, $pr:Int!, $endCursor:String) {
     repository(owner:$owner, name:$repo) {
       pullRequest(number:$pr) {
-        reviewThreads(first:100) {
+        reviewThreads(first:100, after:$endCursor) {
           nodes {
             id
             isResolved
             comments(first:100) { nodes { databaseId url } }
           }
+          pageInfo { hasNextPage endCursor }
         }
       }
     }
   }' -F owner=<owner> -F repo=<repo> -F pr=<n> \
-  --jq '.data.repository.pullRequest.reviewThreads.nodes
-    | map(select(.isResolved | not))
-    | {
-        unresolvedCount: length,
-        unresolvedThreads: map({
-          threadId: .id,
-          rootCommentId: .comments.nodes[0].databaseId,
-          rootCommentUrl: .comments.nodes[0].url
-        })
-      }'
+  --jq '.data.repository.pullRequest.reviewThreads.nodes[]
+    | select(.isResolved | not)
+    | [.id, (.comments.nodes[0].databaseId | tostring),
+       .comments.nodes[0].url]
+    | @tsv'
+)" || exit 1
+if [ -n "$unresolved_threads" ]; then
+  printf 'Unresolved review threads (thread ID, root comment ID, URL):\n%s\n' \
+    "$unresolved_threads" >&2
+  exit 1
+fi
+printf 'All review threads are resolved.\n'
 ```
 
-The last result includes both the unresolved count and the `PRRT_` thread ID
-to root comment-ID mapping needed to answer and resolve each finding.
-Replies are deliberately omitted because the raw reply endpoint accepts the
-root finding ID. Zero unresolved threads is the requirement.
+The last check paginates the complete thread connection. On failure it prints
+the `PRRT_` thread ID to root comment-ID mapping needed to answer and resolve
+each finding. Replies are deliberately omitted because the raw reply endpoint
+accepts the root finding ID. A zero exit proves no unresolved thread remains.
 
 **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.** GitHub's review API can support approval for authorized integrations, but that is not this adapter's observed contract. Do not expect an approval here or treat its absence as a stalled review.
 
@@ -138,7 +142,7 @@ conversation resolution separately requires every inline thread closed.
 ## Answering findings
 
 Use the stable root comment ID from the complete GitHub review surface. Reply
-with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<id>/replies -f
+with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<id>/replies -F
 body=@<file>`, then resolve with the GraphQL mutation:
 
 ```bash
@@ -340,7 +344,7 @@ or close the PR while preserving the findings. Do not grow the current PR one
 review comment at a time. Exact-head review remains required after any redesign;
 scope containment is never permission to skip review.
 
-**The loop.** If every finding resolves **without moving the head** (dispositions 3–4), answer every thread, prove none remain with `--all-resolved-check`, then merge — answered findings satisfy the gate (issue #751); do not request another review. If any fix lands as a commit (dispositions 1–2), batch ALL of them into ONE commit, answer every thread, push, and request one review for the new head.
+**The loop.** If every finding resolves **without moving the head** (dispositions 3–4), answer every thread, prove none remain with the complete paginated thread check above, then merge — answered findings satisfy the gate (issue #751); do not request another review. If any fix lands as a commit (dispositions 1–2), batch ALL of them into ONE commit, answer every thread, push, and request one review for the new head.
 
 **The budget: three finding-bearing rounds per capability, never more than three
 on one PR.** This is a discipline, not an enforced limit — the wrapper that
