@@ -20,18 +20,19 @@ verdict or make the raw recovery path unavailable.
 
 **If you've already pushed**, the standard ship path is broken. Don't try to rewrite history on the default branch. Disclose the slip in the next PR (see "Emergency path" below) and carry on — the commit is now part of history, and the audit trail captures what happened.
 
-**The mechanical guardrails** that back this rule:
+**Local guardrails are optional feedback, not authority.** A repository may
+configure a driver hook or pre-commit hook that refuses commits on its default
+branch. Inspect the repository before relying on either integration; their
+absence never changes the branching rule, and `git commit --no-verify` bypasses
+pre-commit feedback only.
 
-- `hooks/branch-guard.sh` runs as a Claude Code `PreToolUse` hook and refuses a `git commit` invocation on the default branch before the tool call runs at all.
-- The `no-commit-to-branch` hook in `.pre-commit-config.yaml` is configured with `--branch main --branch master`. It runs at `pre-commit` stage and refuses the commit outright. `git commit --no-verify` bypasses this local feedback only.
 - Where the repository's effective policy contains the Touchstone organization
   ruleset, GitHub requires the change to go through a PR and rejects direct
   pushes to `main`, including from organization admins.
 
-The layers are complementary: the tool-boundary hook catches the intent and
-the local hook catches the honest mistake before it becomes a commit. Where
-the repository's effective policy contains the Touchstone ruleset, GitHub also
-rejects direct pushes at the server.
+Local feedback and server policy are complementary when both are present.
+Missing local hooks do not change the branching rule; where effective GitHub
+policy contains the Touchstone ruleset, the server rejects direct pushes.
 
 ## The lifecycle
 
@@ -40,7 +41,7 @@ rejects direct pushes at the server.
 3. **Check the tree before changing it.** Run `git status --short` and `git branch --show-current` before starting implementation. If the tree is dirty with unrelated user changes, do not stash them and do not auto-commit on the user's behalf. Ask how to proceed, or branch around the changes when the file surfaces are disjoint. `git stash` is hidden multi-agent state, not a coordination mechanism.
 4. **Loop: change → commit → push.** Each meaningful sub-task gets its own commit and push. Stage explicit file paths (not `git add -A`), write a concise message, push to the open branch.
 5. **Ship.** Push and open the PR — see "Opening a PR" below.
-6. **Answer every piece of PR feedback before merging.** Reply to each comment and resolve its thread, whoever left it. Unresolved threads genuinely block the merge — `required_conversation_resolution` is on, so this one GitHub enforces.
+6. **Answer every piece of PR feedback before merging.** Reply to each comment and resolve its thread, whoever left it. Where effective policy requires conversation resolution, GitHub blocks unresolved threads; elsewhere resolving them remains mandatory driver procedure.
 7. **Merge**, bound to the head the review actually saw — see "Merging" below.
 8. **Clean up after merge.** Delete the local feature branch once the PR is merged.
 
@@ -89,41 +90,45 @@ If they differ, push again before requesting review — otherwise the review bin
 
 ## Checking the gate
 
-What the merge gate says right now, in three commands:
+What the merge gate says right now, in three checks:
 
 ```bash
 gh pr checks <n>                                          # required checks
 gh pr view <n> --json reviews --jq '.reviews[-1].state'   # latest review state
-gh api graphql -f query='
-  query($owner:String!, $repo:String!, $pr:Int!) {
+unresolved_threads="$(
+  gh api graphql --paginate -f query='
+  query($owner:String!, $repo:String!, $pr:Int!, $endCursor:String) {
     repository(owner:$owner, name:$repo) {
       pullRequest(number:$pr) {
-        reviewThreads(first:100) {
+        reviewThreads(first:100, after:$endCursor) {
           nodes {
             id
             isResolved
             comments(first:100) { nodes { databaseId url } }
           }
+          pageInfo { hasNextPage endCursor }
         }
       }
     }
   }' -F owner=<owner> -F repo=<repo> -F pr=<n> \
-  --jq '.data.repository.pullRequest.reviewThreads.nodes
-    | map(select(.isResolved | not))
-    | {
-        unresolvedCount: length,
-        unresolvedThreads: map({
-          threadId: .id,
-          rootCommentId: .comments.nodes[0].databaseId,
-          rootCommentUrl: .comments.nodes[0].url
-        })
-      }'
+  --jq '.data.repository.pullRequest.reviewThreads.nodes[]
+    | select(.isResolved | not)
+    | [.id, (.comments.nodes[0].databaseId | tostring),
+       .comments.nodes[0].url]
+    | @tsv'
+)" || exit 1
+if [ -n "$unresolved_threads" ]; then
+  printf 'Unresolved review threads (thread ID, root comment ID, URL):\n%s\n' \
+    "$unresolved_threads" >&2
+  exit 1
+fi
+printf 'All review threads are resolved.\n'
 ```
 
-The last result includes both the unresolved count and the `PRRT_` thread ID
-to root comment-ID mapping needed to answer and resolve each finding.
-Replies are deliberately omitted because `respond-review.sh --comment-id`
-accepts the root finding ID. Zero is the requirement.
+The last check paginates the complete thread connection. On failure it prints
+the `PRRT_` thread ID to root comment-ID mapping needed to answer and resolve
+each finding. Replies are deliberately omitted because the raw reply endpoint
+accepts the root finding ID. A zero exit proves no unresolved thread remains.
 
 **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.** GitHub's review API can support approval for authorized integrations, but that is not this adapter's observed contract. Do not expect an approval here or treat its absence as a stalled review.
 
@@ -136,16 +141,9 @@ conversation resolution separately requires every inline thread closed.
 
 ## Answering findings
 
-Answer each finding with the canonical response command instead of hand-rolling API calls:
-
-```bash
-bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file> [--fix-commit <sha>]
-bash scripts/respond-review.sh <pr> --all-resolved-check
-```
-
-It posts the threaded reply, resolves the thread, and verifies the resolution stuck, with bounded retries for transient API failures. GitHub needs four separate calls to do this correctly, which is why it is a script rather than a line of prose.
-
-The raw equivalent, if you need it: reply with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<id>/replies -f body=@<file>`, then resolve with the GraphQL mutation:
+Use the stable root comment ID from the complete GitHub review surface. Reply
+with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<id>/replies -F
+body=@<file>`, then resolve with the GraphQL mutation:
 
 ```bash
 gh api graphql -f query='
@@ -346,7 +344,7 @@ or close the PR while preserving the findings. Do not grow the current PR one
 review comment at a time. Exact-head review remains required after any redesign;
 scope containment is never permission to skip review.
 
-**The loop.** If every finding resolves **without moving the head** (dispositions 3–4), answer every thread, prove none remain with `--all-resolved-check`, then merge — answered findings satisfy the gate (issue #751); do not request another review. If any fix lands as a commit (dispositions 1–2), batch ALL of them into ONE commit, answer every thread, push, and request one review for the new head.
+**The loop.** If every finding resolves **without moving the head** (dispositions 3–4), answer every thread, prove none remain with the complete paginated thread check above, then merge — answered findings satisfy the gate (issue #751); do not request another review. If any fix lands as a commit (dispositions 1–2), batch ALL of them into ONE commit, answer every thread, push, and request one review for the new head.
 
 **The budget: three finding-bearing rounds per capability, never more than three
 on one PR.** This is a discipline, not an enforced limit — the wrapper that
@@ -462,9 +460,12 @@ assignments are worse than no assignment at all.
 **For bundles.** When one lane closes multiple items, claim and comment on all
 of them with the same branch reference.
 
-**Deterministic enforcement.** `.github/workflows/issue-claim-check.yml` runs on every `pull_request` open/edit/synchronize. It parses `Closes #N` / `Fixes #N` / `Resolves #N` / `Closes-issue: #N` from the PR body, fetches each open referenced issue, and fails the check if the PR author is not in the issue's assignees. The failure posts a comment on the PR explaining what to fix. `scripts/issue-claim-check.sh` is the same check, runnable locally before you push.
-
-**Bypass token: `[skip-claim-check]`.** For documented exemptions (drive-by typo fix, true emergency, sandbox PR you don't intend to merge), put the literal token in the PR body. The CI check sees the token and skips with a workflow-run note, leaving an audit trail. This is a documented escape hatch, not a daily shortcut.
+**Enforcement is repository policy, not a prose assumption.** Where effective
+GitHub policy includes an issue-claim check, it may parse closing references,
+verify assignees, and document a repository-specific bypass. Inspect that
+policy before relying on either behavior. Without such a check, the
+claim-and-reconcile discipline remains mandatory driver procedure; there is no
+universal bypass token.
 
 ## Parallel work with worktrees
 

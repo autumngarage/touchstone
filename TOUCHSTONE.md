@@ -64,7 +64,7 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 4. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
 5. **Reconcile tracked work.** Before opening the PR, list every tracker item found, claimed, fixed, partially fixed, or made stale. Fixed items get the configured closing reference in the PR body; partial or stale items get a tracker note explaining the evidence or remaining gap. Do not leave shipped work stale silently.
 6. **Ship.** `git push -u origin HEAD`, then `gh pr create`. Put the configured closing reference (`Closes #123` or `Fixes AUT-123`) in the **PR body**, not only a commit. Request review by commenting `@codex review` on the PR.
-7. **Answer every piece of PR feedback before merging.** Whoever reviews (hosted AI, bot, or colleague), reply to each comment and resolve the thread; unresolved threads and `CHANGES_REQUESTED` block the merge. `bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file>` replies and resolves in one step; `--all-resolved-check` proves none remain.
+7. **Answer every piece of PR feedback before merging.** Inspect GitHub's complete review surface, reply to each comment, and resolve every thread with the raw procedure in `principles/git-workflow.md`; unresolved threads and `CHANGES_REQUESTED` block the merge.
 8. **Merge.** Use a project-documented executable merge boundary when present; otherwise run `gh pr merge <n> --squash --match-head-commit <sha>`. Always bind the reviewed head and confirm GitHub state, regardless of exit code.
 9. **Clean up after merge.** Delete the local branch if it persists.
 

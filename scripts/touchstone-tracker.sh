@@ -14,9 +14,7 @@ OPERATION="${1:-}"
 REFERENCE=""
 TRACKER=""
 KEY_PREFIX=""
-TRACKER_SCHEMA_SEEN=false
-TRACKER_TYPE_SEEN=false
-TRACKER_KEYS=""
+SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 
 usage() {
   sed -n '3,8p' "$0" | sed 's/^# \{0,1\}//' >&2
@@ -54,82 +52,12 @@ fail_input() {
   exit 2
 }
 
-trim() {
-  local value="$1"
-  value="${value#"${value%%[![:space:]]*}"}"
-  value="${value%"${value##*[![:space:]]}"}"
-  printf '%s' "$value"
+tracker_contract_failure() {
+  fail_input "$1" "$2"
 }
 
-parse_string() {
-  local raw
-  raw="$(trim "$1")"
-  case "$raw" in
-    \"*\")
-      raw="${raw#\"}"
-      raw="${raw%\"}"
-      ;;
-    *) return 1 ;;
-  esac
-  case "$raw" in *\"* | *\\*) return 1 ;; esac
-  PARSED="$raw"
-}
-
-load_tracker() {
-  local config="$PROJECT_ROOT/.touchstone-tracker.toml" line key value lineno=0
-  TRACKER="github"
-  [ ! -L "$config" ] \
-    || fail_input unsafe-config "Replace the .touchstone-tracker.toml symlink with a reviewed regular file in this repository."
-  [ -e "$config" ] || return 0
-  [ -f "$config" ] \
-    || fail_input unsafe-config "Replace .touchstone-tracker.toml with a reviewed regular file."
-
-  while IFS= read -r line || [ -n "$line" ]; do
-    lineno=$((lineno + 1))
-    line="$(trim "${line%%#*}")"
-    [ -n "$line" ] || continue
-    case "$line" in
-      *=*)
-        key="$(trim "${line%%=*}")"
-        value="${line#*=}"
-        ;;
-      *) fail_input malformed-config "Use key = value syntax at .touchstone-tracker.toml:$lineno." ;;
-    esac
-    case " $TRACKER_KEYS " in
-      *" $key "*) fail_input duplicate-tracker-key "Keep exactly one tracker $key declaration." ;;
-    esac
-    TRACKER_KEYS="$TRACKER_KEYS $key"
-    case "$key" in
-      schema)
-        value="$(trim "$value")"
-        [ "$value" = 1 ] || fail_input unsupported-tracker-schema "Set schema = 1 in .touchstone-tracker.toml."
-        TRACKER_SCHEMA_SEEN=true
-        ;;
-      type)
-        parse_string "$value" || fail_input malformed-config "Set type to a single-line quoted string."
-        TRACKER="$PARSED"
-        TRACKER_TYPE_SEEN=true
-        ;;
-      key_prefix)
-        parse_string "$value" || fail_input malformed-config "Set key_prefix to a single-line quoted string."
-        KEY_PREFIX="$PARSED"
-        ;;
-      *) fail_input unknown-tracker-key "Remove unsupported tracker key '$key'." ;;
-    esac
-  done <"$config"
-
-  case "$TRACKER" in github | linear) ;; *) fail_input unknown-tracker "Set type to \"github\" or \"linear\"." ;; esac
-  [ "$TRACKER_SCHEMA_SEEN" = true ] \
-    || fail_input missing-tracker-schema "Add schema = 1 to .touchstone-tracker.toml."
-  [ "$TRACKER_TYPE_SEEN" = true ] \
-    || fail_input missing-tracker-type "Add type = \"github\" or type = \"linear\" to .touchstone-tracker.toml."
-  if [ "$TRACKER" = linear ]; then
-    printf '%s' "$KEY_PREFIX" | grep -Eq '^[A-Z][A-Z0-9]*$' \
-      || fail_input invalid-key-prefix "Set key_prefix to the Linear team key, for example \"AUT\"."
-  elif [ -n "$KEY_PREFIX" ]; then
-    fail_input invalid-key-prefix "Remove key_prefix; it applies only to the Linear tracker."
-  fi
-}
+# shellcheck disable=SC1091 # source resolves from the installed CLI root.
+source "$SCRIPT_ROOT/lib/touchstone-tracker-config.sh"
 
 validate_project_contract() {
   local output status
@@ -237,10 +165,8 @@ else
   PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
   PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 fi
-SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
-
 validate_project_contract
-load_tracker
+load_tracker_contract "$PROJECT_ROOT/.touchstone-tracker.toml"
 normalize_reference
 
 if [ "$TRACKER" = github ]; then claim_github; else claim_linear; fi

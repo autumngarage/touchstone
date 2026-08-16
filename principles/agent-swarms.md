@@ -120,7 +120,7 @@ a whole.
 
 If a lane changes the review/merge pipeline itself, ship that lane before other
 parallel lanes. Pipeline fixes include the delivery prose in
-`principles/git-workflow.md`, `.github/workflows/`, `scripts/respond-review.sh`,
+`principles/git-workflow.md`, delivery workflows, review-response tooling,
 and pre-commit hooks. Every
 other lane flows through that path at review/merge time, so leaving known
 pipeline bugs in place can invalidate otherwise-correct slice PRs.
