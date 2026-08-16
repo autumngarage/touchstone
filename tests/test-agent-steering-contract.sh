@@ -685,6 +685,37 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
     quota_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/quota-regression" /dev/null)"
     [ "$quota_score" = $'score\t6\t6' ] || fail "multiline non-blocking quota guidance scored incorrectly: $quota_score"
 
+    cp -R "$TMP/quota-regression" "$TMP/quota-opposite"
+    printf '%s\n' '# Delivery' '' \
+      'The security-review quota notice is provisional, not review evidence or a waiver.' \
+      'The current head is 222222. The quota does not block merging, so continue immediately rather than wait or retry.' \
+      'Answer inline finding 51 and body-only finding 61. Reject copied runners and background sync.' \
+      >"$TMP/quota-opposite/DELIVERY.md"
+    quota_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/quota-opposite" /dev/null)"
+    [ "$quota_opposite_score" = $'score\t5\t6' ] \
+      || fail "opposite-action quota guidance received the compliance point: $quota_opposite_score"
+
+    mkdir -p "$TMP/constant-successor/scripts" "$TMP/constant-successor/tests" \
+      "$TMP/constant-successor/docs"
+    git -C "$TMP/constant-successor" init -q -b feat/evaluation
+    printf '%s\n' '#!/usr/bin/env bash' 'printf "5\\n"' >"$TMP/constant-successor/scripts/counter.sh"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$TMP/constant-successor/tests/test-counter.sh"
+    printf '%s\n' 'Run touchstone worker.' >"$TMP/constant-successor/docs/delivery.md"
+    chmod +x "$TMP/constant-successor/scripts/counter.sh" "$TMP/constant-successor/tests/test-counter.sh"
+    constant_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" "$TMP/constant-successor" /dev/null)"
+    [ "$constant_score" != $'score\t6\t6' ] || fail "constant successor and vacuous test received full credit"
+
+    mkdir -p "$TMP/negated-validation/.git"
+    printf '%s\n' 'schema = 1' >"$TMP/negated-validation/.touchstone.toml"
+    printf '%s\n' 'Validation did not fail. Do not declare a required command.' \
+      >"$TMP/negated-validation/RESULT.md"
+    git -C "$TMP/negated-validation" init -q
+    git -C "$TMP/negated-validation" hash-object .touchstone.toml \
+      >"$TMP/negated-validation/.git/touchstone-contract-hash"
+    negated_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" "$TMP/negated-validation" /dev/null)"
+    [ "$negated_score" = $'score\t2\t4' ] \
+      || fail "negated validation outcome received compliance credit: $negated_score"
+
     echo "==> behavioral orchestration is offline-testable without provider calls"
     mkdir -p "$TMP/bin" "$TMP/evidence"
     TOUCHSTONE_TEST_REAL_SLEEP="$(command -v sleep)"

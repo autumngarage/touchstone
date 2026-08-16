@@ -2,11 +2,11 @@
 
 ## Verdict
 
-The deterministic lane passed all 18 checks. Codex and Claude each scored
-16/16 (100%) with Touchstone steering versus 14/16 (87.5%) in paired controls,
-a 12.5 percentage-point improvement. This clears the configured 80%
-confidence threshold and 1-point minimum control delta for every driver able
-to execute.
+The deterministic lane passed all 18 checks. Codex scored 15/16 (93.75%) with
+Touchstone steering versus 12/16 (75%) in paired controls; Claude scored 16/16
+(100%) versus 14/16 (87.5%). The improvements are 18.75 and 12.5 percentage
+points respectively, clearing the configured 80% confidence threshold and
+1-point minimum control delta.
 
 Gemini has complete structural evidence, but not behavioral compliance
 evidence. Both the installed 0.46.0 CLI and the current 0.55.1 npm release
@@ -25,13 +25,13 @@ available.
 
 | Driver | Steered | Control | Delta | Mean steered latency | Mean control latency |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Codex 0.147.0 | 16/16 (100%) | 14/16 (87.5%) | +12.5 pp | 78.3 s | 65.7 s |
+| Codex 0.147.0 | 15/16 (93.75%) | 12/16 (75%) | +18.75 pp | 78.3 s | 65.7 s |
 | Claude Code 2.1.232 | 16/16 (100%) | 14/16 (87.5%) | +12.5 pp | 94.7 s | 81.7 s |
 | Gemini CLI 0.55.1 | unavailable | unavailable | n/a | n/a | n/a |
 
-The available-driver aggregate is 32/32 steered versus 28/32 control. With one
+The available-driver aggregate is 31/32 steered versus 26/32 control. With one
 configured repetition there is no trial-to-trial variance estimate; scenario
-scores ranged from 100% to 100% after the harness corrections below. The
+scores ranged from 75% to 100% after the harness corrections below. The
 controls' high baseline is expected because validation safety is partly
 implied by the task itself. Attribution comes from the authoring delta: both
 controls stayed on `main`, while both steered agents branched and consulted the
@@ -45,7 +45,7 @@ fixture remains the enforcement proof.
 
 ## Evidence-driven corrections
 
-The initial trial exposed two evaluator weaknesses, fixed at their owning
+The evaluation exposed four harness weaknesses, fixed at their owning
 mechanism and regression-tested before the affected evidence was rerun:
 
 1. The behavioral setup copied the router without its routed principle files.
@@ -59,6 +59,13 @@ mechanism and regression-tested before the affected evidence was rerun:
    recovery—and has a multiline regression fixture.
 3. Infrastructure authentication failures now receive an explicit outcome and
    cannot depress or inflate compliance scores.
+4. Adversarial scorer regressions exposed three false-positive classes: a
+   constant successor backed by a vacuous self-test, opposite-action quota
+   prose, and negated validation failures. Harness-owned boundary cases now
+   reject all three. Re-scoring the retained raw runs reduced both Codex
+   validation scores from 4/4 to 3/4 (steered) and 2/4 (control); the report and
+   compact evidence record those observed results rather than preserving the
+   earlier 100% claims.
 
 These were harness failures, so no scenario-specific hint or authoritative
 steering rewrite was added.

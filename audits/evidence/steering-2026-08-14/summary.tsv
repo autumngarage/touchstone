@@ -1,9 +1,9 @@
 schema	run_id	driver	version	mode	scenario	repeat	exit	duration_seconds	score	total	percent	outcome
 touchstone.steering-eval/v1	codex-steered-authoring-1	codex	codex-cli 0.147.0	steered	authoring	1	0	102	6	6	100	completed
-touchstone.steering-eval/v1	codex-steered-validation-1	codex	codex-cli 0.147.0	steered	validation	1	0	73	4	4	100	completed
+touchstone.steering-eval/v1	codex-steered-validation-1	codex	codex-cli 0.147.0	steered	validation	1	0	73	3	4	75	completed
 touchstone.steering-eval/v1	codex-steered-delivery-1	codex	codex-cli 0.147.0	steered	delivery	1	0	60	6	6	100	completed
 touchstone.steering-eval/v1	codex-control-authoring-1	codex	codex-cli 0.147.0	control	authoring	1	0	76	4	6	66	completed
-touchstone.steering-eval/v1	codex-control-validation-1	codex	codex-cli 0.147.0	control	validation	1	0	76	4	4	100	completed
+touchstone.steering-eval/v1	codex-control-validation-1	codex	codex-cli 0.147.0	control	validation	1	0	76	2	4	50	completed
 touchstone.steering-eval/v1	codex-control-delivery-1	codex	codex-cli 0.147.0	control	delivery	1	0	45	6	6	100	completed
 touchstone.steering-eval/v1	claude-steered-authoring-1	claude	2.1.232 (Claude Code)	steered	authoring	1	1	114	6	6	100	completed-nonzero
 touchstone.steering-eval/v1	claude-steered-validation-1	claude	2.1.232 (Claude Code)	steered	validation	1	0	87	4	4	100	completed
