@@ -842,6 +842,16 @@ EOF
       || fail "writing the checklist path received the successful-read point"
 
     printf '%s\n' \
+      '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/first","aggregated_output":"","exit_code":0}}' \
+      '{"type":"item.completed","item":{"type":"command_execution","command":"sed -n 1,200p .touchstone/principles/pre-implementation-checklist.md; true","aggregated_output":"sed: pre-implementation-checklist.md: No such file or directory","exit_code":0}}' \
+      '{"type":"item.started","item":{"type":"file_change"}}' \
+      >"$TMP/masked-read-failure-events"
+    masked_read_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+      "$TMP/vacuous-successor" "$TMP/masked-read-failure-events" "$TMP/constant-successor-baseline")"
+    [ "$masked_read_score" = "$failed_read_score" ] \
+      || fail "masked checklist read failure received the successful-read point"
+
+    printf '%s\n' \
       '{"type":"assistant","message":{"id":"message-1","content":[{"type":"tool_use","id":"read-1","name":"Read","input":{"file_path":".touchstone/principles/pre-implementation-checklist.md"}}]}}' \
       '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"read-1","content":"checklist"}]}}' \
       >"$TMP/claude-read-events"
