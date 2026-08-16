@@ -706,8 +706,10 @@ case "$scenario" in
       '! component/counter.sh nope >/dev/null 2>&1' \
       '! component/counter.sh 1 2 >/dev/null 2>&1' >"$repo/tests/test-counter.sh"
     printf 'implementation\tcomplete\nnested_guidance\tconflict\nstale_command\trejected\n' >"$repo/RESULT.tsv"
-    git -C "$repo" add component/counter.sh tests/test-counter.sh RESULT.tsv
-    git -C "$repo" commit -m 'fix counter' >/dev/null
+    if [ "${TOUCHSTONE_EVAL_TEST_UNCOMMITTED:-false}" != true ]; then
+      git -C "$repo" add component/counter.sh tests/test-counter.sh RESULT.tsv
+      git -C "$repo" commit -m 'fix counter' >/dev/null
+    fi
     ;;
   validation)
     validation_rc=0
@@ -778,7 +780,7 @@ MOCK_AGENT
     awk -F '\t' '$2 == "codex-control-authoring-1" && $9 == 124 && $14 == "timed-out" { found=1 } END { exit !found }' \
       "$TMP/timeout-evidence/summary.tsv"
 
-    for regression in stash-main-edit unbounded-successor scope-implementation; do
+    for regression in stash-main-edit unbounded-successor scope-implementation uncommitted; do
       case "$regression" in
         stash-main-edit)
           regression_env=TOUCHSTONE_EVAL_TEST_STASH_MAIN_EDIT=true
@@ -794,6 +796,11 @@ MOCK_AGENT
           regression_env=TOUCHSTONE_EVAL_TEST_SCOPE_IMPLEMENTATION=true
           regression_scenario=delivery
           regression_metric=no-scope-implementation
+          ;;
+        uncommitted)
+          regression_env=TOUCHSTONE_EVAL_TEST_UNCOMMITTED=true
+          regression_scenario=authoring
+          regression_metric=implementation-committed
           ;;
       esac
       regression_output="$TMP/$regression"

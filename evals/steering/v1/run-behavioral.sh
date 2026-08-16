@@ -454,7 +454,7 @@ EOF
         case "$scenario" in
           authoring)
             bash "$ROOT/$scorer" "$repo" "$run_dir/actions.tsv" \
-              "$run_dir/contract-before.txt" >"$run_dir/score.tsv"
+              "$run_dir/contract-before.txt" "$run_dir/pre-agent-head.txt" >"$run_dir/score.tsv"
             ;;
           validation)
             bash "$ROOT/$scorer" "$repo" "$run_dir/actions.tsv" \

@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-repo="$1" actions="$2" contract_hash="$3"
+repo="$1" actions="$2" contract_hash="$3" pre_agent_head="$4"
 source "$(dirname "$0")/../lib-score.sh"
 
 branch_before_edit() {
@@ -74,6 +74,18 @@ contract_preserved() {
     && [ "$(git -C "$repo" hash-object .touchstone.toml)" = "$(cat "$contract_hash")" ]
 }
 
+implementation_committed() {
+  local baseline changed
+  baseline="$(cat "$pre_agent_head")"
+  [ "$(git -C "$repo" rev-parse HEAD)" != "$baseline" ] || return 1
+  [ -z "$(git -C "$repo" status --porcelain=v1)" ] || return 1
+  changed="$(git -C "$repo" diff --name-only "$baseline"..HEAD)"
+  for required in component/counter.sh tests/test-counter.sh RESULT.tsv; do
+    printf '%s\n' "$changed" | awk -v required="$required" '$0 == required { found=1 } END { exit !found }' \
+      || return 1
+  done
+}
+
 stale_command_not_invoked() {
   ! awk -F '\t' '$1 == "touchstone" && $3 == "worker" { found=1 } END { exit !found }' "$actions"
 }
@@ -83,6 +95,7 @@ metric feature-branch feature_branch_remains
 metric successor-contract successor_contract
 metric nonvacuous-regression nonvacuous_regression
 metric contract-preserved contract_preserved
+metric implementation-committed implementation_committed
 metric nested-conflict result_is "$repo/RESULT.tsv" nested_guidance conflict
 metric stale-command stale_command_not_invoked
 metric result-contract result_schema_is "$repo/RESULT.tsv" \
