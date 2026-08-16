@@ -1,6 +1,4 @@
 # shellcheck shell=bash
-# shellcheck disable=SC2034 # KEEP_PLAN is consumed by the adoption entrypoint trap.
-
 toml_escape() {
   local value="$1"
   value="${value//\\/\\\\}"
@@ -98,11 +96,13 @@ plan_file() {
   if [ -e "$destination" ]; then
     cp -p "$destination" "$old_file" || operational_failure "could not snapshot $relative"
     action=update
+    cp -p "$destination" "$new_file" || operational_failure "could not preserve metadata for $relative"
+    cp "$proposed" "$new_file" || operational_failure "could not stage proposed $relative"
   else
     : >"$old_file" || operational_failure "could not stage empty snapshot for $relative"
     action=create
+    cp -p "$proposed" "$new_file" || operational_failure "could not stage proposed $relative"
   fi
-  cp -p "$proposed" "$new_file" || operational_failure "could not stage proposed $relative"
   cmp -s "$old_file" "$new_file" && return 0
   printf '%s\t%s\t%s\n' "$action" "$relative" "$ownership" >>"$CHANGES_FILE" \
     || operational_failure "could not record planned change for $relative"
@@ -153,93 +153,5 @@ render_plan_diff() {
     set -e
     case "$diff_status" in 0 | 1) ;; *) operational_failure "could not render diff for $relative" ;; esac
     [ "$renderer_status" -eq 0 ] || operational_failure "could not render diff for $relative"
-  done <"$CHANGES_FILE"
-}
-
-restore_plan_after_failure() {
-  local action relative _ownership destination old_file new_file restore_failed=false
-  local sorted_directories="$PLAN_ROOT/created-dirs-sorted"
-  while IFS="$(printf '\t')" read -r action relative _ownership; do
-    [ -n "$relative" ] || continue
-    destination="$PROJECT_ROOT/$relative"
-    old_file="$PLAN_ROOT/old/$relative"
-    new_file="$PLAN_ROOT/new/$relative"
-    if [ "$action" = create ]; then
-      [ ! -e "$destination" ] && continue
-      if cmp -s "$destination" "$new_file"; then
-        rm -f -- "$destination" || restore_failed=true
-      else
-        restore_failed=true
-      fi
-    else
-      if [ -f "$destination" ] && cmp -s "$destination" "$old_file"; then
-        continue
-      fi
-      if [ ! -e "$destination" ] || { [ -f "$destination" ] && cmp -s "$destination" "$new_file"; }; then
-        mkdir -p "$(dirname "$destination")" || restore_failed=true
-        cp -p "$old_file" "$destination" || restore_failed=true
-      else
-        restore_failed=true
-      fi
-    fi
-  done <"$CHANGES_FILE"
-  awk '
-      !seen[$0]++ { path[++count] = $0 }
-      END {
-        for (left = 1; left <= count; left++)
-          for (right = left + 1; right <= count; right++)
-            if (length(path[right]) > length(path[left])) {
-              swap = path[left]; path[left] = path[right]; path[right] = swap
-            }
-        for (position = 1; position <= count; position++) print path[position]
-      }
-    ' "$CREATED_DIRS_FILE" >"$sorted_directories" || restore_failed=true
-  while IFS= read -r relative; do
-    [ -n "$relative" ] || continue
-    [ ! -d "$PROJECT_ROOT/$relative" ] \
-      || rmdir -- "$PROJECT_ROOT/$relative" || restore_failed=true
-  done <"$sorted_directories"
-  [ "$restore_failed" = false ]
-}
-
-capture_missing_directories() {
-  local action relative _ownership parent relative_parent
-  : >"$CREATED_DIRS_FILE" || operational_failure "could not initialize apply recovery state"
-  while IFS="$(printf '\t')" read -r action relative _ownership; do
-    [ -n "$relative" ] || continue
-    parent="$(dirname "$PROJECT_ROOT/$relative")"
-    while [ "$parent" != "$PROJECT_ROOT" ]; do
-      [ -e "$parent" ] && break
-      relative_parent="${parent#"$PROJECT_ROOT"/}"
-      printf '%s\n' "$relative_parent" >>"$CREATED_DIRS_FILE" \
-        || operational_failure "could not record apply recovery directory"
-      parent="$(dirname "$parent")"
-    done
-  done <"$CHANGES_FILE"
-}
-
-apply_plan() {
-  local apply_output apply_status=0 action relative _ownership destination
-  capture_missing_directories
-  git -C "$PROJECT_ROOT" apply --check "$DIFF_FILE" >/dev/null 2>&1 \
-    || safety_refusal "repository bytes changed after planning; run adoption again"
-  apply_output="$(git -C "$PROJECT_ROOT" apply "$DIFF_FILE" 2>&1)" || apply_status=$?
-  if [ "$apply_status" -ne 0 ]; then
-    if ! restore_plan_after_failure; then
-      KEEP_PLAN=true
-      operational_failure "apply failed and unexpected concurrent content was preserved; recovery snapshots remain at $PLAN_ROOT"
-    fi
-    operational_failure "apply failed without retaining a partial Touchstone write: $apply_output"
-  fi
-  while IFS="$(printf '\t')" read -r action relative _ownership; do
-    [ -n "$relative" ] || continue
-    destination="$PROJECT_ROOT/$relative"
-    if [ ! -f "$destination" ] || ! cmp -s "$destination" "$PLAN_ROOT/new/$relative"; then
-      if ! restore_plan_after_failure; then
-        KEEP_PLAN=true
-        operational_failure "applied bytes could not be verified and recovery requires $PLAN_ROOT"
-      fi
-      operational_failure "applied bytes could not be verified; the original files were restored"
-    fi
   done <"$CHANGES_FILE"
 }

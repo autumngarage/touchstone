@@ -9,10 +9,10 @@ generated project declaration is owned by
 
 `touchstone adopt --check` reports whether repository-file adoption is current.
 `touchstone adopt --dry-run` prints the complete proposed diff. `touchstone
-adopt` presents and applies that same plan only from a clean, non-default
-branch. `touchstone upgrade` exposes the same three modes but refreshes only
-Touchstone-owned steering bytes; it never rewrites an accepted schema-v1
-declaration.
+upgrade` exposes the same two read-only modes but refreshes only
+Touchstone-owned steering bytes in its proposed plan; it never proposes a
+rewrite of an accepted schema-v1 declaration. Applying an accepted plan is a
+separate delivery capability and is not part of this read-only compiler.
 
 Both commands accept `--json` and `--project DIR`. Fresh adoption accepts
 repeated `--task NAME=COMMAND` arguments for the explicit manual path and
@@ -22,10 +22,9 @@ Repeating adoption against an existing tracker declaration accepts no
 replacement tracker or task options; an older adopted project without the
 tracker declaration may select it during adoption.
 
-Exit classes are stable: 0 means current, planned, or applied; 2 is invalid
-invocation; 3 means `--check` found a required change; 4 is ambiguous or
-unsupported input; 5 is an apply safety refusal; and 6 is an operational
-failure.
+Exit classes are stable: 0 means current or planned; 2 is invalid invocation;
+3 means `--check` found a required change; 4 is ambiguous or unsupported
+input; and 6 is an operational failure.
 
 ## Versioned plan
 
@@ -36,9 +35,8 @@ adoption never reads or mutates GitHub policy; the plan always reports that as
 a separate operation.
 
 Detectors return records in one model. They do not write, and validation never
-runs them. One generic planner renders every candidate file and one generic
-applier owns every repository write. Applying a freshly accepted plan twice is
-a no-op.
+runs them. One generic planner renders every candidate file without mutating
+the repository.
 
 ## Automatic scope
 
@@ -69,18 +67,18 @@ proposal.
 
 ## Ownership and safety
 
-The applier may create the project-owned `.touchstone.toml` and
+The planner may propose the project-owned `.touchstone.toml` and
 `.touchstone-tracker.toml` declarations, create complete Touchstone-owned
 sources under `.touchstone/`, and create or replace only the exact
 `touchstone:steering` block in `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md`.
-Everything outside those markers remains project-owned.
+Everything outside those markers remains project-owned. Updates preserve each
+existing file's mode as project-owned metadata.
 
 Existing valid schema-v1 declarations remain byte-for-byte unchanged. Adopt
 fills missing steering integration points without refreshing existing managed
 sources; explicit upgrade refreshes them. Symlinks, malformed or repeated
 markers, ignored managed outputs, untracked existing managed output,
-unsupported schema, dirty/default-branch apply, and paths outside the
-repository refuse without a partial write.
+unsupported schema and paths outside the repository refuse without a write.
 
 No adoption or upgrade operation deletes a project file. A breaking schema,
 obsolete path, or remote-policy change requires its own explicit reviewable

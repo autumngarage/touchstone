@@ -7,7 +7,7 @@ set -euo pipefail
 OUTPUT_SCHEMA='touchstone.adoption/v1'
 OPERATION="${1:-}"
 [ "$#" -gt 0 ] && shift
-MODE=apply
+MODE=""
 JSON_MODE=false
 PROJECT_ARG=""
 TRACKER_TYPE=""
@@ -17,7 +17,6 @@ MANUAL_TASK_ARGS=()
 PROFILE=""
 DETECTED_PROFILE=""
 PLAN_STATUS=""
-KEEP_PLAN=false
 PLAN_ROOT=""
 TAB="$(printf '\t')"
 CR="$(printf '\r')"
@@ -28,9 +27,9 @@ SCRIPT_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  touchstone adopt [--check|--dry-run] [--json] [--project DIR]
+  touchstone adopt --check|--dry-run [--json] [--project DIR]
     [--tracker github|linear] [--tracker-prefix KEY] [--task NAME=COMMAND ...]
-  touchstone upgrade [--check|--dry-run] [--json] [--project DIR]
+  touchstone upgrade --check|--dry-run [--json] [--project DIR]
 EOF
   exit 2
 }
@@ -84,10 +83,6 @@ contract_refusal() {
   emit_failure contract-refusal "$1" "Pass explicit --task commands or repair the named repository fact."
   exit 4
 }
-safety_refusal() {
-  emit_failure safety-refusal "$1" "Use a clean feature branch and rerun the plan."
-  exit 5
-}
 operational_failure() {
   emit_failure operational-failure "$1" "Repair the local filesystem or tool failure, then rerun."
   exit 6
@@ -100,7 +95,7 @@ require_option_value() {
 }
 
 cleanup() {
-  [ -z "$PLAN_ROOT" ] || [ "$KEEP_PLAN" = true ] || rm -rf -- "$PLAN_ROOT"
+  [ -z "$PLAN_ROOT" ] || rm -rf -- "$PLAN_ROOT"
 }
 trap cleanup EXIT
 
@@ -109,12 +104,12 @@ case "$OPERATION" in adopt | upgrade) ;; -h | --help | help) usage ;; *) usage ;
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --check)
-      [ "$MODE" = apply ] || invalid_invocation "choose only one planning mode" "Use --check or --dry-run, not both."
+      [ -z "$MODE" ] || invalid_invocation "choose only one planning mode" "Use --check or --dry-run, not both."
       MODE=check
       shift
       ;;
     --dry-run)
-      [ "$MODE" = apply ] || invalid_invocation "choose only one planning mode" "Use --check or --dry-run, not both."
+      [ -z "$MODE" ] || invalid_invocation "choose only one planning mode" "Use --check or --dry-run, not both."
       MODE=dry-run
       shift
       ;;
@@ -148,6 +143,9 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+[ -n "$MODE" ] \
+  || invalid_invocation "$OPERATION requires --check or --dry-run" "Choose a read-only planning mode."
+
 if [ "$OPERATION" = upgrade ] && { [ "$MANUAL_TASK_COUNT" -gt 0 ] || [ -n "$TRACKER_TYPE$TRACKER_PREFIX" ]; }; then
   invalid_invocation "upgrade does not accept task or tracker replacement options" "Upgrade refreshes only Touchstone-owned steering."
 fi
@@ -180,9 +178,8 @@ TARGETS_FILE="$PLAN_ROOT/targets"
 TASKS_FILE="$PLAN_ROOT/tasks"
 SETUPS_FILE="$PLAN_ROOT/setups"
 CHANGES_FILE="$PLAN_ROOT/changes"
-CREATED_DIRS_FILE="$PLAN_ROOT/created-dirs"
 DIFF_FILE="$PLAN_ROOT/plan.diff"
-if ! { : >"$TARGETS_FILE" && : >"$TASKS_FILE" && : >"$SETUPS_FILE" && : >"$CHANGES_FILE" && : >"$CREATED_DIRS_FILE"; }; then
+if ! { : >"$TARGETS_FILE" && : >"$TASKS_FILE" && : >"$SETUPS_FILE" && : >"$CHANGES_FILE"; }; then
   operational_failure "could not initialize adoption workspace"
 fi
 
@@ -415,36 +412,4 @@ case "$MODE" in
     [ "$CHANGE_COUNT" -eq 0 ] || exit 3
     ;;
   dry-run) emit_result "$([ "$CHANGE_COUNT" -eq 0 ] && printf current || printf planned)" ;;
-  apply)
-    if [ "$CHANGE_COUNT" -eq 0 ]; then
-      emit_result current
-      exit 0
-    fi
-    branch="$(git -C "$PROJECT_ROOT" branch --show-current)" \
-      || operational_failure "could not read current branch"
-    [ -n "$branch" ] || safety_refusal "detached HEAD cannot apply adoption"
-    default_branch="$(git -C "$PROJECT_ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-    default_branch="${default_branch#origin/}"
-    if [ -z "$default_branch" ]; then
-      default_candidates=""
-      for candidate in main master; do
-        if git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/heads/$candidate"; then
-          default_candidates="${default_candidates:+$default_candidates }$candidate"
-        fi
-      done
-      case "$default_candidates" in
-        main | master) default_branch="$default_candidates" ;;
-        *) safety_refusal "could not identify the repository default branch" ;;
-      esac
-    fi
-    case "$branch" in main | master) safety_refusal "adoption cannot apply on the default branch '$branch'" ;; esac
-    [ "$branch" != "$default_branch" ] \
-      || safety_refusal "adoption cannot apply on the default branch '$branch'"
-    [ -z "$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=all)" ] \
-      || safety_refusal "apply requires a clean worktree"
-    printf '==> complete accepted plan before writes\n' >&2
-    cat "$DIFF_FILE" >&2
-    apply_plan
-    emit_result applied
-    ;;
 esac

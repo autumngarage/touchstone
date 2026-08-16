@@ -1087,7 +1087,7 @@ mkdir -p "$PLAN_RECORDS/project/packages/web"
   }
 ) || fail "adoption plan-record invariant failed"
 
-echo "==> adoption plans once, applies safely, and compiles only portfolio evidence"
+echo "==> adoption plans once without writes and compiles only portfolio evidence"
 ADOPTION="$TMP_DIR/adoption"
 mkdir -p "$ADOPTION"
 
@@ -1132,11 +1132,18 @@ printf 'tracked\n' >"$SUBDIRECTORY_PROJECT/sub/input"
 git -C "$SUBDIRECTORY_PROJECT" add sub/input
 git -C "$SUBDIRECTORY_PROJECT" commit -qm subdirectory
 git -C "$SUBDIRECTORY_PROJECT" switch -qc feat/adopt
-run_adoption "$ADOPTION/subdirectory-project.out" adopt --project "$SUBDIRECTORY_PROJECT/sub" --task 'verify=true'
+run_adoption "$ADOPTION/subdirectory-project.json" adopt --dry-run --json \
+  --project "$SUBDIRECTORY_PROJECT/sub" --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "explicit project subdirectory did not normalize to the repository root"
-[ -f "$SUBDIRECTORY_PROJECT/.touchstone.toml" ] || fail "subdirectory adoption missed the repository root"
-[ ! -e "$SUBDIRECTORY_PROJECT/sub/.touchstone.toml" ] || fail "subdirectory adoption wrote below the repository root"
+run_adoption "$ADOPTION/root-project.json" adopt --dry-run --json \
+  --project "$SUBDIRECTORY_PROJECT" --task 'verify=true'
+cmp -s "$ADOPTION/subdirectory-project.json" "$ADOPTION/root-project.json" \
+  || fail "root and subdirectory planning selected different repository roots"
+[ ! -e "$SUBDIRECTORY_PROJECT/.touchstone.toml" ] || fail "subdirectory planning mutated the repository root"
 
+chmod +x "$MANUAL/AGENTS.md"
+git -C "$MANUAL" add AGENTS.md
+git -C "$MANUAL" commit -qm executable-instructions
 run_adoption "$ADOPTION/manual-one.json" adopt --dry-run --json --project "$MANUAL" \
   --tracker linear --tracker-prefix AUT --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "manual adoption dry-run failed"
@@ -1147,6 +1154,8 @@ assert_contains "$ADOPTION/manual-one.json" '"path":".touchstone-tracker.toml"'
 assert_contains "$ADOPTION/manual-one.json" '"remotePolicy":{"status":"separate-operation"}'
 assert_contains "$ADOPTION/manual-one.json" 'type = \"linear\"'
 assert_contains "$ADOPTION/manual-one.json" 'key_prefix = \"AUT\"'
+assert_not_contains "$ADOPTION/manual-one.json" 'old mode'
+assert_not_contains "$ADOPTION/manual-one.json" 'new mode'
 [ ! -e "$MANUAL/.touchstone.toml" ] || fail "adoption dry-run mutated the repository"
 run_adoption "$ADOPTION/manual-two.json" adopt --dry-run --json --project "$MANUAL" \
   --tracker linear --tracker-prefix AUT --task 'verify=true'
@@ -1163,119 +1172,25 @@ tracker_only_hash="$(git -C "$TRACKER_ONLY" hash-object .touchstone-tracker.toml
 run_adoption "$ADOPTION/tracker-only-replacement.json" adopt --dry-run --json --project "$TRACKER_ONLY" \
   --tracker github --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 2 ] || fail "tracker-only adoption accepted replacement tracker options"
-run_adoption "$ADOPTION/tracker-only-apply.out" adopt --project "$TRACKER_ONLY" --task 'verify=true'
-[ "$ADOPTION_STATUS" -eq 0 ] || fail "tracker-only adoption did not complete"
-[ -f "$TRACKER_ONLY/.touchstone.toml" ] || fail "tracker-only adoption missed the validation declaration"
+run_adoption "$ADOPTION/tracker-only-plan.json" adopt --dry-run --json \
+  --project "$TRACKER_ONLY" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "tracker-only adoption did not plan"
+assert_contains "$ADOPTION/tracker-only-plan.json" '"path":".touchstone.toml"'
+assert_not_contains "$ADOPTION/tracker-only-plan.json" '"path":".touchstone-tracker.toml"'
 [ "$tracker_only_hash" = "$(git -C "$TRACKER_ONLY" hash-object .touchstone-tracker.toml)" ] \
-  || fail "tracker-only adoption rewrote the project-owned tracker declaration"
+  || fail "tracker-only planning rewrote the project-owned tracker declaration"
 
 run_adoption "$ADOPTION/manual-check.json" adopt --check --json --project "$MANUAL" \
   --tracker linear --tracker-prefix AUT --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 3 ] || fail "adoption check did not report required changes"
 [ ! -e "$MANUAL/.touchstone.toml" ] || fail "adoption check mutated the repository"
 
-git -C "$MANUAL" switch -q main
-run_adoption "$ADOPTION/default-apply.out" adopt --project "$MANUAL" --task 'verify=true'
-[ "$ADOPTION_STATUS" -eq 5 ] || fail "default-branch adoption apply was accepted"
-[ ! -e "$MANUAL/.touchstone.toml" ] || fail "default-branch refusal left a partial write"
-
-UNKNOWN_DEFAULT="$ADOPTION/unknown-default"
-mkdir -p "$UNKNOWN_DEFAULT"
-git -C "$UNKNOWN_DEFAULT" init -q -b trunk
-git -C "$UNKNOWN_DEFAULT" config user.name test
-git -C "$UNKNOWN_DEFAULT" config user.email test@example.com
-printf '# Consumer\n' >"$UNKNOWN_DEFAULT/AGENTS.md"
-git -C "$UNKNOWN_DEFAULT" add AGENTS.md
-git -C "$UNKNOWN_DEFAULT" commit -qm fixture
-run_adoption "$ADOPTION/unknown-default.out" adopt --project "$UNKNOWN_DEFAULT" --task 'verify=true'
-[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply accepted a repository with an unknown default branch"
-assert_contains "$ADOPTION/unknown-default.out.err" 'could not identify the repository default branch'
-[ ! -e "$UNKNOWN_DEFAULT/.touchstone.toml" ] || fail "unknown-default refusal left a partial write"
-
-git -C "$MANUAL" switch -q feat/adopt
-printf 'dirty\n' >"$MANUAL/untracked"
-run_adoption "$ADOPTION/dirty-apply.out" adopt --project "$MANUAL" --task 'verify=true'
-[ "$ADOPTION_STATUS" -eq 5 ] || fail "dirty adoption apply was accepted"
-[ ! -e "$MANUAL/.touchstone.toml" ] || fail "dirty refusal left a partial write"
-rm "$MANUAL/untracked"
-
-ROLLBACK="$ADOPTION/rollback"
-new_adoption_repo "$ROLLBACK"
-git -C "$ROLLBACK" switch -qc feat/adopt
-rollback_agents_hash="$(git -C "$ROLLBACK" hash-object AGENTS.md)"
-mkdir -p "$ADOPTION/fake-git"
-cat >"$ADOPTION/fake-git/git" <<'EOF'
-#!/usr/bin/env bash
-set -u
-is_apply=false
-is_check=false
-for argument in "$@"; do
-	[ "$argument" != apply ] || is_apply=true
-	[ "$argument" != --check ] || is_check=true
-done
-"$ADOPTION_REAL_GIT" "$@"
-status=$?
-if [ "$status" -eq 0 ] && [ "$is_apply" = true ] && [ "$is_check" = false ] &&
-	[ "${ADOPTION_FAIL_AFTER_APPLY:-}" = 1 ]; then
-	exit 97
-fi
-exit "$status"
-EOF
-chmod +x "$ADOPTION/fake-git/git"
-ADOPTION_REAL_GIT="$(command -v git)"
-original_path="$PATH"
-export ADOPTION_REAL_GIT ADOPTION_FAIL_AFTER_APPLY=1 PATH="$ADOPTION/fake-git:$PATH"
-run_adoption "$ADOPTION/rollback.out" adopt --project "$ROLLBACK" --task 'verify=true'
-PATH="$original_path"
-unset ADOPTION_FAIL_AFTER_APPLY ADOPTION_REAL_GIT
-[ "$ADOPTION_STATUS" -eq 6 ] || fail "ambiguous apply failure did not report an operational failure"
-[ "$rollback_agents_hash" = "$(git -C "$ROLLBACK" hash-object AGENTS.md)" ] \
-  || fail "apply recovery did not restore project-owned prose"
-[ ! -e "$ROLLBACK/.touchstone.toml" ] || fail "apply recovery retained the new validation declaration"
-[ ! -e "$ROLLBACK/.touchstone-tracker.toml" ] || fail "apply recovery retained the new tracker declaration"
-[ ! -e "$ROLLBACK/.touchstone" ] \
-  || fail "apply recovery retained Touchstone-created paths: $(find "$ROLLBACK/.touchstone" -print | sed "s#$ROLLBACK/##")"
-
-run_adoption "$ADOPTION/manual-apply.out" adopt --project "$MANUAL" \
-  --tracker linear --tracker-prefix AUT --task 'verify=true'
-[ "$ADOPTION_STATUS" -eq 0 ] || fail "clean adoption apply failed"
-[ -f "$MANUAL/.touchstone.toml" ] || fail "adoption did not create the declaration"
-[ -f "$MANUAL/.touchstone-tracker.toml" ] || fail "adoption did not create the tracker declaration"
-[ -f "$MANUAL/.touchstone/TOUCHSTONE.md" ] || fail "adoption did not create portable steering"
-assert_contains "$MANUAL/AGENTS.md" 'Project-owned guidance.'
-assert_contains "$MANUAL/AGENTS.md" '<!-- touchstone:steering:start -->'
-assert_contains "$MANUAL/.touchstone/TOUCHSTONE.md" 'A security-review quota notice is never a blocker'
-assert_not_contains "$MANUAL/.touchstone/TOUCHSTONE.md" 'scripts/respond-review.sh'
-assert_contains "$MANUAL/.touchstone/TOUCHSTONE.md" "Inspect GitHub's complete review surface"
-assert_not_contains "$MANUAL/.touchstone/principles/git-workflow.md" 'scripts/touchstone-tracker.sh'
-assert_not_contains "$MANUAL/.touchstone/principles/git-workflow.md" 'respond-review.sh'
-assert_not_contains "$MANUAL/AGENTS.md" 'docs/pr-cli-contract.md'
-for route in agent-swarms.md ai-delivery-architecture.md audit-weak-points.md \
-  documentation-ownership.md engineering-principles.md file-upstream-bugs.md \
-  git-workflow.md memory-hygiene.md pre-implementation-checklist.md; do
-  [ -f "$MANUAL/.touchstone/principles/$route" ] \
-    || fail "rendered steering route is missing: $route"
-done
-assert_contains "$ADOPTION/manual-apply.out.err" 'complete accepted plan before writes'
-git -C "$MANUAL" add .touchstone.toml .touchstone-tracker.toml .touchstone AGENTS.md CLAUDE.md GEMINI.md
-git -C "$MANUAL" commit -qm adopted
-contract_hash="$(git -C "$MANUAL" hash-object .touchstone.toml)"
-run_adoption "$ADOPTION/manual-current.json" adopt --json --project "$MANUAL"
-[ "$ADOPTION_STATUS" -eq 0 ] || fail "repeat adoption failed"
-assert_contains "$ADOPTION/manual-current.json" '"status":"current"'
-[ "$contract_hash" = "$(git -C "$MANUAL" hash-object .touchstone.toml)" ] \
-  || fail "repeat adoption rewrote the accepted contract"
-
-printf '\nMore project-owned guidance.\n' >>"$MANUAL/AGENTS.md"
-printf '\nSTALE MANAGED BYTES\n' >>"$MANUAL/.touchstone/TOUCHSTONE.md"
-git -C "$MANUAL" add AGENTS.md .touchstone/TOUCHSTONE.md
-git -C "$MANUAL" commit -qm stale-steering
-run_adoption "$ADOPTION/upgrade.out" upgrade --project "$MANUAL"
-[ "$ADOPTION_STATUS" -eq 0 ] || fail "explicit steering upgrade failed"
-assert_contains "$MANUAL/AGENTS.md" 'More project-owned guidance.'
-assert_not_contains "$MANUAL/.touchstone/TOUCHSTONE.md" 'STALE MANAGED BYTES'
-[ "$contract_hash" = "$(git -C "$MANUAL" hash-object .touchstone.toml)" ] \
-  || fail "upgrade rewrote the project-owned contract"
+run_adoption "$ADOPTION/apply-unavailable.json" adopt --json --project "$MANUAL" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 2 ] || fail "planner accepted a mutating invocation"
+assert_contains "$ADOPTION/apply-unavailable.json" 'requires --check or --dry-run'
+assert_contains "$ADOPTION/manual-one.json" 'A security-review quota notice is never a blocker'
+assert_not_contains "$ADOPTION/manual-one.json" 'scripts/respond-review.sh'
+assert_contains "$ADOPTION/manual-one.json" "Inspect GitHub's complete review surface"
 
 OLDER_V1="$ADOPTION/older-v1"
 new_adoption_repo "$OLDER_V1"
@@ -1299,12 +1214,11 @@ git -C "$OLDER_V1" add .touchstone.toml
 git -C "$OLDER_V1" commit -qm older-v1
 git -C "$OLDER_V1" switch -qc feat/adopt
 older_contract_hash="$(git -C "$OLDER_V1" hash-object .touchstone.toml)"
-run_adoption "$ADOPTION/older-v1.out" adopt --project "$OLDER_V1"
-[ "$ADOPTION_STATUS" -eq 0 ] || fail "new runtime refused an older valid v1 contract"
+run_adoption "$ADOPTION/older-v1.json" adopt --dry-run --json --project "$OLDER_V1"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "new planner refused an older valid v1 contract"
 [ "$older_contract_hash" = "$(git -C "$OLDER_V1" hash-object .touchstone.toml)" ] \
-  || fail "adoption rewrote an older valid v1 contract"
-[ -f "$OLDER_V1/.touchstone-tracker.toml" ] \
-  || fail "adoption did not add the compatible tracker declaration"
+  || fail "adoption planning rewrote an older valid v1 contract"
+assert_contains "$ADOPTION/older-v1.json" '"path":".touchstone-tracker.toml"'
 
 NPM="$ADOPTION/npm"
 new_adoption_repo "$NPM"
@@ -1378,7 +1292,7 @@ run_adoption "$ADOPTION/unsupported.out" adopt --dry-run --project "$UNSUPPORTED
 
 UNSUPPORTED_TRACKER="$ADOPTION/unsupported-tracker"
 new_adoption_repo "$UNSUPPORTED_TRACKER"
-cp "$MANUAL/.touchstone.toml" "$UNSUPPORTED_TRACKER/.touchstone.toml"
+cp "$OLDER_V1/.touchstone.toml" "$UNSUPPORTED_TRACKER/.touchstone.toml"
 printf '%s\n' 'schema = 2' 'type = "github"' >"$UNSUPPORTED_TRACKER/.touchstone-tracker.toml"
 git -C "$UNSUPPORTED_TRACKER" add .touchstone.toml .touchstone-tracker.toml
 git -C "$UNSUPPORTED_TRACKER" commit -qm unsupported-tracker
