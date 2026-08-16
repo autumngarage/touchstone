@@ -1369,9 +1369,10 @@ run_adoption "$ADOPTION/manual-check.json" adopt --check --json --project "$MANU
 [ "$ADOPTION_STATUS" -eq 3 ] || fail "adoption check did not report required changes"
 [ ! -e "$MANUAL/.touchstone.toml" ] || fail "adoption check mutated the repository"
 
-run_adoption "$ADOPTION/apply-unavailable.json" adopt --json --project "$MANUAL" --task 'verify=true'
-[ "$ADOPTION_STATUS" -eq 2 ] || fail "planner accepted a mutating invocation"
-assert_contains "$ADOPTION/apply-unavailable.json" 'requires --check or --dry-run'
+run_adoption "$ADOPTION/conflicting-modes.json" adopt --json --check --dry-run \
+  --project "$MANUAL" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 2 ] || fail "planner accepted conflicting read-only modes"
+assert_contains "$ADOPTION/conflicting-modes.json" 'choose only one planning mode'
 assert_contains "$ADOPTION/manual-one.json" 'A security-review quota notice is never a blocker'
 assert_not_contains "$ADOPTION/manual-one.json" 'scripts/respond-review.sh'
 assert_contains "$ADOPTION/manual-one.json" "Inspect GitHub's complete review surface"
@@ -1563,5 +1564,141 @@ printf '# local untracked instructions\n' >"$UNTRACKED/CLAUDE.md"
 run_adoption "$ADOPTION/untracked.out" adopt --dry-run --project "$UNTRACKED" --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "untracked managed output did not fail closed"
 assert_contains "$ADOPTION/untracked.out.err" 'existing managed output is not tracked: CLAUDE.md'
+
+echo "==> adoption applies atomically only from a clean non-default branch"
+APPLY_REPO="$ADOPTION/apply"
+new_adoption_repo "$APPLY_REPO"
+chmod +x "$APPLY_REPO/AGENTS.md"
+git -C "$APPLY_REPO" add AGENTS.md
+git -C "$APPLY_REPO" commit -qm executable-guidance
+git -C "$APPLY_REPO" switch -qc feat/adopt
+run_adoption "$ADOPTION/apply.json" adopt --json --project "$APPLY_REPO" \
+  --tracker linear --tracker-prefix AUT --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "clean feature-branch adoption did not apply"
+assert_contains "$ADOPTION/apply.json" '"status":"applied"'
+assert_contains "$APPLY_REPO/AGENTS.md" 'Project-owned guidance.'
+[ -x "$APPLY_REPO/AGENTS.md" ] || fail "apply changed project-owned file mode"
+[ -f "$APPLY_REPO/.touchstone.toml" ] || fail "apply omitted project contract"
+[ -f "$APPLY_REPO/.touchstone-tracker.toml" ] || fail "apply omitted tracker contract"
+git -C "$APPLY_REPO" add AGENTS.md CLAUDE.md GEMINI.md .touchstone .touchstone.toml .touchstone-tracker.toml
+git -C "$APPLY_REPO" commit -qm adopted
+run_adoption "$ADOPTION/apply-twice.json" adopt --json --project "$APPLY_REPO"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "second adoption did not converge"
+assert_contains "$ADOPTION/apply-twice.json" '"status":"current"'
+assert_contains "$ADOPTION/apply-twice.json" '"changes":[]'
+
+contract_hash="$(git -C "$APPLY_REPO" hash-object .touchstone.toml)"
+printf 'stale managed steering\n' >"$APPLY_REPO/.touchstone/TOUCHSTONE.md"
+git -C "$APPLY_REPO" add .touchstone/TOUCHSTONE.md
+git -C "$APPLY_REPO" commit -qm stale-steering
+run_adoption "$ADOPTION/upgrade.json" upgrade --json --project "$APPLY_REPO"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "explicit upgrade did not apply"
+assert_contains "$ADOPTION/upgrade.json" '"status":"applied"'
+assert_contains "$APPLY_REPO/.touchstone/TOUCHSTONE.md" 'A security-review quota notice is never a blocker'
+[ "$contract_hash" = "$(git -C "$APPLY_REPO" hash-object .touchstone.toml)" ] \
+  || fail "upgrade rewrote the project-owned validation declaration"
+
+DEFAULT_REPO="$ADOPTION/default-branch"
+new_adoption_repo "$DEFAULT_REPO"
+run_adoption "$ADOPTION/default-branch.out" adopt --project "$DEFAULT_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply wrote on the default branch"
+assert_contains "$ADOPTION/default-branch.out.err" "cannot apply on the default branch 'main'"
+[ ! -e "$DEFAULT_REPO/.touchstone.toml" ] || fail "default-branch refusal mutated the repository"
+
+TRUNK_DEFAULT="$ADOPTION/trunk-default"
+new_adoption_repo "$TRUNK_DEFAULT"
+git -C "$TRUNK_DEFAULT" branch trunk
+git -C "$TRUNK_DEFAULT" update-ref refs/remotes/origin/trunk HEAD
+git -C "$TRUNK_DEFAULT" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
+run_adoption "$ADOPTION/trunk-default.out" adopt --project "$TRUNK_DEFAULT" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "remote trunk default incorrectly made local main a default branch"
+[ -f "$TRUNK_DEFAULT/.touchstone.toml" ] || fail "remote default metadata did not authorize feature apply"
+
+MISSING_DEFAULT="$ADOPTION/missing-default"
+new_adoption_repo "$MISSING_DEFAULT"
+git -C "$MISSING_DEFAULT" switch -qc feat/adopt
+git -C "$MISSING_DEFAULT" branch -D main >/dev/null
+run_adoption "$ADOPTION/missing-default.out" adopt --project "$MISSING_DEFAULT" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply guessed a default branch without metadata"
+assert_contains "$ADOPTION/missing-default.out.err" 'could not identify the repository default branch'
+
+DANGLING_DEFAULT="$ADOPTION/dangling-default"
+new_adoption_repo "$DANGLING_DEFAULT"
+git -C "$DANGLING_DEFAULT" switch -qc feat/adopt
+git -C "$DANGLING_DEFAULT" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
+run_adoption "$ADOPTION/dangling-default.out" adopt --project "$DANGLING_DEFAULT" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply trusted a dangling remote default-branch ref"
+assert_contains "$ADOPTION/dangling-default.out.err" 'could not identify the repository default branch'
+
+AMBIGUOUS_DEFAULT="$ADOPTION/ambiguous-default"
+new_adoption_repo "$AMBIGUOUS_DEFAULT"
+git -C "$AMBIGUOUS_DEFAULT" branch master
+git -C "$AMBIGUOUS_DEFAULT" switch -qc feat/adopt
+run_adoption "$ADOPTION/ambiguous-default.out" adopt --project "$AMBIGUOUS_DEFAULT" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply guessed between local main and master"
+assert_contains "$ADOPTION/ambiguous-default.out.err" 'could not identify the repository default branch'
+
+DETACHED_REPO="$ADOPTION/detached"
+new_adoption_repo "$DETACHED_REPO"
+git -C "$DETACHED_REPO" checkout -q --detach
+run_adoption "$ADOPTION/detached.out" adopt --project "$DETACHED_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "detached HEAD applied adoption"
+assert_contains "$ADOPTION/detached.out.err" 'detached HEAD cannot apply adoption'
+
+DIRTY_REPO="$ADOPTION/dirty"
+new_adoption_repo "$DIRTY_REPO"
+printf 'clean\n' >"$DIRTY_REPO/project.txt"
+git -C "$DIRTY_REPO" add project.txt
+git -C "$DIRTY_REPO" commit -qm project-file
+git -C "$DIRTY_REPO" switch -qc feat/adopt
+printf 'dirty\n' >>"$DIRTY_REPO/project.txt"
+run_adoption "$ADOPTION/dirty.out" adopt --project "$DIRTY_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "dirty worktree applied adoption"
+assert_contains "$ADOPTION/dirty.out.err" 'apply requires a clean worktree'
+[ ! -e "$DIRTY_REPO/.touchstone.toml" ] || fail "dirty-worktree refusal mutated the repository"
+
+FAIL_GIT_BIN="$ADOPTION/fail-git-bin"
+mkdir -p "$FAIL_GIT_BIN"
+cat >"$FAIL_GIT_BIN/git" <<'EOF'
+#!/usr/bin/env bash
+arguments=("$@")
+project=""
+if [ "${1:-}" = -C ]; then
+  project="$2"
+  shift 2
+fi
+if [ "${1:-}" = apply ] && [ "${2:-}" != --check ]; then
+  "$TOUCHSTONE_REAL_GIT" "${arguments[@]}" || exit $?
+  if [ "${TOUCHSTONE_CONCURRENT_WRITE:-false}" = true ]; then
+    printf 'concurrent content\n' >"$project/AGENTS.md"
+  fi
+  exit 91
+fi
+exec "$TOUCHSTONE_REAL_GIT" "${arguments[@]}"
+EOF
+chmod +x "$FAIL_GIT_BIN/git"
+REAL_GIT="$(command -v git)"
+
+ROLLBACK_REPO="$ADOPTION/rollback"
+new_adoption_repo "$ROLLBACK_REPO"
+git -C "$ROLLBACK_REPO" switch -qc feat/adopt
+PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" \
+  run_adoption "$ADOPTION/rollback.out" adopt --project "$ROLLBACK_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "injected apply failure did not report an operational failure"
+[ "$(cat "$ROLLBACK_REPO/AGENTS.md")" = "# Consumer
+
+Project-owned guidance." ] || fail "failed apply did not restore project guidance"
+[ ! -e "$ROLLBACK_REPO/.touchstone.toml" ] || fail "failed apply retained a partial project contract"
+[ ! -e "$ROLLBACK_REPO/.touchstone" ] || fail "failed apply retained a partial managed directory"
+
+CONCURRENT_REPO="$ADOPTION/concurrent"
+new_adoption_repo "$CONCURRENT_REPO"
+git -C "$CONCURRENT_REPO" switch -qc feat/adopt
+PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" TOUCHSTONE_CONCURRENT_WRITE=true \
+  run_adoption "$ADOPTION/concurrent.out" adopt --project "$CONCURRENT_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "concurrent apply did not report an operational failure"
+[ "$(cat "$CONCURRENT_REPO/AGENTS.md")" = 'concurrent content' ] \
+  || fail "apply rollback overwrote unexpected concurrent content"
+assert_contains "$ADOPTION/concurrent.out.err" 'unexpected concurrent content was preserved'
 
 echo "validation engine tests passed"
