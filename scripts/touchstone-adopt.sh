@@ -431,18 +431,36 @@ case "$MODE" in
     branch="$(git -C "$PROJECT_ROOT" branch --show-current)" \
       || operational_failure "could not read current branch"
     [ -n "$branch" ] || safety_refusal "detached HEAD cannot apply adoption"
-    default_ref_status=0
-    default_branch="$(git -C "$PROJECT_ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" \
-      || default_ref_status=$?
-    case "$default_ref_status" in
-      0 | 1) ;;
-      *) operational_failure "could not inspect the repository default branch" ;;
+    remotes_file="$PLAN_ROOT/remotes"
+    git -C "$PROJECT_ROOT" remote >"$remotes_file" \
+      || operational_failure "could not inspect the repository default branch"
+    remote_default_count=0
+    default_branch=""
+    while IFS= read -r remote; do
+      [ -n "$remote" ] || continue
+      default_ref_status=0
+      default_ref="$(git -C "$PROJECT_ROOT" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null)" \
+        || default_ref_status=$?
+      case "$default_ref_status" in
+        0)
+          remote_default_count=$((remote_default_count + 1))
+          case "$default_ref" in
+            "$remote"/*) default_branch="${default_ref#"$remote"/}" ;;
+            *) safety_refusal "could not identify the repository default branch" ;;
+          esac
+          git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/remotes/$default_ref" \
+            || safety_refusal "could not identify the repository default branch"
+          ;;
+        1) ;;
+        *) operational_failure "could not inspect the repository default branch" ;;
+      esac
+    done <"$remotes_file"
+    case "$remote_default_count" in
+      0) ;;
+      1) ;;
+      *) safety_refusal "multiple remote default branches are configured" ;;
     esac
-    default_branch="${default_branch#origin/}"
-    if [ -n "$default_branch" ]; then
-      git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/remotes/origin/$default_branch" \
-        || safety_refusal "could not identify the repository default branch"
-    else
+    if [ "$remote_default_count" -eq 0 ]; then
       default_candidates=""
       for candidate in main master; do
         if git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/heads/$candidate"; then

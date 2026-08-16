@@ -1608,11 +1608,28 @@ assert_contains "$ADOPTION/default-branch.out.err" "cannot apply on the default 
 TRUNK_DEFAULT="$ADOPTION/trunk-default"
 new_adoption_repo "$TRUNK_DEFAULT"
 git -C "$TRUNK_DEFAULT" branch trunk
-git -C "$TRUNK_DEFAULT" update-ref refs/remotes/origin/trunk HEAD
-git -C "$TRUNK_DEFAULT" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
+git -C "$TRUNK_DEFAULT" remote add upstream https://example.invalid/touchstone-consumer.git
+git -C "$TRUNK_DEFAULT" update-ref refs/remotes/upstream/trunk HEAD
+git -C "$TRUNK_DEFAULT" symbolic-ref refs/remotes/upstream/HEAD refs/remotes/upstream/trunk
 run_adoption "$ADOPTION/trunk-default.out" adopt --project "$TRUNK_DEFAULT" --task 'verify=true'
-[ "$ADOPTION_STATUS" -eq 0 ] || fail "remote trunk default incorrectly made local main a default branch"
-[ -f "$TRUNK_DEFAULT/.touchstone.toml" ] || fail "remote default metadata did not authorize feature apply"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "renamed-remote trunk default incorrectly made local main a default branch"
+[ -f "$TRUNK_DEFAULT/.touchstone.toml" ] || fail "renamed remote default metadata did not authorize feature apply"
+
+MULTIPLE_REMOTE_DEFAULTS="$ADOPTION/multiple-remote-defaults"
+new_adoption_repo "$MULTIPLE_REMOTE_DEFAULTS"
+git -C "$MULTIPLE_REMOTE_DEFAULTS" switch -qc feat/adopt
+git -C "$MULTIPLE_REMOTE_DEFAULTS" remote add origin https://example.invalid/origin.git
+git -C "$MULTIPLE_REMOTE_DEFAULTS" remote add upstream https://example.invalid/upstream.git
+git -C "$MULTIPLE_REMOTE_DEFAULTS" update-ref refs/remotes/origin/main HEAD
+git -C "$MULTIPLE_REMOTE_DEFAULTS" update-ref refs/remotes/upstream/trunk HEAD
+git -C "$MULTIPLE_REMOTE_DEFAULTS" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+git -C "$MULTIPLE_REMOTE_DEFAULTS" symbolic-ref refs/remotes/upstream/HEAD refs/remotes/upstream/trunk
+run_adoption "$ADOPTION/multiple-remote-defaults.out" adopt \
+  --project "$MULTIPLE_REMOTE_DEFAULTS" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply guessed between multiple remote default branches"
+assert_contains "$ADOPTION/multiple-remote-defaults.out.err" 'multiple remote default branches are configured'
+[ ! -e "$MULTIPLE_REMOTE_DEFAULTS/.touchstone.toml" ] \
+  || fail "multiple remote defaults mutated the repository"
 
 MISSING_DEFAULT="$ADOPTION/missing-default"
 new_adoption_repo "$MISSING_DEFAULT"
@@ -1625,6 +1642,7 @@ assert_contains "$ADOPTION/missing-default.out.err" 'could not identify the repo
 DANGLING_DEFAULT="$ADOPTION/dangling-default"
 new_adoption_repo "$DANGLING_DEFAULT"
 git -C "$DANGLING_DEFAULT" switch -qc feat/adopt
+git -C "$DANGLING_DEFAULT" remote add origin https://example.invalid/dangling.git
 git -C "$DANGLING_DEFAULT" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
 run_adoption "$ADOPTION/dangling-default.out" adopt --project "$DANGLING_DEFAULT" --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 5 ] || fail "apply trusted a dangling remote default-branch ref"
@@ -1776,6 +1794,9 @@ assert_contains "$ADOPTION/status-failure.out.err" 'could not verify that the wo
 DEFAULT_REF_FAILURE_REPO="$ADOPTION/default-ref-failure"
 new_adoption_repo "$DEFAULT_REF_FAILURE_REPO"
 git -C "$DEFAULT_REF_FAILURE_REPO" switch -qc feat/adopt
+git -C "$DEFAULT_REF_FAILURE_REPO" remote add origin https://example.invalid/default-ref-failure.git
+git -C "$DEFAULT_REF_FAILURE_REPO" update-ref refs/remotes/origin/main HEAD
+git -C "$DEFAULT_REF_FAILURE_REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
 PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" TOUCHSTONE_SYMBOLIC_REF_FAILURE=true \
   run_adoption "$ADOPTION/default-ref-failure.out" adopt --project "$DEFAULT_REF_FAILURE_REPO" --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 6 ] || fail "default-ref inspection failure did not fail closed"
