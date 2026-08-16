@@ -333,8 +333,7 @@ tracker_contract_failure() {
 }
 
 compile_new_contract() {
-  local proposed="$PLAN_ROOT/proposed-contract.toml" tracker="$PLAN_ROOT/proposed-tracker.toml" detected
-  [ -n "$TRACKER_TYPE" ] || TRACKER_TYPE=github
+  local proposed="$PLAN_ROOT/proposed-contract.toml" detected
   if [ "$MANUAL_TASK_COUNT" -gt 0 ]; then
     compile_manual_plan "${MANUAL_TASK_ARGS[@]}"
   elif [ -f "$PROJECT_ROOT/.touchstone-config" ]; then
@@ -350,26 +349,28 @@ compile_new_contract() {
   fi
   render_contract "$proposed"
   plan_file .touchstone.toml "$proposed" project-contract
-  render_tracker_contract "$tracker"
-  plan_file .touchstone-tracker.toml "$tracker" project-contract
 }
 
-if [ -e "$PROJECT_ROOT/.touchstone.toml" ]; then
-  [ "$MANUAL_TASK_COUNT" -eq 0 ] \
-    || invalid_invocation "an existing validation declaration cannot be replaced by adoption options" "Edit project-owned values in a separate reviewed change."
-  read_existing_contract
+plan_tracker_contract() {
+  local proposed="$PLAN_ROOT/proposed-tracker.toml"
   if [ -e "$PROJECT_ROOT/.touchstone-tracker.toml" ]; then
     [ -z "$TRACKER_TYPE$TRACKER_PREFIX" ] \
       || invalid_invocation "an existing tracker declaration cannot be replaced by adoption options" "Edit project-owned values in a separate reviewed change."
     require_head_file .touchstone-tracker.toml
     load_tracker_contract "$PROJECT_ROOT/.touchstone-tracker.toml"
-  elif [ "$OPERATION" = adopt ]; then
-    [ -n "$TRACKER_TYPE" ] || TRACKER_TYPE=github
-    render_tracker_contract "$PLAN_ROOT/proposed-tracker.toml"
-    plan_file .touchstone-tracker.toml "$PLAN_ROOT/proposed-tracker.toml" project-contract
-  elif [ -n "$TRACKER_TYPE$TRACKER_PREFIX" ]; then
-    invalid_invocation "upgrade does not create a tracker declaration" "Run touchstone adopt to fill the missing project declaration."
+    return 0
   fi
+  [ "$OPERATION" = adopt ] || return 0
+  [ -n "$TRACKER_TYPE" ] || TRACKER_TYPE=github
+  render_tracker_contract "$proposed"
+  plan_file .touchstone-tracker.toml "$proposed" project-contract
+}
+
+plan_tracker_contract
+if [ -e "$PROJECT_ROOT/.touchstone.toml" ]; then
+  [ "$MANUAL_TASK_COUNT" -eq 0 ] \
+    || invalid_invocation "an existing validation declaration cannot be replaced by adoption options" "Edit project-owned values in a separate reviewed change."
+  read_existing_contract
   plan_steering "$([ "$OPERATION" = upgrade ] && printf true || printf false)"
 elif [ "$OPERATION" = upgrade ]; then
   contract_refusal "repository is not adopted; run touchstone adopt first"

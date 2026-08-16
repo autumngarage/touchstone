@@ -1153,6 +1153,22 @@ run_adoption "$ADOPTION/manual-two.json" adopt --dry-run --json --project "$MANU
 cmp -s "$ADOPTION/manual-one.json" "$ADOPTION/manual-two.json" \
   || fail "unchanged adoption inputs produced a different JSON plan"
 
+TRACKER_ONLY="$ADOPTION/tracker-only"
+new_adoption_repo "$TRACKER_ONLY"
+printf '%s\n' 'schema = 1' 'type = "linear"' 'key_prefix = "AUT"' >"$TRACKER_ONLY/.touchstone-tracker.toml"
+git -C "$TRACKER_ONLY" add .touchstone-tracker.toml
+git -C "$TRACKER_ONLY" commit -qm tracker-only
+git -C "$TRACKER_ONLY" switch -qc feat/adopt
+tracker_only_hash="$(git -C "$TRACKER_ONLY" hash-object .touchstone-tracker.toml)"
+run_adoption "$ADOPTION/tracker-only-replacement.json" adopt --dry-run --json --project "$TRACKER_ONLY" \
+  --tracker github --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 2 ] || fail "tracker-only adoption accepted replacement tracker options"
+run_adoption "$ADOPTION/tracker-only-apply.out" adopt --project "$TRACKER_ONLY" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "tracker-only adoption did not complete"
+[ -f "$TRACKER_ONLY/.touchstone.toml" ] || fail "tracker-only adoption missed the validation declaration"
+[ "$tracker_only_hash" = "$(git -C "$TRACKER_ONLY" hash-object .touchstone-tracker.toml)" ] \
+  || fail "tracker-only adoption rewrote the project-owned tracker declaration"
+
 run_adoption "$ADOPTION/manual-check.json" adopt --check --json --project "$MANUAL" \
   --tracker linear --tracker-prefix AUT --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 3 ] || fail "adoption check did not report required changes"
