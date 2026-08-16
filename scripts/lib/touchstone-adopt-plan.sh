@@ -157,6 +157,17 @@ render_plan_diff() {
   done <"$CHANGES_FILE"
 }
 
+managed_destination_is_local() {
+  local destination="$1" parent
+  [ ! -L "$destination" ] || return 1
+  parent="$(dirname "$destination")"
+  while [ "$parent" != "$PROJECT_ROOT" ]; do
+    [ ! -L "$parent" ] || return 1
+    [ ! -e "$parent" ] || [ -d "$parent" ] || return 1
+    parent="$(dirname "$parent")"
+  done
+}
+
 restore_plan_after_failure() {
   local action relative _ownership destination old_file new_file restore_failed=false
   local sorted_directories="$PLAN_ROOT/created-dirs-sorted"
@@ -165,6 +176,10 @@ restore_plan_after_failure() {
     destination="$PROJECT_ROOT/$relative"
     old_file="$PLAN_ROOT/old/$relative"
     new_file="$PLAN_ROOT/new/$relative"
+    if ! managed_destination_is_local "$destination"; then
+      restore_failed=true
+      continue
+    fi
     if [ "$action" = create ]; then
       [ ! -e "$destination" ] && [ ! -L "$destination" ] && continue
       if [ -f "$destination" ] && cmp -s "$destination" "$new_file"; then
@@ -236,7 +251,8 @@ apply_plan() {
   while IFS="$(printf '\t')" read -r action relative _ownership; do
     [ -n "$relative" ] || continue
     destination="$PROJECT_ROOT/$relative"
-    if [ ! -f "$destination" ] || ! cmp -s "$destination" "$PLAN_ROOT/new/$relative"; then
+    if ! managed_destination_is_local "$destination" \
+      || [ ! -f "$destination" ] || ! cmp -s "$destination" "$PLAN_ROOT/new/$relative"; then
       if ! restore_plan_after_failure; then
         KEEP_PLAN=true
         operational_failure "applied bytes could not be verified and recovery requires $PLAN_ROOT"
