@@ -200,14 +200,18 @@ source "$SCRIPT_ROOT/scripts/lib/touchstone-adopt-plan.sh"
 source "$SCRIPT_ROOT/scripts/lib/touchstone-adopt-steering.sh"
 
 require_head_file() {
-  local relative="$1"
+  local relative="$1" head_blob worktree_blob
   [ ! -L "$PROJECT_ROOT/$relative" ] || contract_refusal "compiler input is a symlink: $relative"
   [ -f "$PROJECT_ROOT/$relative" ] || contract_refusal "compiler input is not a regular file: $relative"
   git -C "$PROJECT_ROOT" ls-files --error-unmatch -- "$relative" >/dev/null 2>&1 \
     || contract_refusal "compiler input is not tracked: $relative"
   git -C "$PROJECT_ROOT" cat-file -e "HEAD:$relative" 2>/dev/null \
     || contract_refusal "compiler input does not exist in HEAD: $relative"
-  git -C "$PROJECT_ROOT" diff --quiet HEAD -- "$relative" \
+  head_blob="$(git -C "$PROJECT_ROOT" rev-parse "HEAD:$relative")" \
+    || operational_failure "could not read committed compiler input: $relative"
+  worktree_blob="$(git -C "$PROJECT_ROOT" hash-object -- "$relative")" \
+    || operational_failure "could not hash compiler input: $relative"
+  [ "$head_blob" = "$worktree_blob" ] \
     || contract_refusal "compiler input differs from HEAD: $relative"
 }
 
@@ -422,7 +426,13 @@ case "$MODE" in
     branch="$(git -C "$PROJECT_ROOT" branch --show-current)" \
       || operational_failure "could not read current branch"
     [ -n "$branch" ] || safety_refusal "detached HEAD cannot apply adoption"
-    default_branch="$(git -C "$PROJECT_ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    default_ref_status=0
+    default_branch="$(git -C "$PROJECT_ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" \
+      || default_ref_status=$?
+    case "$default_ref_status" in
+      0 | 1) ;;
+      *) operational_failure "could not inspect the repository default branch" ;;
+    esac
     default_branch="${default_branch#origin/}"
     if [ -n "$default_branch" ]; then
       git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/remotes/origin/$default_branch" \
@@ -455,6 +465,15 @@ case "$MODE" in
     fi
     [ -z "$worktree_status" ] \
       || safety_refusal "apply requires a clean worktree"
+    if ! tracked_flags="$(git -C "$PROJECT_ROOT" ls-files -v)"; then
+      operational_failure "could not inspect tracked-file flags"
+    fi
+    if printf '%s\n' "$tracked_flags" | awk '
+      { tag=substr($0, 1, 1); if (tag == "S" || tag ~ /^[a-z]$/) hidden=1 }
+      END { exit !hidden }
+    '; then
+      safety_refusal "apply does not accept assume-unchanged or skip-worktree files"
+    fi
     printf '==> complete accepted plan before writes\n' >&2
     printf '%s\n' "$(<"$DIFF_FILE")" >&2
     apply_plan

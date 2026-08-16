@@ -1630,6 +1630,19 @@ run_adoption "$ADOPTION/dangling-default.out" adopt --project "$DANGLING_DEFAULT
 [ "$ADOPTION_STATUS" -eq 5 ] || fail "apply trusted a dangling remote default-branch ref"
 assert_contains "$ADOPTION/dangling-default.out.err" 'could not identify the repository default branch'
 
+HIDDEN_INPUT="$ADOPTION/hidden-input"
+new_adoption_repo "$HIDDEN_INPUT"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package.json" "$HIDDEN_INPUT/package.json"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package-lock.json" "$HIDDEN_INPUT/package-lock.json"
+git -C "$HIDDEN_INPUT" add package.json package-lock.json
+git -C "$HIDDEN_INPUT" commit -qm npm
+git -C "$HIDDEN_INPUT" update-index --assume-unchanged package.json
+printf '{"scripts":{"test":"hidden command"}}\n' >"$HIDDEN_INPUT/package.json"
+run_adoption "$ADOPTION/hidden-input.out" adopt --dry-run --project "$HIDDEN_INPUT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "hidden compiler-input changes were accepted"
+assert_contains "$ADOPTION/hidden-input.out.err" 'compiler input differs from HEAD: package.json'
+git -C "$HIDDEN_INPUT" update-index --no-assume-unchanged package.json
+
 AMBIGUOUS_DEFAULT="$ADOPTION/ambiguous-default"
 new_adoption_repo "$AMBIGUOUS_DEFAULT"
 git -C "$AMBIGUOUS_DEFAULT" branch master
@@ -1657,6 +1670,16 @@ run_adoption "$ADOPTION/dirty.out" adopt --project "$DIRTY_REPO" --task 'verify=
 assert_contains "$ADOPTION/dirty.out.err" 'apply requires a clean worktree'
 [ ! -e "$DIRTY_REPO/.touchstone.toml" ] || fail "dirty-worktree refusal mutated the repository"
 
+HIDDEN_TRACKED_REPO="$ADOPTION/hidden-tracked"
+new_adoption_repo "$HIDDEN_TRACKED_REPO"
+git -C "$HIDDEN_TRACKED_REPO" switch -qc feat/adopt
+git -C "$HIDDEN_TRACKED_REPO" update-index --assume-unchanged AGENTS.md
+run_adoption "$ADOPTION/hidden-tracked.out" adopt --project "$HIDDEN_TRACKED_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply accepted a hidden tracked-file flag"
+assert_contains "$ADOPTION/hidden-tracked.out.err" 'apply does not accept assume-unchanged or skip-worktree files'
+[ ! -e "$HIDDEN_TRACKED_REPO/.touchstone.toml" ] || fail "hidden tracked-file refusal mutated the repository"
+git -C "$HIDDEN_TRACKED_REPO" update-index --no-assume-unchanged AGENTS.md
+
 LOCKED_REPO="$ADOPTION/locked"
 new_adoption_repo "$LOCKED_REPO"
 git -C "$LOCKED_REPO" switch -qc feat/adopt
@@ -1681,10 +1704,22 @@ fi
 if [ "${1:-}" = status ] && [ "${TOUCHSTONE_STATUS_FAILURE:-false}" = true ]; then
   exit 92
 fi
+if [ "${1:-}" = symbolic-ref ] && [ "${TOUCHSTONE_SYMBOLIC_REF_FAILURE:-false}" = true ]; then
+  exit 92
+fi
 if [ "${1:-}" = apply ] && [ "${2:-}" != --check ]; then
   "$TOUCHSTONE_REAL_GIT" "${arguments[@]}" || exit $?
   if [ "${TOUCHSTONE_CONCURRENT_WRITE:-false}" = true ]; then
     printf 'concurrent content\n' >"$project/AGENTS.md"
+  fi
+  if [ -n "${TOUCHSTONE_SYMLINK_TARGET:-}" ]; then
+    cp "$project/AGENTS.md" "$TOUCHSTONE_SYMLINK_TARGET"
+    rm "$project/AGENTS.md"
+    ln -s "$TOUCHSTONE_SYMLINK_TARGET" "$project/AGENTS.md"
+  fi
+  if [ -n "${TOUCHSTONE_PARENT_SYMLINK_TARGET:-}" ]; then
+    mv "$project/.touchstone" "$TOUCHSTONE_PARENT_SYMLINK_TARGET"
+    ln -s "$TOUCHSTONE_PARENT_SYMLINK_TARGET" "$project/.touchstone"
   fi
   exit 91
 fi
@@ -1702,6 +1737,16 @@ PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" TOUCHSTONE_STATUS_FAI
 assert_contains "$ADOPTION/status-failure.out.err" 'could not verify that the worktree is clean'
 [ ! -e "$STATUS_FAILURE_REPO/.touchstone.toml" ] \
   || fail "failed cleanliness probe mutated the repository"
+
+DEFAULT_REF_FAILURE_REPO="$ADOPTION/default-ref-failure"
+new_adoption_repo "$DEFAULT_REF_FAILURE_REPO"
+git -C "$DEFAULT_REF_FAILURE_REPO" switch -qc feat/adopt
+PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" TOUCHSTONE_SYMBOLIC_REF_FAILURE=true \
+  run_adoption "$ADOPTION/default-ref-failure.out" adopt --project "$DEFAULT_REF_FAILURE_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "default-ref inspection failure did not fail closed"
+assert_contains "$ADOPTION/default-ref-failure.out.err" 'could not inspect the repository default branch'
+[ ! -e "$DEFAULT_REF_FAILURE_REPO/.touchstone.toml" ] \
+  || fail "default-ref inspection failure mutated the repository"
 
 ROLLBACK_REPO="$ADOPTION/rollback"
 new_adoption_repo "$ROLLBACK_REPO"
@@ -1724,5 +1769,29 @@ PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" TOUCHSTONE_CONCURRENT
 [ "$(cat "$CONCURRENT_REPO/AGENTS.md")" = 'concurrent content' ] \
   || fail "apply rollback overwrote unexpected concurrent content"
 assert_contains "$ADOPTION/concurrent.out.err" 'unexpected concurrent content was preserved'
+
+SYMLINK_ROLLBACK_REPO="$ADOPTION/symlink-rollback"
+SYMLINK_ROLLBACK_TARGET="$ADOPTION/symlink-rollback-target"
+new_adoption_repo "$SYMLINK_ROLLBACK_REPO"
+git -C "$SYMLINK_ROLLBACK_REPO" switch -qc feat/adopt
+PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" \
+  TOUCHSTONE_SYMLINK_TARGET="$SYMLINK_ROLLBACK_TARGET" \
+  run_adoption "$ADOPTION/symlink-rollback.out" adopt --project "$SYMLINK_ROLLBACK_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "symlink-swapped rollback did not report an operational failure"
+[ -L "$SYMLINK_ROLLBACK_REPO/AGENTS.md" ] || fail "rollback replaced unexpected concurrent symlink content"
+assert_contains "$ADOPTION/symlink-rollback.out.err" 'unexpected concurrent content was preserved'
+assert_contains "$SYMLINK_ROLLBACK_TARGET" 'Touchstone — Shared Agent Steering'
+
+PARENT_SYMLINK_REPO="$ADOPTION/parent-symlink-rollback"
+PARENT_SYMLINK_TARGET="$ADOPTION/parent-symlink-target"
+new_adoption_repo "$PARENT_SYMLINK_REPO"
+git -C "$PARENT_SYMLINK_REPO" switch -qc feat/adopt
+PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" \
+  TOUCHSTONE_PARENT_SYMLINK_TARGET="$PARENT_SYMLINK_TARGET" \
+  run_adoption "$ADOPTION/parent-symlink-rollback.out" adopt --project "$PARENT_SYMLINK_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "parent-symlink rollback did not report an operational failure"
+[ -L "$PARENT_SYMLINK_REPO/.touchstone" ] || fail "rollback replaced an unexpected parent symlink"
+assert_contains "$ADOPTION/parent-symlink-rollback.out.err" 'unexpected concurrent content was preserved'
+assert_contains "$PARENT_SYMLINK_TARGET/TOUCHSTONE.md" 'Touchstone — Shared Agent Steering'
 
 echo "validation engine tests passed"
