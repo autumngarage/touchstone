@@ -8,11 +8,28 @@ EVAL_ROOT="$ROOT/evals/steering/v1"
 OPERATION="${1:-}"
 if [ "$#" -gt 0 ]; then shift; fi
 STRUCTURAL_TEMP=""
+ACTIVE_PROCESS_PID=""
+ACTIVE_WATCHDOG_PID=""
+ACTIVE_TERMINATION_GRACE=1
 
 cleanup() {
+  if [ -n "$ACTIVE_WATCHDOG_PID" ]; then
+    kill "$ACTIVE_WATCHDOG_PID" 2>/dev/null || true
+    wait "$ACTIVE_WATCHDOG_PID" 2>/dev/null || true
+    ACTIVE_WATCHDOG_PID=""
+  fi
+  if [ -n "$ACTIVE_PROCESS_PID" ]; then
+    kill -TERM -- "-$ACTIVE_PROCESS_PID" 2>/dev/null || true
+    sleep "$ACTIVE_TERMINATION_GRACE" 2>/dev/null || true
+    kill -KILL -- "-$ACTIVE_PROCESS_PID" 2>/dev/null || true
+    wait "$ACTIVE_PROCESS_PID" 2>/dev/null || true
+    ACTIVE_PROCESS_PID=""
+  fi
   [ -z "$STRUCTURAL_TEMP" ] || rm -rf -- "$STRUCTURAL_TEMP"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 usage() {
   cat >&2 <<'EOF'
@@ -196,8 +213,41 @@ install_steering() {
   fi
 }
 
+wait_for_bounded_process() {
+  local pid="$1" timeout="$2" grace="$3" status=0 watchdog
+  ACTIVE_PROCESS_PID="$pid"
+  ACTIVE_TERMINATION_GRACE="$grace"
+  (
+    local timer=""
+    stop_timer() {
+      [ -z "$timer" ] || kill "$timer" 2>/dev/null || true
+      [ -z "$timer" ] || wait "$timer" 2>/dev/null || true
+      timer=""
+    }
+    trap 'stop_timer; exit 0' HUP INT TERM
+    sleep "$timeout" &
+    timer=$!
+    wait "$timer"
+    timer=""
+    kill -TERM -- "-$pid" 2>/dev/null || true
+    sleep "$grace" &
+    timer=$!
+    wait "$timer"
+    timer=""
+    kill -KILL -- "-$pid" 2>/dev/null || true
+  ) &
+  watchdog=$!
+  ACTIVE_WATCHDOG_PID="$watchdog"
+  wait "$pid" || status=$?
+  ACTIVE_PROCESS_PID=""
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  ACTIVE_WATCHDOG_PID=""
+  return "$status"
+}
+
 run_agent() {
-  local driver="$1" repo="$2" events="$3" prompt="$4" status=0 budget timeout grace pid watchdog monitor_enabled=false
+  local driver="$1" repo="$2" events="$3" prompt="$4" status=0 budget timeout grace pid monitor_enabled=false
   timeout="$(config_value scenario_timeout_seconds)"
   grace="$(config_value termination_grace_seconds)"
   case $- in *m*) ;; *)
@@ -222,29 +272,28 @@ run_agent() {
       ;;
   esac
   pid=$!
-  (
-    timer=""
-    stop_timer() {
-      [ -z "$timer" ] || kill "$timer" 2>/dev/null || true
-      [ -z "$timer" ] || wait "$timer" 2>/dev/null || true
-      timer=""
-    }
-    trap 'stop_timer; exit 0' HUP INT TERM
-    sleep "$timeout" &
-    timer=$!
-    wait "$timer"
-    timer=""
-    kill -TERM -- "-$pid" 2>/dev/null || true
-    sleep "$grace" &
-    timer=$!
-    wait "$timer"
-    timer=""
-    kill -KILL -- "-$pid" 2>/dev/null || true
-  ) &
-  watchdog=$!
-  wait "$pid" || status=$?
-  kill "$watchdog" 2>/dev/null || true
-  wait "$watchdog" 2>/dev/null || true
+  ACTIVE_PROCESS_PID="$pid"
+  ACTIVE_TERMINATION_GRACE="$grace"
+  wait_for_bounded_process "$pid" "$timeout" "$grace" || status=$?
+  [ "$monitor_enabled" = false ] || set +m
+  return "$status"
+}
+
+run_scorer() {
+  local check="$1" repo="$2" events="$3" baseline="$4" score_file="$5"
+  local status=0 timeout grace pid monitor_enabled=false
+  timeout="$(config_value scenario_timeout_seconds)"
+  grace="$(config_value termination_grace_seconds)"
+  case $- in *m*) ;; *)
+    set -m
+    monitor_enabled=true
+    ;;
+  esac
+  bash "$check" "$repo" "$events" "$baseline" >"$score_file" &
+  pid=$!
+  ACTIVE_PROCESS_PID="$pid"
+  ACTIVE_TERMINATION_GRACE="$grace"
+  wait_for_bounded_process "$pid" "$timeout" "$grace" || status=$?
   [ "$monitor_enabled" = false ] || set +m
   return "$status"
 }
@@ -384,7 +433,10 @@ behavioral_evaluation() {
             percent=NA
             printf 'score\tNA\tNA\n' >"$run_dir/score.tsv"
           else
-            bash "$EVAL_ROOT/behavioral/$item/check.sh" "$repo" "$events" "$baseline" >"$run_dir/score.tsv"
+            if ! run_scorer "$EVAL_ROOT/behavioral/$item/check.sh" \
+              "$repo" "$events" "$baseline" "$run_dir/score.tsv"; then
+              fail "$run_id scorer failed or exceeded its configured timeout"
+            fi
             IFS=$'\t' read -r _ score total <"$run_dir/score.tsv"
             percent="$(awk -v score="$score" -v total="$total" 'BEGIN { printf "%d", (100 * score) / total }')"
           fi

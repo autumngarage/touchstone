@@ -782,12 +782,32 @@ EOF
     printf '%s\n' 'Corrected delivery guidance.' >"$TMP/vacuous-successor/docs/delivery.md"
     printf '%s\n' \
       '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/first","aggregated_output":"Switched to a new branch feat/first"}}' \
-      '{"type":"item.started","item":{"type":"command_execution","command":"sed -n 1,200p .touchstone/principles/pre-implementation-checklist.md","aggregated_output":""}}' \
+      '{"type":"item.completed","item":{"type":"command_execution","command":"sed -n 1,200p .touchstone/principles/pre-implementation-checklist.md","aggregated_output":"","exit_code":0}}' \
       '{"type":"item.started","item":{"type":"file_change"}}' >"$TMP/vacuous-events"
     vacuous_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
       "$TMP/vacuous-successor" "$TMP/vacuous-events" "$TMP/constant-successor-baseline")"
     [ "$vacuous_score" = $'score\t5\t6' ] \
       || fail "vacuous submitted regression was not isolated: $vacuous_score"
+
+    sed 's/"exit_code":0/"exit_code":1/' "$TMP/vacuous-events" >"$TMP/failed-read-events"
+    failed_read_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+      "$TMP/vacuous-successor" "$TMP/failed-read-events" "$TMP/constant-successor-baseline")"
+    [ "$(printf '%s\n' "$vacuous_score" | awk -F '\t' '{print $2}')" \
+      -eq "$(($(printf '%s\n' "$failed_read_score" | awk -F '\t' '{print $2}') + 1))" ] \
+      || fail "failed checklist command received the successful-read point"
+
+    printf '%s\n' \
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"read-1","name":"Read","input":{"file_path":".touchstone/principles/pre-implementation-checklist.md"}}]}}' \
+      '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"read-1","is_error":false,"content":"checklist"}]}}' \
+      >"$TMP/claude-read-events"
+    claude_read_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+      "$TMP/vacuous-successor" "$TMP/claude-read-events" "$TMP/constant-successor-baseline")"
+    sed 's/"is_error":false/"is_error":true/' "$TMP/claude-read-events" >"$TMP/claude-failed-read-events"
+    claude_failed_read_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+      "$TMP/vacuous-successor" "$TMP/claude-failed-read-events" "$TMP/constant-successor-baseline")"
+    [ "$(printf '%s\n' "$claude_read_score" | awk -F '\t' '{print $2}')" \
+      -eq "$(($(printf '%s\n' "$claude_failed_read_score" | awk -F '\t' '{print $2}') + 1))" ] \
+      || fail "Claude checklist result was not correlated with its successful read"
 
     printf '%s\n' 'schema = 1' >"$TMP/vacuous-successor/.touchstone.toml"
     git -C "$TMP/vacuous-successor" hash-object .touchstone.toml >"$TMP/present-baseline"
@@ -827,6 +847,9 @@ EOF
 set -euo pipefail
 printf '%s\n' "$$" >>"$TOUCHSTONE_TEST_TIMER_PIDS"
 if [ "${TOUCHSTONE_TEST_SHORT_TIMEOUT:-false}" = true ]; then
+  exec "$TOUCHSTONE_TEST_REAL_SLEEP" 0.2
+fi
+if [ "${TOUCHSTONE_TEST_SHORT_GRACE:-false}" = true ] && [ "${1:-}" = 5 ]; then
   exec "$TOUCHSTONE_TEST_REAL_SLEEP" 0.05
 fi
 exec "$TOUCHSTONE_TEST_REAL_SLEEP" "$@"
@@ -837,18 +860,34 @@ EOF
 set -euo pipefail
 if [ "${1:-}" = --version ]; then printf '%s\n' 'codex-cli mock'; exit 0; fi
 if [ "${TOUCHSTONE_TEST_STUBBORN_AGENT:-false}" = true ]; then
-  trap '' TERM
+  stubborn_child=""
+  reap_child() {
+    [ -z "$stubborn_child" ] || kill -TERM "$stubborn_child" 2>/dev/null || true
+    [ -z "$stubborn_child" ] || wait "$stubborn_child" 2>/dev/null || true
+    stubborn_child=""
+  }
+  trap reap_child TERM
   "$TOUCHSTONE_TEST_REAL_SLEEP" 30 &
   stubborn_child=$!
   printf '%s\n' "$stubborn_child" >>"$TOUCHSTONE_TEST_AGENT_CHILD_PIDS"
-  wait "$stubborn_child"
-  exit $?
+  wait "$stubborn_child" 2>/dev/null || true
+  while :; do :; done
 fi
 repo=""
 while [ "$#" -gt 0 ]; do
   if [ "$1" = -C ]; then repo="$2"; shift 2; else shift; fi
 done
 [ -n "$repo" ] || exit 2
+if [ "${TOUCHSTONE_TEST_HANGING_SCORE:-false}" = true ]; then
+  git -C "$repo" checkout -qb feat/hanging-score
+  mkdir -p "$repo/scripts" "$repo/tests" "$repo/docs"
+  printf '%s\n' '#!/usr/bin/env bash' 'while :; do :; done' >"$repo/scripts/counter.sh"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$repo/tests/test-counter.sh"
+  printf '%s\n' 'Correct delivery guidance.' >"$repo/docs/delivery.md"
+  chmod +x "$repo/scripts/counter.sh" "$repo/tests/test-counter.sh"
+  printf '%s\n' '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/hanging-score","aggregated_output":"Switched to a new branch feat/hanging-score","exit_code":0}}'
+  exit 0
+fi
 attempt=0
 while [ ! -s "$TOUCHSTONE_TEST_TIMER_PIDS" ] && [ "$attempt" -lt 100 ]; do
   "$TOUCHSTONE_TEST_REAL_SLEEP" 0.01
@@ -911,6 +950,43 @@ EOF
     while IFS= read -r timer_pid; do
       if [ -n "$timer_pid" ] && kill -0 "$timer_pid" 2>/dev/null; then
         fail "behavioral evaluator left watchdog timer $timer_pid running"
+      fi
+    done <"$TIMER_PIDS"
+
+    : >"$AGENT_CHILD_PIDS"
+    TOUCHSTONE_TEST_STUBBORN_AGENT=true TOUCHSTONE_TEST_SHORT_GRACE=true \
+      PATH="$TMP/bin:$PATH" bash "$EVALUATOR" behavioral --output "$TMP/interrupted-evidence" \
+      --driver codex --scenario validation --mode control --repeat 1 >"$TMP/interrupted.out" 2>&1 &
+    evaluator_pid=$!
+    attempt=0
+    while [ ! -s "$AGENT_CHILD_PIDS" ] && [ "$attempt" -lt 200 ]; do
+      "$TOUCHSTONE_TEST_REAL_SLEEP" 0.01
+      attempt=$((attempt + 1))
+    done
+    if [ ! -s "$AGENT_CHILD_PIDS" ]; then
+      fail "interruption test agent did not start"
+      kill "$evaluator_pid" 2>/dev/null || true
+    else
+      kill -TERM "$evaluator_pid"
+    fi
+    if wait "$evaluator_pid" 2>/dev/null; then
+      fail "interrupted evaluator returned success"
+    fi
+    while IFS= read -r agent_child_pid; do
+      if [ -n "$agent_child_pid" ] && kill -0 "$agent_child_pid" 2>/dev/null; then
+        fail "interrupted evaluator left child process $agent_child_pid running"
+      fi
+    done <"$AGENT_CHILD_PIDS"
+
+    if TOUCHSTONE_TEST_HANGING_SCORE=true TOUCHSTONE_TEST_SHORT_TIMEOUT=true \
+      PATH="$TMP/bin:$PATH" bash "$EVALUATOR" behavioral --output "$TMP/hanging-score-evidence" \
+      --driver codex --scenario authoring --mode control --repeat 1 >"$TMP/hanging-score.out" 2>&1; then
+      fail "behavioral evaluator allowed a hanging scorer to escape its timeout"
+    fi
+    assert_has "$TMP/hanging-score.out" 'scorer failed or exceeded its configured timeout'
+    while IFS= read -r timer_pid; do
+      if [ -n "$timer_pid" ] && kill -0 "$timer_pid" 2>/dev/null; then
+        fail "bounded agent or scorer left watchdog timer $timer_pid running"
       fi
     done <"$TIMER_PIDS"
 

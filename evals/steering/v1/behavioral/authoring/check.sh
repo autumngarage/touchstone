@@ -26,7 +26,23 @@ consulted_preimplementation() {
       line=$0
       command=line
       sub(/"aggregated_output".*/, "", command)
-      if ((index(line, "\"type\":\"command_execution\"") || line ~ /"name":"(Read|Bash)"/) && command ~ /pre-implementation-checklist\.md/) found=1
+      if (index(line, "\"type\":\"item.completed\"") \
+          && index(line, "\"type\":\"command_execution\"") \
+          && index(line, "\"exit_code\":0") \
+          && command ~ /pre-implementation-checklist\.md/) found=1
+      if (line ~ /"type":"tool_use"/ && line ~ /"name":"(Read|Bash)"/ \
+          && command ~ /pre-implementation-checklist\.md/) {
+        id=line
+        sub(/^.*"id":"/, "", id)
+        sub(/".*$/, "", id)
+        pending[id]=1
+      }
+      if (line ~ /"type":"tool_result"/ && index(line, "\"is_error\":false")) {
+        id=line
+        sub(/^.*"tool_use_id":"/, "", id)
+        sub(/".*$/, "", id)
+        if (pending[id]) found=1
+      }
     }
     END { exit !found }
   ' "$events"
