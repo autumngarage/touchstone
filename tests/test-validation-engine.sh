@@ -1712,9 +1712,12 @@ VERIFY_RACE_RECORD="$ADOPTION/verification-branch-race.result"
 new_adoption_repo "$VERIFY_RACE_REPO"
 git -C "$VERIFY_RACE_REPO" switch -qc feat/adopt
 VERIFY_RACE_GIT_DIR="$(git -C "$VERIFY_RACE_REPO" rev-parse --absolute-git-dir)"
-PATH="$CMP_RACE_BIN:$PATH" TOUCHSTONE_REAL_CMP="$(command -v cmp)" \
-TOUCHSTONE_RACE_GIT_DIR="$VERIFY_RACE_GIT_DIR" TOUCHSTONE_RACE_REPO="$VERIFY_RACE_REPO" \
-TOUCHSTONE_RACE_RECORD="$VERIFY_RACE_RECORD" \
+VERIFY_RACE_REAL_CMP="$(command -v cmp)"
+[ "$VERIFY_RACE_REAL_CMP" != "$CMP_RACE_BIN/cmp" ] \
+  || fail "verification-race fixture resolved its cmp wrapper recursively"
+PATH="$CMP_RACE_BIN:$PATH" TOUCHSTONE_REAL_CMP="$VERIFY_RACE_REAL_CMP" \
+  TOUCHSTONE_RACE_GIT_DIR="$VERIFY_RACE_GIT_DIR" TOUCHSTONE_RACE_REPO="$VERIFY_RACE_REPO" \
+  TOUCHSTONE_RACE_RECORD="$VERIFY_RACE_RECORD" \
   run_adoption "$ADOPTION/verification-branch-race.out" adopt \
   --project "$VERIFY_RACE_REPO" --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "Git-native apply transaction failed during verification race"
