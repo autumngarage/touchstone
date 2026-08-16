@@ -1,8 +1,8 @@
 # Steering Behavioral Evaluation — 2026-08-16
 
-Status: **Codex and Claude pass; Gemini evidence is incomplete because the
-provider refused authentication before model execution.** This is a live,
-manual AUT-284 record, not a required CI gate.
+Status: **Codex and Claude pass; live Gemini evidence is deferred to AUT-296
+because the provider refused authentication before model execution.** This is
+a live, manual AUT-284 record, not a required CI gate.
 
 ## Boundary
 
@@ -51,9 +51,10 @@ instruction to migrate, followed by quota-exhaustion responses. No Gemini API
 key, Vertex credentials, Google Cloud project, or alternate supported CLI is
 available in this environment. Offline fake-driver tests still cover Gemini's
 transport, scoring, paired-control, narration-independence, timeout, and cleanup
-paths, but they do not substitute for the required live model evidence.
+paths, but they do not constitute live Gemini model evidence.
 
-The Gemini lane must be rerun after supported headless authentication is
-provided. A security-review quota notice inside the delivery protocol remains
-non-blocking; this separate provider authentication failure is recorded rather
-than misrepresented as passing evidence.
+AUT-296 owns rerunning the Gemini lane after supported headless authentication
+is available. It is a follow-up feature, not a Milestone 4 blocker. A
+security-review quota notice inside the delivery protocol remains non-blocking;
+this separate provider authentication failure is recorded rather than
+misrepresented as passing evidence.
