@@ -71,7 +71,8 @@ for file in \
   assert_contains "$file" "review cannot amend approved scope"
   assert_contains "$file" "Answering is not implementing"
   assert_contains "$file" "answer and route out-of-scope findings"
-  assert_contains "$file" "Scope widening stops implementation and further review requests"
+  assert_contains "$file" "Stop widened work and requests on that shape"
+  assert_contains "$file" "in-scope fixes still proceed to exact-head review"
   assert_contains "$file" "follow the capability across replacement PRs"
   assert_contains "$file" "closing or renaming never resets the budget"
   assert_not_contains "$file" "Review is an enforced gate."
@@ -165,7 +166,8 @@ done
 
 assert_contains "$GIT_WORKFLOW_SKILL" "Review cannot amend the approved scope"
 assert_contains "$GIT_WORKFLOW_SKILL" "answering is not implementing"
-assert_contains "$GIT_WORKFLOW_SKILL" "stop implementation and further requests on that shape"
+assert_contains "$GIT_WORKFLOW_SKILL" "Stop only widened work and requests on that shape"
+assert_contains "$GIT_WORKFLOW_SKILL" "in-scope fixes continue to exact-head review"
 
 echo "==> Claude entry files import the TOUCHSTONE.md steering router"
 # CLAUDE.md uses @TOUCHSTONE.md (Claude Code resolves @-imports transitively),
