@@ -240,12 +240,15 @@ apply_plan() {
   capture_missing_directories
   git -C "$PROJECT_ROOT" apply --check "$DIFF_FILE" >/dev/null 2>&1 \
     || safety_refusal "repository bytes changed after planning; run adoption again"
+  APPLY_IN_PROGRESS=true
   apply_output="$(git -C "$PROJECT_ROOT" apply "$DIFF_FILE" 2>&1)" || apply_status=$?
   if [ "$apply_status" -ne 0 ]; then
     if ! restore_plan_after_failure; then
       KEEP_PLAN=true
+      APPLY_IN_PROGRESS=false
       operational_failure "apply failed and unexpected concurrent content was preserved; recovery snapshots remain at $PLAN_ROOT"
     fi
+    APPLY_IN_PROGRESS=false
     operational_failure "apply failed without retaining a partial Touchstone write: $apply_output"
   fi
   while IFS="$(printf '\t')" read -r action relative _ownership; do
@@ -255,9 +258,12 @@ apply_plan() {
       || [ ! -f "$destination" ] || ! cmp -s "$destination" "$PLAN_ROOT/new/$relative"; then
       if ! restore_plan_after_failure; then
         KEEP_PLAN=true
+        APPLY_IN_PROGRESS=false
         operational_failure "applied bytes could not be verified and recovery requires $PLAN_ROOT"
       fi
+      APPLY_IN_PROGRESS=false
       operational_failure "applied bytes could not be verified; the original files were restored"
     fi
   done <"$CHANGES_FILE"
+  APPLY_IN_PROGRESS=false
 }

@@ -18,6 +18,7 @@ PROFILE=""
 DETECTED_PROFILE=""
 PLAN_STATUS=""
 KEEP_PLAN=false
+APPLY_IN_PROGRESS=false
 PLAN_ROOT=""
 TAB="$(printf '\t')"
 CR="$(printf '\r')"
@@ -102,6 +103,17 @@ require_option_value() {
 }
 
 cleanup() {
+  if [ "$APPLY_IN_PROGRESS" = true ]; then
+    if restore_plan_after_failure; then
+      APPLY_IN_PROGRESS=false
+      printf 'ERROR: interrupted adoption apply restored the original repository bytes\n' >&2
+    else
+      KEEP_PLAN=true
+      APPLY_IN_PROGRESS=false
+      printf 'ERROR: interrupted adoption apply requires recovery snapshots at %s\n' \
+        "$PLAN_ROOT" >&2
+    fi
+  fi
   if [ -n "$TOUCHSTONE_WORKTREE_LOCK_DIR" ] \
     && ! touchstone_worktree_lock_release; then
     printf 'ERROR: could not release adoption transaction: %s\n' \

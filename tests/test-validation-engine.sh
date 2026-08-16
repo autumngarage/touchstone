@@ -1762,6 +1762,10 @@ if [ "${1:-}" = symbolic-ref ] && [ "${TOUCHSTONE_SYMBOLIC_REF_FAILURE:-false}" 
 fi
 if [ "${1:-}" = apply ] && [ "${2:-}" != --check ]; then
   "$TOUCHSTONE_REAL_GIT" "${arguments[@]}" || exit $?
+  if [ -n "${TOUCHSTONE_SIGNAL_TARGET:-}" ]; then
+    kill -TERM "$TOUCHSTONE_SIGNAL_TARGET"
+    exit 143
+  fi
   if [ "${TOUCHSTONE_CONCURRENT_WRITE:-false}" = true ]; then
     printf 'concurrent content\n' >"$project/AGENTS.md"
   fi
@@ -1780,6 +1784,32 @@ exec "$TOUCHSTONE_REAL_GIT" "${arguments[@]}"
 EOF
 chmod +x "$FAIL_GIT_BIN/git"
 REAL_GIT="$(command -v git)"
+
+SIGNAL_REPO="$ADOPTION/signal-interrupted-apply"
+new_adoption_repo "$SIGNAL_REPO"
+git -C "$SIGNAL_REPO" switch -qc feat/adopt
+SIGNAL_GIT_DIR="$(git -C "$SIGNAL_REPO" rev-parse --absolute-git-dir)"
+set +e
+PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" \
+  bash -c '
+    export TOUCHSTONE_SIGNAL_TARGET=$$
+    exec bash "$1" adopt --project "$2" --task "verify=true"
+  ' _ "$ROOT/bin/touchstone" "$SIGNAL_REPO" \
+  >"$ADOPTION/signal-interrupted-apply.out" 2>"$ADOPTION/signal-interrupted-apply.out.err"
+SIGNAL_STATUS=$?
+set -e
+[ "$SIGNAL_STATUS" -eq 143 ] || fail "signal-interrupted apply returned $SIGNAL_STATUS instead of 143"
+assert_contains "$ADOPTION/signal-interrupted-apply.out.err" \
+  'interrupted adoption apply restored the original repository bytes'
+[ "$(cat "$SIGNAL_REPO/AGENTS.md")" = "# Consumer
+
+Project-owned guidance." ] || fail "signal-interrupted apply did not restore project guidance"
+[ ! -e "$SIGNAL_REPO/.touchstone.toml" ] \
+  || fail "signal-interrupted apply retained a partial project contract"
+[ ! -e "$SIGNAL_GIT_DIR/index.lock" ] \
+  || fail "signal-interrupted apply retained the native index lock"
+[ ! -e "$SIGNAL_GIT_DIR/touchstone-worktree.lock" ] \
+  || fail "signal-interrupted apply retained worktree-lock ownership"
 
 STATUS_FAILURE_REPO="$ADOPTION/status-failure"
 new_adoption_repo "$STATUS_FAILURE_REPO"
