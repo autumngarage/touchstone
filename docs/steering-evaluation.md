@@ -42,6 +42,45 @@ offline, and uses no provider quota.
 
 ## Behavioral lane
 
-Behavioral evaluation is the separate follow-up lane in AUT-284. It consumes
-these versioned structural fixtures, but live-agent orchestration, controls,
-scoring, budgets, and evidence expiry are outside this deterministic boundary.
+Run the live, manual lane outside the repository checkout:
+
+```bash
+evidence_dir="$(mktemp -d -t touchstone-steering-evidence.XXXXXX)"
+bash scripts/evaluate-steering.sh behavioral --output "$evidence_dir"
+```
+
+The lane runs Codex, Claude, and Gemini against the same three versioned
+scenarios in both steered and unsteered-control repositories. Each pair has the
+same commit topology and the same tree except for the active driver's root
+entry file. `pairing.tsv` records that comparison. `config.tsv` owns models,
+run limits, timeouts, confidence thresholds, cost bounds, and evidence expiry;
+`--config FILE` permits a separately captured configuration without changing
+the scenario definitions.
+
+Behavioral credit comes only from harness-owned machine state:
+
+- exact repository state, a harness-installed checkout hook, and executable
+  regression tests for authoring;
+- PATH-observed `git` and `touchstone` invocations for sequencing and exit
+  status;
+- a small stateful PR simulator for exact-head review, inline and body
+  findings, provisional security-review quota, and routed scope expansion;
+- strict, enumerated `RESULT.tsv` claims checked against the observed state.
+
+Provider output is retained only as diagnostic evidence. The evaluator never
+parses provider event schemas or English narration for a score. This boundary
+prevents a model from earning credit by describing an action it did not take
+and keeps provider output-format changes from breaking the evaluator.
+
+The output contains a versioned manifest, paired-repository evidence, per-run
+action logs, scores, committed and worktree diffs, final git state, and a
+summary report with pass rates, driver/model/version, latency, bounded or
+reported cost, variance, and expiry. A nonzero driver exit, a steered mean
+below the configured threshold, or an insufficient control delta makes the
+command fail.
+
+This lane is deliberately absent from required CI: it uses live providers and
+quota. CI runs the deterministic structural lane and offline fake-driver
+regressions only. A security-review quota notice inside the delivery scenario
+is provisional evidence to wait or recover; it never blocks or terminates the
+review workflow.

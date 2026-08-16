@@ -1,0 +1,13 @@
+# schema=touchstone.steering-eval-config/v1
+setting	value
+repeat_count	1
+confidence_threshold_percent	80
+control_delta_percent	1
+max_runs	18
+scenario_timeout_seconds	300
+termination_grace_seconds	5
+evidence_expiry_days	90
+claude_max_budget_usd	0.75
+codex_model	gpt-5.6-terra
+claude_model	sonnet
+gemini_model	pro

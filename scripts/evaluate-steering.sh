@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/evaluate-steering.sh — offline steering resolution evaluation.
+# scripts/evaluate-steering.sh — structural and behavioral steering evaluation.
 
 set -euo pipefail
 
@@ -18,6 +18,7 @@ usage() {
   cat >&2 <<'EOF'
 Usage:
   bash scripts/evaluate-steering.sh structural [--json]
+  bash scripts/evaluate-steering.sh behavioral --output DIR [options]
 EOF
   exit 2
 }
@@ -160,5 +161,6 @@ structural_evaluation() {
 
 case "$OPERATION" in
   structural) structural_evaluation "$@" ;;
+  behavioral) exec bash "$EVAL_ROOT/run-behavioral.sh" "$ROOT" "$@" ;;
   *) usage ;;
 esac
