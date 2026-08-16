@@ -1098,7 +1098,9 @@ cat >"$PACKAGE_JSON_CASES/valid.json" <<'EOF'
     "test": "\t",
     "\u0076erify": "npm run lint && npm test",
     "lint": false,
-    "typecheck": " npm run types "
+    "typecheck": " npm run types ",
+    "\u00e9": "unrelated",
+    "\u00df": "also unrelated"
   },
   "number": -12.5e+2,
   "array": [true, false, null, {"quote": "\\\""}]

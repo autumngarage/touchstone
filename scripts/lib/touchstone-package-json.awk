@@ -186,8 +186,10 @@ function parse_scripts_object(    character, name, has_content) {
   while (1) {
     parse_string()
     name = parsed_string
-    if (name in script_keys) fail("duplicate script name")
-    script_keys[name] = 1
+    if (supported_script(name)) {
+      if (name in script_keys) fail("duplicate supported script name")
+      script_keys[name] = 1
+    }
     skip_space()
     if (substr(document, position, 1) != ":") fail("expected scripts colon")
     position++
