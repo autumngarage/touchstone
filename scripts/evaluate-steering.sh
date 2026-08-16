@@ -189,8 +189,9 @@ install_steering() {
 }
 
 run_agent() {
-  local driver="$1" repo="$2" events="$3" prompt="$4" status=0 budget timeout pid watchdog
+  local driver="$1" repo="$2" events="$3" prompt="$4" status=0 budget timeout grace pid watchdog
   timeout="$(config_value scenario_timeout_seconds)"
+  grace="$(config_value termination_grace_seconds)"
   case "$driver" in
     codex)
       codex exec --json --ephemeral --sandbox danger-full-access --ignore-user-config \
@@ -198,12 +199,12 @@ run_agent() {
       ;;
     claude)
       budget="$(config_value claude_max_budget_usd)"
-      (cd "$repo" && claude --print --output-format stream-json --verbose \
+      (cd "$repo" && exec claude --print --output-format stream-json --verbose \
         --permission-mode bypassPermissions --dangerously-skip-permissions \
         --no-session-persistence --max-budget-usd "$budget" "$prompt") >"$events" 2>&1 &
       ;;
     gemini)
-      (cd "$repo" && gemini --prompt "$prompt" --output-format stream-json \
+      (cd "$repo" && exec gemini --prompt "$prompt" --output-format stream-json \
         --approval-mode yolo --skip-trust) >"$events" 2>&1 &
       ;;
   esac
@@ -221,6 +222,11 @@ run_agent() {
     wait "$timer"
     timer=""
     kill -TERM "$pid" 2>/dev/null || true
+    sleep "$grace" &
+    timer=$!
+    wait "$timer"
+    timer=""
+    kill -KILL "$pid" 2>/dev/null || true
   ) &
   watchdog=$!
   wait "$pid" || status=$?
@@ -336,10 +342,17 @@ behavioral_evaluation() {
           status=0
           PATH="$ROOT/bin:$PATH" run_agent "$driver" "$repo" "$events" "$prompt" || status=$?
           ended="$(date +%s)"
-          bash "$EVAL_ROOT/behavioral/$item/check.sh" "$repo" "$events" >"$run_dir/score.tsv"
-          IFS=$'\t' read -r _ score total <"$run_dir/score.tsv"
-          percent="$(awk -v score="$score" -v total="$total" 'BEGIN { printf "%d", (100 * score) / total }')"
           outcome="$(classify_run "$events" "$status")"
+          if [ "$outcome" = infrastructure-unavailable ]; then
+            score=NA
+            total=NA
+            percent=NA
+            printf 'score\tNA\tNA\n' >"$run_dir/score.tsv"
+          else
+            bash "$EVAL_ROOT/behavioral/$item/check.sh" "$repo" "$events" >"$run_dir/score.tsv"
+            IFS=$'\t' read -r _ score total <"$run_dir/score.tsv"
+            percent="$(awk -v score="$score" -v total="$total" 'BEGIN { printf "%d", (100 * score) / total }')"
+          fi
           git -C "$repo" status --short --branch >"$run_dir/git-status.txt"
           git -C "$repo" log --oneline --decorate -10 >"$run_dir/git-log.txt"
           printf 'touchstone.steering-eval/v1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \

@@ -657,7 +657,7 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
 
     echo "==> live lane is bounded and records all supported drivers"
     EVALUATOR="$ROOT/scripts/evaluate-steering.sh"
-    for needle in 'max_runs' 'scenario_timeout_seconds' 'claude_max_budget_usd' 'codex exec --json --ephemeral' 'claude --print --output-format stream-json' 'gemini --prompt' 'git-status.txt' 'summary.tsv'; do
+    for needle in 'max_runs' 'scenario_timeout_seconds' 'termination_grace_seconds' 'claude_max_budget_usd' 'codex exec --json --ephemeral' 'claude --print --output-format stream-json' 'gemini --prompt' 'git-status.txt' 'summary.tsv'; do
       assert_has "$EVALUATOR" "$needle"
     done
     if grep -qF 'trap "rm -rf' "$EVALUATOR"; then
@@ -695,6 +695,9 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$$" >>"$TOUCHSTONE_TEST_TIMER_PIDS"
+if [ "${TOUCHSTONE_TEST_SHORT_TIMEOUT:-false}" = true ]; then
+  exec "$TOUCHSTONE_TEST_REAL_SLEEP" 0.05
+fi
 exec "$TOUCHSTONE_TEST_REAL_SLEEP" "$@"
 EOF
     chmod +x "$TMP/bin/sleep"
@@ -702,6 +705,10 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = --version ]; then printf '%s\n' 'codex-cli mock'; exit 0; fi
+if [ "${TOUCHSTONE_TEST_STUBBORN_AGENT:-false}" = true ]; then
+  trap '' TERM
+  exec "$TOUCHSTONE_TEST_REAL_SLEEP" 30
+fi
 repo=""
 while [ "$#" -gt 0 ]; do
   if [ "$1" = -C ]; then repo="$2"; shift 2; else shift; fi
@@ -748,8 +755,15 @@ EOF
     chmod +x "$TMP/bin/gemini"
     PATH="$TMP/bin:$PATH" bash "$EVALUATOR" behavioral --output "$TMP/unavailable-evidence" \
       --driver gemini --scenario validation --mode steered --repeat 1 >"$TMP/unavailable.out"
-    awk -F '\t' 'NR == 2 && $13 == "infrastructure-unavailable" { found=1 } END { exit !found }' \
+    awk -F '\t' 'NR == 2 && $10 == "NA" && $11 == "NA" && $12 == "NA" \
+      && $13 == "infrastructure-unavailable" { found=1 } END { exit !found }' \
       "$TMP/unavailable-evidence/summary.tsv" || fail "authentication failure was scored as agent behavior"
+
+    TOUCHSTONE_TEST_STUBBORN_AGENT=true TOUCHSTONE_TEST_SHORT_TIMEOUT=true \
+      PATH="$TMP/bin:$PATH" bash "$EVALUATOR" behavioral --output "$TMP/timeout-evidence" \
+      --driver codex --scenario validation --mode control --repeat 1 >"$TMP/timeout.out"
+    awk -F '\t' 'NR == 2 && $8 == 137 && $13 == "timed-out" { found=1 } END { exit !found }' \
+      "$TMP/timeout-evidence/summary.tsv" || fail "TERM-resistant agent escaped the hard timeout"
     while IFS= read -r timer_pid; do
       if [ -n "$timer_pid" ] && kill -0 "$timer_pid" 2>/dev/null; then
         fail "behavioral evaluator left watchdog timer $timer_pid running"
