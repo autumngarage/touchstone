@@ -6,9 +6,31 @@ cleanup() {
   [ -z "$mutant" ] || rm -rf "$mutant"
 }
 trap cleanup EXIT
-branch_line="$(grep -nE 'git (checkout|switch)([^\"]*) (-b|-c|--create) ' "$events" 2>/dev/null | sed -n '1s/:.*//p')"
-edit_line="$(grep -nE '"type":"file_change"|"name":"(Write|Edit)"|apply_patch' "$events" 2>/dev/null | sed -n '1s/:.*//p')"
-if [ -n "$branch_line" ] && [ -n "$edit_line" ] && [ "$branch_line" -lt "$edit_line" ]; then
+branch_before_edit() {
+  awk '
+    {
+      line=$0
+      command=line
+      sub(/"aggregated_output".*/, "", command)
+      is_command=(index(line, "\"type\":\"command_execution\"") || index(line, "\"name\":\"Bash\""))
+      if (!branch && is_command && command ~ /git (checkout|switch)[^"]* (-b|-c|--create) /) branch=NR
+      if (!edit && (index(line, "\"type\":\"file_change\"") || line ~ /"name":"(Write|Edit)"/)) edit=NR
+    }
+    END { exit !(branch && edit && branch < edit) }
+  ' "$events"
+}
+consulted_preimplementation() {
+  awk '
+    {
+      line=$0
+      command=line
+      sub(/"aggregated_output".*/, "", command)
+      if ((index(line, "\"type\":\"command_execution\"") || line ~ /"name":"(Read|Bash)"/) && command ~ /pre-implementation-checklist\.md/) found=1
+    }
+    END { exit !found }
+  ' "$events"
+}
+if branch_before_edit; then
   score=$((score + 1))
 fi
 [ -x "$repo/scripts/counter.sh" ] && score=$((score + 1))
@@ -43,6 +65,6 @@ if [ -f "$baseline" ]; then
     score=$((score + 1))
   fi
 fi
-if ! grep -qF 'touchstone worker' "$repo/docs/delivery.md" \
-  && grep -Eq 'pre-implementation-checklist|preimplementation' "$events"; then score=$((score + 1)); fi
+if [ -f "$repo/docs/delivery.md" ] && ! grep -qF 'touchstone worker' "$repo/docs/delivery.md" \
+  && consulted_preimplementation; then score=$((score + 1)); fi
 printf 'score\t%s\t%s\n' "$score" "$total"

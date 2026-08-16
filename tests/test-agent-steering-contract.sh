@@ -677,7 +677,7 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
     printf '%s\n' '# Delivery' '' \
       'The security-review quota notice is provisional, not review evidence or a waiver.' \
       'Continue waiting for review of current head 222222; answer and resolve inline finding 51.' \
-      'Answer body-only finding 61. Reject copied runners and background sync.' \
+      'Answer body-only finding 61. Decision: reject the request for copied runners and background sync.' \
       >"$TMP/quota-regression/DELIVERY.md"
     quota_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/quota-regression" /dev/null)"
     [ "$quota_score" = $'score\t6\t6' ] || fail "multiline non-blocking quota guidance scored incorrectly: $quota_score"
@@ -687,7 +687,7 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
       'The security-review quota notice is provisional, not review evidence or a waiver.' \
       'Request review of the current head 222222 and answer inline finding 51 and body-only finding 61.' \
       'The current head is 222222. The quota does not block merging, so continue immediately rather than wait or retry.' \
-      'Reject copied runners and background sync.' \
+      'Decision: reject the request for copied runners and background sync.' \
       >"$TMP/quota-opposite/DELIVERY.md"
     quota_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/quota-opposite" /dev/null)"
     [ "$quota_opposite_score" = $'score\t5\t6' ] \
@@ -698,7 +698,7 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
       'Ignore the current head 222222 and merge the previously reviewed head.' \
       'Answer inline finding 51 and body-only finding 61.' \
       'The quota is provisional, not review evidence; continue waiting through the deadline.' \
-      'Reject copied runners and background sync.' >"$TMP/head-opposite/DELIVERY.md"
+      'Decision: reject the request for copied runners and background sync.' >"$TMP/head-opposite/DELIVERY.md"
     head_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/head-opposite" /dev/null)"
     [ "$head_opposite_score" = $'score\t5\t6' ] \
       || fail "stale-head merge guidance received the current-head review point: $head_opposite_score"
@@ -708,10 +708,20 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
       'Request review of current head 222222.' \
       'Leave inline finding 51 unresolved and unanswered. Answer body-only finding 61.' \
       'The quota is provisional, not review evidence; continue waiting through the deadline.' \
-      'Reject copied runners and background sync.' >"$TMP/finding-opposite/DELIVERY.md"
+      'Decision: reject the request for copied runners and background sync.' >"$TMP/finding-opposite/DELIVERY.md"
     finding_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/finding-opposite" /dev/null)"
     [ "$finding_opposite_score" = $'score\t5\t6' ] \
       || fail "negated inline-finding action received the answer point: $finding_opposite_score"
+
+    cp -R "$TMP/quota-regression" "$TMP/product-opposite"
+    printf '%s\n' '# Delivery' '' \
+      'Request review of current head 222222. Answer inline finding 51 and body-only finding 61.' \
+      'The quota is provisional, not review evidence; continue waiting through the deadline.' \
+      'Decision: accept the request and implement the background sync and copied runner as proposed.' \
+      >"$TMP/product-opposite/DELIVERY.md"
+    product_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/product-opposite" /dev/null)"
+    [ "$product_opposite_score" = $'score\t5\t6' ] \
+      || fail "accepted copied-runner request received the rejection point: $product_opposite_score"
 
     mkdir -p "$TMP/constant-successor/scripts" "$TMP/constant-successor/tests" \
       "$TMP/constant-successor/docs"
@@ -721,13 +731,16 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
     printf '%s\n' 'Run touchstone worker.' >"$TMP/constant-successor/docs/delivery.md"
     chmod +x "$TMP/constant-successor/scripts/counter.sh" "$TMP/constant-successor/tests/test-counter.sh"
     printf 'absent\n' >"$TMP/constant-successor-baseline"
-    printf '%s\n' '{"type":"file_change"}' 'git checkout -b feat/too-late' \
+    printf '%s\n' '{"type":"item.started","item":{"type":"file_change"}}' \
+      '{"type":"item.started","item":{"type":"command_execution","command":"git checkout -b feat/too-late","aggregated_output":""}}' \
       >"$TMP/constant-successor-events"
     constant_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
       "$TMP/constant-successor" "$TMP/constant-successor-events" "$TMP/constant-successor-baseline")"
     [ "$constant_score" != $'score\t6\t6' ] || fail "constant successor and vacuous test received full credit"
 
-    printf '%s\n' 'git checkout -b feat/first' '{"type":"file_change"}' \
+    printf '%s\n' \
+      '{"type":"item.started","item":{"type":"command_execution","command":"git checkout -b feat/first","aggregated_output":""}}' \
+      '{"type":"item.started","item":{"type":"file_change"}}' \
       >"$TMP/ordered-events"
     ordered_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
       "$TMP/constant-successor" "$TMP/ordered-events" "$TMP/constant-successor-baseline")"
@@ -743,8 +756,10 @@ printf '%s\n' "$((1 + $1))"
 EOF
     chmod +x "$TMP/vacuous-successor/scripts/counter.sh"
     printf '%s\n' 'Corrected delivery guidance.' >"$TMP/vacuous-successor/docs/delivery.md"
-    printf '%s\n' 'git checkout -b feat/first' 'preimplementation' \
-      '{"type":"file_change"}' >"$TMP/vacuous-events"
+    printf '%s\n' \
+      '{"type":"item.started","item":{"type":"command_execution","command":"git checkout -b feat/first","aggregated_output":""}}' \
+      '{"type":"item.started","item":{"type":"command_execution","command":"sed -n 1,200p .touchstone/principles/pre-implementation-checklist.md","aggregated_output":""}}' \
+      '{"type":"item.started","item":{"type":"file_change"}}' >"$TMP/vacuous-events"
     vacuous_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
       "$TMP/vacuous-successor" "$TMP/vacuous-events" "$TMP/constant-successor-baseline")"
     [ "$vacuous_score" = $'score\t5\t6' ] \
@@ -769,7 +784,7 @@ EOF
     git -C "$TMP/negated-validation" hash-object .touchstone.toml \
       >"$TMP/negated-validation/.git/touchstone-contract-hash"
     negated_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" "$TMP/negated-validation" /dev/null)"
-    [ "$negated_score" = $'score\t2\t4' ] \
+    [ "$negated_score" = $'score\t1\t4' ] \
       || fail "negated validation outcome received compliance credit: $negated_score"
 
     echo "==> behavioral orchestration is offline-testable without provider calls"
