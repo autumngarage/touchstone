@@ -94,7 +94,7 @@ touchstone_worktree_lock_acquire() {
       && [ -f "$index_lock" ] && [ ! -L "$index_lock" ] \
       && [ "$index_lock" -ef "$owner_dir/token" ]; then
       touchstone_worktree_lock_error \
-        "stale Touchstone worktree lock belongs to dead pid $owner; after confirming no mutation is active, remove $index_lock and $owner_dir" \
+        "stale Touchstone worktree lock belongs to dead pid $owner; after confirming no mutation is active, remove $index_lock, $owner_dir/pid, and $owner_dir/token, then remove $owner_dir" \
         "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
     else
       touchstone_worktree_lock_error \

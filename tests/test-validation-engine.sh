@@ -79,7 +79,7 @@ touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
 [ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_REFUSED" ] \
   || fail "stale-owner refusal used the wrong status"
 case "$TOUCHSTONE_WORKTREE_LOCK_ERROR" in
-  *'dead pid 999999'*'remove '*'index.lock'*'touchstone-worktree.lock'*) ;;
+  *'dead pid 999999'*'remove '*'index.lock'*'/pid'*'/token'*'then remove '*'touchstone-worktree.lock'*) ;;
   *) fail "stale-owner refusal omitted bounded recovery guidance" ;;
 esac
 [ "$LOCK_GIT_DIR/index.lock" -ef "$LOCK_GIT_DIR/touchstone-worktree.lock/token" ] \
