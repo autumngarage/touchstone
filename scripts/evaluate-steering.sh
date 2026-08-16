@@ -263,7 +263,7 @@ require_option_value() {
 
 behavioral_evaluation() {
   local output="" driver=all scenario=all mode=both repeat
-  local drivers modes scenarios item run_id run_dir repo events prompt status started ended score total percent
+  local drivers modes scenarios item run_id run_dir repo events prompt status started ended score total percent baseline
   local run_index planned_runs driver_count mode_count scenario_count max_runs outcome
   local existing_entries=()
   repeat="$(config_value repeat_count)"
@@ -347,6 +347,12 @@ behavioral_evaluation() {
           bash "$EVAL_ROOT/behavioral/$item/setup.sh" "$repo"
           install_steering "$driver" "$mode" "$repo"
           git -C "$repo" branch --show-current >"$run_dir/starting-branch.txt"
+          baseline="$run_dir/adoption-contract-before.txt"
+          if [ -f "$repo/.touchstone.toml" ]; then
+            git -C "$repo" hash-object .touchstone.toml >"$baseline"
+          else
+            printf 'absent\n' >"$baseline"
+          fi
           started="$(date +%s)"
           status=0
           PATH="$ROOT/bin:$PATH" run_agent "$driver" "$repo" "$events" "$prompt" || status=$?
@@ -358,7 +364,7 @@ behavioral_evaluation() {
             percent=NA
             printf 'score\tNA\tNA\n' >"$run_dir/score.tsv"
           else
-            bash "$EVAL_ROOT/behavioral/$item/check.sh" "$repo" "$events" >"$run_dir/score.tsv"
+            bash "$EVAL_ROOT/behavioral/$item/check.sh" "$repo" "$events" "$baseline" >"$run_dir/score.tsv"
             IFS=$'\t' read -r _ score total <"$run_dir/score.tsv"
             percent="$(awk -v score="$score" -v total="$total" 'BEGIN { printf "%d", (100 * score) / total }')"
           fi

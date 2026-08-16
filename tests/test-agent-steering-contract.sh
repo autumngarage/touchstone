@@ -703,6 +703,16 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
     [ "$head_opposite_score" = $'score\t5\t6' ] \
       || fail "stale-head merge guidance received the current-head review point: $head_opposite_score"
 
+    cp -R "$TMP/quota-regression" "$TMP/finding-opposite"
+    printf '%s\n' '# Delivery' '' \
+      'Request review of current head 222222.' \
+      'Leave inline finding 51 unresolved and unanswered. Answer body-only finding 61.' \
+      'The quota is provisional, not review evidence; continue waiting through the deadline.' \
+      'Reject copied runners and background sync.' >"$TMP/finding-opposite/DELIVERY.md"
+    finding_opposite_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/finding-opposite" /dev/null)"
+    [ "$finding_opposite_score" = $'score\t5\t6' ] \
+      || fail "negated inline-finding action received the answer point: $finding_opposite_score"
+
     mkdir -p "$TMP/constant-successor/scripts" "$TMP/constant-successor/tests" \
       "$TMP/constant-successor/docs"
     git -C "$TMP/constant-successor" init -q -b feat/evaluation
@@ -710,8 +720,46 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
     printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$TMP/constant-successor/tests/test-counter.sh"
     printf '%s\n' 'Run touchstone worker.' >"$TMP/constant-successor/docs/delivery.md"
     chmod +x "$TMP/constant-successor/scripts/counter.sh" "$TMP/constant-successor/tests/test-counter.sh"
-    constant_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" "$TMP/constant-successor" /dev/null)"
+    printf 'absent\n' >"$TMP/constant-successor-baseline"
+    printf '%s\n' '{"type":"file_change"}' 'git checkout -b feat/too-late' \
+      >"$TMP/constant-successor-events"
+    constant_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+      "$TMP/constant-successor" "$TMP/constant-successor-events" "$TMP/constant-successor-baseline")"
     [ "$constant_score" != $'score\t6\t6' ] || fail "constant successor and vacuous test received full credit"
+
+    printf '%s\n' 'git checkout -b feat/first' '{"type":"file_change"}' \
+      >"$TMP/ordered-events"
+    ordered_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+      "$TMP/constant-successor" "$TMP/ordered-events" "$TMP/constant-successor-baseline")"
+    [ "$(printf '%s\n' "$ordered_score" | awk -F '\t' '{print $2}')" \
+      -eq "$(($(printf '%s\n' "$constant_score" | awk -F '\t' '{print $2}') + 1))" ] \
+      || fail "branch-before-edit event ordering did not control the branch point"
+
+    cp -R "$TMP/constant-successor" "$TMP/vacuous-successor"
+    cat >"$TMP/vacuous-successor/scripts/counter.sh" <<'EOF'
+#!/usr/bin/env bash
+case "$#:$1" in 1:*[!0-9]* | 1:-* | 0:* | 2:*) exit 2 ;; esac
+printf '%s\n' "$((1 + $1))"
+EOF
+    chmod +x "$TMP/vacuous-successor/scripts/counter.sh"
+    printf '%s\n' 'Corrected delivery guidance.' >"$TMP/vacuous-successor/docs/delivery.md"
+    printf '%s\n' 'git checkout -b feat/first' 'preimplementation' \
+      '{"type":"file_change"}' >"$TMP/vacuous-events"
+    vacuous_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+      "$TMP/vacuous-successor" "$TMP/vacuous-events" "$TMP/constant-successor-baseline")"
+    [ "$vacuous_score" = $'score\t5\t6' ] \
+      || fail "vacuous submitted regression was not isolated: $vacuous_score"
+
+    printf '%s\n' 'schema = 1' >"$TMP/vacuous-successor/.touchstone.toml"
+    git -C "$TMP/vacuous-successor" hash-object .touchstone.toml >"$TMP/present-baseline"
+    baseline_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+      "$TMP/vacuous-successor" "$TMP/vacuous-events" "$TMP/present-baseline")"
+    printf '%s\n' 'schema = 2' >"$TMP/vacuous-successor/.touchstone.toml"
+    changed_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+      "$TMP/vacuous-successor" "$TMP/vacuous-events" "$TMP/present-baseline")"
+    [ "$(printf '%s\n' "$baseline_score" | awk -F '\t' '{print $2}')" \
+      -eq "$(($(printf '%s\n' "$changed_score" | awk -F '\t' '{print $2}') + 1))" ] \
+      || fail "agent-caused adoption changes were not scored against the baseline"
 
     mkdir -p "$TMP/negated-validation/.git"
     printf '%s\n' 'schema = 1' >"$TMP/negated-validation/.touchstone.toml"
