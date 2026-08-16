@@ -63,7 +63,7 @@ touchstone/
 | `scripts/respond-review.sh` | Reply to a review finding and resolve its thread in one step (GitHub needs four API calls) |
 | `scripts/touchstone-tracker.sh` | Versioned tracker-neutral verified claim adapter |
 | `scripts/touchstone-pr.sh` | Source entrypoint for three bounded PR operations |
-| `scripts/evaluate-steering.sh` | Offline instruction resolution and bounded live-agent evaluation |
+| `scripts/evaluate-steering.sh` | Offline instruction-resolution evaluation |
 | `scripts/claim-issue.sh` | GitHub transport used by the tracker adapter |
 | `hooks/branch-guard.sh` | Refuses `git commit` on the default branch at the Claude tool boundary |
 | `tests/test-steering-size-caps.sh` | Steering size caps plus path integrity — every path the docs name must exist |
