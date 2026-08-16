@@ -27,6 +27,10 @@ git -C "$LOCK_REPO" add tracked
 git -C "$LOCK_REPO" commit -qm base
 git -C "$LOCK_REPO" switch -qc feat/locked
 LOCK_GIT_DIR="$(git -C "$LOCK_REPO" rev-parse --absolute-git-dir)"
+DEAD_OWNER_PID=2147483647
+while kill -0 "$DEAD_OWNER_PID" 2>/dev/null; do
+  DEAD_OWNER_PID=$((DEAD_OWNER_PID - 1))
+done
 LOCK_PATCH="$TMP_DIR/worktree-lock.patch"
 printf '%s\n' 'diff --git a/generated b/generated' 'new file mode 100644' \
   '--- /dev/null' '+++ b/generated' '@@ -0,0 +1 @@' '+generated' >"$LOCK_PATCH"
@@ -66,12 +70,16 @@ touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
 [ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_REFUSED" ] \
   || fail "live-owner refusal used the wrong status"
 case "$TOUCHSTONE_WORKTREE_LOCK_ERROR" in *'mutation is active'*) ;; *) fail "live-owner refusal was not explicit" ;; esac
+case "$TOUCHSTONE_WORKTREE_LOCK_ERROR" in
+  *"live pid $$"*'PID was reused'*'/pid'*'/token'*'then remove '*) ;;
+  *) fail "live-or-reused PID refusal omitted bounded recovery guidance" ;;
+esac
 rm -f "$LOCK_GIT_DIR/index.lock" "$LOCK_GIT_DIR/touchstone-worktree.lock/pid" \
   "$LOCK_GIT_DIR/touchstone-worktree.lock/token"
 rmdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
 
 mkdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
-printf '%s\n' 999999 >"$LOCK_GIT_DIR/touchstone-worktree.lock/pid"
+printf '%s\n' "$DEAD_OWNER_PID" >"$LOCK_GIT_DIR/touchstone-worktree.lock/pid"
 printf 'stale\n' >"$LOCK_GIT_DIR/touchstone-worktree.lock/token"
 ln "$LOCK_GIT_DIR/touchstone-worktree.lock/token" "$LOCK_GIT_DIR/index.lock"
 lock_status=0
@@ -79,7 +87,7 @@ touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
 [ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_REFUSED" ] \
   || fail "stale-owner refusal used the wrong status"
 case "$TOUCHSTONE_WORKTREE_LOCK_ERROR" in
-  *'dead pid 999999'*'remove '*'index.lock'*'/pid'*'/token'*'then remove '*'touchstone-worktree.lock'*) ;;
+  *"dead pid $DEAD_OWNER_PID"*'remove '*'index.lock'*'/pid'*'/token'*'then remove '*'touchstone-worktree.lock'*) ;;
   *) fail "stale-owner refusal omitted bounded recovery guidance" ;;
 esac
 [ "$LOCK_GIT_DIR/index.lock" -ef "$LOCK_GIT_DIR/touchstone-worktree.lock/token" ] \

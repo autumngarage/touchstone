@@ -86,7 +86,8 @@ touchstone_worktree_lock_acquire() {
       ;;
     esac
     if kill -0 "$owner" 2>/dev/null; then
-      touchstone_worktree_lock_error "another worktree mutation is active (pid $owner)" \
+      touchstone_worktree_lock_error \
+        "worktree lock names live pid $owner; wait if its mutation is active, or after verifying the PID was reused and no mutation is active, remove $index_lock, $owner_dir/pid, and $owner_dir/token, then remove $owner_dir" \
         "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
       return
     fi
