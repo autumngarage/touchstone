@@ -1525,6 +1525,17 @@ run_adoption "$ADOPTION/dirty.out" adopt --project "$DIRTY_REPO" --task 'verify=
 assert_contains "$ADOPTION/dirty.out.err" 'apply requires a clean worktree'
 [ ! -e "$DIRTY_REPO/.touchstone.toml" ] || fail "dirty-worktree refusal mutated the repository"
 
+LOCKED_REPO="$ADOPTION/locked"
+new_adoption_repo "$LOCKED_REPO"
+git -C "$LOCKED_REPO" switch -qc feat/adopt
+LOCKED_GIT_DIR="$(git -C "$LOCKED_REPO" rev-parse --absolute-git-dir)"
+mkdir "$LOCKED_GIT_DIR/touchstone-adopt.lock"
+run_adoption "$ADOPTION/locked.out" adopt --project "$LOCKED_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply did not serialize against an active repository apply"
+assert_contains "$ADOPTION/locked.out.err" 'another Touchstone adoption apply is active'
+[ ! -e "$LOCKED_REPO/.touchstone.toml" ] || fail "locked apply mutated the repository"
+rmdir "$LOCKED_GIT_DIR/touchstone-adopt.lock"
+
 FAIL_GIT_BIN="$ADOPTION/fail-git-bin"
 mkdir -p "$FAIL_GIT_BIN"
 cat >"$FAIL_GIT_BIN/git" <<'EOF'
@@ -1534,6 +1545,9 @@ project=""
 if [ "${1:-}" = -C ]; then
   project="$2"
   shift 2
+fi
+if [ "${1:-}" = status ] && [ "${TOUCHSTONE_STATUS_FAILURE:-false}" = true ]; then
+  exit 92
 fi
 if [ "${1:-}" = apply ] && [ "${2:-}" != --check ]; then
   "$TOUCHSTONE_REAL_GIT" "${arguments[@]}" || exit $?
@@ -1546,6 +1560,16 @@ exec "$TOUCHSTONE_REAL_GIT" "${arguments[@]}"
 EOF
 chmod +x "$FAIL_GIT_BIN/git"
 REAL_GIT="$(command -v git)"
+
+STATUS_FAILURE_REPO="$ADOPTION/status-failure"
+new_adoption_repo "$STATUS_FAILURE_REPO"
+git -C "$STATUS_FAILURE_REPO" switch -qc feat/adopt
+PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" TOUCHSTONE_STATUS_FAILURE=true \
+  run_adoption "$ADOPTION/status-failure.out" adopt --project "$STATUS_FAILURE_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "failed cleanliness probe did not fail closed"
+assert_contains "$ADOPTION/status-failure.out.err" 'could not verify that the worktree is clean'
+[ ! -e "$STATUS_FAILURE_REPO/.touchstone.toml" ] \
+  || fail "failed cleanliness probe mutated the repository"
 
 ROLLBACK_REPO="$ADOPTION/rollback"
 new_adoption_repo "$ROLLBACK_REPO"

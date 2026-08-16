@@ -19,6 +19,7 @@ DETECTED_PROFILE=""
 PLAN_STATUS=""
 KEEP_PLAN=false
 PLAN_ROOT=""
+APPLY_LOCK=""
 TAB="$(printf '\t')"
 CR="$(printf '\r')"
 LF="$(printf '\n_')"
@@ -100,6 +101,7 @@ require_option_value() {
 }
 
 cleanup() {
+  [ -z "$APPLY_LOCK" ] || rmdir -- "$APPLY_LOCK" 2>/dev/null || true
   [ -z "$PLAN_ROOT" ] || [ "$KEEP_PLAN" = true ] || rm -rf -- "$PLAN_ROOT"
 }
 trap cleanup EXIT
@@ -439,7 +441,19 @@ case "$MODE" in
     fi
     [ "$branch" != "$default_branch" ] \
       || safety_refusal "adoption cannot apply on the default branch '$branch'"
-    [ -z "$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=all)" ] \
+    apply_git_dir="$(git -C "$PROJECT_ROOT" rev-parse --absolute-git-dir)" \
+      || operational_failure "could not locate repository metadata"
+    APPLY_LOCK="$apply_git_dir/touchstone-adopt.lock"
+    if ! mkdir -- "$APPLY_LOCK" 2>/dev/null; then
+      [ -d "$APPLY_LOCK" ] \
+        || operational_failure "could not create the repository apply lock"
+      APPLY_LOCK=""
+      safety_refusal "another Touchstone adoption apply is active"
+    fi
+    if ! worktree_status="$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=all)"; then
+      operational_failure "could not verify that the worktree is clean"
+    fi
+    [ -z "$worktree_status" ] \
       || safety_refusal "apply requires a clean worktree"
     printf '==> complete accepted plan before writes\n' >&2
     printf '%s\n' "$(<"$DIFF_FILE")" >&2
