@@ -57,6 +57,7 @@ touchstone_worktree_lock_release() {
 
 touchstone_worktree_lock_acquire() {
   local project="$1" git_dir owner_dir index_lock owner="" confirmed_owner="" stale_dir
+  local interrupted_dir="" candidate reclaimer
   if [ -n "$TOUCHSTONE_WORKTREE_LOCK_DIR" ]; then
     touchstone_worktree_lock_error "this process already owns a Git-native worktree lock" \
       "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
@@ -69,6 +70,49 @@ touchstone_worktree_lock_acquire() {
   fi
   owner_dir="$git_dir/touchstone-worktree.lock"
   index_lock="$git_dir/index.lock"
+  if [ ! -e "$owner_dir" ] && [ ! -L "$owner_dir" ] \
+    && { [ -e "$index_lock" ] || [ -L "$index_lock" ]; }; then
+    for candidate in "$git_dir"/touchstone-worktree.lock.stale.*; do
+      [ -d "$candidate" ] && [ ! -L "$candidate" ] \
+        && [ -f "$candidate/token" ] && [ ! -L "$candidate/token" ] \
+        && [ -f "$index_lock" ] && [ ! -L "$index_lock" ] \
+        && [ "$index_lock" -ef "$candidate/token" ] || continue
+      if [ -n "$interrupted_dir" ]; then
+        touchstone_worktree_lock_error \
+          "multiple interrupted worktree-lock recoveries own the Git index lock" \
+          "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
+        return
+      fi
+      interrupted_dir="$candidate"
+    done
+    if [ -n "$interrupted_dir" ]; then
+      reclaimer="${interrupted_dir##*.}"
+      case "$reclaimer" in '' | *[!0-9]*)
+        touchstone_worktree_lock_error \
+          "interrupted worktree-lock recovery has no verifiable reclaimer: $interrupted_dir" \
+          "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
+        return
+        ;;
+      esac
+      if kill -0 "$reclaimer" 2>/dev/null; then
+        touchstone_worktree_lock_error "worktree-lock recovery is active (pid $reclaimer)" \
+          "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
+        return
+      fi
+      if [ -f "$interrupted_dir/reclaim" ] && [ ! -L "$interrupted_dir/reclaim" ] \
+        && [ -f "$interrupted_dir/token" ] \
+        && [ "$interrupted_dir/reclaim" -ef "$interrupted_dir/token" ]; then
+        rm -f -- "$interrupted_dir/reclaim" \
+          || touchstone_worktree_lock_error "could not resume interrupted stale-lock recovery" \
+            "$TOUCHSTONE_WORKTREE_LOCK_FAILED" || return
+      fi
+      if ! mv -- "$interrupted_dir" "$owner_dir" 2>/dev/null; then
+        touchstone_worktree_lock_error "interrupted worktree-lock ownership changed; retry" \
+          "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
+        return
+      fi
+    fi
+  fi
   if ! mkdir -- "$owner_dir" 2>/dev/null; then
     if [ ! -d "$owner_dir" ] || [ -L "$owner_dir" ]; then
       touchstone_worktree_lock_error "worktree-lock owner path is not a directory: $owner_dir" \

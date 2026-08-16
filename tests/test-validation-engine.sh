@@ -125,6 +125,18 @@ wait "$second_reclaimer"
 [ ! -e "$LOCK_GIT_DIR/index.lock" ] || fail "two-reclaimer test retained the native index lock"
 [ ! -e "$LOCK_GIT_DIR/touchstone-worktree.lock" ] || fail "two-reclaimer test retained owner state"
 
+INTERRUPTED_LOCK="$LOCK_GIT_DIR/touchstone-worktree.lock.stale.999998"
+mkdir "$INTERRUPTED_LOCK"
+printf '%s\n' 999999 >"$INTERRUPTED_LOCK/pid"
+printf 'interrupted stale\n' >"$INTERRUPTED_LOCK/token"
+ln "$INTERRUPTED_LOCK/token" "$INTERRUPTED_LOCK/reclaim"
+ln "$INTERRUPTED_LOCK/token" "$LOCK_GIT_DIR/index.lock"
+touchstone_worktree_lock_acquire "$LOCK_REPO" || fail "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
+[ "$LOCK_GIT_DIR/index.lock" -ef "$TOUCHSTONE_WORKTREE_LOCK_DIR/token" ] \
+  || fail "interrupted stale recovery did not establish fresh native ownership"
+touchstone_worktree_lock_release || fail "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
+[ ! -e "$INTERRUPTED_LOCK" ] || fail "interrupted stale recovery retained its old owner directory"
+
 printf 'foreign\n' >"$LOCK_GIT_DIR/index.lock"
 lock_status=0
 touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
