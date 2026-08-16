@@ -79,6 +79,52 @@ touchstone_worktree_lock_acquire "$LOCK_REPO" || fail "$TOUCHSTONE_WORKTREE_LOCK
   || fail "stale recovery did not establish fresh native ownership"
 touchstone_worktree_lock_release || fail "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
 
+mkdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
+printf '%s\n' 999999 >"$LOCK_GIT_DIR/touchstone-worktree.lock/pid"
+printf 'contended stale\n' >"$LOCK_GIT_DIR/touchstone-worktree.lock/token"
+ln "$LOCK_GIT_DIR/touchstone-worktree.lock/token" "$LOCK_GIT_DIR/index.lock"
+LOCK_RUNNER="$TMP_DIR/worktree-lock-runner.sh"
+LOCK_RESULTS="$TMP_DIR/worktree-lock-results"
+LOCK_READY="$TMP_DIR/worktree-lock-ready"
+LOCK_START="$TMP_DIR/worktree-lock-start"
+: >"$LOCK_RESULTS"
+: >"$LOCK_READY"
+cat >"$LOCK_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$LOCK_MODULE"
+printf 'ready\n' >>"$LOCK_READY"
+while [ ! -e "$LOCK_START" ]; do sleep 0.01; done
+status=0
+touchstone_worktree_lock_acquire "$LOCK_REPOSITORY" || status=$?
+if [ "$status" -eq 0 ]; then
+  printf 'acquired\n' >>"$LOCK_RESULTS"
+  sleep 1
+  touchstone_worktree_lock_release
+else
+  printf 'refused:%s\n' "$status" >>"$LOCK_RESULTS"
+fi
+EOF
+chmod +x "$LOCK_RUNNER"
+LOCK_MODULE="$ROOT/scripts/lib/touchstone-worktree-lock.sh" LOCK_REPOSITORY="$LOCK_REPO" \
+  LOCK_READY="$LOCK_READY" LOCK_START="$LOCK_START" LOCK_RESULTS="$LOCK_RESULTS" \
+  bash "$LOCK_RUNNER" &
+first_reclaimer=$!
+LOCK_MODULE="$ROOT/scripts/lib/touchstone-worktree-lock.sh" LOCK_REPOSITORY="$LOCK_REPO" \
+  LOCK_READY="$LOCK_READY" LOCK_START="$LOCK_START" LOCK_RESULTS="$LOCK_RESULTS" \
+  bash "$LOCK_RUNNER" &
+second_reclaimer=$!
+while [ "$(wc -l <"$LOCK_READY" | tr -d ' ')" -lt 2 ]; do sleep 0.01; done
+printf 'start\n' >"$LOCK_START"
+wait "$first_reclaimer"
+wait "$second_reclaimer"
+[ "$(grep -c '^acquired$' "$LOCK_RESULTS")" -eq 1 ] \
+  || fail "two stale-lock reclaimers acquired the transaction"
+[ "$(grep -c '^refused:' "$LOCK_RESULTS")" -eq 1 ] \
+  || fail "stale-lock contention did not refuse exactly one reclaimer"
+[ ! -e "$LOCK_GIT_DIR/index.lock" ] || fail "two-reclaimer test retained the native index lock"
+[ ! -e "$LOCK_GIT_DIR/touchstone-worktree.lock" ] || fail "two-reclaimer test retained owner state"
+
 printf 'foreign\n' >"$LOCK_GIT_DIR/index.lock"
 lock_status=0
 touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?

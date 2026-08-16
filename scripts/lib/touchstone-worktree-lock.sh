@@ -14,7 +14,7 @@ touchstone_worktree_lock_error() {
 
 touchstone_worktree_lock_remove_owner() {
   local directory="$1"
-  rm -f -- "$directory/pid" "$directory/token" || return 1
+  rm -f -- "$directory/pid" "$directory/token" "$directory/reclaim" || return 1
   rmdir -- "$directory"
 }
 
@@ -56,7 +56,7 @@ touchstone_worktree_lock_release() {
 }
 
 touchstone_worktree_lock_acquire() {
-  local project="$1" git_dir owner_dir index_lock owner="" stale_dir
+  local project="$1" git_dir owner_dir index_lock owner="" confirmed_owner="" stale_dir
   if [ -n "$TOUCHSTONE_WORKTREE_LOCK_DIR" ]; then
     touchstone_worktree_lock_error "this process already owns a Git-native worktree lock" \
       "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
@@ -90,13 +90,43 @@ touchstone_worktree_lock_acquire() {
         "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
       return
     fi
+    if [ ! -f "$owner_dir/token" ] || [ -L "$owner_dir/token" ]; then
+      touchstone_worktree_lock_error \
+        "stale worktree lock has no verifiable token; after confirming no mutation is active, remove $owner_dir" \
+        "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
+      return
+    fi
     stale_dir="$owner_dir.stale.$$"
     if [ -e "$stale_dir" ] || [ -L "$stale_dir" ]; then
       touchstone_worktree_lock_error "stale-lock recovery path already exists: $stale_dir" \
         "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
       return
     fi
+    if ! ln "$owner_dir/token" "$owner_dir/reclaim" 2>/dev/null; then
+      touchstone_worktree_lock_error \
+        "stale worktree lock is already being reclaimed; retry the operation" \
+        "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
+      return
+    fi
+    if [ ! "$owner_dir/reclaim" -ef "$owner_dir/token" ]; then
+      touchstone_worktree_lock_error "stale worktree-lock claim lost token identity" \
+        "$TOUCHSTONE_WORKTREE_LOCK_FAILED"
+      return
+    fi
+    if [ -f "$owner_dir/pid" ] && [ ! -L "$owner_dir/pid" ]; then
+      IFS= read -r confirmed_owner <"$owner_dir/pid" || confirmed_owner=""
+    fi
+    if [ "$confirmed_owner" != "$owner" ] || kill -0 "$confirmed_owner" 2>/dev/null; then
+      rm -f -- "$owner_dir/reclaim" 2>/dev/null || true
+      touchstone_worktree_lock_error "worktree-lock ownership changed before stale reclamation" \
+        "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
+      return
+    fi
     if ! mv -- "$owner_dir" "$stale_dir" 2>/dev/null; then
+      if [ -f "$owner_dir/reclaim" ] && [ ! -L "$owner_dir/reclaim" ] \
+        && [ -f "$owner_dir/token" ] && [ "$owner_dir/reclaim" -ef "$owner_dir/token" ]; then
+        rm -f -- "$owner_dir/reclaim" 2>/dev/null || true
+      fi
       touchstone_worktree_lock_error "worktree-lock ownership changed; retry the operation" \
         "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
       return
