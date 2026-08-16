@@ -867,8 +867,28 @@ EOF
     "$TMP/gemini-validation-events" >"$TMP/gemini-failed-validation-events"
   gemini_failed_validation_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" \
     "$TMP/negated-validation" "$TMP/gemini-failed-validation-events")"
-  [ "$gemini_failed_validation_score" = "$negated_score" ] \
-    || fail "failed Gemini validation event received the run point"
+  [ "$gemini_failed_validation_score" = "$gemini_validation_score" ] \
+    || fail "nonzero Gemini validation verdict lost the run point"
+  head -n 1 "$TMP/gemini-validation-events" >"$TMP/gemini-incomplete-validation-events"
+  gemini_incomplete_validation_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" \
+    "$TMP/negated-validation" "$TMP/gemini-incomplete-validation-events")"
+  [ "$gemini_incomplete_validation_score" = "$negated_score" ] \
+    || fail "incomplete Gemini validation request received the run point"
+  printf '%s\n' \
+    '{"type":"item.completed","item":{"type":"command_execution","command":"touchstone validate","aggregated_output":"Validation failed: no task ran","exit_code":3}}' \
+    >"$TMP/codex-nonzero-validation-events"
+  codex_nonzero_validation_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" \
+    "$TMP/negated-validation" "$TMP/codex-nonzero-validation-events")"
+  [ "$codex_nonzero_validation_score" = "$gemini_validation_score" ] \
+    || fail "nonzero Codex validation verdict lost the run point"
+  printf '%s\n' \
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"validate-1","name":"Bash","input":{"command":"touchstone validate"}}]}}' \
+    '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"validate-1","is_error":true,"content":"Validation failed: no task ran"}]}}' \
+    >"$TMP/claude-nonzero-validation-events"
+  claude_nonzero_validation_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" \
+    "$TMP/negated-validation" "$TMP/claude-nonzero-validation-events")"
+  [ "$claude_nonzero_validation_score" = "$gemini_validation_score" ] \
+    || fail "nonzero Claude validation verdict lost the run point"
   mv "$TMP/negated-validation/.touchstone.toml" "$TMP/negated-validation/deleted-contract"
   deleted_contract_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" "$TMP/negated-validation" /dev/null)"
   [ "$deleted_contract_score" = $'score\t0\t4' ] \

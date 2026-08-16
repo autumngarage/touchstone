@@ -50,9 +50,11 @@ scoring, budgets, and evidence expiry are outside this deterministic boundary.
 
 `evals/steering/v1/normalize-events.sh` converts Codex, Claude, and Gemini
 JSONL into provider-neutral action facts. Scenario scorers consume only those
-facts plus final repository artifacts. Tool requests must correlate with
-successful results before they earn credit; action order is preserved even
-when a shell command contains both actions.
+facts plus final repository artifacts. Reads and mutations must correlate with
+successful results before they earn credit. A validation invocation instead
+requires a terminal result because its expected no-task verdict is nonzero;
+an uncompleted request earns nothing. Action order is preserved even when a
+shell command contains both actions.
 
 `rubric.tsv` records the content-quality judgment for every instruction, and
 `scenarios.tsv` maps each load-bearing behavioral rule to its scorer. A

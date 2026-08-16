@@ -33,12 +33,14 @@ awk '
     pending_command[id]=command
     pending_sequence[id]=sequence
   }
-  function complete(id, result, kind) {
+  function complete(id, result, successful, kind) {
     kind=pending_kind[id]
-    if (kind == "command") emit_command(pending_command[id], pending_sequence[id], result)
-    if (kind == "read" && pending_command[id] ~ /pre-implementation-checklist\.md/) \
+    if (kind == "command" && successful) emit_command(pending_command[id], pending_sequence[id], result)
+    else if (kind == "command" && pending_command[id] ~ /touchstone (run )?validate/) \
+      emit_fact("validation-run", "")
+    if (successful && kind == "read" && pending_command[id] ~ /pre-implementation-checklist\.md/) \
       emit_fact("checklist-read", "")
-    if (kind == "edit") emit_fact("edit", pending_sequence[id] * 1000000 + 1)
+    if (successful && kind == "edit") emit_fact("edit", pending_sequence[id] * 1000000 + 1)
     delete pending_kind[id]
     delete pending_command[id]
     delete pending_sequence[id]
@@ -52,8 +54,10 @@ awk '
       edit_position=match(command, /(cat|printf|echo)[^"]*(>|>>)|sed [^"]*-i|[ ;](tee|touch|cp|mv|chmod|install) /)
       if (edit_position) emit_fact("edit", NR * 1000000 + edit_position)
     }
-    if (line ~ /"type":"item.completed"/ && line ~ /"type":"command_execution"/ \
-        && line ~ /"exit_code":0/) emit_command(command, NR, line)
+    if (line ~ /"type":"item.completed"/ && line ~ /"type":"command_execution"/) {
+      if (line ~ /"exit_code":0/) emit_command(command, NR, line)
+      else if (command ~ /touchstone (run )?validate/) emit_fact("validation-run", "")
+    }
     if (line ~ /"type":"file_change"/) emit_fact("edit", NR * 1000000 + 1)
 
     if (line ~ /"type":"tool_use"/ && line ~ /"name":"(Bash|Read|Write|Edit)"/) {
@@ -61,8 +65,8 @@ awk '
       kind=(line ~ /"name":"(Write|Edit)"/ ? "edit" : (line ~ /"name":"Read"/ ? "read" : "command"))
       remember(id, kind, command, NR)
     }
-    if (line ~ /"type":"tool_result"/ && line ~ /"tool_use_id":/ \
-        && line !~ /"is_error":true/) complete(value_after(line, "\"tool_use_id\":\""), line)
+    if (line ~ /"type":"tool_result"/ && line ~ /"tool_use_id":/) \
+      complete(value_after(line, "\"tool_use_id\":\""), line, line !~ /"is_error":true/)
 
     if (line ~ /"type":"tool_use"/ \
         && line ~ /"tool_name":"(run_shell_command|read_file|write_file|replace)"/) {
@@ -70,7 +74,7 @@ awk '
       kind=(line ~ /"tool_name":"(write_file|replace)"/ ? "edit" : (line ~ /"tool_name":"read_file"/ ? "read" : "command"))
       remember(id, kind, command, NR)
     }
-    if (line ~ /"type":"tool_result"/ && line ~ /"tool_id":/ \
-        && line ~ /"status":"success"/) complete(value_after(line, "\"tool_id\":\""), line)
+    if (line ~ /"type":"tool_result"/ && line ~ /"tool_id":/) \
+      complete(value_after(line, "\"tool_id\":\""), line, line ~ /"status":"success"/)
   }
 ' "$events"
