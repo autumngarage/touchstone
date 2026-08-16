@@ -14,6 +14,88 @@ fail() {
 assert_contains() { grep -Fq "$2" "$1" || fail "$1 does not contain: $2"; }
 assert_not_contains() { ! grep -Fq "$2" "$1" || fail "$1 unexpectedly contains: $2"; }
 
+echo "==> Git-native worktree transactions exclude checkout and recover only owned stale locks"
+# shellcheck disable=SC1091 # the transaction primitive is the unit under test.
+source "$ROOT/scripts/lib/touchstone-worktree-lock.sh"
+LOCK_REPO="$TMP_DIR/worktree-lock"
+mkdir -p "$LOCK_REPO"
+git -C "$LOCK_REPO" init -q -b main
+git -C "$LOCK_REPO" config user.name worktree-lock-test
+git -C "$LOCK_REPO" config user.email worktree-lock@example.invalid
+printf 'base\n' >"$LOCK_REPO/tracked"
+git -C "$LOCK_REPO" add tracked
+git -C "$LOCK_REPO" commit -qm base
+git -C "$LOCK_REPO" switch -qc feat/locked
+LOCK_GIT_DIR="$(git -C "$LOCK_REPO" rev-parse --absolute-git-dir)"
+LOCK_PATCH="$TMP_DIR/worktree-lock.patch"
+printf '%s\n' 'diff --git a/generated b/generated' 'new file mode 100644' \
+  '--- /dev/null' '+++ b/generated' '@@ -0,0 +1 @@' '+generated' >"$LOCK_PATCH"
+
+touchstone_worktree_lock_acquire "$LOCK_REPO" || fail "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
+[ "$LOCK_GIT_DIR/index.lock" -ef "$LOCK_GIT_DIR/touchstone-worktree.lock/token" ] \
+  || fail "native index lock is not the owned hard-linked token"
+if git -C "$LOCK_REPO" switch main >"$TMP_DIR/locked-switch.out" 2>&1; then
+  fail "Git checkout ignored the native worktree transaction lock"
+fi
+assert_contains "$TMP_DIR/locked-switch.out" 'index.lock'
+git -C "$LOCK_REPO" apply "$LOCK_PATCH" || fail "worktree-only apply could not run under the native lock"
+[ -f "$LOCK_REPO/generated" ] || fail "worktree-only apply did not write its planned file"
+touchstone_worktree_lock_release || fail "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
+[ ! -e "$LOCK_GIT_DIR/index.lock" ] || fail "release retained the native index lock"
+[ ! -e "$LOCK_GIT_DIR/touchstone-worktree.lock" ] || fail "release retained the owner lock"
+
+touchstone_worktree_lock_acquire "$LOCK_REPO" || fail "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
+rm -f "$LOCK_GIT_DIR/index.lock"
+printf 'foreign replacement\n' >"$LOCK_GIT_DIR/index.lock"
+lock_status=0
+touchstone_worktree_lock_release || lock_status=$?
+[ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_FAILED" ] \
+  || fail "changed ownership did not fail release"
+[ "$(cat "$LOCK_GIT_DIR/index.lock")" = 'foreign replacement' ] \
+  || fail "release removed a foreign replacement index lock"
+rm -f "$LOCK_GIT_DIR/index.lock" "$LOCK_GIT_DIR/touchstone-worktree.lock/pid" \
+  "$LOCK_GIT_DIR/touchstone-worktree.lock/token"
+rmdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
+
+mkdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
+printf '%s\n' "$$" >"$LOCK_GIT_DIR/touchstone-worktree.lock/pid"
+printf 'live\n' >"$LOCK_GIT_DIR/touchstone-worktree.lock/token"
+ln "$LOCK_GIT_DIR/touchstone-worktree.lock/token" "$LOCK_GIT_DIR/index.lock"
+lock_status=0
+touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
+[ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_REFUSED" ] \
+  || fail "live-owner refusal used the wrong status"
+case "$TOUCHSTONE_WORKTREE_LOCK_ERROR" in *'mutation is active'*) ;; *) fail "live-owner refusal was not explicit" ;; esac
+rm -f "$LOCK_GIT_DIR/index.lock" "$LOCK_GIT_DIR/touchstone-worktree.lock/pid" \
+  "$LOCK_GIT_DIR/touchstone-worktree.lock/token"
+rmdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
+
+mkdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
+printf '%s\n' 999999 >"$LOCK_GIT_DIR/touchstone-worktree.lock/pid"
+printf 'stale\n' >"$LOCK_GIT_DIR/touchstone-worktree.lock/token"
+ln "$LOCK_GIT_DIR/touchstone-worktree.lock/token" "$LOCK_GIT_DIR/index.lock"
+touchstone_worktree_lock_acquire "$LOCK_REPO" || fail "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
+[ "$LOCK_GIT_DIR/index.lock" -ef "$LOCK_GIT_DIR/touchstone-worktree.lock/token" ] \
+  || fail "stale recovery did not establish fresh native ownership"
+touchstone_worktree_lock_release || fail "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
+
+printf 'foreign\n' >"$LOCK_GIT_DIR/index.lock"
+lock_status=0
+touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
+[ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_REFUSED" ] \
+  || fail "foreign-lock refusal used the wrong status"
+[ "$(cat "$LOCK_GIT_DIR/index.lock")" = foreign ] || fail "foreign Git index lock was changed"
+[ ! -e "$LOCK_GIT_DIR/touchstone-worktree.lock" ] || fail "foreign-lock refusal retained owner state"
+rm -f "$LOCK_GIT_DIR/index.lock"
+
+mkdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
+lock_status=0
+touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
+[ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_REFUSED" ] \
+  || fail "ownerless refusal used the wrong status"
+case "$TOUCHSTONE_WORKTREE_LOCK_ERROR" in *'no verifiable owner'*) ;; *) fail "ownerless refusal omitted recovery guidance" ;; esac
+rmdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
+
 write_contract() {
   local dir="$1" command="$2" required="${3:-true}"
   mkdir -p "$dir"
