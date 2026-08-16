@@ -208,12 +208,6 @@ require_head_file() {
 
 detect_profile() {
   local facts="" count=0
-  if [ -e "$PROJECT_ROOT/package.json" ] || [ -e "$PROJECT_ROOT/package-lock.json" ]; then
-    [ -f "$PROJECT_ROOT/package.json" ] && [ -f "$PROJECT_ROOT/package-lock.json" ] \
-      || contract_refusal "npm adoption requires both package.json and package-lock.json"
-    facts="${facts:+$facts,}npm"
-    count=$((count + 1))
-  fi
   if [ -e "$PROJECT_ROOT/pyproject.toml" ]; then
     facts="${facts:+$facts,}python"
     count=$((count + 1))
@@ -247,40 +241,6 @@ compile_legacy_plan() {
     fi
   done
   [ "$found" = true ]
-}
-
-compile_npm_plan() {
-  local script scripts found=false
-  require_head_file package.json
-  require_head_file package-lock.json
-  command -v node >/dev/null 2>&1 \
-    || contract_refusal "npm adoption requires the authoritative Node JSON parser"
-  scripts="$(node -e '
-    const fs = require("fs");
-    const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    if (!value.scripts || typeof value.scripts !== "object" || Array.isArray(value.scripts)) process.exit(3);
-    for (const name of ["validate", "verify", "lint", "typecheck", "test", "build"])
-      if (typeof value.scripts[name] === "string" && value.scripts[name].trim()) console.log(name);
-  ' "$PROJECT_ROOT/package.json" 2>/dev/null)" \
-    || contract_refusal "package.json has no usable scripts object"
-  [ -n "$scripts" ] || contract_refusal "package.json declares no validate, verify, lint, typecheck, test, or build script"
-  record_plan_target root . npm
-  record_plan_setup "$PROJECT_ROOT" 'npm ci --ignore-scripts'
-  for script in validate verify; do
-    if printf '%s\n' "$scripts" | grep -Fx "$script" >/dev/null; then
-      record_plan_task "$script" root "npm run $script"
-      PROFILE=npm
-      return 0
-    fi
-  done
-  for script in lint typecheck test build; do
-    if printf '%s\n' "$scripts" | grep -Fx "$script" >/dev/null; then
-      record_plan_task "$script" root "npm run $script"
-      found=true
-    fi
-  done
-  [ "$found" = true ] || contract_refusal "package.json has no supported validation script"
-  PROFILE=npm
 }
 
 compile_python_plan() {
@@ -333,16 +293,16 @@ compile_new_contract() {
   local proposed="$PLAN_ROOT/proposed-contract.toml" detected
   if [ "$MANUAL_TASK_COUNT" -gt 0 ]; then
     compile_manual_plan "${MANUAL_TASK_ARGS[@]}"
-  elif [ -f "$PROJECT_ROOT/.touchstone-config" ]; then
+  elif [ -e "$PROJECT_ROOT/.touchstone-config" ] || [ -L "$PROJECT_ROOT/.touchstone-config" ]; then
     if compile_legacy_plan; then :; else
       detect_profile
       detected="$DETECTED_PROFILE"
-      case "$detected" in npm) compile_npm_plan ;; python) compile_python_plan ;; swift) compile_swift_plan ;; esac
+      case "$detected" in python) compile_python_plan ;; swift) compile_swift_plan ;; esac
     fi
   else
     detect_profile
     detected="$DETECTED_PROFILE"
-    case "$detected" in npm) compile_npm_plan ;; python) compile_python_plan ;; swift) compile_swift_plan ;; esac
+    case "$detected" in python) compile_python_plan ;; swift) compile_swift_plan ;; esac
   fi
   render_contract "$proposed"
   plan_file .touchstone.toml "$proposed" project-contract
@@ -350,7 +310,7 @@ compile_new_contract() {
 
 plan_tracker_contract() {
   local proposed="$PLAN_ROOT/proposed-tracker.toml"
-  if [ -e "$PROJECT_ROOT/.touchstone-tracker.toml" ]; then
+  if [ -e "$PROJECT_ROOT/.touchstone-tracker.toml" ] || [ -L "$PROJECT_ROOT/.touchstone-tracker.toml" ]; then
     [ -z "$TRACKER_TYPE$TRACKER_PREFIX" ] \
       || invalid_invocation "an existing tracker declaration cannot be replaced by adoption options" "Edit project-owned values in a separate reviewed change."
     require_head_file .touchstone-tracker.toml
@@ -364,7 +324,7 @@ plan_tracker_contract() {
 }
 
 plan_tracker_contract
-if [ -e "$PROJECT_ROOT/.touchstone.toml" ]; then
+if [ -e "$PROJECT_ROOT/.touchstone.toml" ] || [ -L "$PROJECT_ROOT/.touchstone.toml" ]; then
   [ "$MANUAL_TASK_COUNT" -eq 0 ] \
     || invalid_invocation "an existing validation declaration cannot be replaced by adoption options" "Edit project-owned values in a separate reviewed change."
   read_existing_contract

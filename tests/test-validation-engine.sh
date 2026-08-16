@@ -1106,7 +1106,7 @@ run_adoption() {
   local output="$1"
   shift
   set +e
-  bash "$ROOT/bin/touchstone" "$@" >"$output" 2>"$output.err"
+  bash "$ROOT/scripts/touchstone-adopt.sh" "$@" >"$output" 2>"$output.err"
   ADOPTION_STATUS=$?
   set -e
 }
@@ -1220,18 +1220,6 @@ run_adoption "$ADOPTION/older-v1.json" adopt --dry-run --json --project "$OLDER_
   || fail "adoption planning rewrote an older valid v1 contract"
 assert_contains "$ADOPTION/older-v1.json" '"path":".touchstone-tracker.toml"'
 
-NPM="$ADOPTION/npm"
-new_adoption_repo "$NPM"
-cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package.json" "$NPM/package.json"
-cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package-lock.json" "$NPM/package-lock.json"
-git -C "$NPM" add package.json package-lock.json
-git -C "$NPM" commit -qm npm
-run_adoption "$ADOPTION/npm.json" adopt --dry-run --json --project "$NPM"
-[ "$ADOPTION_STATUS" -eq 0 ] || fail "captured npm profile did not compile"
-assert_contains "$ADOPTION/npm.json" '"profile":"npm"'
-assert_contains "$ADOPTION/npm.json" 'npm ci --ignore-scripts'
-assert_contains "$ADOPTION/npm.json" 'npm run verify'
-
 PYTHON="$ADOPTION/python"
 new_adoption_repo "$PYTHON"
 cp "$ROOT/tests/fixtures/adoption-v1/repositories/arpeggio/pyproject.toml" "$PYTHON/pyproject.toml"
@@ -1266,22 +1254,6 @@ assert_contains "$ADOPTION/legacy.json" '"profile":"legacy"'
 assert_contains "$ADOPTION/legacy.json" 'uv run ruff check src/ tests/'
 assert_contains "$ADOPTION/legacy.json" 'uv run pytest'
 
-AMBIGUOUS="$ADOPTION/ambiguous"
-new_adoption_repo "$AMBIGUOUS"
-cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package.json" "$AMBIGUOUS/package.json"
-cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package-lock.json" "$AMBIGUOUS/package-lock.json"
-cp "$ROOT/tests/fixtures/adoption-v1/repositories/arpeggio/pyproject.toml" "$AMBIGUOUS/pyproject.toml"
-git -C "$AMBIGUOUS" add package.json package-lock.json pyproject.toml
-git -C "$AMBIGUOUS" commit -qm ambiguous
-run_adoption "$ADOPTION/ambiguous.out" adopt --dry-run --project "$AMBIGUOUS"
-[ "$ADOPTION_STATUS" -eq 4 ] || fail "competing profile evidence did not fail closed"
-assert_contains "$ADOPTION/ambiguous.out.err" 'competing project evidence found: npm,python'
-run_adoption "$ADOPTION/ambiguous.json" adopt --dry-run --json --project "$AMBIGUOUS"
-[ "$ADOPTION_STATUS" -eq 4 ] || fail "JSON competing profile evidence did not fail closed"
-assert_contains "$ADOPTION/ambiguous.json" '"schema":"touchstone.adoption/v1"'
-assert_contains "$ADOPTION/ambiguous.json" '"status":"contract-refusal"'
-assert_contains "$ADOPTION/ambiguous.json" 'competing project evidence found: npm,python'
-
 UNSUPPORTED="$ADOPTION/unsupported"
 new_adoption_repo "$UNSUPPORTED"
 printf 'schema = 2\n' >"$UNSUPPORTED/.touchstone.toml"
@@ -1299,6 +1271,25 @@ git -C "$UNSUPPORTED_TRACKER" commit -qm unsupported-tracker
 run_adoption "$ADOPTION/unsupported-tracker.out" adopt --dry-run --json --project "$UNSUPPORTED_TRACKER"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "unsupported tracker schema did not fail closed"
 assert_contains "$ADOPTION/unsupported-tracker.out" 'unsupported-tracker-schema'
+
+DANGLING_TRACKER="$ADOPTION/dangling-tracker"
+new_adoption_repo "$DANGLING_TRACKER"
+cp "$OLDER_V1/.touchstone.toml" "$DANGLING_TRACKER/.touchstone.toml"
+ln -s missing-tracker "$DANGLING_TRACKER/.touchstone-tracker.toml"
+git -C "$DANGLING_TRACKER" add .touchstone.toml .touchstone-tracker.toml
+git -C "$DANGLING_TRACKER" commit -qm dangling-tracker
+run_adoption "$ADOPTION/dangling-tracker.out" upgrade --dry-run --project "$DANGLING_TRACKER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "upgrade accepted a dangling tracker declaration symlink"
+assert_contains "$ADOPTION/dangling-tracker.out.err" 'compiler input is a symlink: .touchstone-tracker.toml'
+
+DANGLING_LEGACY="$ADOPTION/dangling-legacy"
+new_adoption_repo "$DANGLING_LEGACY"
+ln -s missing-config "$DANGLING_LEGACY/.touchstone-config"
+git -C "$DANGLING_LEGACY" add .touchstone-config
+git -C "$DANGLING_LEGACY" commit -qm dangling-legacy
+run_adoption "$ADOPTION/dangling-legacy.out" adopt --dry-run --project "$DANGLING_LEGACY"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "adoption accepted a dangling legacy declaration symlink"
+assert_contains "$ADOPTION/dangling-legacy.out.err" 'compiler input is a symlink: .touchstone-config'
 
 SYMLINKED="$ADOPTION/symlinked"
 OUTSIDE="$ADOPTION/outside"

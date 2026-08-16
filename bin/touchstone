@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# touchstone — versioned adoption, validation, tracker, and PR boundary.
+# touchstone — versioned validation, tracker, and PR delivery boundary.
 
 set -euo pipefail
 
@@ -19,8 +19,6 @@ usage() {
   cat <<'EOF'
 Usage:
   touchstone validate [--json] [--project DIR] [--config FILE]
-  touchstone adopt --check|--dry-run [arguments]
-  touchstone upgrade --check|--dry-run [arguments]
   touchstone tracker claim [arguments]
   touchstone pr open|status|merge [arguments]
 EOF
@@ -32,9 +30,6 @@ if [ "$#" -gt 0 ]; then shift; fi
 case "$COMMAND" in
   validate)
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" validate "$@"
-    ;;
-  adopt | upgrade)
-    exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-adopt.sh" "$COMMAND" "$@"
     ;;
   tracker)
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-tracker.sh" "$@"
