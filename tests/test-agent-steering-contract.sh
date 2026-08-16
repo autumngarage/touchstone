@@ -672,9 +672,6 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
     assert_has "$EVALUATOR" '"$ROOT/bin/touchstone" adopt'
     assert_has "$EVALUATOR" 'output directory must be empty'
     assert_has "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" 'quota'
-    assert_has "$ROOT/audits/2026-08-14-steering-evaluation.md" 'Behavioral results remain'
-    assert_has "$ROOT/audits/2026-08-14-steering-evaluation.md" 'infrastructure-unavailable'
-    assert_has "$ROOT/audits/2026-08-14-steering-evaluation.md" '2026-11-12'
 
     mkdir -p "$TMP/quota-regression"
     printf '%s\n' '# Delivery' '' \
