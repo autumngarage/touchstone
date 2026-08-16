@@ -31,6 +31,23 @@ LOCK_PATCH="$TMP_DIR/worktree-lock.patch"
 printf '%s\n' 'diff --git a/generated b/generated' 'new file mode 100644' \
   '--- /dev/null' '+++ b/generated' '@@ -0,0 +1 @@' '+generated' >"$LOCK_PATCH"
 
+for git_override in GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE; do
+  export "$git_override=$TMP_DIR/ambient-git-override"
+  lock_status=0
+  touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
+  unset "$git_override"
+  [ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_REFUSED" ] \
+    || fail "$git_override did not refuse the worktree transaction"
+  case "$TOUCHSTONE_WORKTREE_LOCK_ERROR" in
+    *'ambient Git repository overrides are not supported'*) ;;
+    *) fail "$git_override refusal omitted its recovery boundary" ;;
+  esac
+  [ ! -e "$LOCK_GIT_DIR/index.lock" ] \
+    || fail "$git_override refusal created a native index lock"
+  [ ! -e "$LOCK_GIT_DIR/touchstone-worktree.lock" ] \
+    || fail "$git_override refusal created owner state"
+done
+
 touchstone_worktree_lock_acquire "$LOCK_REPO" || fail "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
 [ "$LOCK_GIT_DIR/index.lock" -ef "$LOCK_GIT_DIR/touchstone-worktree.lock/token" ] \
   || fail "native index lock is not the owned hard-linked token"

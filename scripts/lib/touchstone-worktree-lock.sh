@@ -84,6 +84,13 @@ touchstone_worktree_lock_acquire() {
       "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
     return
   fi
+  if [ "${GIT_DIR+x}" = x ] || [ "${GIT_WORK_TREE+x}" = x ] \
+    || [ "${GIT_COMMON_DIR+x}" = x ] || [ "${GIT_INDEX_FILE+x}" = x ]; then
+    touchstone_worktree_lock_error \
+      "ambient Git repository overrides are not supported during a worktree transaction" \
+      "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
+    return
+  fi
   if ! git_dir="$(git -C "$project" rev-parse --absolute-git-dir)"; then
     touchstone_worktree_lock_error "could not locate repository metadata" \
       "$TOUCHSTONE_WORKTREE_LOCK_FAILED"
