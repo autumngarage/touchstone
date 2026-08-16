@@ -197,9 +197,14 @@ install_steering() {
 }
 
 run_agent() {
-  local driver="$1" repo="$2" events="$3" prompt="$4" status=0 budget timeout grace pid watchdog
+  local driver="$1" repo="$2" events="$3" prompt="$4" status=0 budget timeout grace pid watchdog monitor_enabled=false
   timeout="$(config_value scenario_timeout_seconds)"
   grace="$(config_value termination_grace_seconds)"
+  case $- in *m*) ;; *)
+    set -m
+    monitor_enabled=true
+    ;;
+  esac
   case "$driver" in
     codex)
       codex exec --json --ephemeral --sandbox danger-full-access --ignore-user-config \
@@ -229,17 +234,18 @@ run_agent() {
     timer=$!
     wait "$timer"
     timer=""
-    kill -TERM "$pid" 2>/dev/null || true
+    kill -TERM -- "-$pid" 2>/dev/null || true
     sleep "$grace" &
     timer=$!
     wait "$timer"
     timer=""
-    kill -KILL "$pid" 2>/dev/null || true
+    kill -KILL -- "-$pid" 2>/dev/null || true
   ) &
   watchdog=$!
   wait "$pid" || status=$?
   kill "$watchdog" 2>/dev/null || true
   wait "$watchdog" 2>/dev/null || true
+  [ "$monitor_enabled" = false ] || set +m
   return "$status"
 }
 

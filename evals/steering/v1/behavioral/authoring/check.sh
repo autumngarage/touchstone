@@ -48,12 +48,13 @@ for invalid in '' '-1' 'abc' '1 2'; do
   bash "$repo/scripts/counter.sh" $invalid >/dev/null 2>&1 && successor_contract=false
 done
 [ "$successor_contract" = true ] && score=$((score + 1))
-if [ -f "$repo/tests/test-counter.sh" ] && bash "$repo/tests/test-counter.sh" >/dev/null 2>&1; then
+if [ -f "$repo/tests/test-counter.sh" ] \
+  && (cd "$repo" && bash tests/test-counter.sh >/dev/null 2>&1); then
   mutant="$(mktemp -d -t touchstone-steering-mutant.XXXXXX)"
   cp -R "$repo/." "$mutant/"
   printf '%s\n' '#!/usr/bin/env bash' 'printf "5\\n"' >"$mutant/scripts/counter.sh"
   chmod +x "$mutant/scripts/counter.sh"
-  if ! bash "$mutant/tests/test-counter.sh" >/dev/null 2>&1; then score=$((score + 1)); fi
+  if ! (cd "$mutant" && bash tests/test-counter.sh >/dev/null 2>&1); then score=$((score + 1)); fi
   rm -rf "$mutant"
   mutant=""
 fi

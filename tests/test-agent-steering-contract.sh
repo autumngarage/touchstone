@@ -609,11 +609,17 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
     ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
     TMP="$(mktemp -d -t touchstone-steering-test.XXXXXX)"
     TIMER_PIDS="$TMP/timer-pids"
+    AGENT_CHILD_PIDS="$TMP/agent-child-pids"
     cleanup_evaluation_test() {
       if [ -f "$TIMER_PIDS" ]; then
         while IFS= read -r timer_pid; do
           [ -z "$timer_pid" ] || kill "$timer_pid" 2>/dev/null || true
         done <"$TIMER_PIDS"
+      fi
+      if [ -f "$AGENT_CHILD_PIDS" ]; then
+        while IFS= read -r agent_child_pid; do
+          [ -z "$agent_child_pid" ] || kill "$agent_child_pid" 2>/dev/null || true
+        done <"$AGENT_CHILD_PIDS"
       fi
       rm -rf "$TMP"
     }
@@ -813,7 +819,8 @@ EOF
     mkdir -p "$TMP/bin" "$TMP/evidence"
     TOUCHSTONE_TEST_REAL_SLEEP="$(command -v sleep)"
     TOUCHSTONE_TEST_TIMER_PIDS="$TIMER_PIDS"
-    export TOUCHSTONE_TEST_REAL_SLEEP TOUCHSTONE_TEST_TIMER_PIDS
+    TOUCHSTONE_TEST_AGENT_CHILD_PIDS="$AGENT_CHILD_PIDS"
+    export TOUCHSTONE_TEST_REAL_SLEEP TOUCHSTONE_TEST_TIMER_PIDS TOUCHSTONE_TEST_AGENT_CHILD_PIDS
     : >"$TIMER_PIDS"
     cat >"$TMP/bin/sleep" <<'EOF'
 #!/usr/bin/env bash
@@ -831,7 +838,11 @@ set -euo pipefail
 if [ "${1:-}" = --version ]; then printf '%s\n' 'codex-cli mock'; exit 0; fi
 if [ "${TOUCHSTONE_TEST_STUBBORN_AGENT:-false}" = true ]; then
   trap '' TERM
-  exec "$TOUCHSTONE_TEST_REAL_SLEEP" 30
+  "$TOUCHSTONE_TEST_REAL_SLEEP" 30 &
+  stubborn_child=$!
+  printf '%s\n' "$stubborn_child" >>"$TOUCHSTONE_TEST_AGENT_CHILD_PIDS"
+  wait "$stubborn_child"
+  exit $?
 fi
 repo=""
 while [ "$#" -gt 0 ]; do
@@ -892,6 +903,11 @@ EOF
       --driver codex --scenario validation --mode control --repeat 1 >"$TMP/timeout.out"
     awk -F '\t' 'NR == 2 && $8 == 137 && $13 == "timed-out" { found=1 } END { exit !found }' \
       "$TMP/timeout-evidence/summary.tsv" || fail "TERM-resistant agent escaped the hard timeout"
+    while IFS= read -r agent_child_pid; do
+      if [ -n "$agent_child_pid" ] && kill -0 "$agent_child_pid" 2>/dev/null; then
+        fail "timed-out agent left child process $agent_child_pid running"
+      fi
+    done <"$AGENT_CHILD_PIDS"
     while IFS= read -r timer_pid; do
       if [ -n "$timer_pid" ] && kill -0 "$timer_pid" 2>/dev/null; then
         fail "behavioral evaluator left watchdog timer $timer_pid running"
