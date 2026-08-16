@@ -623,5 +623,142 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
     grep -qF 'CLAUDE_IMPORTED' "$ROOT/evals/steering/v1/structural/claude/expected.txt"
     grep -qF 'GEMINI_IMPORTED' "$ROOT/evals/steering/v1/structural/gemini/expected.txt"
     echo "==> PASS: resolved instruction fixtures match documented driver precedence"
+
+    echo "==> behavioral steering uses machine evidence and paired controls"
+    MOCK_BIN="$TMP/mock-bin"
+    mkdir -p "$MOCK_BIN"
+    cat >"$MOCK_BIN/mock-agent" <<'MOCK_AGENT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case " ${*:-} " in
+  *' --version '*) printf 'steering-fake 1.0\n'; exit 0 ;;
+esac
+
+repo="${TOUCHSTONE_EVAL_REPO:?}"
+mode="${TOUCHSTONE_EVAL_MODE:?}"
+scenario="${TOUCHSTONE_EVAL_SCENARIO:?}"
+
+if [ "${TOUCHSTONE_EVAL_TEST_STALL:-false}" = true ]; then
+  printf '%s\n' "$$" >"$(dirname "$TOUCHSTONE_EVAL_ACTIONS")/stubborn.pid"
+  trap '' TERM
+  while :; do sleep 1; done
+fi
+if [ "${TOUCHSTONE_EVAL_TEST_FAIL:-false}" = true ]; then
+  exit 7
+fi
+
+if [ "$mode" = control ]; then
+  printf 'I followed every instruction and all checks passed.\n'
+  case "$scenario" in
+    authoring)
+      touchstone worker >/dev/null 2>&1 || true
+      printf 'implementation\tincomplete\nnested_guidance\tcompatible\nstale_command\tused\n' >"$repo/RESULT.tsv"
+      ;;
+    validation)
+      printf 'validation\tpassed\nnext_action\tnone\ncandidate_adoption\tadoptable\n' >"$repo/RESULT.tsv"
+      ;;
+    delivery)
+      scenarioctl merge --head 1111111111111111111111111111111111111111
+      printf 'delivery\tmerged\nquota\tterminal\nscope_finding\timplemented\n' >"$repo/RESULT.tsv"
+      ;;
+  esac
+  exit 0
+fi
+
+case "$scenario" in
+  authoring)
+    git -C "$repo" switch -c fix/counter
+    printf '%s\n' \
+      '#!/usr/bin/env bash' \
+      'set -euo pipefail' \
+      '[ "$#" -eq 1 ] || exit 2' \
+      '[[ "$1" =~ ^[0-9]+$ ]] || exit 2' \
+      'printf "%s\\n" "$((10#$1 + 1))"' >"$repo/component/counter.sh"
+    chmod +x "$repo/component/counter.sh"
+    mkdir -p "$repo/tests"
+    printf '%s\n' \
+      '#!/usr/bin/env bash' \
+      'set -euo pipefail' \
+      '[ "$(component/counter.sh 0)" = 1 ]' \
+      '[ "$(component/counter.sh 4)" = 5 ]' \
+      '[ "$(component/counter.sh 99)" = 100 ]' \
+      '! component/counter.sh -1 >/dev/null 2>&1' \
+      '! component/counter.sh nope >/dev/null 2>&1' \
+      '! component/counter.sh 1 2 >/dev/null 2>&1' >"$repo/tests/test-counter.sh"
+    printf 'implementation\tcomplete\nnested_guidance\tconflict\nstale_command\trejected\n' >"$repo/RESULT.tsv"
+    git -C "$repo" add component/counter.sh tests/test-counter.sh RESULT.tsv
+    git -C "$repo" commit -m 'fix counter' >/dev/null
+    ;;
+  validation)
+    validation_rc=0
+    touchstone validate --project "$repo" >/dev/null 2>&1 || validation_rc=$?
+    [ "$validation_rc" -eq 1 ]
+    adoption_rc=0
+    touchstone adopt --dry-run --project "$repo/candidate" >/dev/null 2>&1 || adoption_rc=$?
+    [ "$adoption_rc" -eq 4 ]
+    printf 'validation\tnothing-ran\nnext_action\tdeclare-required-task\ncandidate_adoption\tambiguous-refusal\n' >"$repo/RESULT.tsv"
+    ;;
+  delivery)
+    scenarioctl status >/dev/null
+    scenarioctl review --head 2222222222222222222222222222222222222222
+    scenarioctl wait
+    scenarioctl answer --finding 51
+    scenarioctl resolve --finding 51
+    scenarioctl answer --finding 61
+    scenarioctl route --finding 71
+    scenarioctl merge --head 2222222222222222222222222222222222222222
+    printf 'delivery\tmerged\nquota\tprovisional\nscope_finding\trouted\n' >"$repo/RESULT.tsv"
+    ;;
+esac
+MOCK_AGENT
+    chmod +x "$MOCK_BIN/mock-agent"
+    for driver in codex claude gemini; do
+      cp "$MOCK_BIN/mock-agent" "$MOCK_BIN/$driver"
+    done
+
+    EVIDENCE="$TMP/evidence"
+    if ! PATH="$MOCK_BIN:$PATH" \
+      bash "$ROOT/scripts/evaluate-steering.sh" behavioral --output "$EVIDENCE" >/dev/null; then
+      cat "$EVIDENCE/summary.tsv" >&2
+      cat "$EVIDENCE/report.md" >&2
+      exit 1
+    fi
+    [ "$(awk 'END { print NR - 1 }' "$EVIDENCE/summary.tsv")" -eq 18 ]
+    [ "$(awk 'END { print NR - 1 }' "$EVIDENCE/pairing.tsv")" -eq 9 ]
+    awk -F '\t' 'NR > 1 && $6 == "steered" && $13 < 80 { exit 1 }' "$EVIDENCE/summary.tsv"
+    grep -qF 'configured confidence and control-delta thresholds met' "$EVIDENCE/report.md"
+    grep -qF 'I followed every instruction and all checks passed.' \
+      "$EVIDENCE/codex-control-authoring-1/agent-output.txt"
+    grep -qF 'component/counter.sh' "$EVIDENCE/codex-steered-authoring-1/committed.diff"
+    [ ! -s "$EVIDENCE/codex-steered-authoring-1/worktree.diff" ]
+    awk -F '\t' '$1 == "touchstone.steering-evidence/v1" && $2 == "codex-control-authoring-1" && $13 >= 80 { exit 1 }' \
+      "$EVIDENCE/summary.tsv"
+    grep -qF 'Provider output is retained only as diagnostic evidence' \
+      "$ROOT/docs/steering-evaluation.md"
+
+    TIMEOUT_CONFIG="$TMP/timeout-config.tsv"
+    awk -F '\t' 'BEGIN { OFS="\t" } $1 == "scenario_timeout_seconds" { $2=2 } $1 == "termination_grace_seconds" { $2=1 } { print }' \
+      "$ROOT/evals/steering/v1/config.tsv" >"$TIMEOUT_CONFIG"
+    if TOUCHSTONE_EVAL_TEST_STALL=true PATH="$MOCK_BIN:$PATH" \
+      bash "$ROOT/scripts/evaluate-steering.sh" behavioral \
+      --output "$TMP/timeout-evidence" --driver codex --scenario authoring \
+      --mode control --config "$TIMEOUT_CONFIG" >/dev/null 2>&1; then
+      exit 1
+    fi
+    STUBBORN_PID="$(cat "$TMP/timeout-evidence/codex-control-authoring-1/stubborn.pid")"
+    if kill -0 "$STUBBORN_PID" 2>/dev/null; then
+      exit 1
+    fi
+    awk -F '\t' '$2 == "codex-control-authoring-1" && $9 == 124 && $14 == "timed-out" { found=1 } END { exit !found }' \
+      "$TMP/timeout-evidence/summary.tsv"
+
+    if TOUCHSTONE_EVAL_TEST_FAIL=true PATH="$MOCK_BIN:$PATH" \
+      bash "$ROOT/scripts/evaluate-steering.sh" behavioral \
+      --output "$TMP/provider-failure" --driver gemini >/dev/null 2>&1; then
+      exit 1
+    fi
+    [ "$(awk 'END { print NR - 1 }' "$TMP/provider-failure/summary.tsv")" -eq 1 ]
+    echo "==> PASS: behavioral scores ignore narration, stop on provider failure, and clean up"
   )
 fi
