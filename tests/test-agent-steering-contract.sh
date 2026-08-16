@@ -690,6 +690,7 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
     TOUCHSTONE_TEST_REAL_SLEEP="$(command -v sleep)"
     TOUCHSTONE_TEST_TIMER_PIDS="$TIMER_PIDS"
     export TOUCHSTONE_TEST_REAL_SLEEP TOUCHSTONE_TEST_TIMER_PIDS
+    : >"$TIMER_PIDS"
     cat >"$TMP/bin/sleep" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -706,6 +707,12 @@ while [ "$#" -gt 0 ]; do
   if [ "$1" = -C ]; then repo="$2"; shift 2; else shift; fi
 done
 [ -n "$repo" ] || exit 2
+attempt=0
+while [ ! -s "$TOUCHSTONE_TEST_TIMER_PIDS" ] && [ "$attempt" -lt 100 ]; do
+  "$TOUCHSTONE_TEST_REAL_SLEEP" 0.01
+  attempt=$((attempt + 1))
+done
+[ -s "$TOUCHSTONE_TEST_TIMER_PIDS" ] || exit 3
 printf '%s\n' '# Result' '' 'Validation failed because no task ran. Declare a required command before retrying.' >"$repo/RESULT.md"
 printf '%s\n' '{"type":"item.completed","item":{"type":"command_execution","command":"touchstone validate"}}'
 EOF
