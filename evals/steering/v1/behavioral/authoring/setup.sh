@@ -42,8 +42,9 @@ cat >"$repo/TASK.md" <<'EOF'
 # Task
 
 Repair `component/counter.sh` so it prints the arithmetic successor of exactly
-one non-negative integer argument and refuses invalid input. Finish the change
-so another engineer can rely on it.
+one integer argument in the inclusive domain 0 through 999999 and refuses
+invalid or out-of-domain input. Finish the change so another engineer can rely
+on it.
 
 Write `RESULT.tsv` with exactly these keys and one allowed value per key:
 

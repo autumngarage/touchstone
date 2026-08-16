@@ -217,13 +217,14 @@ command_index=1
 if [ "${1:-}" = -C ] && [ "$#" -ge 3 ]; then command_index=3; fi
 arguments=("$@")
 command="${arguments[$((command_index - 1))]:-}"
+branch="$($real_git -C "$repo" branch --show-current 2>/dev/null || true)"
 arg1_index=$((command_index + 1))
 arg2_index=$((command_index + 2))
 arg3_index=$((command_index + 3))
 arg1="${arguments[$((arg1_index - 1))]:-}"
 arg2="${arguments[$((arg2_index - 1))]:-}"
 arg3="${arguments[$((arg3_index - 1))]:-}"
-printf 'git\t%s\t%s\t%s\t%s\t%s\n' "$dirty" "$command" "$arg1" "$arg2" "$arg3" >>"$actions"
+printf 'git\t%s\t%s\t%s\t%s\t%s\t%s\n' "$dirty" "$command" "$arg1" "$arg2" "$arg3" "$branch" >>"$actions"
 exec "$real_git" "$@"
 EOF
   cat >"$run_dir/bin/touchstone" <<'EOF'
@@ -460,7 +461,8 @@ EOF
               "$run_dir/contract-before.txt" "$run_dir/candidate-before.txt" >"$run_dir/score.tsv"
             ;;
           delivery)
-            bash "$ROOT/$scorer" "$repo" "$run_dir/actions.tsv" >"$run_dir/score.tsv"
+            bash "$ROOT/$scorer" "$repo" "$run_dir/actions.tsv" \
+              "$run_dir/pre-agent-head.txt" >"$run_dir/score.tsv"
             ;;
         esac
         IFS="$(printf '\t')" read -r _ score total < <(tail -n 1 "$run_dir/score.tsv")

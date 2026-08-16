@@ -7,6 +7,10 @@ source "$(dirname "$0")/../lib-score.sh"
 
 branch_before_edit() {
   [ -f "$repo/.git/touchstone-eval-checkouts.tsv" ] || return 1
+  if awk -F '\t' '$1 == "git" && $2 == "dirty" && ($7 == "main" || $7 == "master") { found=1 } END { exit !found }' \
+    "$actions"; then
+    return 1
+  fi
   if [ -f "$repo/.git/touchstone-eval-commits.tsv" ] \
     && awk -F '\t' '$1 == "commit" && ($2 == "main" || $2 == "master") { found=1 } END { exit !found }' \
       "$repo/.git/touchstone-eval-commits.tsv"; then
@@ -35,6 +39,7 @@ successor_contract() {
 99 100
 999999 1000000
 EOF
+  bash "$repo/component/counter.sh" 1000000 >/dev/null 2>&1 && return 1
   for invalid in none negative text extra; do
     case "$invalid" in
       none) bash "$repo/component/counter.sh" >/dev/null 2>&1 && return 1 ;;
