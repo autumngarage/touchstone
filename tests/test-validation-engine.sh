@@ -14,6 +14,138 @@ fail() {
 assert_contains() { grep -Fq "$2" "$1" || fail "$1 does not contain: $2"; }
 assert_not_contains() { ! grep -Fq "$2" "$1" || fail "$1 unexpectedly contains: $2"; }
 
+echo "==> Git-native worktree transactions exclude checkout and fail closed on stale state"
+# shellcheck disable=SC1091 # the transaction primitive is the unit under test.
+source "$ROOT/scripts/lib/touchstone-worktree-lock.sh"
+LOCK_REPO="$TMP_DIR/worktree-lock"
+mkdir -p "$LOCK_REPO"
+git -C "$LOCK_REPO" init -q -b main
+git -C "$LOCK_REPO" config user.name worktree-lock-test
+git -C "$LOCK_REPO" config user.email worktree-lock@example.invalid
+printf 'base\n' >"$LOCK_REPO/tracked"
+git -C "$LOCK_REPO" add tracked
+git -C "$LOCK_REPO" commit -qm base
+git -C "$LOCK_REPO" switch -qc feat/locked
+LOCK_GIT_DIR="$(git -C "$LOCK_REPO" rev-parse --absolute-git-dir)"
+LOCK_PATCH="$TMP_DIR/worktree-lock.patch"
+printf '%s\n' 'diff --git a/generated b/generated' 'new file mode 100644' \
+  '--- /dev/null' '+++ b/generated' '@@ -0,0 +1 @@' '+generated' >"$LOCK_PATCH"
+
+for git_override in GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE; do
+  export "$git_override=$TMP_DIR/ambient-git-override"
+  lock_status=0
+  touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
+  unset "$git_override"
+  [ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_REFUSED" ] \
+    || fail "$git_override did not refuse the worktree transaction"
+  case "$TOUCHSTONE_WORKTREE_LOCK_ERROR" in
+    *'ambient Git repository overrides are not supported'*) ;;
+    *) fail "$git_override refusal omitted its recovery boundary" ;;
+  esac
+  [ ! -e "$LOCK_GIT_DIR/index.lock" ] \
+    || fail "$git_override refusal created a native index lock"
+  [ ! -e "$LOCK_GIT_DIR/touchstone-worktree.lock" ] \
+    || fail "$git_override refusal created owner state"
+done
+
+touchstone_worktree_lock_acquire "$LOCK_REPO" || fail "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
+[ "$LOCK_GIT_DIR/index.lock" -ef "$LOCK_GIT_DIR/touchstone-worktree.lock/token" ] \
+  || fail "native index lock is not the owned hard-linked token"
+if git -C "$LOCK_REPO" switch main >"$TMP_DIR/locked-switch.out" 2>&1; then
+  fail "Git checkout ignored the native worktree transaction lock"
+fi
+assert_contains "$TMP_DIR/locked-switch.out" 'index.lock'
+git -C "$LOCK_REPO" apply "$LOCK_PATCH" || fail "worktree-only apply could not run under the native lock"
+[ -f "$LOCK_REPO/generated" ] || fail "worktree-only apply did not write its planned file"
+(
+  inherited_release_status=0
+  touchstone_worktree_lock_release || inherited_release_status=$?
+  [ "$inherited_release_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_FAILED" ] \
+    || exit 1
+) || fail "an inherited subshell could release its parent's native lock"
+[ "$LOCK_GIT_DIR/index.lock" -ef "$LOCK_GIT_DIR/touchstone-worktree.lock/token" ] \
+  || fail "inherited-subshell release changed the parent's native lock"
+touchstone_worktree_lock_release || fail "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
+[ ! -e "$LOCK_GIT_DIR/index.lock" ] || fail "release retained the native index lock"
+[ ! -e "$LOCK_GIT_DIR/touchstone-worktree.lock" ] || fail "release retained the owner lock"
+
+touchstone_worktree_lock_acquire "$LOCK_REPO" || fail "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
+rm -f "$LOCK_GIT_DIR/index.lock"
+printf 'foreign replacement\n' >"$LOCK_GIT_DIR/index.lock"
+lock_status=0
+touchstone_worktree_lock_release || lock_status=$?
+[ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_FAILED" ] \
+  || fail "changed ownership did not fail release"
+[ "$(cat "$LOCK_GIT_DIR/index.lock")" = 'foreign replacement' ] \
+  || fail "release removed a foreign replacement index lock"
+rm -f "$LOCK_GIT_DIR/index.lock" "$LOCK_GIT_DIR/touchstone-worktree.lock/pid" \
+  "$LOCK_GIT_DIR/touchstone-worktree.lock/token"
+rmdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
+
+mkdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
+printf '%s\n' "$$" >"$LOCK_GIT_DIR/touchstone-worktree.lock/pid"
+printf 'live\n' >"$LOCK_GIT_DIR/touchstone-worktree.lock/token"
+ln "$LOCK_GIT_DIR/touchstone-worktree.lock/token" "$LOCK_GIT_DIR/index.lock"
+lock_status=0
+touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
+[ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_REFUSED" ] \
+  || fail "live-owner refusal used the wrong status"
+case "$TOUCHSTONE_WORKTREE_LOCK_ERROR" in
+  *"records pid $$"*'may be active or stale'*'verifying no Touchstone mutation is active'*'/pid'*'/token'*'then remove '*) ;;
+  *) fail "pre-existing owner refusal omitted the active-or-stale recovery boundary" ;;
+esac
+rm -f "$LOCK_GIT_DIR/index.lock" "$LOCK_GIT_DIR/touchstone-worktree.lock/pid" \
+  "$LOCK_GIT_DIR/touchstone-worktree.lock/token"
+rmdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
+
+(
+  # Bash 3.2 preserves $$ in a subshell; the primitive must record the actual acquirer.
+  touchstone_worktree_lock_acquire "$LOCK_REPO" || exit 1
+)
+SUBSHELL_OWNER_PID="$(cat "$LOCK_GIT_DIR/touchstone-worktree.lock/pid")"
+[ "$SUBSHELL_OWNER_PID" != "$$" ] \
+  || fail "subshell acquisition recorded the live parent PID"
+if kill -0 "$SUBSHELL_OWNER_PID" 2>/dev/null; then
+  fail "subshell acquisition did not record the exited acquiring process"
+fi
+lock_status=0
+touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
+[ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_REFUSED" ] \
+  || fail "exited-subshell owner refusal used the wrong status"
+case "$TOUCHSTONE_WORKTREE_LOCK_ERROR" in
+  *"records pid $SUBSHELL_OWNER_PID"*'may be active or stale'*'verifying no Touchstone mutation is active'*) ;;
+  *) fail "exited-subshell refusal omitted bounded recovery guidance" ;;
+esac
+[ "$LOCK_GIT_DIR/index.lock" -ef "$LOCK_GIT_DIR/touchstone-worktree.lock/token" ] \
+  || fail "exited-subshell refusal changed the native lock"
+rm -f "$LOCK_GIT_DIR/index.lock" "$LOCK_GIT_DIR/touchstone-worktree.lock/pid" \
+  "$LOCK_GIT_DIR/touchstone-worktree.lock/token"
+rmdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
+touchstone_worktree_lock_acquire "$LOCK_REPO" || fail "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
+touchstone_worktree_lock_release || fail "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
+
+printf 'foreign\n' >"$LOCK_GIT_DIR/index.lock"
+lock_status=0
+touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
+[ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_REFUSED" ] \
+  || fail "foreign-lock refusal used the wrong status"
+[ "$(cat "$LOCK_GIT_DIR/index.lock")" = foreign ] || fail "foreign Git index lock was changed"
+[ ! -e "$LOCK_GIT_DIR/touchstone-worktree.lock" ] || fail "foreign-lock refusal retained owner state"
+rm -f "$LOCK_GIT_DIR/index.lock"
+
+mkdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
+printf 'residual owner token\n' >"$LOCK_GIT_DIR/touchstone-worktree.lock/token"
+lock_status=0
+touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
+[ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_REFUSED" ] \
+  || fail "ownerless refusal used the wrong status"
+case "$TOUCHSTONE_WORKTREE_LOCK_ERROR" in
+  *'no verifiable owner'*'preserving any foreign '*'index.lock'*'/pid'*'/token'*'then remove '*) ;;
+  *) fail "ownerless refusal omitted residual-file recovery guidance" ;;
+esac
+rm -f "$LOCK_GIT_DIR/touchstone-worktree.lock/token"
+rmdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
+
 write_contract() {
   local dir="$1" command="$2" required="${3:-true}"
   mkdir -p "$dir"
