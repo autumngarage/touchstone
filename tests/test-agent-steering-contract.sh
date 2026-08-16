@@ -67,7 +67,11 @@ for file in \
   assert_contains "$file" "missing enforcement is a rollout gap"
   assert_contains "$file" "A security-review quota notice is never a blocker"
   assert_contains "$file" "bounded stalled-request recovery"
-  assert_contains "$file" "Bound review convergence"
+  assert_contains "$file" "Keep review subordinate to scope"
+  assert_contains "$file" "review cannot amend approved scope"
+  assert_contains "$file" "Answering is not implementing"
+  assert_contains "$file" "answer and route out-of-scope findings"
+  assert_contains "$file" "Scope widening stops implementation and further review requests"
   assert_contains "$file" "follow the capability across replacement PRs"
   assert_contains "$file" "closing or renaming never resets the budget"
   assert_not_contains "$file" "Review is an enforced gate."
@@ -158,6 +162,10 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   assert_contains "$file" "capability"
   assert_not_contains "$file" "retry until review"
 done
+
+assert_contains "$GIT_WORKFLOW_SKILL" "Review cannot amend the approved scope"
+assert_contains "$GIT_WORKFLOW_SKILL" "answering is not implementing"
+assert_contains "$GIT_WORKFLOW_SKILL" "stop implementation and further requests on that shape"
 
 echo "==> Claude entry files import the TOUCHSTONE.md steering router"
 # CLAUDE.md uses @TOUCHSTONE.md (Claude Code resolves @-imports transitively),

@@ -48,7 +48,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale lives
 - **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill (Claude) or read `principles/audit-weak-points.md` (other drivers).
 - **Isolate file-writing subagents** — parallel agents use dedicated worktrees and disjoint file ownership by default.
 - **File tracked bugs** — open an item in the configured tracker when you find a bug, here or in an upstream tool. Don't silently work around it.
-- **Bound review convergence** — three finding-bearing rounds follow the capability across replacement PRs; closing or renaming never resets the budget. After exhaustion, narrow scope or redesign before requesting review again; record recurring tool/reviewer drag upstream.
+- **Keep review subordinate to scope** — review cannot amend approved scope. Implement only diff-created or in-scope defects; route the rest. Three finding-bearing rounds follow the capability across replacement PRs; closing or renaming never resets the budget.
 
 ## Never commit on the default branch
 
@@ -64,7 +64,7 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 4. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
 5. **Reconcile tracked work.** Before opening the PR, list every tracker item found, claimed, fixed, partially fixed, or made stale. Fixed items get the configured closing reference in the PR body; partial or stale items get a tracker note explaining the evidence or remaining gap. Do not leave shipped work stale silently.
 6. **Ship.** `git push -u origin HEAD`, then `gh pr create`. Put the configured closing reference (`Closes #123` or `Fixes AUT-123`) in the **PR body**, not only a commit. Request review by commenting `@codex review` on the PR.
-7. **Answer every piece of PR feedback before merging.** Inspect GitHub's complete review surface, reply to each comment, and resolve every thread with the raw procedure in `principles/git-workflow.md`; unresolved threads and `CHANGES_REQUESTED` block the merge.
+7. **Answer every piece of PR feedback before merging.** Answering is not implementing; classify against approved scope, then answer and route out-of-scope findings. Scope widening stops implementation and further review requests. Inspect GitHub's complete review surface, reply to each comment, and resolve every thread via `principles/git-workflow.md`; unresolved threads and `CHANGES_REQUESTED` block merge.
 8. **Merge.** Use a project-documented executable merge boundary when present; otherwise run `gh pr merge <n> --squash --match-head-commit <sha>`. Always bind the reviewed head and confirm GitHub state, regardless of exit code.
 9. **Clean up after merge.** Delete the local branch if it persists.
 
