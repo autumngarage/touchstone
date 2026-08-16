@@ -9,6 +9,19 @@ ran_validation() {
       command=line
       sub(/"aggregated_output".*/, "", command)
       if ((index(line, "\"type\":\"command_execution\"") || index(line, "\"name\":\"Bash\"")) && command ~ /touchstone (run )?validate/) found=1
+      if (line ~ /"type":"tool_use"/ && line ~ /"tool_name":"run_shell_command"/ \
+          && command ~ /touchstone (run )?validate/) {
+        id=line
+        sub(/^.*"tool_id":"/, "", id)
+        sub(/".*$/, "", id)
+        pending[id]=1
+      }
+      if (line ~ /"type":"tool_result"/ && line ~ /"status":"success"/) {
+        id=line
+        sub(/^.*"tool_id":"/, "", id)
+        sub(/".*$/, "", id)
+        if (pending[id]) found=1
+      }
     }
     END { exit !found }
   ' "$_events"

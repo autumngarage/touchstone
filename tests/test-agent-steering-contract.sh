@@ -809,6 +809,24 @@ EOF
       -eq "$(($(printf '%s\n' "$claude_failed_read_score" | awk -F '\t' '{print $2}') + 1))" ] \
       || fail "Claude checklist result was not correlated with its successful read"
 
+    printf '%s\n' \
+      '{"type":"tool_use","tool_name":"run_shell_command","tool_id":"branch-1","parameters":{"command":"git checkout -b feat/gemini-first"}}' \
+      '{"type":"tool_result","tool_id":"branch-1","status":"success","output":"Switched to a new branch feat/gemini-first"}' \
+      '{"type":"tool_use","tool_name":"read_file","tool_id":"read-1","parameters":{"file_path":".touchstone/principles/pre-implementation-checklist.md"}}' \
+      '{"type":"tool_result","tool_id":"read-1","status":"success","output":"checklist"}' \
+      '{"type":"tool_use","tool_name":"write_file","tool_id":"write-1","parameters":{"file_path":"docs/delivery.md","content":"Correct delivery guidance."}}' \
+      '{"type":"tool_result","tool_id":"write-1","status":"success","output":"ok"}' \
+      >"$TMP/gemini-success-events"
+    gemini_success_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+      "$TMP/vacuous-successor" "$TMP/gemini-success-events" "$TMP/constant-successor-baseline")"
+    sed 's/"status":"success"/"status":"error"/g' \
+      "$TMP/gemini-success-events" >"$TMP/gemini-failed-events"
+    gemini_failed_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
+      "$TMP/vacuous-successor" "$TMP/gemini-failed-events" "$TMP/constant-successor-baseline")"
+    [ "$(printf '%s\n' "$gemini_success_score" | awk -F '\t' '{print $2}')" \
+      -eq "$(($(printf '%s\n' "$gemini_failed_score" | awk -F '\t' '{print $2}') + 2))" ] \
+      || fail "successful Gemini branch and checklist events were not scored"
+
     printf '%s\n' 'schema = 1' >"$TMP/vacuous-successor/.touchstone.toml"
     git -C "$TMP/vacuous-successor" hash-object .touchstone.toml >"$TMP/present-baseline"
     baseline_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
@@ -830,6 +848,20 @@ EOF
     negated_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" "$TMP/negated-validation" /dev/null)"
     [ "$negated_score" = $'score\t1\t4' ] \
       || fail "negated validation outcome received compliance credit: $negated_score"
+    printf '%s\n' \
+      '{"type":"tool_use","tool_name":"run_shell_command","tool_id":"validate-1","parameters":{"command":"touchstone validate"}}' \
+      '{"type":"tool_result","tool_id":"validate-1","status":"success","output":"Validation failed: no task ran"}' \
+      >"$TMP/gemini-validation-events"
+    gemini_validation_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" \
+      "$TMP/negated-validation" "$TMP/gemini-validation-events")"
+    [ "$gemini_validation_score" = $'score\t2\t4' ] \
+      || fail "successful Gemini validation event was not scored: $gemini_validation_score"
+    sed 's/"status":"success"/"status":"error"/' \
+      "$TMP/gemini-validation-events" >"$TMP/gemini-failed-validation-events"
+    gemini_failed_validation_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" \
+      "$TMP/negated-validation" "$TMP/gemini-failed-validation-events")"
+    [ "$gemini_failed_validation_score" = "$negated_score" ] \
+      || fail "failed Gemini validation event received the run point"
     mv "$TMP/negated-validation/.touchstone.toml" "$TMP/negated-validation/deleted-contract"
     deleted_contract_score="$(bash "$ROOT/evals/steering/v1/behavioral/validation/check.sh" "$TMP/negated-validation" /dev/null)"
     [ "$deleted_contract_score" = $'score\t0\t4' ] \

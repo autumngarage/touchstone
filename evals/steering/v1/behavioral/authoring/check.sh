@@ -12,10 +12,15 @@ branch_before_edit() {
       line=$0
       command=line
       sub(/"aggregated_output".*/, "", command)
-      is_command=(index(line, "\"type\":\"command_execution\"") || index(line, "\"name\":\"Bash\""))
-      if (!branch && line ~ /Switched to a new branch/) branch=NR
+      is_gemini_shell=(line ~ /"type":"tool_use"/ && line ~ /"tool_name":"run_shell_command"/)
+      is_command=(index(line, "\"type\":\"command_execution\"") || index(line, "\"name\":\"Bash\"") || is_gemini_shell)
+      if (!branch && line ~ /Switched to a new branch/ \
+          && !(line ~ /"type":"tool_result"/ && line ~ /"tool_id":/)) branch=NR
       shell_edit=(is_command && (command ~ /(cat|printf|echo)[^"]*(>|>>)/ || command ~ /sed [^"]*-i/ || command ~ /(^|[ ;])(tee|touch|cp|mv|chmod|install) /))
-      if (!edit && (index(line, "\"type\":\"file_change\"") || line ~ /"name":"(Write|Edit)"/ || shell_edit)) edit=NR
+      gemini_edit=(line ~ /"type":"tool_use"/ && line ~ /"tool_name":"(write_file|replace)"/)
+      if (!edit && (index(line, "\"type\":\"file_change\"") || line ~ /"name":"(Write|Edit)"/ || gemini_edit || shell_edit)) edit=NR
+      if (!branch && line ~ /"type":"tool_result"/ && line ~ /"status":"success"/ \
+          && line ~ /Switched to a new branch/) branch=NR
     }
     END { exit !(branch && edit && branch < edit) }
   ' "$events"
@@ -42,6 +47,20 @@ consulted_preimplementation() {
         sub(/^.*"tool_use_id":"/, "", id)
         sub(/".*$/, "", id)
         if (pending[id]) found=1
+      }
+      if (line ~ /"type":"tool_use"/ \
+          && line ~ /"tool_name":"(read_file|run_shell_command)"/ \
+          && command ~ /pre-implementation-checklist\.md/) {
+        id=line
+        sub(/^.*"tool_id":"/, "", id)
+        sub(/".*$/, "", id)
+        gemini_pending[id]=1
+      }
+      if (line ~ /"type":"tool_result"/ && line ~ /"status":"success"/) {
+        id=line
+        sub(/^.*"tool_id":"/, "", id)
+        sub(/".*$/, "", id)
+        if (gemini_pending[id]) found=1
       }
     }
     END { exit !found }
