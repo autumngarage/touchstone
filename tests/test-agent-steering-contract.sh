@@ -669,6 +669,15 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
       fail "behavioral evaluator accepted an explicitly empty option value"
     fi
     [ ! -e "$TMP/empty-option" ] || fail "empty option parsing created evaluator output"
+    for invalid_args in '--scenario .*' '--repeat 999999999999999999999999'; do
+      # Deliberate splitting supplies the option/value pair under test.
+      # shellcheck disable=SC2086
+      if bash "$EVALUATOR" behavioral --output "$TMP/invalid-value" \
+        --driver codex $invalid_args --mode steered >"$TMP/invalid-value.out" 2>&1; then
+        fail "behavioral evaluator accepted invalid value: $invalid_args"
+      fi
+      [ ! -e "$TMP/invalid-value" ] || fail "invalid value created evaluator output: $invalid_args"
+    done
     if bash "$EVALUATOR" behavioral --output "$ROOT/.touchstone-evidence-test" \
       --driver codex --scenario validation --mode steered --repeat 1 \
       >"$TMP/inside-root.out" 2>&1; then
@@ -740,7 +749,7 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
     printf 'absent\n' >"$TMP/constant-successor-baseline"
     printf '%s\n' \
       '{"type":"item.started","item":{"type":"command_execution","command":"cat > scripts/counter.sh","aggregated_output":""}}' \
-      '{"type":"item.started","item":{"type":"command_execution","command":"git checkout -b feat/too-late","aggregated_output":""}}' \
+      '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/too-late","aggregated_output":"Switched to a new branch feat/too-late"}}' \
       '{"type":"item.started","item":{"type":"file_change"}}' \
       >"$TMP/constant-successor-events"
     constant_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
@@ -748,7 +757,7 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
     [ "$constant_score" != $'score\t6\t6' ] || fail "constant successor and vacuous test received full credit"
 
     printf '%s\n' \
-      '{"type":"item.started","item":{"type":"command_execution","command":"git checkout -b feat/first","aggregated_output":""}}' \
+      '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/first","aggregated_output":"Switched to a new branch feat/first"}}' \
       '{"type":"item.started","item":{"type":"file_change"}}' \
       >"$TMP/ordered-events"
     ordered_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \
@@ -766,7 +775,7 @@ EOF
     chmod +x "$TMP/vacuous-successor/scripts/counter.sh"
     printf '%s\n' 'Corrected delivery guidance.' >"$TMP/vacuous-successor/docs/delivery.md"
     printf '%s\n' \
-      '{"type":"item.started","item":{"type":"command_execution","command":"git checkout -b feat/first","aggregated_output":""}}' \
+      '{"type":"item.completed","item":{"type":"command_execution","command":"git checkout -b feat/first","aggregated_output":"Switched to a new branch feat/first"}}' \
       '{"type":"item.started","item":{"type":"command_execution","command":"sed -n 1,200p .touchstone/principles/pre-implementation-checklist.md","aggregated_output":""}}' \
       '{"type":"item.started","item":{"type":"file_change"}}' >"$TMP/vacuous-events"
     vacuous_score="$(bash "$ROOT/evals/steering/v1/behavioral/authoring/check.sh" \

@@ -301,17 +301,22 @@ behavioral_evaluation() {
   case "$driver" in all) drivers="codex claude gemini" ;; codex | claude | gemini) drivers="$driver" ;; *) usage ;; esac
   case "$mode" in both) modes="steered control" ;; steered | control) modes="$mode" ;; *) usage ;; esac
   case "$repeat" in "" | *[!0-9]* | 0) usage ;; esac
+  max_runs="$(config_value max_runs)"
+  if [ "${#repeat}" -gt "${#max_runs}" ] \
+    || { [ "${#repeat}" -eq "${#max_runs}" ] && [[ "$repeat" > "$max_runs" ]]; }; then
+    usage
+  fi
   if [ "$scenario" = all ]; then
     scenarios="$(awk -F '\t' '!/^#/ && $1 != "id" { print $1 }' "$EVAL_ROOT/scenarios.tsv")"
   else
-    grep -q "^$scenario"$'\t' "$EVAL_ROOT/scenarios.tsv" || usage
+    awk -F '\t' -v wanted="$scenario" '$1 == wanted { found=1 } END { exit !found }' \
+      "$EVAL_ROOT/scenarios.tsv" || usage
     scenarios="$scenario"
   fi
   driver_count="$(printf '%s\n' $drivers | awk 'NF { count++ } END { print count + 0 }')"
   mode_count="$(printf '%s\n' $modes | awk 'NF { count++ } END { print count + 0 }')"
   scenario_count="$(printf '%s\n' $scenarios | awk 'NF { count++ } END { print count + 0 }')"
   planned_runs=$((driver_count * mode_count * scenario_count * repeat))
-  max_runs="$(config_value max_runs)"
   [ "$planned_runs" -le "$max_runs" ] || fail "planned $planned_runs runs exceed configured max_runs=$max_runs"
   if [ -d "$output" ]; then
     output_candidate="$(cd "$output" && pwd -P)"
