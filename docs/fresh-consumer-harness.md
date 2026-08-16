@@ -39,14 +39,15 @@ workflow cannot change the central result. The checked-in policy must still
 pin a full source SHA in a different, protected repository. Repository-file
 plans continue to report remote policy as a separate operation.
 
-The non-mutation lane snapshots the scratch repository around validation, an
-ambient required-workflow revision change, installed-CLI help, a Homebrew
-upgrade adapter, and a mocked read-only PR status observation. The upgrade may
+The non-mutation lane snapshots the scratch repository around validation,
+installed-CLI help, a Homebrew upgrade adapter, and a mocked read-only PR
+status observation. The upgrade may
 write only to its isolated installation prefix; it cannot search for or change
 a project. AUT-276 will replace the adapter with the released formula without
 changing this boundary. Default-branch and dirty apply attempts refuse without
-partial files, and an outside sentinel proves no operation crosses the declared
-ownership boundary.
+partial files. Every adoption fixture sits beside a committed sentinel
+repository; exact sibling inventory and source-checkout snapshots prove the
+operation does not cross its declared ownership boundary.
 
 Finally, the harness invokes the versioned steering structural lane from
 `evals/steering/v1/`. Fresh-consumer proof therefore cannot pass with a broken

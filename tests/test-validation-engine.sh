@@ -1894,8 +1894,7 @@ echo "validation engine tests passed"
   POLICY="$ROOT/policy/github/touchstone-main.json"
   TMP="$(mktemp -d -t touchstone-fresh-consumer.XXXXXX)"
   trap 'rm -rf "$TMP"' EXIT
-  printf '%s\n' 'outside ownership sentinel' >"$TMP/outside-sentinel"
-  OUTSIDE_SENTINEL_HASH="$(git hash-object "$TMP/outside-sentinel")"
+  ROOT_STATUS_BEFORE="$(git -C "$ROOT" status --porcelain=v1)"
   TOOL_BIN="$TMP/tool-bin"
   mkdir -p "$TOOL_BIN"
   cat >"$TOOL_BIN/tool" <<'EOF'
@@ -1917,6 +1916,14 @@ EOF
 
   assert_clean() {
     [ -z "$(git -C "$1" status --porcelain=v1)" ] || fail "$2 mutated the consumer"
+  }
+
+  assert_boundary_clean() {
+    local boundary="$1" actual
+    actual="$(find "$boundary" -mindepth 1 -maxdepth 1 -exec basename {} \; | LC_ALL=C sort)"
+    [ "$actual" = 'outside
+project' ] || fail "$2 wrote an unexpected sibling outside the consumer"
+    assert_clean "$boundary/outside" "$2 outside sentinel"
   }
 
   init_repo() {
@@ -1944,8 +1951,11 @@ EOF
   for fixture in "$FIXTURES"/*; do
     [ -d "$fixture" ] || continue
     id="$(basename "$fixture")"
-    repo="$TMP/project-$id"
-    mkdir -p "$repo"
+    boundary="$TMP/project-$id"
+    repo="$boundary/project"
+    mkdir -p "$repo" "$boundary/outside"
+    printf '%s\n' 'outside ownership sentinel' >"$boundary/outside/sentinel"
+    init_repo "$boundary/outside"
     cp -R "$fixture/." "$repo/"
     IFS="$(printf '\t')" read -r outcome profile expected expected_setup <"$repo/expect.tsv"
     printf '%s\n' 'PROJECT AGENT PROSE' >"$repo/AGENTS.md"
@@ -1962,6 +1972,7 @@ EOF
       [ "$RUN_STATUS" -eq 4 ] || fail "$id ambiguity did not refuse with exit 4"
       assert_contains "$TMP/$id-refusal" "$expected"
       assert_clean "$repo" "$id refusal"
+      assert_boundary_clean "$boundary" "$id refusal"
       continue
     fi
 
@@ -2044,6 +2055,7 @@ EOF
       -o -name 'update-project.sh' -o -name '*registry*' -o -name '*sync*' \) -print -quit | grep -q .; then
       fail "$id adoption vendored implementation or background machinery"
     fi
+    assert_boundary_clean "$boundary" "$id adoption"
   done
 
   echo "==> old schema-v1 consumers validate and adopt through one explicit transition"
@@ -2148,10 +2160,9 @@ EOF
   and .workflowSource.branchProtection.required_conversation_resolution
 ' "$POLICY" >/dev/null || fail "required workflow is not pinned to a separately protected source"
 
-  echo "==> ordinary validation, install, revision, and PR observations do not mutate projects"
+  echo "==> ordinary validation, install, and PR observations do not mutate projects"
   status_before="$(git -C "$policy_repo" status --porcelain=v1)"
-  TOUCHSTONE_REQUIRED_WORKFLOW_SHA=1111111111111111111111111111111111111111 \
-    bash "$RUNNER" validate --project "$policy_repo" --json >/dev/null
+  bash "$RUNNER" validate --project "$policy_repo" --json >/dev/null
   (cd "$policy_repo" && "$CLI" --help >/dev/null)
   mkdir -p "$TMP/mock-bin"
   cat >"$TMP/mock-bin/gh" <<'EOF'
@@ -2180,7 +2191,7 @@ EOF
   PATH="$TMP/mock-bin:$PATH" TOUCHSTONE_READ_ATTEMPTS=1 "$CLI" pr status 1 \
     --project "$policy_repo" --json >/dev/null
   [ "$(git -C "$policy_repo" status --porcelain=v1)" = "$status_before" ] \
-    || fail "ordinary validation, installed-tool, revision, or PR observation mutated the project"
+    || fail "ordinary validation, installed-tool, or PR observation mutated the project"
 
   echo "==> unsafe apply states refuse without partial writes"
   safety_repo="$TMP/safety-consumer"
@@ -2203,8 +2214,8 @@ EOF
   echo "==> fresh consumers reuse the versioned steering-resolution fixtures"
   structural="$(bash "$ROOT/scripts/evaluate-steering.sh" structural --json)"
   case "$structural" in *'"status":"passed"'*) ;; *) fail "structural steering fixtures failed: $structural" ;; esac
-  [ "$(git hash-object "$TMP/outside-sentinel")" = "$OUTSIDE_SENTINEL_HASH" ] \
-    || fail "consumer operations wrote outside their ownership boundary"
+  [ "$(git -C "$ROOT" status --porcelain=v1)" = "$ROOT_STATUS_BEFORE" ] \
+    || fail "consumer operations mutated the Touchstone source checkout"
 
   echo "==> PASS: fresh-consumer adoption, compatibility, policy, and safety contracts hold"
 )
