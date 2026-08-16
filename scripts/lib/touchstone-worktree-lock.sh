@@ -80,7 +80,7 @@ touchstone_worktree_lock_acquire() {
     fi
     case "$owner" in '' | *[!0-9]*)
       touchstone_worktree_lock_error \
-        "worktree lock has no verifiable owner; after confirming no mutation is active, remove $owner_dir" \
+        "worktree lock has no verifiable owner; after confirming no mutation is active and preserving any foreign $index_lock, remove $owner_dir/pid and $owner_dir/token, then remove $owner_dir" \
         "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
       return
       ;;

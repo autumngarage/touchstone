@@ -108,11 +108,16 @@ touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
 rm -f "$LOCK_GIT_DIR/index.lock"
 
 mkdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
+printf 'residual owner token\n' >"$LOCK_GIT_DIR/touchstone-worktree.lock/token"
 lock_status=0
 touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
 [ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_REFUSED" ] \
   || fail "ownerless refusal used the wrong status"
-case "$TOUCHSTONE_WORKTREE_LOCK_ERROR" in *'no verifiable owner'*) ;; *) fail "ownerless refusal omitted recovery guidance" ;; esac
+case "$TOUCHSTONE_WORKTREE_LOCK_ERROR" in
+  *'no verifiable owner'*'preserving any foreign '*'index.lock'*'/pid'*'/token'*'then remove '*) ;;
+  *) fail "ownerless refusal omitted residual-file recovery guidance" ;;
+esac
+rm -f "$LOCK_GIT_DIR/touchstone-worktree.lock/token"
 rmdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
 
 write_contract() {
