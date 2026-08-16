@@ -160,13 +160,14 @@ elif [ -n "$TRACKER_PREFIX" ]; then
 fi
 
 if [ -n "$PROJECT_ARG" ]; then
-  PROJECT_ROOT="$(cd "$PROJECT_ARG" 2>/dev/null && pwd -P)" \
+  PROJECT_DIRECTORY="$(cd "$PROJECT_ARG" 2>/dev/null && pwd -P)" \
     || invalid_invocation "project directory does not exist: $PROJECT_ARG" "Pass an existing Git repository."
 else
-  PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
-    || invalid_invocation "not inside a Git repository" "Run inside a project or pass --project DIR."
-  PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
+  PROJECT_DIRECTORY="$PWD"
 fi
+PROJECT_ROOT="$(git -C "$PROJECT_DIRECTORY" rev-parse --show-toplevel 2>/dev/null)" \
+  || invalid_invocation "not inside a Git repository" "Run inside a project or pass --project DIR."
+PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 git -C "$PROJECT_ROOT" rev-parse --verify HEAD >/dev/null 2>&1 \
   || invalid_invocation "project has no committed HEAD" "Commit the repository facts before adoption."
 
@@ -189,6 +190,8 @@ fi
 source "$SCRIPT_ROOT/scripts/lib/touchstone-plan-records.sh"
 # shellcheck disable=SC1091 # sources resolve from the installed CLI root.
 source "$SCRIPT_ROOT/scripts/lib/touchstone-legacy-config.sh"
+# shellcheck disable=SC1091 # sources resolve from the installed CLI root.
+source "$SCRIPT_ROOT/scripts/lib/touchstone-tracker-config.sh"
 # shellcheck disable=SC1091 # sources resolve from the installed CLI root.
 source "$SCRIPT_ROOT/scripts/lib/touchstone-adopt-plan.sh"
 # shellcheck disable=SC1091 # sources resolve from the installed CLI root.
@@ -325,6 +328,10 @@ read_existing_contract() {
   PROFILE=declared-v1
 }
 
+tracker_contract_failure() {
+  contract_refusal "existing .touchstone-tracker.toml is invalid ($1): $2"
+}
+
 compile_new_contract() {
   local proposed="$PLAN_ROOT/proposed-contract.toml" tracker="$PLAN_ROOT/proposed-tracker.toml" detected
   [ -n "$TRACKER_TYPE" ] || TRACKER_TYPE=github
@@ -355,6 +362,7 @@ if [ -e "$PROJECT_ROOT/.touchstone.toml" ]; then
     [ -z "$TRACKER_TYPE$TRACKER_PREFIX" ] \
       || invalid_invocation "an existing tracker declaration cannot be replaced by adoption options" "Edit project-owned values in a separate reviewed change."
     require_head_file .touchstone-tracker.toml
+    load_tracker_contract "$PROJECT_ROOT/.touchstone-tracker.toml"
   elif [ "$OPERATION" = adopt ]; then
     [ -n "$TRACKER_TYPE" ] || TRACKER_TYPE=github
     render_tracker_contract "$PLAN_ROOT/proposed-tracker.toml"

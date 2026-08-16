@@ -1124,6 +1124,19 @@ run_adoption "$ADOPTION/control-argument.json" adopt --json "$control_argument"
 [ "$ADOPTION_STATUS" -eq 2 ] || fail "control-character argument did not fail as invalid input"
 jq -e '.status == "invalid-invocation"' "$ADOPTION/control-argument.json" >/dev/null \
   || fail "control-character failure was not valid JSON"
+
+SUBDIRECTORY_PROJECT="$ADOPTION/subdirectory-project"
+new_adoption_repo "$SUBDIRECTORY_PROJECT"
+mkdir -p "$SUBDIRECTORY_PROJECT/sub"
+printf 'tracked\n' >"$SUBDIRECTORY_PROJECT/sub/input"
+git -C "$SUBDIRECTORY_PROJECT" add sub/input
+git -C "$SUBDIRECTORY_PROJECT" commit -qm subdirectory
+git -C "$SUBDIRECTORY_PROJECT" switch -qc feat/adopt
+run_adoption "$ADOPTION/subdirectory-project.out" adopt --project "$SUBDIRECTORY_PROJECT/sub" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "explicit project subdirectory did not normalize to the repository root"
+[ -f "$SUBDIRECTORY_PROJECT/.touchstone.toml" ] || fail "subdirectory adoption missed the repository root"
+[ ! -e "$SUBDIRECTORY_PROJECT/sub/.touchstone.toml" ] || fail "subdirectory adoption wrote below the repository root"
+
 run_adoption "$ADOPTION/manual-one.json" adopt --dry-run --json --project "$MANUAL" \
   --tracker linear --tracker-prefix AUT --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "manual adoption dry-run failed"
@@ -1346,6 +1359,16 @@ git -C "$UNSUPPORTED" add .touchstone.toml
 git -C "$UNSUPPORTED" commit -qm unsupported
 run_adoption "$ADOPTION/unsupported.out" adopt --dry-run --project "$UNSUPPORTED"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "unsupported schema did not fail closed"
+
+UNSUPPORTED_TRACKER="$ADOPTION/unsupported-tracker"
+new_adoption_repo "$UNSUPPORTED_TRACKER"
+cp "$MANUAL/.touchstone.toml" "$UNSUPPORTED_TRACKER/.touchstone.toml"
+printf '%s\n' 'schema = 2' 'type = "github"' >"$UNSUPPORTED_TRACKER/.touchstone-tracker.toml"
+git -C "$UNSUPPORTED_TRACKER" add .touchstone.toml .touchstone-tracker.toml
+git -C "$UNSUPPORTED_TRACKER" commit -qm unsupported-tracker
+run_adoption "$ADOPTION/unsupported-tracker.out" adopt --dry-run --json --project "$UNSUPPORTED_TRACKER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "unsupported tracker schema did not fail closed"
+assert_contains "$ADOPTION/unsupported-tracker.out" 'unsupported-tracker-schema'
 
 SYMLINKED="$ADOPTION/symlinked"
 OUTSIDE="$ADOPTION/outside"
