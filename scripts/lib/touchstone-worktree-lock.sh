@@ -3,6 +3,7 @@
 
 TOUCHSTONE_WORKTREE_LOCK_DIR=""
 TOUCHSTONE_WORKTREE_INDEX_LOCK=""
+TOUCHSTONE_WORKTREE_LOCK_PID=""
 TOUCHSTONE_WORKTREE_LOCK_ERROR=""
 TOUCHSTONE_WORKTREE_LOCK_REFUSED=10
 TOUCHSTONE_WORKTREE_LOCK_FAILED=11
@@ -18,14 +19,33 @@ touchstone_worktree_lock_remove_owner() {
   rmdir -- "$directory"
 }
 
+touchstone_worktree_lock_read_process_id() {
+  local pid_file process_id=""
+  pid_file="$(mktemp "${TMPDIR:-/tmp}/touchstone-worktree-pid.XXXXXX")" || return 1
+  if ! /bin/sh -c 'printf "%s\n" "$PPID"' >"$pid_file" \
+    || ! IFS= read -r process_id <"$pid_file"; then
+    rm -f -- "$pid_file"
+    return 1
+  fi
+  rm -f -- "$pid_file" || return 1
+  case "$process_id" in '' | *[!0-9]*) return 1 ;; esac
+  TOUCHSTONE_WORKTREE_PROCESS_ID="$process_id"
+}
+
 touchstone_worktree_lock_release() {
   local owner=""
   [ -n "$TOUCHSTONE_WORKTREE_LOCK_DIR" ] || return 0
+  if ! touchstone_worktree_lock_read_process_id; then
+    touchstone_worktree_lock_error "could not identify the releasing process" \
+      "$TOUCHSTONE_WORKTREE_LOCK_FAILED"
+    return
+  fi
   if [ -f "$TOUCHSTONE_WORKTREE_LOCK_DIR/pid" ] \
     && [ ! -L "$TOUCHSTONE_WORKTREE_LOCK_DIR/pid" ]; then
     IFS= read -r owner <"$TOUCHSTONE_WORKTREE_LOCK_DIR/pid" || owner=""
   fi
-  if [ "$owner" != "$$" ] \
+  if [ "$owner" != "$TOUCHSTONE_WORKTREE_LOCK_PID" ] \
+    || [ "$TOUCHSTONE_WORKTREE_PROCESS_ID" != "$TOUCHSTONE_WORKTREE_LOCK_PID" ] \
     || [ ! -f "$TOUCHSTONE_WORKTREE_LOCK_DIR/token" ] \
     || [ -L "$TOUCHSTONE_WORKTREE_LOCK_DIR/token" ] \
     || [ ! -f "$TOUCHSTONE_WORKTREE_INDEX_LOCK" ] \
@@ -33,6 +53,7 @@ touchstone_worktree_lock_release() {
     || [ ! "$TOUCHSTONE_WORKTREE_INDEX_LOCK" -ef "$TOUCHSTONE_WORKTREE_LOCK_DIR/token" ]; then
     TOUCHSTONE_WORKTREE_LOCK_DIR=""
     TOUCHSTONE_WORKTREE_INDEX_LOCK=""
+    TOUCHSTONE_WORKTREE_LOCK_PID=""
     touchstone_worktree_lock_error \
       "Git-native worktree-lock ownership changed before release" \
       "$TOUCHSTONE_WORKTREE_LOCK_FAILED"
@@ -52,6 +73,7 @@ touchstone_worktree_lock_release() {
   fi
   TOUCHSTONE_WORKTREE_LOCK_DIR=""
   TOUCHSTONE_WORKTREE_INDEX_LOCK=""
+  TOUCHSTONE_WORKTREE_LOCK_PID=""
   TOUCHSTONE_WORKTREE_LOCK_ERROR=""
 }
 
@@ -85,17 +107,11 @@ touchstone_worktree_lock_acquire() {
       return
       ;;
     esac
-    if kill -0 "$owner" 2>/dev/null; then
-      touchstone_worktree_lock_error \
-        "worktree lock names live pid $owner; wait if its mutation is active, or after verifying the PID was reused and no mutation is active, remove $index_lock, $owner_dir/pid, and $owner_dir/token, then remove $owner_dir" \
-        "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
-      return
-    fi
     if [ -f "$owner_dir/token" ] && [ ! -L "$owner_dir/token" ] \
       && [ -f "$index_lock" ] && [ ! -L "$index_lock" ] \
       && [ "$index_lock" -ef "$owner_dir/token" ]; then
       touchstone_worktree_lock_error \
-        "stale Touchstone worktree lock belongs to dead pid $owner; after confirming no mutation is active, remove $index_lock, $owner_dir/pid, and $owner_dir/token, then remove $owner_dir" \
+        "worktree lock records pid $owner and may be active or stale; wait if its mutation is active, or after verifying no Touchstone mutation is active, remove $index_lock, $owner_dir/pid, and $owner_dir/token, then remove $owner_dir" \
         "$TOUCHSTONE_WORKTREE_LOCK_REFUSED"
     else
       touchstone_worktree_lock_error \
@@ -104,8 +120,9 @@ touchstone_worktree_lock_acquire() {
     fi
     return
   fi
-  if ! printf '%s\n' "$$" >"$owner_dir/pid" \
-    || ! printf 'touchstone-worktree-lock/v1 %s\n' "$$" >"$owner_dir/token"; then
+  if ! touchstone_worktree_lock_read_process_id \
+    || ! printf '%s\n' "$TOUCHSTONE_WORKTREE_PROCESS_ID" >"$owner_dir/pid" \
+    || ! printf 'touchstone-worktree-lock/v1 %s\n' "$TOUCHSTONE_WORKTREE_PROCESS_ID" >"$owner_dir/token"; then
     touchstone_worktree_lock_remove_owner "$owner_dir" 2>/dev/null || true
     touchstone_worktree_lock_error "could not record worktree-lock ownership" \
       "$TOUCHSTONE_WORKTREE_LOCK_FAILED"
@@ -125,5 +142,6 @@ touchstone_worktree_lock_acquire() {
   fi
   TOUCHSTONE_WORKTREE_LOCK_DIR="$owner_dir"
   TOUCHSTONE_WORKTREE_INDEX_LOCK="$index_lock"
+  TOUCHSTONE_WORKTREE_LOCK_PID="$TOUCHSTONE_WORKTREE_PROCESS_ID"
   TOUCHSTONE_WORKTREE_LOCK_ERROR=""
 }

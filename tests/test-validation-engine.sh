@@ -27,10 +27,6 @@ git -C "$LOCK_REPO" add tracked
 git -C "$LOCK_REPO" commit -qm base
 git -C "$LOCK_REPO" switch -qc feat/locked
 LOCK_GIT_DIR="$(git -C "$LOCK_REPO" rev-parse --absolute-git-dir)"
-DEAD_OWNER_PID=2147483647
-while kill -0 "$DEAD_OWNER_PID" 2>/dev/null; do
-  DEAD_OWNER_PID=$((DEAD_OWNER_PID - 1))
-done
 LOCK_PATCH="$TMP_DIR/worktree-lock.patch"
 printf '%s\n' 'diff --git a/generated b/generated' 'new file mode 100644' \
   '--- /dev/null' '+++ b/generated' '@@ -0,0 +1 @@' '+generated' >"$LOCK_PATCH"
@@ -44,6 +40,14 @@ fi
 assert_contains "$TMP_DIR/locked-switch.out" 'index.lock'
 git -C "$LOCK_REPO" apply "$LOCK_PATCH" || fail "worktree-only apply could not run under the native lock"
 [ -f "$LOCK_REPO/generated" ] || fail "worktree-only apply did not write its planned file"
+(
+  inherited_release_status=0
+  touchstone_worktree_lock_release || inherited_release_status=$?
+  [ "$inherited_release_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_FAILED" ] \
+    || exit 1
+) || fail "an inherited subshell could release its parent's native lock"
+[ "$LOCK_GIT_DIR/index.lock" -ef "$LOCK_GIT_DIR/touchstone-worktree.lock/token" ] \
+  || fail "inherited-subshell release changed the parent's native lock"
 touchstone_worktree_lock_release || fail "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
 [ ! -e "$LOCK_GIT_DIR/index.lock" ] || fail "release retained the native index lock"
 [ ! -e "$LOCK_GIT_DIR/touchstone-worktree.lock" ] || fail "release retained the owner lock"
@@ -69,29 +73,34 @@ lock_status=0
 touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
 [ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_REFUSED" ] \
   || fail "live-owner refusal used the wrong status"
-case "$TOUCHSTONE_WORKTREE_LOCK_ERROR" in *'mutation is active'*) ;; *) fail "live-owner refusal was not explicit" ;; esac
 case "$TOUCHSTONE_WORKTREE_LOCK_ERROR" in
-  *"live pid $$"*'PID was reused'*'/pid'*'/token'*'then remove '*) ;;
-  *) fail "live-or-reused PID refusal omitted bounded recovery guidance" ;;
+  *"records pid $$"*'may be active or stale'*'verifying no Touchstone mutation is active'*'/pid'*'/token'*'then remove '*) ;;
+  *) fail "pre-existing owner refusal omitted the active-or-stale recovery boundary" ;;
 esac
 rm -f "$LOCK_GIT_DIR/index.lock" "$LOCK_GIT_DIR/touchstone-worktree.lock/pid" \
   "$LOCK_GIT_DIR/touchstone-worktree.lock/token"
 rmdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
 
-mkdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
-printf '%s\n' "$DEAD_OWNER_PID" >"$LOCK_GIT_DIR/touchstone-worktree.lock/pid"
-printf 'stale\n' >"$LOCK_GIT_DIR/touchstone-worktree.lock/token"
-ln "$LOCK_GIT_DIR/touchstone-worktree.lock/token" "$LOCK_GIT_DIR/index.lock"
+(
+  # Bash 3.2 preserves $$ in a subshell; the primitive must record the actual acquirer.
+  touchstone_worktree_lock_acquire "$LOCK_REPO" || exit 1
+)
+SUBSHELL_OWNER_PID="$(cat "$LOCK_GIT_DIR/touchstone-worktree.lock/pid")"
+[ "$SUBSHELL_OWNER_PID" != "$$" ] \
+  || fail "subshell acquisition recorded the live parent PID"
+if kill -0 "$SUBSHELL_OWNER_PID" 2>/dev/null; then
+  fail "subshell acquisition did not record the exited acquiring process"
+fi
 lock_status=0
 touchstone_worktree_lock_acquire "$LOCK_REPO" || lock_status=$?
 [ "$lock_status" -eq "$TOUCHSTONE_WORKTREE_LOCK_REFUSED" ] \
-  || fail "stale-owner refusal used the wrong status"
+  || fail "exited-subshell owner refusal used the wrong status"
 case "$TOUCHSTONE_WORKTREE_LOCK_ERROR" in
-  *"dead pid $DEAD_OWNER_PID"*'remove '*'index.lock'*'/pid'*'/token'*'then remove '*'touchstone-worktree.lock'*) ;;
-  *) fail "stale-owner refusal omitted bounded recovery guidance" ;;
+  *"records pid $SUBSHELL_OWNER_PID"*'may be active or stale'*'verifying no Touchstone mutation is active'*) ;;
+  *) fail "exited-subshell refusal omitted bounded recovery guidance" ;;
 esac
 [ "$LOCK_GIT_DIR/index.lock" -ef "$LOCK_GIT_DIR/touchstone-worktree.lock/token" ] \
-  || fail "stale-owner refusal changed the native lock"
+  || fail "exited-subshell refusal changed the native lock"
 rm -f "$LOCK_GIT_DIR/index.lock" "$LOCK_GIT_DIR/touchstone-worktree.lock/pid" \
   "$LOCK_GIT_DIR/touchstone-worktree.lock/token"
 rmdir "$LOCK_GIT_DIR/touchstone-worktree.lock"
