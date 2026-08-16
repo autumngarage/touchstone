@@ -7,7 +7,7 @@ set -euo pipefail
 OUTPUT_SCHEMA='touchstone.adoption/v1'
 OPERATION="${1:-}"
 [ "$#" -gt 0 ] && shift
-MODE=""
+MODE=apply
 JSON_MODE=false
 PROJECT_ARG=""
 TRACKER_TYPE=""
@@ -17,19 +17,23 @@ MANUAL_TASK_ARGS=()
 PROFILE=""
 DETECTED_PROFILE=""
 PLAN_STATUS=""
+KEEP_PLAN=false
+APPLY_IN_PROGRESS=false
 PLAN_ROOT=""
 TAB="$(printf '\t')"
 CR="$(printf '\r')"
 LF="$(printf '\n_')"
 LF="${LF%_}"
 SCRIPT_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+# shellcheck disable=SC1091 # installed CLI modules resolve from SCRIPT_ROOT.
+source "$SCRIPT_ROOT/scripts/lib/touchstone-worktree-lock.sh"
 
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  touchstone adopt --check|--dry-run [--json] [--project DIR]
+  touchstone adopt [--check|--dry-run] [--json] [--project DIR]
     [--tracker github|linear] [--tracker-prefix KEY] [--task NAME=COMMAND ...]
-  touchstone upgrade --check|--dry-run [--json] [--project DIR]
+  touchstone upgrade [--check|--dry-run] [--json] [--project DIR]
 EOF
   exit 2
 }
@@ -83,6 +87,10 @@ contract_refusal() {
   emit_failure contract-refusal "$1" "Pass explicit --task commands or repair the named repository fact."
   exit 4
 }
+safety_refusal() {
+  emit_failure safety-refusal "$1" "Use a clean feature branch and rerun the plan."
+  exit 5
+}
 operational_failure() {
   emit_failure operational-failure "$1" "Repair the local filesystem or tool failure, then rerun."
   exit 6
@@ -95,7 +103,23 @@ require_option_value() {
 }
 
 cleanup() {
-  [ -z "$PLAN_ROOT" ] || rm -rf -- "$PLAN_ROOT"
+  if [ "$APPLY_IN_PROGRESS" = true ]; then
+    if restore_plan_after_failure; then
+      APPLY_IN_PROGRESS=false
+      printf 'ERROR: interrupted adoption apply restored the original repository bytes\n' >&2
+    else
+      KEEP_PLAN=true
+      APPLY_IN_PROGRESS=false
+      printf 'ERROR: interrupted adoption apply requires recovery snapshots at %s\n' \
+        "$PLAN_ROOT" >&2
+    fi
+  fi
+  if [ -n "$TOUCHSTONE_WORKTREE_LOCK_DIR" ] \
+    && ! touchstone_worktree_lock_release; then
+    printf 'ERROR: could not release adoption transaction: %s\n' \
+      "$TOUCHSTONE_WORKTREE_LOCK_ERROR" >&2
+  fi
+  [ -z "$PLAN_ROOT" ] || [ "$KEEP_PLAN" = true ] || rm -rf -- "$PLAN_ROOT"
 }
 trap cleanup EXIT
 
@@ -104,12 +128,12 @@ case "$OPERATION" in adopt | upgrade) ;; -h | --help | help) usage ;; *) usage ;
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --check)
-      [ -z "$MODE" ] || invalid_invocation "choose only one planning mode" "Use --check or --dry-run, not both."
+      [ "$MODE" = apply ] || invalid_invocation "choose only one planning mode" "Use --check or --dry-run, not both."
       MODE=check
       shift
       ;;
     --dry-run)
-      [ -z "$MODE" ] || invalid_invocation "choose only one planning mode" "Use --check or --dry-run, not both."
+      [ "$MODE" = apply ] || invalid_invocation "choose only one planning mode" "Use --check or --dry-run, not both."
       MODE=dry-run
       shift
       ;;
@@ -143,9 +167,6 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-[ -n "$MODE" ] \
-  || invalid_invocation "$OPERATION requires --check or --dry-run" "Choose a read-only planning mode."
-
 if [ "$OPERATION" = upgrade ] && { [ "$MANUAL_TASK_COUNT" -gt 0 ] || [ -n "$TRACKER_TYPE$TRACKER_PREFIX" ]; }; then
   invalid_invocation "upgrade does not accept task or tracker replacement options" "Upgrade refreshes only Touchstone-owned steering."
 fi
@@ -178,8 +199,9 @@ TARGETS_FILE="$PLAN_ROOT/targets"
 TASKS_FILE="$PLAN_ROOT/tasks"
 SETUPS_FILE="$PLAN_ROOT/setups"
 CHANGES_FILE="$PLAN_ROOT/changes"
+CREATED_DIRS_FILE="$PLAN_ROOT/created-dirs"
 DIFF_FILE="$PLAN_ROOT/plan.diff"
-if ! { : >"$TARGETS_FILE" && : >"$TASKS_FILE" && : >"$SETUPS_FILE" && : >"$CHANGES_FILE"; }; then
+if ! { : >"$TARGETS_FILE" && : >"$TASKS_FILE" && : >"$SETUPS_FILE" && : >"$CHANGES_FILE" && : >"$CREATED_DIRS_FILE"; }; then
   operational_failure "could not initialize adoption workspace"
 fi
 
@@ -195,14 +217,18 @@ source "$SCRIPT_ROOT/scripts/lib/touchstone-adopt-plan.sh"
 source "$SCRIPT_ROOT/scripts/lib/touchstone-adopt-steering.sh"
 
 require_head_file() {
-  local relative="$1"
+  local relative="$1" head_blob worktree_blob
   [ ! -L "$PROJECT_ROOT/$relative" ] || contract_refusal "compiler input is a symlink: $relative"
   [ -f "$PROJECT_ROOT/$relative" ] || contract_refusal "compiler input is not a regular file: $relative"
   git -C "$PROJECT_ROOT" ls-files --error-unmatch -- "$relative" >/dev/null 2>&1 \
     || contract_refusal "compiler input is not tracked: $relative"
   git -C "$PROJECT_ROOT" cat-file -e "HEAD:$relative" 2>/dev/null \
     || contract_refusal "compiler input does not exist in HEAD: $relative"
-  git -C "$PROJECT_ROOT" diff --quiet HEAD -- "$relative" \
+  head_blob="$(git -C "$PROJECT_ROOT" rev-parse "HEAD:$relative")" \
+    || operational_failure "could not read committed compiler input: $relative"
+  worktree_blob="$(git -C "$PROJECT_ROOT" hash-object -- "$relative")" \
+    || operational_failure "could not hash compiler input: $relative"
+  [ "$head_blob" = "$worktree_blob" ] \
     || contract_refusal "compiler input differs from HEAD: $relative"
 }
 
@@ -409,4 +435,87 @@ case "$MODE" in
     [ "$CHANGE_COUNT" -eq 0 ] || exit 3
     ;;
   dry-run) emit_result "$([ "$CHANGE_COUNT" -eq 0 ] && printf current || printf planned)" ;;
+  apply)
+    if [ "$CHANGE_COUNT" -eq 0 ]; then
+      emit_result current
+      exit 0
+    fi
+    branch="$(git -C "$PROJECT_ROOT" branch --show-current)" \
+      || operational_failure "could not read current branch"
+    [ -n "$branch" ] || safety_refusal "detached HEAD cannot apply adoption"
+    remotes_file="$PLAN_ROOT/remotes"
+    git -C "$PROJECT_ROOT" remote >"$remotes_file" \
+      || operational_failure "could not inspect the repository default branch"
+    remote_default_count=0
+    default_branch=""
+    while IFS= read -r remote; do
+      [ -n "$remote" ] || continue
+      default_ref_status=0
+      default_ref="$(git -C "$PROJECT_ROOT" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null)" \
+        || default_ref_status=$?
+      case "$default_ref_status" in
+        0)
+          remote_default_count=$((remote_default_count + 1))
+          case "$default_ref" in
+            "$remote"/*) default_branch="${default_ref#"$remote"/}" ;;
+            *) safety_refusal "could not identify the repository default branch" ;;
+          esac
+          git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/remotes/$default_ref" \
+            || safety_refusal "could not identify the repository default branch"
+          ;;
+        1) ;;
+        *) operational_failure "could not inspect the repository default branch" ;;
+      esac
+    done <"$remotes_file"
+    case "$remote_default_count" in
+      0) ;;
+      1) ;;
+      *) safety_refusal "multiple remote default branches are configured" ;;
+    esac
+    if [ "$remote_default_count" -eq 0 ]; then
+      default_candidates=""
+      for candidate in main master; do
+        if git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/heads/$candidate"; then
+          default_candidates="${default_candidates:+$default_candidates }$candidate"
+        fi
+      done
+      case "$default_candidates" in
+        main | master) default_branch="$default_candidates" ;;
+        *) safety_refusal "could not identify the repository default branch" ;;
+      esac
+    fi
+    [ "$branch" != "$default_branch" ] \
+      || safety_refusal "adoption cannot apply on the default branch '$branch'"
+    lock_status=0
+    touchstone_worktree_lock_acquire "$PROJECT_ROOT" || lock_status=$?
+    case "$lock_status" in
+      0) ;;
+      "$TOUCHSTONE_WORKTREE_LOCK_REFUSED") safety_refusal "$TOUCHSTONE_WORKTREE_LOCK_ERROR" ;;
+      *) operational_failure "$TOUCHSTONE_WORKTREE_LOCK_ERROR" ;;
+    esac
+    locked_branch="$(git -C "$PROJECT_ROOT" branch --show-current)" \
+      || operational_failure "could not bind the feature branch after locking"
+    [ "$locked_branch" = "$branch" ] \
+      || safety_refusal "repository branch changed before the apply transaction was locked"
+    if ! worktree_status="$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=all)"; then
+      operational_failure "could not verify that the worktree is clean"
+    fi
+    [ -z "$worktree_status" ] \
+      || safety_refusal "apply requires a clean worktree"
+    if ! tracked_flags="$(git -C "$PROJECT_ROOT" ls-files -v)"; then
+      operational_failure "could not inspect tracked-file flags"
+    fi
+    if printf '%s\n' "$tracked_flags" | awk '
+      { tag=substr($0, 1, 1); if (tag == "S" || tag ~ /^[a-z]$/) hidden=1 }
+      END { exit !hidden }
+    '; then
+      safety_refusal "apply does not accept assume-unchanged or skip-worktree files"
+    fi
+    printf '==> complete accepted plan before writes\n' >&2
+    printf '%s\n' "$(<"$DIFF_FILE")" >&2
+    apply_plan
+    touchstone_worktree_lock_release \
+      || operational_failure "$TOUCHSTONE_WORKTREE_LOCK_ERROR"
+    emit_result applied
+    ;;
 esac

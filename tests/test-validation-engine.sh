@@ -1369,9 +1369,10 @@ run_adoption "$ADOPTION/manual-check.json" adopt --check --json --project "$MANU
 [ "$ADOPTION_STATUS" -eq 3 ] || fail "adoption check did not report required changes"
 [ ! -e "$MANUAL/.touchstone.toml" ] || fail "adoption check mutated the repository"
 
-run_adoption "$ADOPTION/apply-unavailable.json" adopt --json --project "$MANUAL" --task 'verify=true'
-[ "$ADOPTION_STATUS" -eq 2 ] || fail "planner accepted a mutating invocation"
-assert_contains "$ADOPTION/apply-unavailable.json" 'requires --check or --dry-run'
+run_adoption "$ADOPTION/conflicting-modes.json" adopt --json --check --dry-run \
+  --project "$MANUAL" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 2 ] || fail "planner accepted conflicting read-only modes"
+assert_contains "$ADOPTION/conflicting-modes.json" 'choose only one planning mode'
 assert_contains "$ADOPTION/manual-one.json" 'A security-review quota notice is never a blocker'
 assert_not_contains "$ADOPTION/manual-one.json" 'scripts/respond-review.sh'
 assert_contains "$ADOPTION/manual-one.json" "Inspect GitHub's complete review surface"
@@ -1563,5 +1564,320 @@ printf '# local untracked instructions\n' >"$UNTRACKED/CLAUDE.md"
 run_adoption "$ADOPTION/untracked.out" adopt --dry-run --project "$UNTRACKED" --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "untracked managed output did not fail closed"
 assert_contains "$ADOPTION/untracked.out.err" 'existing managed output is not tracked: CLAUDE.md'
+
+echo "==> adoption applies atomically only from a clean non-default branch"
+APPLY_REPO="$ADOPTION/apply"
+new_adoption_repo "$APPLY_REPO"
+chmod +x "$APPLY_REPO/AGENTS.md"
+git -C "$APPLY_REPO" add AGENTS.md
+git -C "$APPLY_REPO" commit -qm executable-guidance
+git -C "$APPLY_REPO" switch -qc feat/adopt
+run_adoption "$ADOPTION/apply.json" adopt --json --project "$APPLY_REPO" \
+  --tracker linear --tracker-prefix AUT --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "clean feature-branch adoption did not apply"
+assert_contains "$ADOPTION/apply.json" '"status":"applied"'
+assert_contains "$APPLY_REPO/AGENTS.md" 'Project-owned guidance.'
+[ -x "$APPLY_REPO/AGENTS.md" ] || fail "apply changed project-owned file mode"
+[ -f "$APPLY_REPO/.touchstone.toml" ] || fail "apply omitted project contract"
+[ -f "$APPLY_REPO/.touchstone-tracker.toml" ] || fail "apply omitted tracker contract"
+git -C "$APPLY_REPO" add AGENTS.md CLAUDE.md GEMINI.md .touchstone .touchstone.toml .touchstone-tracker.toml
+git -C "$APPLY_REPO" commit -qm adopted
+run_adoption "$ADOPTION/apply-twice.json" adopt --json --project "$APPLY_REPO"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "second adoption did not converge"
+assert_contains "$ADOPTION/apply-twice.json" '"status":"current"'
+assert_contains "$ADOPTION/apply-twice.json" '"changes":[]'
+
+contract_hash="$(git -C "$APPLY_REPO" hash-object .touchstone.toml)"
+printf 'stale managed steering\n' >"$APPLY_REPO/.touchstone/TOUCHSTONE.md"
+git -C "$APPLY_REPO" add .touchstone/TOUCHSTONE.md
+git -C "$APPLY_REPO" commit -qm stale-steering
+run_adoption "$ADOPTION/upgrade.json" upgrade --json --project "$APPLY_REPO"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "explicit upgrade did not apply"
+assert_contains "$ADOPTION/upgrade.json" '"status":"applied"'
+assert_contains "$APPLY_REPO/.touchstone/TOUCHSTONE.md" 'A security-review quota notice is never a blocker'
+[ "$contract_hash" = "$(git -C "$APPLY_REPO" hash-object .touchstone.toml)" ] \
+  || fail "upgrade rewrote the project-owned validation declaration"
+
+DEFAULT_REPO="$ADOPTION/default-branch"
+new_adoption_repo "$DEFAULT_REPO"
+run_adoption "$ADOPTION/default-branch.out" adopt --project "$DEFAULT_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply wrote on the default branch"
+assert_contains "$ADOPTION/default-branch.out.err" "cannot apply on the default branch 'main'"
+[ ! -e "$DEFAULT_REPO/.touchstone.toml" ] || fail "default-branch refusal mutated the repository"
+
+TRUNK_DEFAULT="$ADOPTION/trunk-default"
+new_adoption_repo "$TRUNK_DEFAULT"
+git -C "$TRUNK_DEFAULT" branch trunk
+git -C "$TRUNK_DEFAULT" remote add upstream https://example.invalid/touchstone-consumer.git
+git -C "$TRUNK_DEFAULT" update-ref refs/remotes/upstream/trunk HEAD
+git -C "$TRUNK_DEFAULT" symbolic-ref refs/remotes/upstream/HEAD refs/remotes/upstream/trunk
+run_adoption "$ADOPTION/trunk-default.out" adopt --project "$TRUNK_DEFAULT" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "renamed-remote trunk default incorrectly made local main a default branch"
+[ -f "$TRUNK_DEFAULT/.touchstone.toml" ] || fail "renamed remote default metadata did not authorize feature apply"
+
+MULTIPLE_REMOTE_DEFAULTS="$ADOPTION/multiple-remote-defaults"
+new_adoption_repo "$MULTIPLE_REMOTE_DEFAULTS"
+git -C "$MULTIPLE_REMOTE_DEFAULTS" switch -qc feat/adopt
+git -C "$MULTIPLE_REMOTE_DEFAULTS" remote add origin https://example.invalid/origin.git
+git -C "$MULTIPLE_REMOTE_DEFAULTS" remote add upstream https://example.invalid/upstream.git
+git -C "$MULTIPLE_REMOTE_DEFAULTS" update-ref refs/remotes/origin/main HEAD
+git -C "$MULTIPLE_REMOTE_DEFAULTS" update-ref refs/remotes/upstream/trunk HEAD
+git -C "$MULTIPLE_REMOTE_DEFAULTS" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+git -C "$MULTIPLE_REMOTE_DEFAULTS" symbolic-ref refs/remotes/upstream/HEAD refs/remotes/upstream/trunk
+run_adoption "$ADOPTION/multiple-remote-defaults.out" adopt \
+  --project "$MULTIPLE_REMOTE_DEFAULTS" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply guessed between multiple remote default branches"
+assert_contains "$ADOPTION/multiple-remote-defaults.out.err" 'multiple remote default branches are configured'
+[ ! -e "$MULTIPLE_REMOTE_DEFAULTS/.touchstone.toml" ] \
+  || fail "multiple remote defaults mutated the repository"
+
+MISSING_DEFAULT="$ADOPTION/missing-default"
+new_adoption_repo "$MISSING_DEFAULT"
+git -C "$MISSING_DEFAULT" switch -qc feat/adopt
+git -C "$MISSING_DEFAULT" branch -D main >/dev/null
+run_adoption "$ADOPTION/missing-default.out" adopt --project "$MISSING_DEFAULT" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply guessed a default branch without metadata"
+assert_contains "$ADOPTION/missing-default.out.err" 'could not identify the repository default branch'
+
+DANGLING_DEFAULT="$ADOPTION/dangling-default"
+new_adoption_repo "$DANGLING_DEFAULT"
+git -C "$DANGLING_DEFAULT" switch -qc feat/adopt
+git -C "$DANGLING_DEFAULT" remote add origin https://example.invalid/dangling.git
+git -C "$DANGLING_DEFAULT" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
+run_adoption "$ADOPTION/dangling-default.out" adopt --project "$DANGLING_DEFAULT" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply trusted a dangling remote default-branch ref"
+assert_contains "$ADOPTION/dangling-default.out.err" 'could not identify the repository default branch'
+
+HIDDEN_INPUT="$ADOPTION/hidden-input"
+new_adoption_repo "$HIDDEN_INPUT"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package.json" "$HIDDEN_INPUT/package.json"
+cp "$ROOT/tests/fixtures/adoption-v1/repositories/anima/package-lock.json" "$HIDDEN_INPUT/package-lock.json"
+git -C "$HIDDEN_INPUT" add package.json package-lock.json
+git -C "$HIDDEN_INPUT" commit -qm npm
+git -C "$HIDDEN_INPUT" update-index --assume-unchanged package.json
+printf '{"scripts":{"test":"hidden command"}}\n' >"$HIDDEN_INPUT/package.json"
+run_adoption "$ADOPTION/hidden-input.out" adopt --dry-run --project "$HIDDEN_INPUT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "hidden compiler-input changes were accepted"
+assert_contains "$ADOPTION/hidden-input.out.err" 'compiler input differs from HEAD: package.json'
+git -C "$HIDDEN_INPUT" update-index --no-assume-unchanged package.json
+
+AMBIGUOUS_DEFAULT="$ADOPTION/ambiguous-default"
+new_adoption_repo "$AMBIGUOUS_DEFAULT"
+git -C "$AMBIGUOUS_DEFAULT" branch master
+git -C "$AMBIGUOUS_DEFAULT" switch -qc feat/adopt
+run_adoption "$ADOPTION/ambiguous-default.out" adopt --project "$AMBIGUOUS_DEFAULT" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply guessed between local main and master"
+assert_contains "$ADOPTION/ambiguous-default.out.err" 'could not identify the repository default branch'
+
+DETACHED_REPO="$ADOPTION/detached"
+new_adoption_repo "$DETACHED_REPO"
+git -C "$DETACHED_REPO" checkout -q --detach
+run_adoption "$ADOPTION/detached.out" adopt --project "$DETACHED_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "detached HEAD applied adoption"
+assert_contains "$ADOPTION/detached.out.err" 'detached HEAD cannot apply adoption'
+
+DIRTY_REPO="$ADOPTION/dirty"
+new_adoption_repo "$DIRTY_REPO"
+printf 'clean\n' >"$DIRTY_REPO/project.txt"
+git -C "$DIRTY_REPO" add project.txt
+git -C "$DIRTY_REPO" commit -qm project-file
+git -C "$DIRTY_REPO" switch -qc feat/adopt
+printf 'dirty\n' >>"$DIRTY_REPO/project.txt"
+run_adoption "$ADOPTION/dirty.out" adopt --project "$DIRTY_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "dirty worktree applied adoption"
+assert_contains "$ADOPTION/dirty.out.err" 'apply requires a clean worktree'
+[ ! -e "$DIRTY_REPO/.touchstone.toml" ] || fail "dirty-worktree refusal mutated the repository"
+
+HIDDEN_TRACKED_REPO="$ADOPTION/hidden-tracked"
+new_adoption_repo "$HIDDEN_TRACKED_REPO"
+git -C "$HIDDEN_TRACKED_REPO" switch -qc feat/adopt
+git -C "$HIDDEN_TRACKED_REPO" update-index --assume-unchanged AGENTS.md
+run_adoption "$ADOPTION/hidden-tracked.out" adopt --project "$HIDDEN_TRACKED_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply accepted a hidden tracked-file flag"
+assert_contains "$ADOPTION/hidden-tracked.out.err" 'apply does not accept assume-unchanged or skip-worktree files'
+[ ! -e "$HIDDEN_TRACKED_REPO/.touchstone.toml" ] || fail "hidden tracked-file refusal mutated the repository"
+git -C "$HIDDEN_TRACKED_REPO" update-index --no-assume-unchanged AGENTS.md
+
+FOREIGN_LOCK_REPO="$ADOPTION/foreign-index-lock"
+new_adoption_repo "$FOREIGN_LOCK_REPO"
+git -C "$FOREIGN_LOCK_REPO" switch -qc feat/adopt
+FOREIGN_GIT_DIR="$(git -C "$FOREIGN_LOCK_REPO" rev-parse --absolute-git-dir)"
+printf 'foreign index lock\n' >"$FOREIGN_GIT_DIR/index.lock"
+run_adoption "$ADOPTION/foreign-index-lock.out" adopt --project "$FOREIGN_LOCK_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply accepted a foreign Git index lock"
+assert_contains "$ADOPTION/foreign-index-lock.out.err" 'Git index lock already exists and was preserved'
+[ "$(cat "$FOREIGN_GIT_DIR/index.lock")" = 'foreign index lock' ] \
+  || fail "apply changed a foreign Git index lock"
+[ ! -e "$FOREIGN_LOCK_REPO/.touchstone.toml" ] || fail "foreign-lock refusal mutated the repository"
+rm -f "$FOREIGN_GIT_DIR/index.lock"
+
+CMP_RACE_BIN="$ADOPTION/cmp-race-bin"
+mkdir -p "$CMP_RACE_BIN"
+cat >"$CMP_RACE_BIN/cmp" <<'EOF'
+#!/usr/bin/env bash
+if [ -e "$TOUCHSTONE_RACE_GIT_DIR/index.lock" ] && [ ! -e "$TOUCHSTONE_RACE_RECORD" ]; then
+  if git -C "$TOUCHSTONE_RACE_REPO" switch -q main >/dev/null 2>&1; then
+    printf 'switched\n' >"$TOUCHSTONE_RACE_RECORD"
+  else
+    printf 'blocked\n' >"$TOUCHSTONE_RACE_RECORD"
+  fi
+fi
+exec "$TOUCHSTONE_REAL_CMP" "$@"
+EOF
+chmod +x "$CMP_RACE_BIN/cmp"
+VERIFY_RACE_REPO="$ADOPTION/verification-branch-race"
+VERIFY_RACE_RECORD="$ADOPTION/verification-branch-race.result"
+new_adoption_repo "$VERIFY_RACE_REPO"
+git -C "$VERIFY_RACE_REPO" switch -qc feat/adopt
+VERIFY_RACE_GIT_DIR="$(git -C "$VERIFY_RACE_REPO" rev-parse --absolute-git-dir)"
+VERIFY_RACE_REAL_CMP="$(command -v cmp)"
+[ "$VERIFY_RACE_REAL_CMP" != "$CMP_RACE_BIN/cmp" ] \
+  || fail "verification-race fixture resolved its cmp wrapper recursively"
+PATH="$CMP_RACE_BIN:$PATH" TOUCHSTONE_REAL_CMP="$VERIFY_RACE_REAL_CMP" \
+  TOUCHSTONE_RACE_GIT_DIR="$VERIFY_RACE_GIT_DIR" TOUCHSTONE_RACE_REPO="$VERIFY_RACE_REPO" \
+  TOUCHSTONE_RACE_RECORD="$VERIFY_RACE_RECORD" \
+  run_adoption "$ADOPTION/verification-branch-race.out" adopt \
+  --project "$VERIFY_RACE_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "Git-native apply transaction failed during verification race"
+[ "$(cat "$VERIFY_RACE_RECORD")" = blocked ] || fail "checkout moved the branch during final verification"
+[ "$(git -C "$VERIFY_RACE_REPO" branch --show-current)" = feat/adopt ] \
+  || fail "verification race moved adoption onto the default branch"
+[ -f "$VERIFY_RACE_REPO/.touchstone.toml" ] || fail "verification-race apply omitted the project contract"
+
+FAIL_GIT_BIN="$ADOPTION/fail-git-bin"
+mkdir -p "$FAIL_GIT_BIN"
+cat >"$FAIL_GIT_BIN/git" <<'EOF'
+#!/usr/bin/env bash
+arguments=("$@")
+project=""
+if [ "${1:-}" = -C ]; then
+  project="$2"
+  shift 2
+fi
+if [ "${1:-}" = status ] && [ "${TOUCHSTONE_STATUS_FAILURE:-false}" = true ]; then
+  exit 92
+fi
+if [ "${1:-}" = symbolic-ref ] && [ "${TOUCHSTONE_SYMBOLIC_REF_FAILURE:-false}" = true ]; then
+  exit 92
+fi
+if [ "${1:-}" = apply ] && [ "${2:-}" != --check ]; then
+  "$TOUCHSTONE_REAL_GIT" "${arguments[@]}" || exit $?
+  if [ -n "${TOUCHSTONE_SIGNAL_TARGET:-}" ]; then
+    kill -TERM "$TOUCHSTONE_SIGNAL_TARGET"
+    exit 143
+  fi
+  if [ "${TOUCHSTONE_CONCURRENT_WRITE:-false}" = true ]; then
+    printf 'concurrent content\n' >"$project/AGENTS.md"
+  fi
+  if [ -n "${TOUCHSTONE_SYMLINK_TARGET:-}" ]; then
+    cp "$project/AGENTS.md" "$TOUCHSTONE_SYMLINK_TARGET"
+    rm "$project/AGENTS.md"
+    ln -s "$TOUCHSTONE_SYMLINK_TARGET" "$project/AGENTS.md"
+  fi
+  if [ -n "${TOUCHSTONE_PARENT_SYMLINK_TARGET:-}" ]; then
+    mv "$project/.touchstone" "$TOUCHSTONE_PARENT_SYMLINK_TARGET"
+    ln -s "$TOUCHSTONE_PARENT_SYMLINK_TARGET" "$project/.touchstone"
+  fi
+  exit 91
+fi
+exec "$TOUCHSTONE_REAL_GIT" "${arguments[@]}"
+EOF
+chmod +x "$FAIL_GIT_BIN/git"
+REAL_GIT="$(command -v git)"
+
+SIGNAL_REPO="$ADOPTION/signal-interrupted-apply"
+new_adoption_repo "$SIGNAL_REPO"
+git -C "$SIGNAL_REPO" switch -qc feat/adopt
+SIGNAL_GIT_DIR="$(git -C "$SIGNAL_REPO" rev-parse --absolute-git-dir)"
+set +e
+PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" \
+  bash -c '
+    export TOUCHSTONE_SIGNAL_TARGET=$$
+    exec bash "$1" adopt --project "$2" --task "verify=true"
+  ' _ "$ROOT/bin/touchstone" "$SIGNAL_REPO" \
+  >"$ADOPTION/signal-interrupted-apply.out" 2>"$ADOPTION/signal-interrupted-apply.out.err"
+SIGNAL_STATUS=$?
+set -e
+[ "$SIGNAL_STATUS" -eq 143 ] || fail "signal-interrupted apply returned $SIGNAL_STATUS instead of 143"
+assert_contains "$ADOPTION/signal-interrupted-apply.out.err" \
+  'interrupted adoption apply restored the original repository bytes'
+[ "$(cat "$SIGNAL_REPO/AGENTS.md")" = "# Consumer
+
+Project-owned guidance." ] || fail "signal-interrupted apply did not restore project guidance"
+[ ! -e "$SIGNAL_REPO/.touchstone.toml" ] \
+  || fail "signal-interrupted apply retained a partial project contract"
+[ ! -e "$SIGNAL_GIT_DIR/index.lock" ] \
+  || fail "signal-interrupted apply retained the native index lock"
+[ ! -e "$SIGNAL_GIT_DIR/touchstone-worktree.lock" ] \
+  || fail "signal-interrupted apply retained worktree-lock ownership"
+
+STATUS_FAILURE_REPO="$ADOPTION/status-failure"
+new_adoption_repo "$STATUS_FAILURE_REPO"
+git -C "$STATUS_FAILURE_REPO" switch -qc feat/adopt
+PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" TOUCHSTONE_STATUS_FAILURE=true \
+  run_adoption "$ADOPTION/status-failure.out" adopt --project "$STATUS_FAILURE_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "failed cleanliness probe did not fail closed"
+assert_contains "$ADOPTION/status-failure.out.err" 'could not verify that the worktree is clean'
+[ ! -e "$STATUS_FAILURE_REPO/.touchstone.toml" ] \
+  || fail "failed cleanliness probe mutated the repository"
+
+DEFAULT_REF_FAILURE_REPO="$ADOPTION/default-ref-failure"
+new_adoption_repo "$DEFAULT_REF_FAILURE_REPO"
+git -C "$DEFAULT_REF_FAILURE_REPO" switch -qc feat/adopt
+git -C "$DEFAULT_REF_FAILURE_REPO" remote add origin https://example.invalid/default-ref-failure.git
+git -C "$DEFAULT_REF_FAILURE_REPO" update-ref refs/remotes/origin/main HEAD
+git -C "$DEFAULT_REF_FAILURE_REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" TOUCHSTONE_SYMBOLIC_REF_FAILURE=true \
+  run_adoption "$ADOPTION/default-ref-failure.out" adopt --project "$DEFAULT_REF_FAILURE_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "default-ref inspection failure did not fail closed"
+assert_contains "$ADOPTION/default-ref-failure.out.err" 'could not inspect the repository default branch'
+[ ! -e "$DEFAULT_REF_FAILURE_REPO/.touchstone.toml" ] \
+  || fail "default-ref inspection failure mutated the repository"
+
+ROLLBACK_REPO="$ADOPTION/rollback"
+new_adoption_repo "$ROLLBACK_REPO"
+git -C "$ROLLBACK_REPO" switch -qc feat/adopt
+PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" \
+  run_adoption "$ADOPTION/rollback.out" adopt --project "$ROLLBACK_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "injected apply failure did not report an operational failure"
+[ "$(cat "$ROLLBACK_REPO/AGENTS.md")" = "# Consumer
+
+Project-owned guidance." ] || fail "failed apply did not restore project guidance"
+[ ! -e "$ROLLBACK_REPO/.touchstone.toml" ] || fail "failed apply retained a partial project contract"
+[ ! -e "$ROLLBACK_REPO/.touchstone" ] || fail "failed apply retained a partial managed directory"
+
+CONCURRENT_REPO="$ADOPTION/concurrent"
+new_adoption_repo "$CONCURRENT_REPO"
+git -C "$CONCURRENT_REPO" switch -qc feat/adopt
+PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" TOUCHSTONE_CONCURRENT_WRITE=true \
+  run_adoption "$ADOPTION/concurrent.out" adopt --project "$CONCURRENT_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "concurrent apply did not report an operational failure"
+[ "$(cat "$CONCURRENT_REPO/AGENTS.md")" = 'concurrent content' ] \
+  || fail "apply rollback overwrote unexpected concurrent content"
+assert_contains "$ADOPTION/concurrent.out.err" 'unexpected concurrent content was preserved'
+
+SYMLINK_ROLLBACK_REPO="$ADOPTION/symlink-rollback"
+SYMLINK_ROLLBACK_TARGET="$ADOPTION/symlink-rollback-target"
+new_adoption_repo "$SYMLINK_ROLLBACK_REPO"
+git -C "$SYMLINK_ROLLBACK_REPO" switch -qc feat/adopt
+PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" \
+  TOUCHSTONE_SYMLINK_TARGET="$SYMLINK_ROLLBACK_TARGET" \
+  run_adoption "$ADOPTION/symlink-rollback.out" adopt --project "$SYMLINK_ROLLBACK_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "symlink-swapped rollback did not report an operational failure"
+[ -L "$SYMLINK_ROLLBACK_REPO/AGENTS.md" ] || fail "rollback replaced unexpected concurrent symlink content"
+assert_contains "$ADOPTION/symlink-rollback.out.err" 'unexpected concurrent content was preserved'
+assert_contains "$SYMLINK_ROLLBACK_TARGET" 'Touchstone — Shared Agent Steering'
+
+PARENT_SYMLINK_REPO="$ADOPTION/parent-symlink-rollback"
+PARENT_SYMLINK_TARGET="$ADOPTION/parent-symlink-target"
+new_adoption_repo "$PARENT_SYMLINK_REPO"
+git -C "$PARENT_SYMLINK_REPO" switch -qc feat/adopt
+PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" \
+  TOUCHSTONE_PARENT_SYMLINK_TARGET="$PARENT_SYMLINK_TARGET" \
+  run_adoption "$ADOPTION/parent-symlink-rollback.out" adopt --project "$PARENT_SYMLINK_REPO" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "parent-symlink rollback did not report an operational failure"
+[ -L "$PARENT_SYMLINK_REPO/.touchstone" ] || fail "rollback replaced an unexpected parent symlink"
+assert_contains "$ADOPTION/parent-symlink-rollback.out.err" 'unexpected concurrent content was preserved'
+assert_contains "$PARENT_SYMLINK_TARGET/TOUCHSTONE.md" 'Touchstone — Shared Agent Steering'
 
 echo "validation engine tests passed"

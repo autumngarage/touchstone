@@ -19,8 +19,8 @@ usage() {
   cat <<'EOF'
 Usage:
   touchstone validate [--json] [--project DIR] [--config FILE]
-  touchstone adopt --check|--dry-run [arguments]
-  touchstone upgrade --check|--dry-run [arguments]
+  touchstone adopt [--check|--dry-run] [arguments]
+  touchstone upgrade [--check|--dry-run] [arguments]
   touchstone tracker claim [arguments]
   touchstone pr open|status|merge [arguments]
 EOF

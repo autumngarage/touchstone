@@ -8,11 +8,10 @@ generated project declaration is owned by
 ## Commands and modes
 
 `touchstone adopt --check` reports whether repository-file adoption is current.
-`touchstone adopt --dry-run` prints the complete proposed diff. `touchstone
-upgrade` exposes the same two read-only modes but refreshes only
-Touchstone-owned steering bytes in its proposed plan; it never proposes a
-rewrite of an accepted schema-v1 declaration. Applying an accepted plan is a
-separate delivery capability and is not part of this read-only compiler.
+`touchstone adopt --dry-run` prints the complete proposed diff. Plain
+`touchstone adopt` applies that same plan. `touchstone upgrade` exposes the same
+three modes but refreshes only Touchstone-owned steering bytes; it never
+rewrites an accepted schema-v1 declaration.
 
 Both commands accept `--json` and `--project DIR`. Fresh adoption accepts
 repeated `--task NAME=COMMAND` arguments for the explicit manual path and
@@ -22,9 +21,10 @@ Repeating adoption against an existing tracker declaration accepts no
 replacement tracker or task options; an older adopted project without the
 tracker declaration may select it during adoption.
 
-Exit classes are stable: 0 means current or planned; 2 is invalid invocation;
-3 means `--check` found a required change; 4 is ambiguous or unsupported input;
-and 6 is an operational failure.
+Exit classes are stable: 0 means current, planned, or applied; 2 is invalid
+invocation; 3 means `--check` found a required change; 4 is ambiguous or
+unsupported input; 5 is an apply-safety refusal; and 6 is an operational
+failure.
 
 ## Versioned plan
 
@@ -88,3 +88,10 @@ unsupported schema and paths outside the repository refuse without a write.
 No adoption or upgrade operation deletes a project file. A breaking schema,
 obsolete path, or remote-policy change requires its own explicit reviewable
 operation and recovery plan.
+
+Apply requires a clean, attached, non-default branch. The remote default-branch
+symbolic ref is authoritative; without it, exactly one local `main` or `master`
+branch must identify the default. Before writing, the applier rechecks the
+complete accepted diff. Every planned output is then byte-verified. A failed
+apply restores original files and removes newly created files; unexpected
+concurrent content is preserved with recovery snapshots instead of overwritten.
