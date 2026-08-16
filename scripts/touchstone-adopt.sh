@@ -44,9 +44,17 @@ json_string() {
         character = substr($0, position, 1)
         if (character == "\\") printf "\\\\"
         else if (character == "\"") printf "\\\""
-        else if (character == sprintf("%c", 9)) printf "\\t"
-        else if (character == sprintf("%c", 13)) printf "\\r"
-        else printf "%s", character
+        else {
+          control = 0
+          for (code = 1; code < 32; code++) {
+            if (character == sprintf("%c", code)) {
+              printf "\\u%04x", code
+              control = 1
+              break
+            }
+          }
+          if (!control) printf "%s", character
+        }
       }
     }'
   printf '"'
@@ -408,8 +416,20 @@ case "$MODE" in
     [ -n "$branch" ] || safety_refusal "detached HEAD cannot apply adoption"
     default_branch="$(git -C "$PROJECT_ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
     default_branch="${default_branch#origin/}"
+    if [ -z "$default_branch" ]; then
+      default_candidates=""
+      for candidate in main master; do
+        if git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/heads/$candidate"; then
+          default_candidates="${default_candidates:+$default_candidates }$candidate"
+        fi
+      done
+      case "$default_candidates" in
+        main | master) default_branch="$default_candidates" ;;
+        *) safety_refusal "could not identify the repository default branch" ;;
+      esac
+    fi
     case "$branch" in main | master) safety_refusal "adoption cannot apply on the default branch '$branch'" ;; esac
-    [ -z "$default_branch" ] || [ "$branch" != "$default_branch" ] \
+    [ "$branch" != "$default_branch" ] \
       || safety_refusal "adoption cannot apply on the default branch '$branch'"
     [ -z "$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=all)" ] \
       || safety_refusal "apply requires a clean worktree"

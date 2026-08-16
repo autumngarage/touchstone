@@ -1119,6 +1119,11 @@ run_adoption "$ADOPTION/empty-project.json" adopt --dry-run --json \
 [ "$ADOPTION_STATUS" -eq 2 ] || fail "explicitly empty adoption project was accepted"
 assert_contains "$ADOPTION/empty-project.json" '"status":"invalid-invocation"'
 assert_contains "$ADOPTION/empty-project.json" 'missing value for --project'
+control_argument="invalid$(printf '\b\f')argument"
+run_adoption "$ADOPTION/control-argument.json" adopt --json "$control_argument"
+[ "$ADOPTION_STATUS" -eq 2 ] || fail "control-character argument did not fail as invalid input"
+jq -e '.status == "invalid-invocation"' "$ADOPTION/control-argument.json" >/dev/null \
+  || fail "control-character failure was not valid JSON"
 run_adoption "$ADOPTION/manual-one.json" adopt --dry-run --json --project "$MANUAL" \
   --tracker linear --tracker-prefix AUT --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "manual adoption dry-run failed"
@@ -1144,6 +1149,20 @@ git -C "$MANUAL" switch -q main
 run_adoption "$ADOPTION/default-apply.out" adopt --project "$MANUAL" --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 5 ] || fail "default-branch adoption apply was accepted"
 [ ! -e "$MANUAL/.touchstone.toml" ] || fail "default-branch refusal left a partial write"
+
+UNKNOWN_DEFAULT="$ADOPTION/unknown-default"
+mkdir -p "$UNKNOWN_DEFAULT"
+git -C "$UNKNOWN_DEFAULT" init -q -b trunk
+git -C "$UNKNOWN_DEFAULT" config user.name test
+git -C "$UNKNOWN_DEFAULT" config user.email test@example.com
+printf '# Consumer\n' >"$UNKNOWN_DEFAULT/AGENTS.md"
+git -C "$UNKNOWN_DEFAULT" add AGENTS.md
+git -C "$UNKNOWN_DEFAULT" commit -qm fixture
+run_adoption "$ADOPTION/unknown-default.out" adopt --project "$UNKNOWN_DEFAULT" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "apply accepted a repository with an unknown default branch"
+assert_contains "$ADOPTION/unknown-default.out.err" 'could not identify the repository default branch'
+[ ! -e "$UNKNOWN_DEFAULT/.touchstone.toml" ] || fail "unknown-default refusal left a partial write"
+
 git -C "$MANUAL" switch -q feat/adopt
 printf 'dirty\n' >"$MANUAL/untracked"
 run_adoption "$ADOPTION/dirty-apply.out" adopt --project "$MANUAL" --task 'verify=true'
@@ -1200,6 +1219,7 @@ assert_contains "$MANUAL/.touchstone/TOUCHSTONE.md" 'A security-review quota not
 assert_not_contains "$MANUAL/.touchstone/TOUCHSTONE.md" 'scripts/respond-review.sh'
 assert_contains "$MANUAL/.touchstone/TOUCHSTONE.md" "Inspect GitHub's complete review surface"
 assert_not_contains "$MANUAL/.touchstone/principles/git-workflow.md" 'scripts/touchstone-tracker.sh'
+assert_not_contains "$MANUAL/.touchstone/principles/git-workflow.md" 'respond-review.sh'
 assert_not_contains "$MANUAL/AGENTS.md" 'docs/pr-cli-contract.md'
 for route in agent-swarms.md ai-delivery-architecture.md audit-weak-points.md \
   documentation-ownership.md engineering-principles.md file-upstream-bugs.md \

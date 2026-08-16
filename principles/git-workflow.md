@@ -123,8 +123,8 @@ gh api graphql -f query='
 
 The last result includes both the unresolved count and the `PRRT_` thread ID
 to root comment-ID mapping needed to answer and resolve each finding.
-Replies are deliberately omitted because `respond-review.sh --comment-id`
-accepts the root finding ID. Zero is the requirement.
+Replies are deliberately omitted because the raw reply endpoint accepts the
+root finding ID. Zero unresolved threads is the requirement.
 
 **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.** GitHub's review API can support approval for authorized integrations, but that is not this adapter's observed contract. Do not expect an approval here or treat its absence as a stalled review.
 
