@@ -248,14 +248,27 @@ case "$OPERATION" in
     ;;
 esac
 
+# Resolve --project to the repository root, matching the implicit path and
+# `touchstone adopt`. Canonicalizing the passed directory alone made
+# `--project sub` and `cd sub` select different roots for the same command.
+#
+# Deliberately inline rather than shared: the organization-required workflow
+# fetches this file alone from raw.githubusercontent.com into RUNNER_TEMP and
+# runs it there, so a `source` of anything under scripts/lib/ would break the
+# required check in every consumer. tests/test-project-root.sh asserts the four
+# entrypoints agree, which is the contract that actually matters.
+#
+# A non-repository directory keeps its own path here and is refused by the
+# existing work-tree check below, preserving this command's error schema.
 if [ -n "$PROJECT_ARG" ]; then
   PROJECT_ROOT="$(cd "$PROJECT_ARG" 2>/dev/null && pwd -P)" \
     || fail_input "project directory does not exist: $PROJECT_ARG" "Pass an existing Git repository with --project."
 else
   PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || fail_input "not inside a Git repository" "Run from a repository or pass --project DIR."
-  PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 fi
+PROJECT_ROOT="$(git -C "$PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PROJECT_ROOT")"
+PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 [ -z "$BODY_FILE" ] || BODY_FILE="$(absolute_input_file "$BODY_FILE")"
 
 git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1 \
