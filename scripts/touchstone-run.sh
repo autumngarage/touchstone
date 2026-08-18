@@ -61,15 +61,32 @@ if [ "$ACTION" != validate ]; then
   exit 2
 fi
 
+# Resolve --project to the repository root, matching the implicit path and
+# `touchstone adopt`. Canonicalizing the passed directory alone made
+# `--project sub` and `cd sub` select different roots for the same command.
+#
+# Deliberately inline rather than shared: the organization-required workflow
+# fetches this file alone from raw.githubusercontent.com into RUNNER_TEMP and
+# runs it there, so a `source` of anything under scripts/lib/ would break the
+# required check in every consumer. tests/test-project-root.sh asserts the four
+# entrypoints agree, which is the contract that actually matters.
+#
+# Validation does not require Git, so a directory outside a work tree resolves
+# to itself rather than failing.
 if [ -n "$PROJECT_ARG" ]; then
   PROJECT_ROOT="$(cd "$PROJECT_ARG" 2>/dev/null && pwd -P)" || {
     echo "ERROR: project directory does not exist: $PROJECT_ARG" >&2
     exit 2
   }
 else
-  PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-  PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
+  PROJECT_ROOT="$PWD"
 fi
+# env -u: an exported GIT_DIR/GIT_WORK_TREE would resolve the ambient
+# repository instead of the named one, so --project A could select B.
+# The validation contract promises ambient variables cannot select
+# another project; enforce that at the resolver.
+PROJECT_ROOT="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE git -C "$PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PROJECT_ROOT")"
+PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 
 case "$CONFIG_ARG" in
   /*) CONFIG_FILE="$CONFIG_ARG" ;;
