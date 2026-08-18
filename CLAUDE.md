@@ -12,7 +12,7 @@ Codex and other AGENTS.md-native tools read `AGENTS.md`; Gemini CLI reads `GEMIN
 
 The block above is the canonical universal contract: agent roles, the engineering principles, the never-commit-on-main rule, the required delivery workflow, and a routing table that points to deeper docs rather than inlining them. Codex and Gemini agents read the same content via the `<!-- touchstone:steering -->` managed block in `AGENTS.md` / `GEMINI.md`.
 
-**That block is currently hand-maintained in four files.** The renderer that generated it (lib/touchstone-block.sh) went out with the strip. Edit `TOUCHSTONE.md` first, then mirror the change into the managed block of `AGENTS.md`, `GEMINI.md`, `templates/AGENTS.md`, and `templates/GEMINI.md`. Making `AGENTS.md` canonical and retiring the duplication is tracked in #733.
+**Edit `TOUCHSTONE.md`, then run `bash scripts/render-steering.sh`.** It rewrites the managed block in `AGENTS.md`, `GEMINI.md`, `templates/AGENTS.md`, and `templates/GEMINI.md` from the canonical file, leaving content outside the markers untouched. `tests/test-steering-render.sh` fails if any block drifts, so a forgotten render is caught before it ships rather than becoming four divergent contracts.
 
 ## Touchstone-Specific Principles
 

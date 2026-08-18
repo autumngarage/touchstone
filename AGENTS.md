@@ -4,10 +4,9 @@ This file steers Codex and other AGENTS.md-native coding agents. Claude Code rea
 
 <!-- touchstone:steering:start -->
 
-<!-- This block is a hand-maintained copy of TOUCHSTONE.md. The renderer that
-     generated it (lib/touchstone-block.sh) was deleted; edit TOUCHSTONE.md first,
-     then mirror the change here. Edit content OUTSIDE the markers freely. -->
-
+<!-- Generated from TOUCHSTONE.md by scripts/render-steering.sh.
+     Do not edit between the markers; edit TOUCHSTONE.md and re-run it.
+     Content outside the markers is the project's own. -->
 ## Touchstone — Shared Agent Steering
 
 You are an AI agent (Claude Code, Codex, or another driving CLI) working in a Touchstone-bootstrapped project. This block is the universal contract: rules that apply on every turn, plus a routing table to deeper docs you should consult when specific triggers fire. Project-specific guidance lives outside this block in your driver's steering doc (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`).
@@ -97,7 +96,6 @@ Never push directly to the default branch, even in an emergency; rewriting your 
 | write, trust, or audit agent memory — it is a cache, not truth | `principles/memory-hygiene.md` |
 
 Claude Code agents: the bundled `touchstone-*` and `memory-audit` skills mirror this table in your session header. Trust whichever surface fires first.
-
 <!-- touchstone:steering:end -->
 
 ## Authoring Guide
