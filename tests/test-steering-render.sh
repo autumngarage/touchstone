@@ -145,6 +145,36 @@ else
   pass "--check refuses reversed marker order"
 fi
 
+# Two byte-exactness regressions from PR #919 review. A source lacking a
+# final newline used to weld the end marker to its last line -- render
+# reported success, the very next --check rejected every target. And the awk
+# tail extraction appended a newline to project content that ended without
+# one, mutating bytes outside the markers the script promises not to touch.
+echo "==> A newline-less source still renders a valid, re-checkable block"
+NONL="$TMP_DIR/nonl"
+mkdir -p "$NONL/scripts" "$NONL/templates"
+printf '%s' "$(cat "$REPO_ROOT/TOUCHSTONE.md")" >"$NONL/TOUCHSTONE.md" # strips final newline
+for f in AGENTS.md GEMINI.md templates/AGENTS.md templates/GEMINI.md; do
+  cp "$REPO_ROOT/$f" "$NONL/$f"
+done
+cp "$RENDER" "$NONL/scripts/render-steering.sh"
+if bash "$NONL/scripts/render-steering.sh" >/dev/null 2>&1 && bash "$NONL/scripts/render-steering.sh" --check >/dev/null 2>&1; then
+  pass "render then --check both succeed without a source trailing newline"
+else
+  fail "a newline-less source produced a block its own --check rejects"
+fi
+
+echo "==> Rendering leaves a newline-less project tail byte-identical"
+printf '\ntrailing-sentinel-no-newline' >>"$NONL/GEMINI.md" # tail now ends without newline
+last_before="$(tail -c 1 "$NONL/GEMINI.md" | od -An -c | tr -d ' \n')"
+bash "$NONL/scripts/render-steering.sh" >/dev/null 2>&1 || true
+last_after="$(tail -c 1 "$NONL/GEMINI.md" | od -An -c | tr -d ' \n')"
+if [ "$last_before" = "$last_after" ]; then
+  pass "the tail's final byte is unchanged by a render"
+else
+  fail "render mutated the trailing byte outside the markers ($last_before -> $last_after)"
+fi
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "$FAILURES check(s) failed" >&2
   exit 1

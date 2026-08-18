@@ -70,7 +70,7 @@ EOF
 # generated block, the end marker, then everything after it. Content outside
 # the markers is copied byte for byte.
 render_one() {
-  local path="$1" out="$2" begin_count end_count begin_line end_line
+  local path="$1" out="$2" begin_count end_count begin_line end_line tail_offset
   # Whole-line counts, matching the awk extraction below exactly. grep -cF
   # also counts indented or embedded occurrences, which awk would then miss —
   # the render would copy the whole file and append a second block, exiting 0.
@@ -81,14 +81,22 @@ render_one() {
   begin_line="$(awk -v m="$BEGIN_MARKER" '$0 == m { print NR; exit }' "$path")"
   end_line="$(awk -v m="$END_MARKER" '$0 == m { print NR; exit }' "$path")"
   [ "$begin_line" -lt "$end_line" ] || die "$path has its end marker before its start marker"
-  awk -v begin_marker="$BEGIN_MARKER" -v end_marker="$END_MARKER" \
-    '$0 == begin_marker { exit } { print }' "$path" >"$out"
+  head -n "$((begin_line - 1))" "$path" >"$out"
   printf '%s\n' "$BEGIN_MARKER" >>"$out"
   header >>"$out"
   cat "$SOURCE" >>"$out"
+  # A source without a final newline would weld the end marker onto its last
+  # line, producing a block the next validation rejects. Normalize inside the
+  # managed block only; the source file itself is not touched.
+  if [ -n "$(tail -c 1 "$SOURCE")" ]; then
+    printf '\n' >>"$out"
+  fi
   printf '%s\n' "$END_MARKER" >>"$out"
-  awk -v end_marker="$END_MARKER" \
-    'seen { print } $0 == end_marker { seen = 1 }' "$path" >>"$out"
+  # Byte-exact tail: awk print would append a newline to project-owned content
+  # that ends without one, mutating bytes outside the markers in violation of
+  # the ownership boundary. Copy from the byte after the end-marker line.
+  tail_offset="$(head -n "$end_line" "$path" | wc -c | tr -d ' ')"
+  tail -c "+$((tail_offset + 1))" "$path" >>"$out"
 }
 
 DRIFTED=0
