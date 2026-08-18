@@ -96,6 +96,55 @@ else
   pass "a target with no markers is rejected"
 fi
 
+# An indented marker satisfies a substring count but not whole-line
+# extraction; the old validation accepted it and rendered a duplicate block
+# with exit 0. Both modes must refuse it. Reported as P2 on PR #919.
+echo "==> An indented marker is refused, not silently duplicated"
+INDENTED="$TMP_DIR/indented"
+mkdir -p "$INDENTED/scripts" "$INDENTED/templates"
+cp "$REPO_ROOT/TOUCHSTONE.md" "$INDENTED/TOUCHSTONE.md"
+for f in AGENTS.md GEMINI.md templates/AGENTS.md templates/GEMINI.md; do
+  cp "$REPO_ROOT/$f" "$INDENTED/$f"
+done
+cp "$RENDER" "$INDENTED/scripts/render-steering.sh"
+sed 's/^<!-- touchstone:steering:start -->$/  <!-- touchstone:steering:start -->/' "$INDENTED/AGENTS.md" >"$INDENTED/AGENTS.md.tmp" && mv "$INDENTED/AGENTS.md.tmp" "$INDENTED/AGENTS.md"
+before_hash="$(cksum "$INDENTED/AGENTS.md")"
+if bash "$INDENTED/scripts/render-steering.sh" >/dev/null 2>&1; then
+  fail "render accepted an indented start marker"
+else
+  pass "render refuses an indented start marker"
+fi
+after_hash="$(cksum "$INDENTED/AGENTS.md")"
+if [ "$before_hash" = "$after_hash" ]; then
+  pass "the refused file was not modified"
+else
+  fail "render modified a file it refused"
+fi
+if bash "$INDENTED/scripts/render-steering.sh" --check >/dev/null 2>&1; then
+  fail "--check accepted an indented start marker"
+else
+  pass "--check refuses an indented start marker"
+fi
+
+echo "==> Reversed marker order is refused"
+REVERSED="$TMP_DIR/reversed"
+mkdir -p "$REVERSED/scripts" "$REVERSED/templates"
+cp "$REPO_ROOT/TOUCHSTONE.md" "$REVERSED/TOUCHSTONE.md"
+for f in AGENTS.md GEMINI.md templates/AGENTS.md templates/GEMINI.md; do
+  cp "$REPO_ROOT/$f" "$REVERSED/$f"
+done
+cp "$RENDER" "$REVERSED/scripts/render-steering.sh"
+awk '
+  /^<!-- touchstone:steering:start -->$/ { print "<!-- touchstone:steering:end -->"; next }
+  /^<!-- touchstone:steering:end -->$/   { print "<!-- touchstone:steering:start -->"; next }
+  { print }
+' "$REVERSED/GEMINI.md" >"$REVERSED/GEMINI.md.tmp" && mv "$REVERSED/GEMINI.md.tmp" "$REVERSED/GEMINI.md"
+if bash "$REVERSED/scripts/render-steering.sh" --check >/dev/null 2>&1; then
+  fail "--check accepted an end marker before the start marker"
+else
+  pass "--check refuses reversed marker order"
+fi
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "$FAILURES check(s) failed" >&2
   exit 1

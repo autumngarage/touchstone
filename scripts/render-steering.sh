@@ -70,11 +70,17 @@ EOF
 # generated block, the end marker, then everything after it. Content outside
 # the markers is copied byte for byte.
 render_one() {
-  local path="$1" out="$2" begin_count end_count
-  begin_count="$(grep -cF "$BEGIN_MARKER" "$path" || true)"
-  end_count="$(grep -cF "$END_MARKER" "$path" || true)"
-  [ "$begin_count" = 1 ] || die "$path has $begin_count start markers, expected exactly 1"
-  [ "$end_count" = 1 ] || die "$path has $end_count end markers, expected exactly 1"
+  local path="$1" out="$2" begin_count end_count begin_line end_line
+  # Whole-line counts, matching the awk extraction below exactly. grep -cF
+  # also counts indented or embedded occurrences, which awk would then miss —
+  # the render would copy the whole file and append a second block, exiting 0.
+  begin_count="$(awk -v m="$BEGIN_MARKER" '$0 == m { c++ } END { print c + 0 }' "$path")"
+  end_count="$(awk -v m="$END_MARKER" '$0 == m { c++ } END { print c + 0 }' "$path")"
+  [ "$begin_count" = 1 ] || die "$path has $begin_count exact-line start markers, expected exactly 1 (an indented or embedded marker does not count)"
+  [ "$end_count" = 1 ] || die "$path has $end_count exact-line end markers, expected exactly 1 (an indented or embedded marker does not count)"
+  begin_line="$(awk -v m="$BEGIN_MARKER" '$0 == m { print NR; exit }' "$path")"
+  end_line="$(awk -v m="$END_MARKER" '$0 == m { print NR; exit }' "$path")"
+  [ "$begin_line" -lt "$end_line" ] || die "$path has its end marker before its start marker"
   awk -v begin_marker="$BEGIN_MARKER" -v end_marker="$END_MARKER" \
     '$0 == begin_marker { exit } { print }' "$path" >"$out"
   printf '%s\n' "$BEGIN_MARKER" >>"$out"
