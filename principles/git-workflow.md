@@ -432,9 +432,14 @@ before review costs nothing, the same amend after three review rounds costs all
 three.
 
 Do not rewrite a branch another agent or worktree is building on, a branch
-serving as the base of an open stacked PR, or anything already merged. If you
-are unsure whether someone else holds it, the lease will tell you: let it fail
-rather than adding `--force`.
+serving as the base of an open stacked PR, or anything already merged. The
+lease is not an ownership check: it compares only the remote ref's value, so a
+collaborator with *unpushed* work on the branch is invisible to it — the
+remote still equals `$EXPECTED`, the push succeeds, and they discover the
+rewrite when their own push is rejected. Ownership is settled by coordination
+(worktree assignments, claimed work), not by the push. What the lease does
+guarantee is narrower and still worth having: nothing already *pushed* gets
+discarded unseen.
 
 Recovery: `git reflog` holds your pre-rewrite head, and the remote's prior SHA
 is in the push output and the PR timeline. A rewrite you regret is recoverable;
@@ -458,9 +463,10 @@ parallelization mechanism when exact-head evidence is required.
 ```bash
 DEFAULT=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
 git fetch origin
+EXPECTED=$(git rev-parse "origin/<child-branch>")
 gh pr edit <child> --base "$DEFAULT"
 git rebase --onto "origin/$DEFAULT" "origin/<parent-branch>" <child-branch>
-git push --force-with-lease
+git push --force-with-lease="<child-branch>:$EXPECTED"
 ```
 
 Both rebase anchors come from the fetch: the new base is the merged remote
