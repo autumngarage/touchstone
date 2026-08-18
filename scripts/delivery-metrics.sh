@@ -4,10 +4,18 @@
 #
 # Usage:
 #   bash scripts/delivery-metrics.sh collect [--repo OWNER/NAME] [--limit N]
+#   bash scripts/delivery-metrics.sh select --limit N [FILE]
 #   bash scripts/delivery-metrics.sh report [FILE]
 #
 # collect reads GitHub and emits one TSV record per merged PR (network).
+# select keeps the N most recently merged of those records (offline).
 # report reads those records and summarizes them by change size (offline).
+#
+# select exists as its own command because the sampling rule is the part most
+# likely to be silently wrong, and a rule that only runs inside a network call
+# cannot be tested. It is the fix for a real defect: selecting by creation
+# order dropped PRs opened long ago and merged recently, which is precisely
+# the stalled case this tool exists to surface.
 #
 # This observes. It decides nothing, gates nothing, and writes to no
 # repository. A delivery metric that can block delivery is a second
@@ -18,7 +26,7 @@ set -euo pipefail
 SCHEMA="touchstone.delivery-metrics/v1"
 
 usage() {
-  sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '3,21p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -99,10 +107,47 @@ collect() {
           .commits.totalCount,
           .reviews.totalCount ]
       | @tsv' \
-    | awk -v n="$limit" 'NR <= n'
-  # awk drains the stream rather than closing it early: `head` would SIGPIPE
-  # the paginating `gh` and trip pipefail. --limit truncates the report, it
-  # does not bound the fetch.
+    | select_records "$limit"
+  # The pipeline drains rather than closing early: `head` would SIGPIPE the
+  # paginating `gh` and trip pipefail. --limit truncates the sample, it does
+  # not bound the fetch.
+}
+
+# Sample the N most recently MERGED records. GitHub's pullRequests connection
+# cannot order by merge time, so the ordering is applied here over the full
+# fetched set. Sorting by creation time instead systematically under-samples
+# stalls: a PR opened weeks ago and merged today sorts as old and falls off
+# the end, and long-lived PRs are exactly the ones worth measuring.
+select_records() {
+  local limit="$1"
+  sort -t "$(printf '\t')" -k3,3nr | awk -v n="$limit" 'NR <= n'
+}
+
+select_cmd() {
+  local limit="" input=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --limit)
+        [ "$#" -ge 2 ] || die "--limit requires a positive integer"
+        limit="$2"
+        shift 2
+        ;;
+      -*) die "unknown argument '$1'" ;;
+      *)
+        [ -z "$input" ] || die "select accepts at most one FILE"
+        input="$1"
+        shift
+        ;;
+    esac
+  done
+  [ -n "$limit" ] || die "select requires --limit"
+  case "$limit" in '' | *[!0-9]* | 0) die "--limit must be a positive integer" ;; esac
+  [ -z "$input" ] || [ -r "$input" ] || die "cannot read records: $input"
+  if [ -n "$input" ]; then
+    select_records "$limit" <"$input"
+  else
+    select_records "$limit"
+  fi
 }
 
 report() {
@@ -170,10 +215,12 @@ report() {
       name[4] = "large  (250+)"
 
       printf("%s — %d merged pull requests\n\n", schema, n)
-      printf("%-19s %5s  %9s  %9s  %9s  %8s  %8s\n", \
-        "size", "count", "med", "p90", "max", "reviews", "commits")
-      printf("%-19s %5s  %9s  %9s  %9s  %8s  %8s\n", \
-        "-------------------", "-----", "---------", "---------", "---------", "--------", "--------")
+      printf("%-19s %5s  %26s  %17s\n", "", "", "commit-to-merge", "open-to-merge")
+      printf("%-19s %5s  %8s %8s %8s  %8s %8s  %7s %7s\n", \
+        "size", "count", "med", "p90", "max", "med", "max", "reviews", "commits")
+      printf("%-19s %5s  %8s %8s %8s  %8s %8s  %7s %7s\n", \
+        "-------------------", "-----", "--------", "--------", "--------", \
+        "--------", "--------", "-------", "-------")
 
       for (k = 1; k <= 4; k++) {
         c = 0
@@ -181,34 +228,38 @@ report() {
           if (b[i] != k) continue
           c++
           t[c] = total_min[i]; t2[c] = total_min[i]; t3[c] = total_min[i]
+          o[c] = open_min[i]; o2[c] = open_min[i]
           r[c] = reviews[i]; m[c] = commits[i]
         }
-        if (c == 0) { printf("%-19s %5d  %9s  %9s  %9s  %8s  %8s\n", name[k], 0, "-", "-", "-", "-", "-"); continue }
-        printf("%-19s %5d  %8dm  %8dm  %8dm  %8d  %8d\n", \
-          name[k], c, median(t, c), pct(t2, c, 90), pct(t3, c, 100), median(r, c), median(m, c))
-        delete t; delete t2; delete t3; delete r; delete m
+        if (c == 0) { printf("%-19s %5d  %8s %8s %8s  %8s %8s  %7s %7s\n", name[k], 0, "-", "-", "-", "-", "-", "-", "-"); continue }
+        printf("%-19s %5d  %7dm %7dm %7dm  %7dm %7dm  %7d %7d\n", \
+          name[k], c, median(t, c), pct(t2, c, 90), pct(t3, c, 100), \
+          median(o, c), pct(o2, c, 100), median(r, c), median(m, c))
+        delete t; delete t2; delete t3; delete o; delete o2; delete r; delete m
       }
 
       # The slowest changes are the ones that cost real time; medians hide
       # them entirely. Sorted by first-commit-to-merge.
-      printf("\nslowest merged changes\n")
+      printf("\nslowest merged changes, by time the pull request stayed open\n")
       for (i = 1; i <= n; i++) { ord[i] = i }
       for (i = 2; i <= n; i++) {
         key = ord[i]; j = i - 1
-        while (j > 0 && total_min[ord[j]] < total_min[key]) { ord[j + 1] = ord[j]; j-- }
+        while (j > 0 && open_min[ord[j]] < open_min[key]) { ord[j + 1] = ord[j]; j-- }
         ord[j + 1] = key
       }
       top = (n < 5) ? n : 5
       for (i = 1; i <= top; i++) {
         idx = ord[i]
-        printf("  #%-6d %6dm  %5d lines  %2d commits  %2d reviews\n", \
-          num[idx], total_min[idx], lines[idx], commits[idx], reviews[idx])
+        printf("  #%-6d %7dm open  %6dm working  %5d lines  %2d commits  %3d reviews\n", \
+          num[idx], open_min[idx], total_min[idx], lines[idx], commits[idx], reviews[idx])
       }
 
       # The premise under test: cost should track size. If the tiny and large
       # rows report similar totals, the toll is flat and the disproportion is
       # visible here rather than argued.
-      printf("\nAll times are first commit to merge. MERGED PULL REQUESTS ONLY:\n")
+      printf("\ncommit-to-merge measures working time; open-to-merge measures elapsed\n")
+      printf("time and is where stalls appear. A large gap between them is a change\n")
+      printf("that sat rather than one that was hard. MERGED PULL REQUESTS ONLY:\n")
       printf("changes still open, or closed unmerged, are excluded by construction\n")
       printf("and are exactly where delivery pain concentrates. Read the tail, not\n")
       printf("the median.\n")
@@ -222,7 +273,8 @@ shift
 
 case "$ACTION" in
   collect) collect "$@" ;;
+  select) select_cmd "$@" ;;
   report) report "$@" ;;
   -h | --help) usage ;;
-  *) die "unknown action '$ACTION'; expected 'collect' or 'report'" ;;
+  *) die "unknown action '$ACTION'; expected 'collect', 'select', or 'report'" ;;
 esac

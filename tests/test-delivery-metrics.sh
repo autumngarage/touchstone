@@ -115,6 +115,48 @@ else
   pass "collect rejects a malformed --repo"
 fi
 
+# Regression: the sample must be the most recently MERGED records, not the most
+# recently opened. Selecting by creation order drops a PR opened long ago and
+# merged today — the stalled case this tool exists to surface. Reported on
+# PR #917 as a P1.
+#
+# 201 opened FIRST and merged LAST (the stall); 203 opened LAST and merged
+# FIRST. Selecting two by merge time keeps {201,202}; selecting by creation
+# order keeps {203,202}. The sets differ, so this fails on the old code because
+# the stalled record is missing, not merely misordered.
+ORDERING="$TMP_DIR/ordering.tsv"
+cat >"$ORDERING" <<'EOF'
+203	1786000300	1786000400	1786000300	5	1	1	0
+202	1786000200	1786500000	1786000200	5	1	1	0
+201	1786000100	1786900000	1786000100	5	1	1	0
+EOF
+
+selected="$(bash "$SCRIPT" select --limit 2 "$ORDERING" | cut -f1 | tr '\n' ' ')"
+if [ "$selected" = "201 202 " ]; then
+  pass "select samples by merge time, newest merge first"
+else
+  fail "select returned '$selected'; expected '201 202 ' (by merge time)"
+fi
+
+# Guard the specific inversion: a creation-ordered implementation returns 202
+# and 203 here, because 201 was opened first.
+case "$selected" in
+  *203*) fail "select kept 203, which merged first — sampling is by creation order" ;;
+  *) pass "select excludes the earliest-merged record" ;;
+esac
+
+if bash "$SCRIPT" select "$ORDERING" >/dev/null 2>&1; then
+  fail "select accepted a missing --limit"
+else
+  pass "select requires --limit"
+fi
+
+if bash "$SCRIPT" select --limit 2 --bogus "$ORDERING" >/dev/null 2>&1; then
+  fail "select accepted an unknown argument"
+else
+  pass "select rejects unknown arguments"
+fi
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "$FAILURES check(s) failed" >&2
   exit 1
