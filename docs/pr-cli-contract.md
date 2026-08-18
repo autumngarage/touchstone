@@ -50,13 +50,24 @@ taking this document's word for it.
   SHA, draft state, and GitHub's merge-state observation. Raw equivalent:
   `gh pr view --json number,state,url,headRefOid,baseRefName,baseRefOid,mergeStateStatus,isDraft`.
 
-  Why not the raw sequence: this operation is thin, deliberately, and its cost
-  should stay visible. Over the raw call it adds bounded retries and the
+  Why not the raw sequence: over the raw call it adds bounded retries and the
   versioned `touchstone.pr/v1` field names, so an agent parses one stable
-  schema across all three operations instead of two. That is the whole
-  justification. Its unique implementation is output formatting; the read path
-  is shared with `merge`. If the single-schema argument stops being worth a
-  public command, delete it — nothing else depends on it.
+  schema across all three operations instead of two.
+
+  The failure it prevents is a driver trusting a local verdict over GitHub's.
+  On 2026-08-18 the vendored merge gate in `henrymodisett/vesper` reported PR
+  #888 as unmergeable — "resolved review thread(s) without a follow-up reply" —
+  while `status` read `CLEAN` from GitHub with zero unresolved threads. That
+  contrast is what identified the refusal as a local defect rather than a real
+  one, and what made merging at the reviewed head an evidenced decision instead
+  of a blind override. Without a cheap, schema-stable read of GitHub's own
+  view, a driver facing a local gate that says no has two moves: stall, or
+  bypass with no evidence. Both were taken on that PR before the read settled
+  it.
+
+  It remains the thinnest of the three, and deliberately so: its unique
+  implementation is output formatting, and its read path is shared with
+  `merge`. If it ever stops earning a public command, delete it.
 
 - `merge` requires the caller's exact reviewed head, passes it through
   `--match-head-commit`, and re-reads state and head after the mutation. It
