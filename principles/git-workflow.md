@@ -390,11 +390,24 @@ Never delete a branch that serves as an open PR's base or head; that is what orp
 
 The prohibition is the **protected default branch**, and GitHub enforces it.
 Rewriting your own unmerged feature branch is permitted and sometimes the only
-correct fix: amend, squash, or rebase, then `git push --force-with-lease`.
+correct fix: amend, squash, or rebase, then force-push with a pinned lease.
 
-Always `--force-with-lease`, never `--force`. The lease refuses the push if the
-remote moved since you last fetched, which is what makes the operation safe —
-it cannot silently discard a commit another agent or worktree pushed.
+Pin the lease to the SHA you inspected. Before rewriting, record the remote
+head; after rewriting, push against exactly that value:
+
+```bash
+git fetch origin
+EXPECTED=$(git rev-parse "origin/$(git branch --show-current)")
+# ...amend / squash / rebase...
+git push --force-with-lease="$(git branch --show-current):$EXPECTED"
+```
+
+Never bare `--force`, and don't trust bare `--force-with-lease` either: it
+compares against your remote-tracking ref, and any background fetch — another
+worktree, an IDE, a status prompt — refreshes that ref, so the lease can
+"pass" against a commit you never looked at and silently discard another
+agent's push. The pinned form refuses unless the remote still holds the exact
+SHA you decided to replace.
 
 **The cost is the reviewed head, and it is the reason to think first.** A
 rewrite changes the head SHA, so every piece of evidence bound to the old head
@@ -405,7 +418,15 @@ before rewriting, not after.
 
 Rewrite when the history is actually wrong and a later commit cannot fix it: a
 commit missing an artifact its own gate requires per commit, a leaked secret, a
-commit that breaks bisect. Rewriting is the cheap fix while the branch is
+commit that breaks bisect.
+
+A leaked secret is the one case where the rewrite is the *smaller* half of the
+fix. **Rotate or revoke the credential first, then clean the history.** A
+pushed secret is already copied — clones, forks, reflogs, provider caches, CI
+logs — and no rewrite reaches those. History cleanup without rotation leaves a
+live credential while making the leak harder to notice.
+
+Rewriting is the cheap fix while the branch is
 yours and unmerged, and it gets more expensive the longer you wait — an amend
 before review costs nothing, the same amend after three review rounds costs all
 three.
