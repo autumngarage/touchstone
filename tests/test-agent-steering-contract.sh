@@ -201,6 +201,12 @@ echo "==> canonical git workflow describes the PR-visible review loop"
 # the safe lease form, and ordered rotation-before-rewrite for leaked secrets.
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Rewriting an unmerged branch"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '--force-with-lease="$(git branch --show-current):$EXPECTED"'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '--force-with-lease="<child-branch>:$EXPECTED"'
+# No executable bare lease may survive anywhere in the workflow guide: a bare
+# lease trusts a remote-tracking ref that any background fetch refreshes.
+if grep -E '^\s*git push --force-with-lease\s*$' "$TOUCHSTONE_ROOT/principles/git-workflow.md" >/dev/null; then
+  fail "principles/git-workflow.md contains an executable bare --force-with-lease"
+fi
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Rotate or revoke the credential first"
 assert_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "rewriting your own unmerged branch is fine"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Agentic PR Review Loop"
