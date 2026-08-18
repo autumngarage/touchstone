@@ -68,16 +68,23 @@ before). A clock that can be wrong in both directions was deleted rather than
 repaired. Conclusions drawn from it — including an earlier classification of
 vesper #823 as a stall — are withdrawn.
 
-**Medians are healthy and track size.** The defect is the tail: every bucket's
-p90 runs several multiples above its median (touchstone large: 121m median,
-2,935m max; vesper large: 42m median, 519m max). An unpredictable pipeline
-cannot be planned around even when its typical case is fine.
+**Medians are healthy and track size.** The defect is the tail, and it
+concentrates in the larger buckets rather than appearing everywhere:
+touchstone medium runs 47m median against 938m p90, touchstone large 121m
+median against 519m p90 (2,935m max), and vesper large 42m median against
+346m p90. The small buckets are tight in both repositories (touchstone tiny
+3m/6m, vesper small 7m/9m at p90). An unpredictable pipeline cannot be
+planned around even when its typical case is fine — but the unpredictability
+is a large-change phenomenon in this sample.
 
-**Review counts separate two tail shapes** without needing a second clock:
-high-review rows (touchstone #703, 49 reviews) are churn — the review loop
-reopening a change; low-review long-open rows are waiting. Which mechanism
-dominates is for the exit check (AUT-309) to determine on post-change data,
-not this baseline.
+**What drives the tail is not established by this data.** High review counts
+mark churn where they appear (#703: 49 reviews, #715: 38), but the converse
+inference — few reviews plus long elapsed time equals waiting — does not
+hold: a PR opened before implementation begins accrues elapsed time while
+being actively worked. Separating waiting from working needs event
+timestamps this metric does not collect. Which mechanism dominates is for
+the exit check (AUT-309) to determine, and it will need more than these
+fields to do it.
 
 ## Known limitation, and it is load-bearing
 
