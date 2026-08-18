@@ -388,8 +388,11 @@ Never delete a branch that serves as an open PR's base or head; that is what orp
 
 ## Rewriting an unmerged branch
 
-The prohibition is the **protected default branch**, and GitHub enforces it.
-Rewriting your own unmerged feature branch is permitted and sometimes the only
+The prohibition is the **protected default branch**. Where the audited
+Touchstone policy is installed and verified, GitHub enforces it; elsewhere the
+missing enforcement is a rollout gap and the prohibition stays mandatory
+driver procedure — inspect the effective rules rather than assuming the
+server will refuse. Rewriting your own unmerged feature branch is permitted and sometimes the only
 correct fix: amend, squash, or rebase, then force-push with a pinned lease.
 
 Pin the lease to the SHA you inspected. Before rewriting, record the remote
