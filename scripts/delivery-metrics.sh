@@ -39,8 +39,14 @@ die() {
 # seconds are resolved during collect so report needs no `date` parsing, which
 # differs between GNU and BSD userlands.
 #
-#   1 number  2 created_epoch  3 merged_epoch  4 first_commit_epoch
-#   5 lines_changed  6 files_changed  7 commits  8 reviews
+#   1 number  2 created_epoch  3 merged_epoch
+#   4 lines_changed  5 files_changed  6 commits  7 reviews
+#
+# There is deliberately no working-time field. The obvious candidate -- the
+# first commit's committedDate -- does not bound work: rebases rewrite
+# committer dates and commits can predate the PR (observed in both directions:
+# touchstone #703 first commit 2,705m after open, vesper #823 596m before).
+# A clock that can be wrong in both directions is worse than no clock.
 
 collect() {
   local repo="" limit=100
@@ -89,7 +95,7 @@ collect() {
             pageInfo { hasNextPage endCursor }
             nodes {
               number createdAt mergedAt additions deletions changedFiles
-              commits(first: 1) { totalCount nodes { commit { committedDate } } }
+              commits(first: 1) { totalCount }
               reviews(first: 1) { totalCount }
             }
           }
@@ -101,7 +107,6 @@ collect() {
       | [ .number,
           (.createdAt | fromdateiso8601),
           (.mergedAt | fromdateiso8601),
-          (.commits.nodes[0].commit.committedDate | fromdateiso8601),
           (.additions + .deletions),
           .changedFiles,
           .commits.totalCount,
@@ -192,18 +197,17 @@ report() {
       return arr[idx]
     }
     NF == 0 { next }
-    NF != 8 {
-      printf("ERROR: expected 8 fields, got %d on line %d\n", NF, NR) > "/dev/stderr"
+    NF != 7 {
+      printf("ERROR: expected 7 fields, got %d on line %d\n", NF, NR) > "/dev/stderr"
       bad = 1
       next
     }
     {
       n++
-      num[n] = $1; created[n] = $2; merged[n] = $3; firstc[n] = $4
-      lines[n] = $5; files[n] = $6; commits[n] = $7; reviews[n] = $8
-      b[n] = bucket_of($5)
+      num[n] = $1; created[n] = $2; merged[n] = $3
+      lines[n] = $4; files[n] = $5; commits[n] = $6; reviews[n] = $7
+      b[n] = bucket_of($4)
       open_min[n] = int(($3 - $2) / 60)
-      total_min[n] = int(($3 - $4) / 60)
     }
     END {
       if (bad) exit 1
@@ -215,27 +219,26 @@ report() {
       name[4] = "large  (250+)"
 
       printf("%s — %d merged pull requests\n\n", schema, n)
-      printf("%-19s %5s  %26s  %17s\n", "", "", "commit-to-merge", "open-to-merge")
-      printf("%-19s %5s  %8s %8s %8s  %8s %8s  %7s %7s\n", \
-        "size", "count", "med", "p90", "max", "med", "max", "reviews", "commits")
-      printf("%-19s %5s  %8s %8s %8s  %8s %8s  %7s %7s\n", \
+      printf("%-19s %5s  %28s\n", "", "", "open-to-merge")
+      printf("%-19s %5s  %8s %8s %8s  %7s %7s\n", \
+        "size", "count", "med", "p90", "max", "reviews", "commits")
+      printf("%-19s %5s  %8s %8s %8s  %7s %7s\n", \
         "-------------------", "-----", "--------", "--------", "--------", \
-        "--------", "--------", "-------", "-------")
+        "-------", "-------")
 
       for (k = 1; k <= 4; k++) {
         c = 0
         for (i = 1; i <= n; i++) {
           if (b[i] != k) continue
           c++
-          t[c] = total_min[i]; t2[c] = total_min[i]; t3[c] = total_min[i]
-          o[c] = open_min[i]; o2[c] = open_min[i]
+          o[c] = open_min[i]; o2[c] = open_min[i]; o3[c] = open_min[i]
           r[c] = reviews[i]; m[c] = commits[i]
         }
-        if (c == 0) { printf("%-19s %5d  %8s %8s %8s  %8s %8s  %7s %7s\n", name[k], 0, "-", "-", "-", "-", "-", "-", "-"); continue }
-        printf("%-19s %5d  %7dm %7dm %7dm  %7dm %7dm  %7d %7d\n", \
-          name[k], c, median(t, c), pct(t2, c, 90), pct(t3, c, 100), \
-          median(o, c), pct(o2, c, 100), median(r, c), median(m, c))
-        delete t; delete t2; delete t3; delete o; delete o2; delete r; delete m
+        if (c == 0) { printf("%-19s %5d  %8s %8s %8s  %7s %7s\n", name[k], 0, "-", "-", "-", "-", "-"); continue }
+        printf("%-19s %5d  %7dm %7dm %7dm  %7d %7d\n", \
+          name[k], c, median(o, c), pct(o2, c, 90), pct(o3, c, 100), \
+          median(r, c), median(m, c))
+        delete o; delete o2; delete o3; delete r; delete m
       }
 
       # The slowest changes are the ones that cost real time; medians hide
@@ -250,16 +253,15 @@ report() {
       top = (n < 5) ? n : 5
       for (i = 1; i <= top; i++) {
         idx = ord[i]
-        printf("  #%-6d %7dm open  %6dm working  %5d lines  %2d commits  %3d reviews\n", \
-          num[idx], open_min[idx], total_min[idx], lines[idx], commits[idx], reviews[idx])
+        printf("  #%-6d %7dm open  %5d lines  %2d commits  %3d reviews\n", \
+          num[idx], open_min[idx], lines[idx], commits[idx], reviews[idx])
       }
 
       # The premise under test: cost should track size. If the tiny and large
       # rows report similar totals, the toll is flat and the disproportion is
       # visible here rather than argued.
-      printf("\ncommit-to-merge measures working time; open-to-merge measures elapsed\n")
-      printf("time and is where stalls appear. A large gap between them is a change\n")
-      printf("that sat rather than one that was hard. MERGED PULL REQUESTS ONLY:\n")
+      printf("\nopen-to-merge is elapsed time; no working-time clock is reported\n")
+      printf("because commit dates do not bound work. MERGED PULL REQUESTS ONLY:\n")
       printf("changes still open, or closed unmerged, are excluded by construction\n")
       printf("and are exactly where delivery pain concentrates. Read the tail, not\n")
       printf("the median.\n")

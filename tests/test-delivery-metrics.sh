@@ -25,21 +25,21 @@ pass() { echo "  ok: $*"; }
   exit 1
 }
 
-# number  created  merged  first_commit  lines  files  commits  reviews
+# number  created  merged  lines  files  commits  reviews
 #
 # Times are epoch seconds. The small bucket carries one deliberate outlier so
 # the median/tail distinction is asserted, not assumed: four fast records and
 # one slow one must produce a small median and a large max.
 FIXTURE="$TMP_DIR/records.tsv"
 cat >"$FIXTURE" <<'EOF'
-101	1786000000	1786000300	1786000000	5	1	1	0
-102	1786000000	1786000600	1786000000	20	2	1	0
-103	1786000000	1786000600	1786000000	21	2	1	0
-104	1786000000	1786000600	1786000000	22	2	1	0
-105	1786000000	1786000600	1786000000	23	2	1	0
-106	1786000000	1786036000	1786000000	24	2	9	11
-107	1786000000	1786003600	1786000000	100	5	3	2
-108	1786000000	1786007200	1786000000	4000	40	12	20
+101	1786000000	1786000300	5	1	1	0
+102	1786000000	1786000600	20	2	1	0
+103	1786000000	1786000600	21	2	1	0
+104	1786000000	1786000600	22	2	1	0
+105	1786000000	1786000600	23	2	1	0
+106	1786000000	1786036000	24	2	9	11
+107	1786000000	1786003600	100	5	3	2
+108	1786000000	1786007200	4000	40	12	20
 EOF
 
 OUT="$TMP_DIR/report.txt"
@@ -74,7 +74,7 @@ grep -q "MERGED PULL REQUESTS ONLY" "$OUT" \
 
 # Malformed input fails closed rather than reporting partial numbers.
 BAD="$TMP_DIR/bad.tsv"
-printf '101\t1786000000\t1786000300\n' >"$BAD"
+printf '101\t1786000000\n' >"$BAD"
 if bash "$SCRIPT" report "$BAD" >/dev/null 2>&1; then
   fail "report accepted a record with the wrong field count"
 else
@@ -126,9 +126,9 @@ fi
 # the stalled record is missing, not merely misordered.
 ORDERING="$TMP_DIR/ordering.tsv"
 cat >"$ORDERING" <<'EOF'
-203	1786000300	1786000400	1786000300	5	1	1	0
-202	1786000200	1786500000	1786000200	5	1	1	0
-201	1786000100	1786900000	1786000100	5	1	1	0
+203	1786000300	1786000400	5	1	1	0
+202	1786000200	1786500000	5	1	1	0
+201	1786000100	1786900000	5	1	1	0
 EOF
 
 selected="$(bash "$SCRIPT" select --limit 2 "$ORDERING" | cut -f1 | tr '\n' ' ')"
