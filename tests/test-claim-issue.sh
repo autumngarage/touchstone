@@ -451,3 +451,25 @@ EOF
   fi
   echo "==> PASS: tracker adapter preserves claim semantics"
 )
+
+# The vacuous PR-time claim gate was deleted (AUT-302): it enforced GitHub
+# issue claims for a repository whose tracking is Linear-only, so it could
+# only pass over an empty set. These assertions lock the deletion in -- a
+# template refresh or workflow restore would otherwise bring it back
+# silently. claim-issue.sh itself stays: it is the tracker adapter's GitHub
+# transport and is covered above.
+echo "==> the deleted claim gate stays deleted"
+for relic in \
+  "scripts/issue-claim-check.sh" \
+  ".github/workflows/issue-claim-check.yml" \
+  "templates/ci/issue-claim-check.yml"; do
+  if [ -e "$TOUCHSTONE_ROOT/$relic" ]; then
+    echo "FAIL: deleted claim-gate file has returned: $relic" >&2
+    exit 1
+  fi
+done
+if grep -rn "skip-claim-check" "$TOUCHSTONE_ROOT/docs" "$TOUCHSTONE_ROOT/scripts" "$TOUCHSTONE_ROOT/.github" 2>/dev/null; then
+  echo "FAIL: the retired skip-claim-check contract is referenced again" >&2
+  exit 1
+fi
+echo "  ok: claim-gate files and the skip token remain absent"

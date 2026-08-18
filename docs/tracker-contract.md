@@ -59,12 +59,6 @@ adapter reuses the surviving claim script and verifies assignment after its
 mutation; authentication errors, unavailable transports, and partial
 mutations never produce `verified`.
 
-GitHub's documented `[skip-claim-check]` token bypasses only the GitHub
-assignment guard for an exceptional PR. It does not bypass tracker selection,
-reference parsing or claim verification, and it has no implicit
-Linear equivalent. A tracker-specific exception must remain visible in that
-tracker and in the PR.
-
 Claiming and reconciliation are delivery discipline, not merge adjudication.
 The claim adapter does not infer repository identity for tracker mutations;
 drivers reconcile through the configured tracker's API or CLI. `touchstone pr`
