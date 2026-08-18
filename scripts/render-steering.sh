@@ -120,7 +120,19 @@ for target in "${TARGETS[@]}"; do
     continue
   fi
 
-  cat "$rendered" >"$path" || die "could not write $target"
+  # Same-directory staging plus rename: a redirection onto the target would
+  # truncate it before writing, so a full disk or an interrupt mid-copy could
+  # destroy project-owned bytes the error path cannot restore. rename(2)
+  # within one filesystem replaces the file whole or not at all.
+  staged="$path.render-steering.$$"
+  if ! cp "$rendered" "$staged"; then
+    rm -f -- "$staged"
+    die "could not stage $target"
+  fi
+  mv -f -- "$staged" "$path" || {
+    rm -f -- "$staged"
+    die "could not replace $target"
+  }
   printf '  updated: %s\n' "$target"
   CHANGED=$((CHANGED + 1))
 done
