@@ -386,6 +386,39 @@ That compares the branch against the merge-base with main: an empty diff means e
 
 Never delete a branch that serves as an open PR's base or head; that is what orphans a stack (see below).
 
+## Rewriting an unmerged branch
+
+The prohibition is the **protected default branch**, and GitHub enforces it.
+Rewriting your own unmerged feature branch is permitted and sometimes the only
+correct fix: amend, squash, or rebase, then `git push --force-with-lease`.
+
+Always `--force-with-lease`, never `--force`. The lease refuses the push if the
+remote moved since you last fetched, which is what makes the operation safe —
+it cannot silently discard a commit another agent or worktree pushed.
+
+**The cost is the reviewed head, and it is the reason to think first.** A
+rewrite changes the head SHA, so every piece of evidence bound to the old head
+stops applying: `review-binding`, answered findings, and resolved threads all
+go outdated, and the change needs review again for the new head. That expense
+— not a prohibition — is what should make a driver pause. Budget a review round
+before rewriting, not after.
+
+Rewrite when the history is actually wrong and a later commit cannot fix it: a
+commit missing an artifact its own gate requires per commit, a leaked secret, a
+commit that breaks bisect. Rewriting is the cheap fix while the branch is
+yours and unmerged, and it gets more expensive the longer you wait — an amend
+before review costs nothing, the same amend after three review rounds costs all
+three.
+
+Do not rewrite a branch another agent or worktree is building on, a branch
+serving as the base of an open stacked PR, or anything already merged. If you
+are unsure whether someone else holds it, the lease will tell you: let it fail
+rather than adding `--force`.
+
+Recovery: `git reflog` holds your pre-rewrite head, and the remote's prior SHA
+is in the push output and the PR timeline. A rewrite you regret is recoverable;
+a `--force` that clobbered someone else's push may not be.
+
 ## Stacked PRs (and how they merge)
 
 A stacked PR is a PR whose base branch is another open PR's branch instead of the default branch. The goal: split a large change into a chain where each step is reviewable on its own. Open one with `gh pr create --base <parent-branch>`.
