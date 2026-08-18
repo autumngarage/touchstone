@@ -204,7 +204,7 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '--force-with-leas
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '--force-with-lease="<child-branch>:$EXPECTED"'
 # No executable bare lease may survive anywhere in the workflow guide: a bare
 # lease trusts a remote-tracking ref that any background fetch refreshes.
-if grep -E '^\s*git push --force-with-lease\s*$' "$TOUCHSTONE_ROOT/principles/git-workflow.md" >/dev/null; then
+if grep -E '^[[:space:]]*git push --force-with-lease[[:space:]]*$' "$TOUCHSTONE_ROOT/principles/git-workflow.md" >/dev/null; then
   fail "principles/git-workflow.md contains an executable bare --force-with-lease"
 fi
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Rotate or revoke the credential first"
