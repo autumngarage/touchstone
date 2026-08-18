@@ -15,7 +15,7 @@ touchstone.delivery-metrics/v1 — 60 merged pull requests
 size                count       med      p90      max  reviews commits
 ------------------- -----  -------- -------- --------  ------- -------
 tiny   (<10 lines)      2        3m       6m       6m        0       1
-small  (10-49)          9       20m      47m      90m        2       2
+small  (10-49)          9       20m      90m      90m        2       2
 medium (50-249)        15       47m     938m    1012m        2       3
 large  (250+)          34      121m     519m    2935m        8       5
 

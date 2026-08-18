@@ -191,7 +191,10 @@ report() {
         while (j > 0 && arr[j] > key) { arr[j + 1] = arr[j]; j-- }
         arr[j + 1] = key
       }
-      idx = int((p / 100) * n + 0.5)
+      # Ceiling rank: the smallest index whose cumulative share reaches p%.
+      # Rounding to nearest reported a value that fewer than p% of records
+      # sit at or below (nine records rounded 8.1 down to rank 8 = 88.9%).
+      idx = int((p * n + 99) / 100)
       if (idx < 1) idx = 1
       if (idx > n) idx = n
       return arr[idx]
