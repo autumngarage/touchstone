@@ -47,8 +47,8 @@ touchstone/
 ├── skills/         # User-scoped Claude Code skills
 ├── templates/      # Legacy transition inputs (nothing copies them today)
 ├── hooks/          # branch-guard.sh — the PreToolUse hook wired in .claude/settings.json
-├── scripts/        # The surviving script surface: claim-issue, issue-claim-check,
-│                   #   respond-review, touchstone-run
+├── scripts/        # The surviving script surface: claim-issue, respond-review,
+│                   #   touchstone-run
 ├── audits/         # Dated drift/health reports (never auto-modified)
 ├── feedback/       # Dated dogfooding notes from downstream projects
 └── tests/          # Self-tests
