@@ -267,7 +267,11 @@ else
   PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || fail_input "not inside a Git repository" "Run from a repository or pass --project DIR."
 fi
-PROJECT_ROOT="$(git -C "$PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PROJECT_ROOT")"
+# env -u: an exported GIT_DIR/GIT_WORK_TREE would resolve the ambient
+# repository instead of the named one, so --project A could select B.
+# The validation contract promises ambient variables cannot select
+# another project; enforce that at the resolver.
+PROJECT_ROOT="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE git -C "$PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PROJECT_ROOT")"
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 [ -z "$BODY_FILE" ] || BODY_FILE="$(absolute_input_file "$BODY_FILE")"
 

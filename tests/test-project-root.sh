@@ -93,6 +93,53 @@ case "$out" in
   *) fail "pr accepted a non-repository project: $out" ;;
 esac
 
+echo "==> ambient GIT_DIR cannot redirect --project to another repository"
+# Review finding on PR #920: with GIT_DIR/GIT_WORK_TREE exported (as hooks and
+# some CIs do), the resolver's git call answered for the ambient repository, so
+# validating A could run B's declaration and return B's verdict as A's.
+OTHER="$TMP_DIR/other"
+mkdir -p "$OTHER"
+git -C "$OTHER" init -q
+git -C "$OTHER" config user.email test@example.com
+git -C "$OTHER" config user.name Test
+cat >"$OTHER/.touchstone.toml" <<'EOF'
+schema = 1
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "wrong-repo-sentinel"
+target = "root"
+command = "echo WRONG_REPOSITORY && exit 1"
+required = true
+EOF
+git -C "$OTHER" add -A >/dev/null 2>&1
+git -C "$OTHER" commit -qm init >/dev/null 2>&1
+
+override_out="$(GIT_DIR="$OTHER/.git" GIT_WORK_TREE="$OTHER" bash "$REPO_ROOT/scripts/touchstone-run.sh" validate --project "$PROJECT" 2>&1)" || true
+case "$override_out" in
+  *WRONG_REPOSITORY*) fail "exported GIT_DIR redirected --project to the ambient repository" ;;
+  *"PASS noop"*) pass "--project wins over exported GIT_DIR/GIT_WORK_TREE" ;;
+  *) fail "unexpected output under GIT_DIR override: $override_out" ;;
+esac
+
+echo "==> tracker resolves --project SUBDIR to the repository root"
+# Offline-observable: the tracker validates the project contract before any
+# transport. Under the old resolver a subdirectory --project failed with
+# invalid-project-contract (contract not found below the subdirectory); with
+# resolution fixed it passes that gate and fails later on the absent tracker
+# declaration instead. The distinction is the regression.
+tracker_out="$(bash "$REPO_ROOT/scripts/touchstone-tracker.sh" claim AUT-1 --project "$PROJECT/nested/deeper" 2>&1)" || true
+case "$tracker_out" in
+  *invalid-project-contract*) fail "tracker still resolves --project SUBDIR below the root: $tracker_out" ;;
+  *) pass "tracker passed the project-contract gate from a subdirectory" ;;
+esac
+
 # The organization-required workflow fetches scripts/touchstone-run.sh alone
 # from raw.githubusercontent.com into RUNNER_TEMP and runs it there. It never
 # checks out this repository, so any `source` of a sibling file would break the
