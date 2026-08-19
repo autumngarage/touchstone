@@ -168,6 +168,14 @@ git -C "$WT_MAIN" commit -qm "seed"
 git -C "$WT_MAIN" checkout -q -b feat/first
 git -C "$WT_MAIN" worktree add -q "$TMP_DIR/wt-second" -b feat/second
 
+# The option is only a safety binding if an operator can find it: the
+# unknown-argument error points at this help text.
+out="$(bash "$REPO_ROOT/scripts/touchstone-pr.sh" pr 2>&1 || true)"
+case "$out" in
+  *"--expect-branch BRANCH"*) pass "the help text advertises the branch binding" ;;
+  *) fail "usage() omits --expect-branch: $out" ;;
+esac
+
 out="$(bash "$REPO_ROOT/scripts/touchstone-pr.sh" open --project "$TMP_DIR/wt-second" --expect-branch feat/first 2>&1 || true)"
 case "$out" in
   *"expected branch feat/first"*"feat/second"*) pass "a branch mismatch is refused, naming both branches" ;;

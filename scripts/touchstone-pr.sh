@@ -42,7 +42,8 @@ esac
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  touchstone pr open --title TITLE --body-file FILE [--base BRANCH] [--project DIR] [--json]
+  touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
+                     [--expect-branch BRANCH] [--project DIR] [--json]
   touchstone pr status PR [--project DIR] [--json]
   touchstone pr merge PR --head SHA [--project DIR] [--json]
 EOF
