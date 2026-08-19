@@ -209,6 +209,19 @@ case "$out" in
   *) fail "open took --json as the branch name: $out" ;;
 esac
 
+# The implicit (no --project) path chooses PROJECT_ROOT from the working
+# directory. Unsanitized, ambient GIT_DIR selected a different repository
+# entirely -- and --expect-branch matched, because it compared against that
+# same ambient repository.
+out="$(cd "$TMP_DIR/wt-second" && GIT_DIR="$WT_MAIN/.git" GIT_WORK_TREE="$WT_MAIN" \
+  bash "$REPO_ROOT/scripts/touchstone-pr.sh" open --expect-branch feat/second 2>&1 || true)"
+case "$out" in
+  *"expected branch feat/second"*)
+    fail "ambient GIT_DIR redirected the implicit repository lookup: $out"
+    ;;
+  *) pass "the implicit lookup ignores ambient GIT_DIR too" ;;
+esac
+
 # #920 sanitized the resolver but not the reads after it, so with GIT_DIR
 # exported every later project read answered for the ambient repository --
 # here, refusing a correct --expect-branch by reporting another repo's branch.

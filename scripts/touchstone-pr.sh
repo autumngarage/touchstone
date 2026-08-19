@@ -280,7 +280,12 @@ if [ -n "$PROJECT_ARG" ]; then
   PROJECT_ROOT="$(cd "$PROJECT_ARG" 2>/dev/null && pwd -P)" \
     || fail_input "project directory does not exist: $PROJECT_ARG" "Pass an existing Git repository with --project."
 else
-  PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
+  # Sanitized like every other project read: this lookup chooses PROJECT_ROOT
+  # itself, so ambient GIT_DIR/GIT_WORK_TREE here selects the whole repository
+  # the command then operates on -- and --expect-branch would match, because
+  # it would be comparing against that same ambient repository's branch.
+  PROJECT_ROOT="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+    git rev-parse --show-toplevel 2>/dev/null)" \
     || fail_input "not inside a Git repository" "Run from a repository or pass --project DIR."
 fi
 # env -u: an exported GIT_DIR/GIT_WORK_TREE would resolve the ambient
