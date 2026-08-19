@@ -340,12 +340,15 @@ compile_swift_plan() {
 }
 
 read_existing_contract() {
-  local output status=0
+  local output status=0 declared_schema
   require_head_file .touchstone.toml
   output="$(bash "$SCRIPT_ROOT/scripts/touchstone-run.sh" validate --check-contract \
     --project "$PROJECT_ROOT" 2>&1)" || status=$?
   [ "$status" -eq 0 ] || contract_refusal "existing .touchstone.toml is invalid: $output"
-  PROFILE=declared-v1
+  # The validator reports the accepted schema; carry it rather than assuming
+  # v1, so automation reading the profile sees the declaration it actually has.
+  declared_schema="$(printf '%s' "$output" | sed -n 's/^schema-v\([0-9][0-9]*\) contract is valid$/\1/p' | head -1)"
+  PROFILE="declared-v${declared_schema:-1}"
 }
 
 tracker_contract_failure() {

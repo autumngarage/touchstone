@@ -695,7 +695,7 @@ for fixture in unsupported duplicate escape unknown; do
   dir="$TMP_DIR/$fixture"
   write_contract "$dir" "true"
   case "$fixture" in
-    unsupported) sed 's/schema = 1/schema = 2/' "$dir/.touchstone.toml" >"$dir/new" ;;
+    unsupported) sed 's/schema = 1/schema = 3/' "$dir/.touchstone.toml" >"$dir/new" ;;
     duplicate)
       awk '{ print; if ($0 == "path = \".\"") print "name = \"root-again\"" }' \
         "$dir/.touchstone.toml" >"$dir/new"
@@ -1479,7 +1479,7 @@ assert_contains "$ADOPTION/ambiguous.json" 'competing project evidence found: np
 
 UNSUPPORTED="$ADOPTION/unsupported"
 new_adoption_repo "$UNSUPPORTED"
-printf 'schema = 2\n' >"$UNSUPPORTED/.touchstone.toml"
+printf 'schema = 3\n' >"$UNSUPPORTED/.touchstone.toml"
 git -C "$UNSUPPORTED" add .touchstone.toml
 git -C "$UNSUPPORTED" commit -qm unsupported
 run_adoption "$ADOPTION/unsupported.out" adopt --dry-run --project "$UNSUPPORTED"
@@ -2216,3 +2216,391 @@ EOF
 
   echo "==> PASS: fresh-consumer adoption, compatibility, policy, and safety contracts hold"
 )
+
+# ---------------------------------------------------------------------------
+# Schema-2 execution stages (AUT-306). A project invariant that holds per
+# commit cannot be enforced by a check that only runs at push -- by then the
+# commit exists and the cheap fix is gone. These assertions cover stage
+# selection, schema-1 compatibility, and fail-closed handling.
+echo ""
+echo "==> Schema-2 execution stages"
+RUN_ENGINE="$ROOT/scripts/touchstone-run.sh"
+STAGE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-stages.XXXXXX")"
+# Do not install a second EXIT trap: it would replace the suite's own and
+# leak the primary workspace. Extend the existing cleanup instead.
+trap 'rm -rf "$TMP_DIR" "$STAGE_TMP"' EXIT
+FAILURES=0
+fail() {
+  echo "FAIL: $*" >&2
+  FAILURES=$((FAILURES + 1))
+}
+pass() { echo "  ok: $*"; }
+make_stage_project() {
+  local dir="$1" body="$2"
+  mkdir -p "$dir"
+  git -C "$dir" init -q
+  git -C "$dir" config user.email test@example.com
+  git -C "$dir" config user.name Test
+  printf '%s\n' "$body" >"$dir/.touchstone.toml"
+  git -C "$dir" add -A >/dev/null 2>&1
+  git -C "$dir" commit -qm init >/dev/null 2>&1
+}
+
+BOTH="$STAGE_TMP/both"
+make_stage_project "$BOTH" 'schema = 2
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "suite"
+target = "root"
+command = "echo ENFORCE_SENTINEL"
+required = true
+
+[[validation.tasks]]
+name = "guard"
+target = "root"
+stage = "commit"
+command = "echo COMMIT_SENTINEL"
+required = true'
+
+echo "==> the enforcement run never executes an authoring guard"
+out="$(bash "$RUN_ENGINE" validate --project "$BOTH" 2>&1)"
+case "$out" in
+  *COMMIT_SENTINEL*) fail "a commit-stage task ran in the enforcement stage" ;;
+  *ENFORCE_SENTINEL*) pass "enforce stage ran only its own task" ;;
+  *) fail "enforce stage produced no sentinel: $out" ;;
+esac
+
+echo "==> the commit stage runs only authoring guards"
+out="$(bash "$RUN_ENGINE" validate --stage commit --project "$BOTH" 2>&1)"
+case "$out" in
+  *ENFORCE_SENTINEL*) fail "an enforce-stage task ran in the commit stage" ;;
+  *COMMIT_SENTINEL*) pass "commit stage ran only its own task" ;;
+  *) fail "commit stage produced no sentinel: $out" ;;
+esac
+
+echo "==> schema 1 means exactly what it meant"
+V1="$STAGE_TMP/v1"
+make_stage_project "$V1" 'schema = 1
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "suite"
+target = "root"
+command = "echo V1_SENTINEL"
+required = true'
+out="$(bash "$RUN_ENGINE" validate --project "$V1" 2>&1)"
+case "$out" in
+  *V1_SENTINEL*"passed"*) pass "a schema-1 declaration runs unchanged at the default stage" ;;
+  *) fail "schema 1 changed behavior: $out" ;;
+esac
+
+# A stage key in a schema-1 file is a contract error, not a silent default:
+# accepting it would let a v1 consumer believe it declared a guard that never
+# runs anywhere.
+V1STAGE="$STAGE_TMP/v1stage"
+make_stage_project "$V1STAGE" 'schema = 1
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "suite"
+target = "root"
+stage = "commit"
+command = "true"
+required = true'
+if bash "$RUN_ENGINE" validate --project "$V1STAGE" >/dev/null 2>&1; then
+  fail "schema 1 accepted a stage key"
+else
+  pass "schema 1 rejects a stage key"
+fi
+
+echo "==> an empty commit stage passes; an empty enforcement stage fails"
+ONLY="$STAGE_TMP/enforce-only"
+make_stage_project "$ONLY" 'schema = 2
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "suite"
+target = "root"
+command = "true"
+required = true'
+if bash "$RUN_ENGINE" validate --stage commit --project "$ONLY" >/dev/null 2>&1; then
+  pass "no authoring guards is a pass at the commit stage"
+else
+  fail "a project without authoring guards failed its commit stage"
+fi
+
+GUARDONLY="$STAGE_TMP/guard-only"
+make_stage_project "$GUARDONLY" 'schema = 2
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "guard"
+target = "root"
+stage = "commit"
+command = "true"
+required = true'
+if bash "$RUN_ENGINE" validate --project "$GUARDONLY" >/dev/null 2>&1; then
+  fail "a declaration with no enforcement task passed the gate"
+else
+  pass "no enforcement task still fails: a gate must run something"
+fi
+
+echo "==> unknown stages fail closed"
+if bash "$RUN_ENGINE" validate --stage nope --project "$BOTH" >/dev/null 2>&1; then
+  fail "an unknown --stage was accepted"
+else
+  pass "an unknown --stage is rejected"
+fi
+BADSTAGE="$STAGE_TMP/badstage"
+make_stage_project "$BADSTAGE" 'schema = 2
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "suite"
+target = "root"
+stage = "prepush"
+command = "true"
+required = true'
+if bash "$RUN_ENGINE" validate --project "$BADSTAGE" >/dev/null 2>&1; then
+  fail "an unknown declared stage was accepted"
+else
+  pass "an unknown declared stage is rejected"
+fi
+
+echo "==> an unsupported schema still fails closed"
+V3="$STAGE_TMP/v3"
+make_stage_project "$V3" 'schema = 3
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "suite"
+target = "root"
+command = "true"
+required = true'
+if bash "$RUN_ENGINE" validate --project "$V3" >/dev/null 2>&1; then
+  fail "schema 3 was accepted"
+else
+  pass "an unsupported schema is rejected"
+fi
+
+echo "==> a commit-only target absent in CI does not fail the enforcement run"
+# An authoring guard may point at a directory that exists on a developer's
+# machine and not on a runner. Preflighting every declared target regardless
+# of stage would fail the gate over a path the enforcement run never touches.
+SPLITTARGET="$STAGE_TMP/split-target"
+make_stage_project "$SPLITTARGET" 'schema = 2
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "src"
+path = "src"
+
+[[validation.targets]]
+name = "devonly"
+path = "dev-workspace"
+
+[[validation.tasks]]
+name = "suite"
+target = "src"
+command = "true"
+required = true
+
+[[validation.tasks]]
+name = "guard"
+target = "devonly"
+stage = "commit"
+command = "true"
+required = true'
+mkdir -p "$SPLITTARGET/src"
+if bash "$RUN_ENGINE" validate --project "$SPLITTARGET" >/dev/null 2>&1; then
+  pass "the enforcement run ignores a target only the commit stage uses"
+else
+  fail "an absent commit-stage target failed the enforcement run"
+fi
+# The converse must still hold: a target the selected stage uses is checked.
+if bash "$RUN_ENGINE" validate --stage commit --project "$SPLITTARGET" >/dev/null 2>&1; then
+  fail "the commit stage passed with its own target missing"
+else
+  pass "a missing target the selected stage uses still fails"
+fi
+# A contract check validates the whole declaration rather than one stage's
+# slice: the adapters call it to ask whether the declaration is valid at all.
+if bash "$RUN_ENGINE" validate --check-contract --project "$SPLITTARGET" >/dev/null 2>&1; then
+  fail "--check-contract passed a declaration whose commit-stage target is missing"
+else
+  pass "--check-contract validates every declared target regardless of stage"
+fi
+
+echo "==> a target no task references keeps its validation"
+# Skipping a target belongs to stage ownership: a target some other stage owns
+# is skipped, a target nobody owns is still checked, which is what schema 1
+# has always done.
+ORPHAN="$STAGE_TMP/orphan-target"
+make_stage_project "$ORPHAN" 'schema = 1
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "src"
+path = "src"
+
+[[validation.targets]]
+name = "orphan"
+path = "nonexistent"
+
+[[validation.tasks]]
+name = "suite"
+target = "src"
+command = "true"
+required = true'
+mkdir -p "$ORPHAN/src"
+if bash "$RUN_ENGINE" validate --project "$ORPHAN" >/dev/null 2>&1; then
+  fail "an unreferenced broken target stopped being validated"
+else
+  pass "an unreferenced broken target still fails validation"
+fi
+
+echo "==> contract identity reports the declared schema, not a fixed version"
+V2ID="$STAGE_TMP/v2-identity"
+make_stage_project "$V2ID" 'schema = 2
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "suite"
+target = "root"
+command = "true"
+required = true'
+out="$(bash "$RUN_ENGINE" validate --check-contract --project "$V2ID" 2>&1)"
+case "$out" in
+  *"schema-v2 contract is valid"*) pass "a schema-2 declaration reports v2 identity" ;;
+  *) fail "contract identity did not follow the declaration: $out" ;;
+esac
+out="$(bash "$RUN_ENGINE" validate --check-contract --project "$V1" 2>&1)"
+case "$out" in
+  *"schema-v1 contract is valid"*) pass "a schema-1 declaration still reports v1 identity" ;;
+  *) fail "schema-1 identity changed: $out" ;;
+esac
+
+echo "==> the documented commit-hook wiring is runnable as written"
+# The contract shows a pre-commit entry invoking the commit stage. If that
+# entry is wrong the feature is undiscoverable in practice, so the exact
+# command is exercised against a project with a guard.
+WIRED="$STAGE_TMP/wired"
+make_stage_project "$WIRED" 'schema = 2
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "suite"
+target = "root"
+command = "true"
+required = true
+
+[[validation.tasks]]
+name = "guard"
+target = "root"
+stage = "commit"
+command = "echo WIRED_GUARD"
+required = true'
+wired_entry="$(grep -o 'touchstone validate --stage commit' "$ROOT/docs/validation-contract.md" | head -1)"
+if [ -n "$wired_entry" ]; then
+  pass "the contract documents a commit-stage hook entry"
+else
+  fail "the contract no longer documents how to wire the commit stage"
+fi
+out="$(cd "$WIRED" && bash "$RUN_ENGINE" validate --stage commit 2>&1)"
+case "$out" in
+  *WIRED_GUARD*) pass "the documented invocation runs the project's guard" ;;
+  *) fail "the documented invocation did not run the guard: $out" ;;
+esac
+
+echo "==> setup does not run for a stage with no tasks"
+SETUPONLY="$STAGE_TMP/setup-only"
+make_stage_project "$SETUPONLY" 'schema = 2
+
+[validation]
+runtime = "bash"
+setup = "echo SETUP_SENTINEL"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "suite"
+target = "root"
+command = "true"
+required = true'
+out="$(bash "$RUN_ENGINE" validate --project "$SETUPONLY" 2>&1)"
+case "$out" in
+  *SETUP_SENTINEL*) pass "setup runs when the selected stage has tasks" ;;
+  *) fail "setup did not run for the enforcement stage" ;;
+esac
+out="$(bash "$RUN_ENGINE" validate --stage commit --project "$SETUPONLY" 2>&1)"
+case "$out" in
+  *SETUP_SENTINEL*) fail "setup ran for a stage with no tasks" ;;
+  *) pass "setup is skipped when the selected stage has no tasks" ;;
+esac
+
+if [ "$FAILURES" -ne 0 ]; then
+  echo "$FAILURES stage check(s) failed" >&2
+  exit 1
+fi
+echo "==> PASS: execution stages select tasks and schema 1 is unchanged"

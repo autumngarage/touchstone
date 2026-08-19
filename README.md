@@ -60,8 +60,8 @@ revision outside the consumer PR and executes the same project contract.
 
 The surviving `templates/` describe the frozen pre-strip consumer shape and are
 historical inputs for compatibility audits, not the new architecture.
-`scripts/touchstone-run.sh` is the declaration-only schema-v1 validation
-engine; its contract lives in [docs/validation-contract.md](docs/validation-contract.md).
+`scripts/touchstone-run.sh` is the declaration-only validation engine,
+accepting schema 1 and schema 2; its contract lives in [docs/validation-contract.md](docs/validation-contract.md).
 `scripts/touchstone-tracker.sh` owns the tracker-neutral verified claim boundary;
 its versioned outcomes live in [docs/tracker-contract.md](docs/tracker-contract.md).
 Drivers reconcile delivered work through the configured tracker's API or CLI.
@@ -133,7 +133,7 @@ done
 
 The suite is deterministic, offline, and fetches nothing. The protected,
 immutable workflow pinned by `policy/github/touchstone-main.json` runs the same
-schema-v1 engine as local validation with no unrelated toolchain dependency.
+declaration engine as local validation with no unrelated toolchain dependency.
 The target repository carries no duplicate required workflow.
 
 Lint is separate, at pre-commit: `shellcheck`, `shfmt`, `markdownlint`, `actionlint`.

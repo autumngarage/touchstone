@@ -57,7 +57,7 @@ a copy of Touchstone's implementation:
 - `.touchstone.toml` declares its schema version, exact validation commands,
   required tasks, runtime/setup requirements, and explicit monorepo targets.
   `.touchstone-tracker.toml` declares the project's issue tracker once.
-  [The validation contract](validation-contract.md) owns the schema-v1 shape
+  [The validation contract](validation-contract.md) owns the accepted schema shapes
   and verdict semantics; [the tracker contract](tracker-contract.md) owns
   claim configuration, references, and outcomes.
 - An organization ruleset requires a workflow selected from a protected

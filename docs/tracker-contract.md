@@ -17,7 +17,7 @@ type = "github"
 uppercase `key_prefix`, such as `AUT`. Projects without the tracker file retain
 the pre-declaration GitHub behavior for compatibility; adoption creates the
 declaration rather than rewriting it implicitly. The adapter independently
-requires a valid schema-v1 `.touchstone.toml` before any mutation.
+requires a valid `.touchstone.toml` of any supported schema before any mutation.
 
 Tracker selection is a separate versioned boundary because it must not change
 validation semantics or force a centrally pinned validator rollout. The tracker
