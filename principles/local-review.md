@@ -15,7 +15,7 @@ the classification picks the reviewer; no judgment is left in the loop:
 | Tier | Local pass before commit | Command |
 |---|---|---|
 | trivial | none | — |
-| normal | one CodeRabbit pass | `coderabbit review --agent --committed --base <default>` |
+| normal | one CodeRabbit pass of the staged slice | `coderabbit review --agent --uncommitted` |
 | serious | one Codex deep review | `codex review --base <default>` |
 
 Never run both locally on one slice: measured on 2026-08-19, the two invert
@@ -162,8 +162,10 @@ generated artifact that is not required to land with this change. State the inte
 Invoke it against the slice, passing the contract as additional instructions:
 
 ```bash
-coderabbit review --agent --committed --base "$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's|^origin/||')" \
-  -c /path/to/contract.md      # --uncommitted to review staged work instead
+# The normal-tier pass runs before the commit exists, so it reviews the
+# staged slice; --committed --base <default> is the branch-level form the
+# serious tier's pre-push Codex review uses instead.
+coderabbit review --agent --uncommitted -c /path/to/contract.md
 ```
 
 A project declares whether this pass is expected in its review declaration
@@ -175,8 +177,11 @@ checks alone, and the PR-visible review remains unchanged.
 the provider's plan. A driver that re-runs locally after every edit is then
 spending the budget the merge gate depends on — a second reason the rules
 above allow one pass per coherent slice and no confirming re-run. When a
-quota is exhausted, record that fact in the validation block and proceed; the
-PR-visible review is the authority.
+quota is exhausted, the tier's local obligation is **satisfied by its
+deterministic checks plus recording the exhaustion** in the validation block
+— the same rule as a project with no local reviewer configured. Do not wait
+for quota to run an initiated pass; the PR-visible review is the authority
+either way.
 
 Afterwards: triage each finding as valid, false positive, duplicate, or out of
 scope; apply only valid fixes; do not re-run the pass to confirm the
@@ -221,7 +226,9 @@ is met:
 - **normal** — one local pass has run and its findings are triaged.
 - **serious** — one deep review has run on the stable PR.
 
-After a bounded pass, fix the valid findings and stop. Do not run a
+After a bounded pass, fix the valid findings, **re-run every applicable
+deterministic check and the intended validation scenario** — a valid fix can
+break what already passed — and stop. Do not run a
 confirming local pass to see whether the reviewer is satisfied; run another
 only if a fix materially changed the risk surface — a new serialization
 format, ownership or threading change, security boundary, or public
