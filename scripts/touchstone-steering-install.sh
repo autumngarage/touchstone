@@ -32,6 +32,10 @@ PRINCIPLES_SOURCE="$ROOT/principles"
 # rewritten to point here, so `principles/git-workflow.md` resolves for an
 # agent in a repository that carries no Touchstone files.
 PRINCIPLES_RELATIVE=".touchstone/principles"
+# Ownership is recorded, not inferred. A content heuristic misjudges both
+# directions: an operator file can resemble ours, and one of ours can change
+# until it no longer matches the pattern. The manifest is a fact.
+PRINCIPLES_MANIFEST=".touchstone-installed"
 BEGIN_MARKER='<!-- touchstone:steering:start -->'
 # The start marker may carry attributes (see restore-newline below).
 BEGIN_MARKER_RE='^<!-- touchstone:steering:start( restore-newline)? -->$'
@@ -232,11 +236,17 @@ preflight_principles() {
   fi
   mkdir -p "$destination" || die "could not create $destination"
   [ -w "$destination" ] || die "$destination is not writable"
-  local doc
+  local doc name
   for doc in "$PRINCIPLES_SOURCE"/*.md; do
     [ -f "$doc" ] || continue
-    if [ -d "$destination/$(basename "$doc")" ]; then
-      die "$PRINCIPLES_RELATIVE/$(basename "$doc") is a directory; move it before installing"
+    name="$(basename "$doc")"
+    if [ -d "$destination/$name" ]; then
+      die "$PRINCIPLES_RELATIVE/$name is a directory; move it before installing"
+    fi
+    # A file we did not install belongs to the operator. Detect it here, before
+    # any driver file is written, so the refusal costs nothing.
+    if [ -e "$destination/$name" ] && ! principles_owned "$name"; then
+      die "$PRINCIPLES_RELATIVE/$name exists and was not installed by touchstone; move it before installing"
     fi
   done
 }
@@ -250,6 +260,12 @@ render_principle() {
   sed "s|\`principles/|\`$principles_home/|g" "$source" >"$out"
 }
 
+principles_owned() {
+  local name="$1" manifest="$HOME_DIR/$PRINCIPLES_RELATIVE/$PRINCIPLES_MANIFEST"
+  [ -f "$manifest" ] || return 1
+  grep -qxF "$name" "$manifest"
+}
+
 install_principles() {
   local destination="$HOME_DIR/$PRINCIPLES_RELATIVE" doc name staged
   for doc in "$PRINCIPLES_SOURCE"/*.md; do
@@ -260,19 +276,14 @@ install_principles() {
       rm -f -- "$staged"
       die "could not stage $name"
     }
-    # An existing file this tool did not write is the operator's. Replacing it
-    # silently would destroy their work; refuse and name the conflict.
-    if [ -e "$destination/$name" ] && ! cmp -s "$destination/$name" "$staged"; then
-      if [ ! -f "$destination/$name" ] || ! grep -qF "$PRINCIPLES_RELATIVE" "$destination/$name" 2>/dev/null; then
-        rm -f -- "$staged"
-        die "$PRINCIPLES_RELATIVE/$name exists and was not installed by touchstone; move it before installing"
-      fi
-    fi
     mv -f -- "$staged" "$destination/$name" || {
       rm -f -- "$staged"
       die "could not install $name"
     }
+    printf '%s\n' "$name" >>"$destination/.$PRINCIPLES_MANIFEST.$$"
   done
+  mv -f -- "$destination/.$PRINCIPLES_MANIFEST.$$" "$destination/$PRINCIPLES_MANIFEST" \
+    || die "could not record the installed document manifest"
 }
 
 principles_current() {
@@ -445,10 +456,16 @@ case "$ACTION" in
     # the operator's own files; a recursive delete would take them too.
     principles_home="${HOME_DIR:?}/${PRINCIPLES_RELATIVE:?}"
     if [ -d "$principles_home" ]; then
-      for doc in "$PRINCIPLES_SOURCE"/*.md; do
-        [ -f "$doc" ] || continue
-        rm -f -- "$principles_home/$(basename "$doc")"
-      done
+      # Remove exactly what the manifest records, so a bundled name the
+      # operator owns is left alone even across releases that change which
+      # documents ship.
+      if [ -f "$principles_home/$PRINCIPLES_MANIFEST" ]; then
+        while IFS= read -r recorded; do
+          [ -n "$recorded" ] || continue
+          rm -f -- "$principles_home/$recorded"
+        done <"$principles_home/$PRINCIPLES_MANIFEST"
+        rm -f -- "$principles_home/$PRINCIPLES_MANIFEST"
+      fi
       # Only if nothing of the operator's remains.
       rmdir "$principles_home" 2>/dev/null || true
       rmdir "$(dirname "$principles_home")" 2>/dev/null || true

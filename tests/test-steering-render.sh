@@ -462,17 +462,43 @@ else
   fail "installed documents cross-reference paths that do not exist: $xref"
 fi
 
-echo "==> an operator file sharing a bundled name is refused, not replaced"
-printf 'MY OWN NOTES\n' >"$HXREF/.touchstone/principles/git-workflow.md"
-if bash "$INSTALL" install --home "$HXREF" >/dev/null 2>&1; then
+echo "==> ownership is recorded, not inferred from content"
+# A pre-existing operator file at a bundled name must be refused before any
+# driver file is written, and a document this tool installed must stay
+# recognizable even after a release changes its contents entirely.
+HOWN="$TMP_DIR/hown"
+mkdir -p "$HOWN/.touchstone/principles"
+printf 'MY OWN NOTES\n' >"$HOWN/.touchstone/principles/git-workflow.md"
+if bash "$INSTALL" install --home "$HOWN" >/dev/null 2>&1; then
   fail "install replaced a file it did not write"
 else
   pass "install refuses a routed name the operator owns"
 fi
-if grep -qF 'MY OWN NOTES' "$HXREF/.touchstone/principles/git-workflow.md"; then
+if [ -e "$HOWN/.claude/CLAUDE.md" ]; then
+  fail "a driver file was written before the collision was detected"
+else
+  pass "the collision is detected before any driver file is written"
+fi
+if grep -qF 'MY OWN NOTES' "$HOWN/.touchstone/principles/git-workflow.md"; then
   pass "the operator's file is intact after the refusal"
 else
   fail "install destroyed an operator file"
+fi
+
+HUP="$TMP_DIR/hup"
+bash "$INSTALL" install --home "$HUP" >/dev/null 2>&1
+printf 'CHANGED BY A LATER RELEASE\n' >"$HUP/.touchstone/principles/file-upstream-bugs.md"
+if bash "$INSTALL" install --home "$HUP" >/dev/null 2>&1; then
+  pass "a document we installed stays recognized after its contents change"
+else
+  fail "an installed document was misjudged as operator-owned after changing"
+fi
+printf 'OPERATOR ADDED LATER\n' >"$HUP/.touchstone/principles/my-own-notes.md"
+bash "$INSTALL" uninstall --home "$HUP" >/dev/null 2>&1
+if [ -f "$HUP/.touchstone/principles/my-own-notes.md" ]; then
+  pass "uninstall removes only the manifest's documents"
+else
+  fail "uninstall removed a file it never installed"
 fi
 
 echo "==> uninstall honors --dry-run"
