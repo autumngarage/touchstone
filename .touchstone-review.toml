@@ -11,7 +11,7 @@ preflight_required = true
 [review.local]
 expected = true
 provider = "coderabbit-cli"
-command = "coderabbit review --agent --committed"
+command = "coderabbit review --agent --uncommitted"
 
 [review.pr_triggered]
 required = true

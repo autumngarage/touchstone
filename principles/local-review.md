@@ -16,7 +16,7 @@ the classification picks the reviewer; no judgment is left in the loop:
 |---|---|---|
 | trivial | none | — |
 | normal | one CodeRabbit pass of the staged slice | `coderabbit review --agent --uncommitted` |
-| serious | one Codex deep review | `codex review --base <default>` |
+| serious | one Codex review of the branch, pre-push | `codex review --base <default>` |
 
 Never run both locally on one slice: measured on 2026-08-19, the two invert
 cleanly — Codex found 71 of 81 code findings on a 6k-line shell PR while
@@ -123,9 +123,12 @@ data-loss risk); security (authentication, authorization, secrets, user data,
 payments, exposed APIs); public interfaces used by multiple subsystems;
 performance-critical paths; broad agent-generated or cross-system diffs that
 one focused scenario cannot validate; anything expensive to diagnose or roll
-back after merge. Path: deterministic checks, one local Codex review of the
-branch before push, make the PR coherent and stable, then **one** deep review
-on the stable PR before merge — never on every push.
+back after merge. Path: deterministic checks, then one local Codex review of
+the branch before push — the only review a driver *initiates* for this tier.
+The deep review of the stable PR is the PR-side review that repository policy
+runs on open; it is the merge authority, not a second request, and a fix
+commit takes its one exact-head re-review per `principles/git-workflow.md` —
+never one per push.
 
 When torn between normal and serious, pick serious only for genuinely high
 blast radius. Many lines is not a trigger.
@@ -224,7 +227,8 @@ is met:
 
 - **trivial** — no initiated review; deterministic checks alone complete it.
 - **normal** — one local pass has run and its findings are triaged.
-- **serious** — one deep review has run on the stable PR.
+- **serious** — the pre-push local pass ran, and the PR-side review evidence
+  covers the head that merges (the gate enforces the latter).
 
 After a bounded pass, fix the valid findings, **re-run every applicable
 deterministic check and the intended validation scenario** — a valid fix can
