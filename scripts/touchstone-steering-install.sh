@@ -340,6 +340,17 @@ render_principle() {
 # legitimately drifted from its recorded checksum.
 # The set of documents this tool installs. It is the authority on what may be
 # deleted: the manifest records what was written, but cannot vouch for itself.
+# Staging paths are created exclusively, never reused. A predictable name --
+# a PID, which recurs -- can be pre-created as a symlink, and `cp` would then
+# follow it: the payload overwrites the link's referent and the `mv` installs
+# the symlink as the driver's instruction path. Reproduced in review.
+stage_path() {
+  local directory="$1" prefix="$2" staged
+  staged="$(mktemp "$directory/.$prefix.XXXXXXXX")" \
+    || die "could not create a staging file in $directory"
+  printf '%s\n' "$staged"
+}
+
 shipped_document() {
   local candidate="$1" doc
   for doc in "$PRINCIPLES_SOURCE"/*.md; do
@@ -365,11 +376,12 @@ principles_owned() {
 }
 
 install_principles() {
-  local destination="$HOME_DIR/$PRINCIPLES_RELATIVE" doc name staged backup suffix
+  local destination="$HOME_DIR/$PRINCIPLES_RELATIVE" doc name staged backup suffix manifest_staged
+  manifest_staged="$(stage_path "$destination" "$PRINCIPLES_MANIFEST")"
   for doc in "$PRINCIPLES_SOURCE"/*.md; do
     [ -f "$doc" ] || continue
     name="$(basename "$doc")"
-    staged="$destination/.$name.$$"
+    staged="$(stage_path "$destination" "$name")"
     render_principle "$doc" "$staged" || {
       rm -f -- "$staged"
       die "could not stage $name"
@@ -399,7 +411,7 @@ install_principles() {
       rm -f -- "$staged"
       die "could not install $name"
     }
-    printf '%s\t%s\n' "$(cksum <"$destination/$name")" "$name" >>"$destination/.$PRINCIPLES_MANIFEST.$$"
+    printf '%s\t%s\n' "$(cksum <"$destination/$name")" "$name" >>"$manifest_staged"
   done
   # A release that removes or renames a document must not leave the copy it
   # installed behind: the old manifest is the only record that we wrote it,
@@ -433,7 +445,7 @@ install_principles() {
       fi
     done <"$destination/$PRINCIPLES_MANIFEST"
   fi
-  mv -f -- "$destination/.$PRINCIPLES_MANIFEST.$$" "$destination/$PRINCIPLES_MANIFEST" \
+  mv -f -- "$manifest_staged" "$destination/$PRINCIPLES_MANIFEST" \
     || die "could not record the installed document manifest"
 }
 
@@ -609,7 +621,7 @@ for entry in "${TARGETS[@]}"; do
     continue
   fi
   mkdir -p "$(dirname "$path")" || die "could not create $(dirname "$path")"
-  staged="$path.touchstone-steering.$$"
+  staged="$(stage_path "$(dirname "$path")" "$(basename "$path").touchstone-steering")"
   # cp -p onto an existing target would copy the workspace file's mode; copy
   # the payload, then restore the target's own permissions. An instruction
   # file the operator restricted to 0600 must not become world-readable

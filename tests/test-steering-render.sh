@@ -1167,6 +1167,26 @@ else
   fail "uninstall left files behind after an ordinary install: $leftovers"
 fi
 
+echo "==> staging never follows a symlink planted at its path"
+# A PID-based staging name recurs and can be pre-created as a symlink; `cp`
+# would follow it, overwriting the referent, and the `mv` would then install
+# the symlink as the driver's instruction file.
+H34="$TMP_DIR/h34"
+mkdir -p "$H34/.claude"
+printf 'OPERATOR SECRET\n' >"$H34/victim"
+ln -s "$H34/victim" "$H34/.claude/CLAUDE.md.touchstone-steering.$$"
+bash "$INSTALL" install --home "$H34" >/dev/null 2>&1 || true
+if grep -qF 'OPERATOR SECRET' "$H34/victim"; then
+  pass "a symlink at the staging path does not redirect the write"
+else
+  fail "staging followed a planted symlink and overwrote its referent"
+fi
+if [ -L "$H34/.claude/CLAUDE.md" ]; then
+  fail "a symlink was installed as the driver instruction file"
+else
+  pass "the instruction path is a regular file"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"
