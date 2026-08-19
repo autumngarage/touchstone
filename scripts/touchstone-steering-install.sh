@@ -349,10 +349,19 @@ shipped_document() {
   return 1
 }
 
+# Ownership must be provable on the install path too, not only on uninstall:
+# overwriting an operator's file destroys content irreversibly, so a name in
+# the manifest is not enough. The entry must record the bytes that are there
+# now -- which a corrupted manifest carrying `anything<TAB>git-workflow.md`
+# cannot, and which a document the operator edited after install no longer
+# matches.
 principles_owned() {
-  local name="$1" manifest="$HOME_DIR/$PRINCIPLES_RELATIVE/$PRINCIPLES_MANIFEST"
+  local name="$1" destination="$HOME_DIR/$PRINCIPLES_RELATIVE"
+  local manifest="$destination/$PRINCIPLES_MANIFEST"
   [ -f "$manifest" ] || return 1
-  cut -f 2- <"$manifest" | grep -qxF "$name"
+  shipped_document "$name" || return 1
+  [ -f "$destination/$name" ] || return 1
+  grep -qxF "$(cksum <"$destination/$name")	$name" "$manifest"
 }
 
 install_principles() {

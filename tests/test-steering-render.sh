@@ -499,13 +499,39 @@ else
   fail "install destroyed an operator file"
 fi
 
+# A later release changes what the tool *ships*, not the copy on disk. Build a
+# second checkout with a modified source document and reinstall from it: the
+# installed copy still matches what the manifest recorded, so it is still
+# ours to replace.
+RELEASE="$TMP_DIR/next-release"
+mkdir -p "$RELEASE/scripts" "$RELEASE/principles"
+cp "$REPO_ROOT/TOUCHSTONE.md" "$RELEASE/TOUCHSTONE.md"
+cp "$INSTALL" "$RELEASE/scripts/$(basename "$INSTALL")"
+cp "$REPO_ROOT"/principles/*.md "$RELEASE/principles/"
 HUP="$TMP_DIR/hup"
 bash "$INSTALL" install --home "$HUP" >/dev/null 2>&1
-printf 'CHANGED BY A LATER RELEASE\n' >"$HUP/.touchstone/principles/file-upstream-bugs.md"
-if bash "$INSTALL" install --home "$HUP" >/dev/null 2>&1; then
-  pass "a document we installed stays recognized after its contents change"
+printf 'CHANGED BY A LATER RELEASE\n' >>"$RELEASE/principles/file-upstream-bugs.md"
+if bash "$RELEASE/scripts/$(basename "$INSTALL")" install --home "$HUP" >/dev/null 2>&1; then
+  pass "a document we installed stays ours when a release changes what we ship"
 else
-  fail "an installed document was misjudged as operator-owned after changing"
+  fail "an installed document was misjudged as operator-owned after a release change"
+fi
+if grep -qF 'CHANGED BY A LATER RELEASE' "$HUP/.touchstone/principles/file-upstream-bugs.md"; then
+  pass "the release's new contents actually landed"
+else
+  fail "the reinstall reported success without updating the document"
+fi
+
+# The mirror case: the operator edited the installed copy. Install must not
+# overwrite it, because that destroys their content irreversibly.
+HEDIT="$TMP_DIR/hedit"
+bash "$INSTALL" install --home "$HEDIT" >/dev/null 2>&1
+printf 'MY ANNOTATION\n' >>"$HEDIT/.touchstone/principles/file-upstream-bugs.md"
+bash "$INSTALL" install --home "$HEDIT" >/dev/null 2>&1 || true
+if grep -qF 'MY ANNOTATION' "$HEDIT/.touchstone/principles/file-upstream-bugs.md"; then
+  pass "a document edited after install is not overwritten"
+else
+  fail "install destroyed an edit the operator made to an installed document"
 fi
 printf 'OPERATOR ADDED LATER\n' >"$HUP/.touchstone/principles/my-own-notes.md"
 bash "$INSTALL" uninstall --home "$HUP" >/dev/null 2>&1
@@ -948,6 +974,22 @@ if bash "$INSTALL" install --home "$H22" >/dev/null 2>&1; then
   fail "install accepted a symlink into a directory that does not exist"
 else
   pass "a dangling symlink target is refused"
+fi
+
+echo "==> install proves ownership before overwriting a routed document"
+# Uninstall refusing to delete an unproven file is only half the guarantee:
+# install overwrites, which destroys content irreversibly. A corrupted
+# manifest entry naming a document we do ship must not make an operator's
+# file at that name ours.
+H23="$TMP_DIR/h23"
+mkdir -p "$H23/.touchstone/principles"
+printf 'MY IMPORTANT NOTES\n' >"$H23/.touchstone/principles/git-workflow.md"
+printf 'anything\tgit-workflow.md\n' >"$H23/.touchstone/principles/.touchstone-installed"
+bash "$INSTALL" install --home "$H23" >/dev/null 2>&1 || true
+if grep -q 'MY IMPORTANT NOTES' "$H23/.touchstone/principles/git-workflow.md"; then
+  pass "a manifest entry that does not match the bytes cannot authorize an overwrite"
+else
+  fail "install overwrote an operator file on a name-only ownership claim"
 fi
 
 echo "==> unknown actions and arguments fail closed"
