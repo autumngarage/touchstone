@@ -435,14 +435,21 @@ while IFS="$(printf '\t')" read -r target_name target_path; do
   # target absent on a runner must not fail the enforcement gate over a path
   # that run never touches.
   if [ "$CHECK_CONTRACT" != true ]; then
+    # Skip a target only when some other stage owns it. A target no task
+    # references at all keeps its validation, which is what schema 1 has
+    # always done and what an unreferenced broken path should still report.
     target_in_stage=false
+    target_owned=false
     while IFS="$(printf '\t')" read -r _tn task_target _tr task_stage _tc; do
-      [ "$task_stage" = "$STAGE_ARG" ] || continue
       [ "$task_target" = "$target_name" ] || continue
+      target_owned=true
+      [ "$task_stage" = "$STAGE_ARG" ] || continue
       target_in_stage=true
       break
     done <"$TASKS_FILE"
-    [ "$target_in_stage" = true ] || continue
+    if [ "$target_owned" = true ] && [ "$target_in_stage" != true ]; then
+      continue
+    fi
   fi
   resolve_target "$target_name" "$target_path" || true
 done <"$TARGETS_FILE"

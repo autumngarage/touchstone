@@ -2476,6 +2476,36 @@ else
   pass "--check-contract validates every declared target regardless of stage"
 fi
 
+echo "==> a target no task references keeps its validation"
+# Skipping a target belongs to stage ownership: a target some other stage owns
+# is skipped, a target nobody owns is still checked, which is what schema 1
+# has always done.
+ORPHAN="$STAGE_TMP/orphan-target"
+make_stage_project "$ORPHAN" 'schema = 1
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "src"
+path = "src"
+
+[[validation.targets]]
+name = "orphan"
+path = "nonexistent"
+
+[[validation.tasks]]
+name = "suite"
+target = "src"
+command = "true"
+required = true'
+mkdir -p "$ORPHAN/src"
+if bash "$RUN_ENGINE" validate --project "$ORPHAN" >/dev/null 2>&1; then
+  fail "an unreferenced broken target stopped being validated"
+else
+  pass "an unreferenced broken target still fails validation"
+fi
+
 echo "==> contract identity reports the declared schema, not a fixed version"
 V2ID="$STAGE_TMP/v2-identity"
 make_stage_project "$V2ID" 'schema = 2
