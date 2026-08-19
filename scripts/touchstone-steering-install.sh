@@ -374,12 +374,40 @@ install_principles() {
       rm -f -- "$staged"
       die "could not stage $name"
     }
+    # The manifest sits beside the documents and is owned by the same user, so
+    # it can never be evidence independent of them: anyone able to forge an
+    # entry can already edit the file it names. Rather than keep hardening a
+    # provenance check that has no trust root, make the overwrite recoverable
+    # -- the bytes survive whether or not the ownership claim was honest.
+    if [ -f "$destination/$name" ] && ! cmp -s "$destination/$name" "$staged"; then
+      cp -p -- "$destination/$name" "$destination/.$name.replaced" \
+        || die "could not preserve the existing $name before replacing it"
+      printf '  preserved: %s -> .%s.replaced\n' "$name" "$name"
+    fi
     mv -f -- "$staged" "$destination/$name" || {
       rm -f -- "$staged"
       die "could not install $name"
     }
     printf '%s\t%s\n' "$(cksum <"$destination/$name")" "$name" >>"$destination/.$PRINCIPLES_MANIFEST.$$"
   done
+  # A release that removes or renames a document must not leave the copy it
+  # installed behind: the old manifest is the only record that we wrote it,
+  # and replacing that manifest is the moment the knowledge is lost.
+  if [ -f "$destination/$PRINCIPLES_MANIFEST" ]; then
+    local prior_sum prior_name
+    while IFS="$(printf '\t')" read -r prior_sum prior_name; do
+      [ -n "$prior_name" ] || continue
+      case "$prior_name" in */* | . | .. | -*) continue ;; esac
+      shipped_document "$prior_name" && continue
+      [ -f "$destination/$prior_name" ] || continue
+      if [ "$prior_sum" = "$(cksum <"$destination/$prior_name")" ]; then
+        rm -f -- "$destination/$prior_name"
+        printf '  removed: %s (no longer shipped)\n' "$prior_name"
+      else
+        printf '  kept: %s is no longer shipped but has been edited\n' "$prior_name" >&2
+      fi
+    done <"$destination/$PRINCIPLES_MANIFEST"
+  fi
   mv -f -- "$destination/.$PRINCIPLES_MANIFEST.$$" "$destination/$PRINCIPLES_MANIFEST" \
     || die "could not record the installed document manifest"
 }

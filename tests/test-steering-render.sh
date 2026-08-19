@@ -992,6 +992,53 @@ else
   fail "install overwrote an operator file on a name-only ownership claim"
 fi
 
+echo "==> an overwrite is recoverable regardless of the ownership claim"
+# The manifest sits beside the documents, owned by the same user, so it can
+# never be evidence independent of them. Recoverability is the guarantee that
+# does not depend on the claim being honest.
+H24="$TMP_DIR/h24"
+mkdir -p "$H24/.touchstone/principles"
+printf 'MY IRREPLACEABLE NOTES\n' >"$H24/.touchstone/principles/git-workflow.md"
+printf '%s\tgit-workflow.md\n' "$(cksum <"$H24/.touchstone/principles/git-workflow.md")" \
+  >"$H24/.touchstone/principles/.touchstone-installed"
+bash "$INSTALL" install --home "$H24" >/dev/null 2>&1 || true
+if grep -rqF 'MY IRREPLACEABLE NOTES' "$H24/.touchstone/principles/"; then
+  pass "the replaced bytes survive a manifest that vouched for itself"
+else
+  fail "install destroyed content on a self-authenticating ownership claim"
+fi
+
+echo "==> a release that stops shipping a document removes its copy"
+# The old manifest is the only record that we wrote the file, and replacing
+# it is the moment that knowledge is lost -- so reconcile before replacing.
+H25="$TMP_DIR/h25"
+NEXT="$TMP_DIR/next-release-trimmed"
+mkdir -p "$NEXT/scripts" "$NEXT/principles"
+cp "$REPO_ROOT/TOUCHSTONE.md" "$NEXT/TOUCHSTONE.md"
+cp "$INSTALL" "$NEXT/scripts/$(basename "$INSTALL")"
+cp "$REPO_ROOT"/principles/*.md "$NEXT/principles/"
+bash "$NEXT/scripts/$(basename "$INSTALL")" install --home "$H25" >/dev/null 2>&1
+rm -f "$NEXT/principles/agent-swarms.md"
+bash "$NEXT/scripts/$(basename "$INSTALL")" install --home "$H25" >/dev/null 2>&1
+if [ -f "$H25/.touchstone/principles/agent-swarms.md" ]; then
+  fail "a document the release stopped shipping was orphaned on disk"
+else
+  pass "a document no longer shipped is removed, not orphaned"
+fi
+# An orphan the operator edited is theirs; it is kept and reported instead.
+H26="$TMP_DIR/h26"
+mkdir -p "$NEXT/principles"
+cp "$REPO_ROOT/principles/agent-swarms.md" "$NEXT/principles/agent-swarms.md"
+bash "$NEXT/scripts/$(basename "$INSTALL")" install --home "$H26" >/dev/null 2>&1
+printf 'MY EDIT\n' >>"$H26/.touchstone/principles/agent-swarms.md"
+rm -f "$NEXT/principles/agent-swarms.md"
+bash "$NEXT/scripts/$(basename "$INSTALL")" install --home "$H26" >/dev/null 2>&1
+if grep -qF 'MY EDIT' "$H26/.touchstone/principles/agent-swarms.md" 2>/dev/null; then
+  pass "an edited document is kept when the release stops shipping it"
+else
+  fail "reconciliation deleted a document the operator had edited"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"
