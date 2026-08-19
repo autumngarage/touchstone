@@ -80,7 +80,7 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 
 Raw commands remain portable recovery. A narrow project sequencer may call them, but GitHub owns verdict and state. `principles/git-workflow.md` carries the full sequence, including thread resolution.
 
-Never use a direct default-branch push as an emergency path. Repositories with the audited policy enforce PR-only bypass; elsewhere this remains mandatory procedure until adoption. See `principles/git-workflow.md`.
+Never push directly to the default branch, even in an emergency; rewriting your own unmerged branch is fine. Audited policy enforces PR-only bypass; elsewhere it stays mandatory. See `principles/git-workflow.md`.
 
 ## Routing table — read these when the trigger fires
 

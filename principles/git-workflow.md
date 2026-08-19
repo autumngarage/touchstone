@@ -386,6 +386,82 @@ That compares the branch against the merge-base with main: an empty diff means e
 
 Never delete a branch that serves as an open PR's base or head; that is what orphans a stack (see below).
 
+## Rewriting an unmerged branch
+
+The prohibition is the **protected default branch**. Where the audited
+Touchstone policy is installed and verified, GitHub enforces it; elsewhere the
+missing enforcement is a rollout gap and the prohibition stays mandatory
+driver procedure — inspect the effective rules rather than assuming the
+server will refuse. Rewriting your own unmerged feature branch is permitted and sometimes the only
+correct fix: amend, squash, or rebase, then force-push with a pinned lease.
+
+Pin the lease to the SHA you inspected. Before rewriting, record the remote
+head; after rewriting, push against exactly that value:
+
+```bash
+git fetch origin
+EXPECTED=$(git rev-parse "origin/$(git branch --show-current)")
+# The tip you just fetched must be one you have already integrated -- normally
+# your own last push. If it is not in your local history, another agent pushed
+# while you were away; the rewrite runs only when the guard passes.
+if git merge-base --is-ancestor "$EXPECTED" HEAD; then
+  # ...amend / squash / rebase...
+  git push --force-with-lease="$(git branch --show-current):$EXPECTED"
+else
+  echo "remote moved beyond this branch; reconcile before rewriting" >&2
+fi
+```
+
+The pin guards the window between that inspection and the push; the ancestor
+check *is* the inspection. Pinning a tip you never verified is the bare lease
+with extra steps.
+
+Never bare `--force`, and don't trust bare `--force-with-lease` either: it
+compares against your remote-tracking ref, and any background fetch — another
+worktree, an IDE, a status prompt — refreshes that ref, so the lease can
+"pass" against a commit you never looked at and silently discard another
+agent's push. The pinned form refuses unless the remote still holds the exact
+SHA you decided to replace.
+
+**The cost is the reviewed head, and it is the reason to think first.** A
+rewrite changes the head SHA, so every piece of evidence bound to the old head
+stops applying: `review-binding`, answered findings, and resolved threads all
+go outdated, and the change needs review again for the new head. That expense
+— not a prohibition — is what should make a driver pause. Budget a review round
+before rewriting, not after.
+
+Rewrite when the history is actually wrong and a later commit cannot fix it: a
+commit missing an artifact its own gate requires per commit, a leaked secret, a
+commit that breaks bisect.
+
+A leaked secret is the one case where the rewrite is the *smaller* half of the
+fix. **Rotate or revoke the credential first, then clean the history.** A
+pushed secret is already copied — clones, forks, reflogs, provider caches, CI
+logs — and no rewrite reaches those. History cleanup without rotation leaves a
+live credential while making the leak harder to notice.
+
+Rewriting is the cheap fix while the branch is
+yours and unmerged, and it gets more expensive the longer you wait — an amend
+before review costs nothing, the same amend after three review rounds costs all
+three.
+
+Do not rewrite a branch another agent or worktree is building on, or anything
+already merged. A branch serving as the base of an open stacked PR is
+rewritten only as part of the chain retargeting below — parent first, each
+child deliberately, its own children retargeted in turn — never as an
+isolated amend that silently invalidates the stack above it. The
+lease is not an ownership check: it compares only the remote ref's value, so a
+collaborator with *unpushed* work on the branch is invisible to it — the
+remote still equals `$EXPECTED`, the push succeeds, and they discover the
+rewrite when their own push is rejected. Ownership is settled by coordination
+(worktree assignments, claimed work), not by the push. What the lease does
+guarantee is narrower and still worth having: nothing already *pushed* gets
+discarded unseen.
+
+Recovery: `git reflog` holds your pre-rewrite head, and the remote's prior SHA
+is in the push output and the PR timeline. A rewrite you regret is recoverable;
+a `--force` that clobbered someone else's push may not be.
+
 ## Stacked PRs (and how they merge)
 
 A stacked PR is a PR whose base branch is another open PR's branch instead of the default branch. The goal: split a large change into a chain where each step is reviewable on its own. Open one with `gh pr create --base <parent-branch>`.
@@ -404,9 +480,12 @@ parallelization mechanism when exact-head evidence is required.
 ```bash
 DEFAULT=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
 git fetch origin
+EXPECTED=$(git rev-parse "origin/<child-branch>")
+git merge-base --is-ancestor "$EXPECTED" <child-branch> \
+  || { echo "child moved on the remote; reconcile before retargeting" >&2; exit 1; }
 gh pr edit <child> --base "$DEFAULT"
 git rebase --onto "origin/$DEFAULT" "origin/<parent-branch>" <child-branch>
-git push --force-with-lease
+git push --force-with-lease="<child-branch>:$EXPECTED"
 ```
 
 Both rebase anchors come from the fetch: the new base is the merged remote

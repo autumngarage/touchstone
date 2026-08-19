@@ -195,6 +195,29 @@ for file in \
 done
 
 echo "==> canonical git workflow describes the PR-visible review loop"
+# The branch-rewrite contract earned its way in through a field failure: a
+# consumer over-generalized "never force-push" and stalled on a permitted
+# amend (vesper PR #888). These assertions keep the rule present, pinned to
+# the safe lease form, and ordered rotation-before-rewrite for leaked secrets.
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Rewriting an unmerged branch"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '--force-with-lease="$(git branch --show-current):$EXPECTED"'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '--force-with-lease="<child-branch>:$EXPECTED"'
+# The ancestry guards must fail closed. The rewrite recipe runs its rewrite
+# and push only inside the guard's success branch, and the stacked recovery
+# exits nonzero -- a print-and-continue guard rewrites over the very
+# concurrent push it exists to catch.
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'if git merge-base --is-ancestor "$EXPECTED" HEAD; then'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'reconcile before retargeting" >&2; exit 1; }'
+if grep -E 'is-ancestor.*\|\| \{ echo [^}]*>&2; \}$' "$TOUCHSTONE_ROOT/principles/git-workflow.md" >/dev/null; then
+  fail "an ancestry guard prints and continues instead of failing closed"
+fi
+# No executable bare lease may survive anywhere in the workflow guide: a bare
+# lease trusts a remote-tracking ref that any background fetch refreshes.
+if grep -E '^[[:space:]]*git push --force-with-lease[[:space:]]*$' "$TOUCHSTONE_ROOT/principles/git-workflow.md" >/dev/null; then
+  fail "principles/git-workflow.md contains an executable bare --force-with-lease"
+fi
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Rotate or revoke the credential first"
+assert_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "rewriting your own unmerged branch is fine"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Agentic PR Review Loop"
 # The canonical doc must carry the portable recovery mechanism: how to open
 # the PR, how to bind the review to the head being merged, and how to resolve a
