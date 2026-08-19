@@ -1059,6 +1059,24 @@ else
   fail "a later upgrade destroyed an earlier preserved copy"
 fi
 
+echo "==> a referent whose name is a prefix of another still gets its block"
+# Deduping against a flattened "${array[*]}" made /dotfiles/shared match
+# "/dotfiles/shared file", so one driver silently received nothing while the
+# command reported covering every agent.
+H28="$TMP_DIR/h28"
+mkdir -p "$H28/.claude" "$H28/.codex" "$H28/dotfiles"
+printf 'a\n' >"$H28/dotfiles/shared"
+printf 'b\n' >"$H28/dotfiles/shared file"
+ln -s "$H28/dotfiles/shared file" "$H28/.claude/CLAUDE.md"
+ln -s "$H28/dotfiles/shared" "$H28/.codex/AGENTS.md"
+bash "$INSTALL" install --home "$H28" >/dev/null 2>&1 || true
+if grep -q 'touchstone:steering:start' "$H28/dotfiles/shared" \
+  && grep -q 'touchstone:steering:start' "$H28/dotfiles/shared file"; then
+  pass "both referents receive the managed block"
+else
+  fail "a referent was skipped as already staged when it was not"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"

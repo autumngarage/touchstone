@@ -563,12 +563,20 @@ for entry in "${TARGETS[@]}"; do
   # Two driver paths may be symlinks to one shared document. Installing it
   # twice would have the second staging file overwrite the first and leave an
   # orphan; the block is identical, so the first write is sufficient.
-  case " ${INSTALL_PATHS[*]-} " in
-    *" $path "*)
-      printf '  shared: %s resolves to an already-staged file\n' "$relative"
-      continue
-      ;;
-  esac
+  # Compare entries, not a flattened string: a referent containing a space can
+  # be a prefix of another inside `${array[*]}`, so `/dotfiles/shared` matched
+  # `/dotfiles/shared file` and the second driver silently received no block
+  # while the command reported covering every agent.
+  already_staged=false
+  for staged_path in ${INSTALL_PATHS[@]+"${INSTALL_PATHS[@]}"}; do
+    [ "$staged_path" = "$path" ] || continue
+    already_staged=true
+    break
+  done
+  if [ "$already_staged" = true ]; then
+    printf '  shared: %s resolves to an already-staged file\n' "$relative"
+    continue
+  fi
   mkdir -p "$(dirname "$path")" || die "could not create $(dirname "$path")"
   staged="$path.touchstone-steering.$$"
   # cp -p onto an existing target would copy the workspace file's mode; copy
