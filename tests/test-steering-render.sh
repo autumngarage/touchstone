@@ -937,6 +937,19 @@ else
   fail "the install did not land under the requested path"
 fi
 
+echo "==> a link into a missing directory is refused, not retargeted"
+# Canonicalizing a dangling link let the `cd` fail while the basename stood
+# alone, so the destination silently became `/doc` -- which a privileged run
+# would have written to the filesystem root.
+H22="$TMP_DIR/h22"
+mkdir -p "$H22/.claude"
+ln -s "../missing/sub/doc" "$H22/.claude/CLAUDE.md"
+if bash "$INSTALL" install --home "$H22" >/dev/null 2>&1; then
+  fail "install accepted a symlink into a directory that does not exist"
+else
+  pass "a dangling symlink target is refused"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"

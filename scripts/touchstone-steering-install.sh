@@ -486,9 +486,19 @@ for entry in "${TARGETS[@]}"; do
       /*) path="$link_target" ;;
       *) path="$(cd "$(dirname "$path")" && pwd -P)/$link_target" ;;
     esac
-    # Collapse lexical components so two spellings of one file dedupe.
+    # Collapse lexical components so two spellings of one file dedupe -- but
+    # only when the parent exists. A link into a missing directory made the
+    # `cd` fail while the basename stood alone, silently retargeting the
+    # install to `/doc`; a privileged run would then have written to the
+    # filesystem root instead of the intended referent.
     case "$path" in
-      */*) path="$(cd "$(dirname "$path")" 2>/dev/null && pwd -P)/$(basename "$path")" ;;
+      */*)
+        if [ -d "$(dirname "$path")" ]; then
+          path="$(cd "$(dirname "$path")" && pwd -P)/$(basename "$path")"
+        else
+          die "$relative resolves through a symlink to a missing directory: $path"
+        fi
+        ;;
     esac
   done
 

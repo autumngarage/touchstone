@@ -23,6 +23,15 @@ once. A steering change ships with the tool; no repository is rewritten, no
 pull request is opened per consumer, and nothing drifts because nothing is
 duplicated.
 
+**Not yet true of `adopt` and `upgrade`.** Both still stage
+`.touchstone/TOUCHSTONE.md`, the routed principles, and managed blocks in a
+repository's own `AGENTS.md`, `GEMINI.md`, and `CLAUDE.md`
+(`scripts/lib/touchstone-adopt-steering.sh`). Because every driver layers
+project files over user-level ones, those copies win, and a newly adopted
+repository still carries a duplicate that can drift. Retiring that planner is
+tracked as AUT-317 and must land before any repository adopts this contract.
+Until it does, the paragraph above describes `steering install` alone.
+
 Copying was the alternative and it failed measurably: on 2026-08-18, zero of
 ten consumer repositories carried a block matching this contract, and several
 instructed agents to do what the contract forbids. The per-repository refresh
