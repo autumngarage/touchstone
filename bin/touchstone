@@ -23,6 +23,7 @@ Usage:
   touchstone upgrade [--check|--dry-run] [arguments]
   touchstone tracker claim [arguments]
   touchstone pr open|status|merge [arguments]
+  touchstone steering install|check|uninstall [--home DIR] [--dry-run]
 EOF
 }
 
@@ -41,6 +42,9 @@ case "$COMMAND" in
     ;;
   pr)
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" "$@"
+    ;;
+  steering)
+    exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-steering-install.sh" "$@"
     ;;
   help | -h | --help)
     usage

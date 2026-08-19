@@ -119,7 +119,13 @@ compose() {
   if [ "$begin_count" = 0 ] && [ "$end_count" = 0 ]; then
     # No managed block yet: append, preserving the operator's own content.
     cat "$path" >"$out"
-    if [ -s "$path" ] && [ -n "$(tail -c 1 "$path")" ]; then printf '\n' >>"$out"; fi
+    # Record whether the operator's content lacked a final newline, so
+    # uninstall can restore the file byte-for-byte rather than leaving the
+    # newline this append had to add.
+    if [ -s "$path" ] && [ -n "$(tail -c 1 "$path")" ]; then
+      printf '\n' >>"$out"
+      printf '<!-- touchstone:steering:no-trailing-newline -->\n' >>"$out"
+    fi
     printf '\n' >>"$out"
     cat "$block" >>"$out"
     return 0
@@ -148,14 +154,24 @@ compose_removal() {
   begin_line="$(awk -v m="$BEGIN_MARKER" '$0 == m { print NR; exit }' "$path")"
   end_line="$(awk -v m="$END_MARKER" '$0 == m { print NR; exit }' "$path")"
   [ -n "$begin_line" ] && [ -n "$end_line" ] || return 1
-  local keep=$((begin_line - 1))
+  local keep=$((begin_line - 1)) strip_trailing_newline=false
   if [ "$keep" -gt 0 ] && [ -z "$(sed -n "${keep}p" "$path")" ]; then
     keep=$((keep - 1))
+  fi
+  # The marker install left when it had to add a separating newline.
+  if [ "$keep" -gt 0 ] \
+    && [ "$(sed -n "${keep}p" "$path")" = '<!-- touchstone:steering:no-trailing-newline -->' ]; then
+    keep=$((keep - 1))
+    strip_trailing_newline=true
   fi
   if [ "$keep" -gt 0 ]; then
     head -n "$keep" "$path" >"$out"
   else
     : >"$out"
+  fi
+  if [ "$strip_trailing_newline" = true ] && [ -s "$out" ]; then
+    # Drop the newline install added after the operator's last line.
+    printf '%s' "$(cat "$out")" >"$out.trimmed" && mv -f -- "$out.trimmed" "$out"
   fi
   tail_offset="$(head -n "$end_line" "$path" | wc -c | tr -d ' ')"
   tail -c "+$((tail_offset + 1))" "$path" >>"$out"
@@ -214,10 +230,20 @@ for entry in "${TARGETS[@]}"; do
 
   mkdir -p "$(dirname "$path")" || die "could not create $(dirname "$path")"
   staged="$path.touchstone-steering.$$"
+  # cp -p onto an existing target would copy the workspace file's mode; copy
+  # the payload, then restore the target's own permissions. An instruction
+  # file the operator restricted to 0600 must not become world-readable
+  # because Touchstone rewrote it.
   cp "$composed" "$staged" || {
     rm -f -- "$staged"
     die "could not stage $path"
   }
+  if [ -f "$path" ]; then
+    existing_mode="$(ls -l "$path" | awk '{print $1}')"
+    chmod --reference="$path" "$staged" 2>/dev/null \
+      || chmod "$(stat -f '%Lp' "$path" 2>/dev/null || printf 644)" "$staged" 2>/dev/null \
+      || printf '  warning: could not preserve permissions on %s (%s)\n' "$relative" "$existing_mode" >&2
+  fi
   mv -f -- "$staged" "$path" || {
     rm -f -- "$staged"
     die "could not write $path"
