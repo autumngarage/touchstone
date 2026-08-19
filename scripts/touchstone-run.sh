@@ -430,14 +430,20 @@ resolve_target() {
 # machine and not in CI; resolving it during the enforcement run would fail a
 # gate over a path that run never touches.
 while IFS="$(printf '\t')" read -r target_name target_path; do
-  target_in_stage=false
-  while IFS="$(printf '\t')" read -r _tn task_target _tr task_stage _tc; do
-    [ "$task_stage" = "$STAGE_ARG" ] || continue
-    [ "$task_target" = "$target_name" ] || continue
-    target_in_stage=true
-    break
-  done <"$TASKS_FILE"
-  [ "$target_in_stage" = true ] || continue
+  # --check-contract validates the whole declaration, so every target is
+  # resolved. A run validates only what it will execute: a commit-stage
+  # target absent on a runner must not fail the enforcement gate over a path
+  # that run never touches.
+  if [ "$CHECK_CONTRACT" != true ]; then
+    target_in_stage=false
+    while IFS="$(printf '\t')" read -r _tn task_target _tr task_stage _tc; do
+      [ "$task_stage" = "$STAGE_ARG" ] || continue
+      [ "$task_target" = "$target_name" ] || continue
+      target_in_stage=true
+      break
+    done <"$TASKS_FILE"
+    [ "$target_in_stage" = true ] || continue
+  fi
   resolve_target "$target_name" "$target_path" || true
 done <"$TARGETS_FILE"
 

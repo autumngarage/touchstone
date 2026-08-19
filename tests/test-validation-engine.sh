@@ -2468,6 +2468,13 @@ if bash "$RUN_ENGINE" validate --stage commit --project "$SPLITTARGET" >/dev/nul
 else
   pass "a missing target the selected stage uses still fails"
 fi
+# A contract check validates the whole declaration rather than one stage's
+# slice: the adapters call it to ask whether the declaration is valid at all.
+if bash "$RUN_ENGINE" validate --check-contract --project "$SPLITTARGET" >/dev/null 2>&1; then
+  fail "--check-contract passed a declaration whose commit-stage target is missing"
+else
+  pass "--check-contract validates every declared target regardless of stage"
+fi
 
 echo "==> setup does not run for a stage with no tasks"
 SETUPONLY="$STAGE_TMP/setup-only"
