@@ -53,7 +53,12 @@ filled() {
     { line = $0
       sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
       if (line == "") next
-      if (line ~ /^<!--.*-->$/) next          # template comment
+      # Comments are invisible in the rendered body, so nothing inside one is
+      # evidence -- including a comment opened on one line and closed on a
+      # later one, which the single-line pattern below cannot see.
+      if (in_comment) { if (line ~ /-->/) in_comment = 0; next }
+      if (line ~ /^<!--/ && line !~ /-->/) { in_comment = 1; next }
+      if (line ~ /^<!--.*-->$/) next          # single-line comment
       # A bullet or "Label:" prefix is scaffolding, not content: judge what
       # follows it, or "- Build: <exact command and result>" reads as filled.
       sub(/^[-*][[:space:]]*/, "", line)
@@ -100,7 +105,8 @@ esac
 
 if [ "$FAILURES" -ne 0 ]; then
   printf '\nThis pull request does not record the evidence its tier requires.\n' >&2
-  printf 'See principles/local-review.md for the template and tier rules.\n' >&2
+  printf 'The required sections are in .github/pull_request_template.md;\n' >&2
+  printf 'the tier rules live in principles/local-review.md.\n' >&2
   exit 1
 fi
 

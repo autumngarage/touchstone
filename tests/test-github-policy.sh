@@ -792,4 +792,250 @@ run_policy verify "$POLICY" >/dev/null \
   || fail "failed rollback deletion did not verify the complete prior policy state"
 ok "failed rollback deletion restores the prior active gate"
 
+# =============================================================================
+# Delivery evidence — the merge gate refuses a pull request that has not
+# recorded its review tier and validation. Assertions live here rather than in
+# a new file per the self-test rule: policy and merge-gate behavior is this
+# file's surface.
+EVIDENCE_CHECK="$ROOT/scripts/check-delivery-evidence.sh"
+EVIDENCE_TMP="$TMP_DIR/evidence"
+mkdir -p "$EVIDENCE_TMP"
+body() { printf '%s\n' "$1" >"$EVIDENCE_TMP/body.md"; }
+accepts() { bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/body.md" >/dev/null 2>&1; }
+
+echo "==> a fully recorded pull request is accepted"
+body '## Intent
+Bind the branch a PR is opened for.
+
+## Invariants
+- The reviewed head is the merged head.
+
+## Validation
+- Automated tests: full suite, pass.
+
+## Review tier
+serious
+
+## Why this tier
+Touches the merge boundary used by every project.'
+if accepts; then
+  ok "a recorded serious pull request passes"
+else
+  fail "the gate refused a fully recorded pull request"
+fi
+
+echo "==> an unedited template is absence, not evidence"
+body '## Intent
+<State exactly what behavior this change creates.>
+
+## Invariants
+<List the conditions that must remain true.>
+
+## Validation
+- Build: <exact command and result>
+
+## Review tier
+normal
+
+## Why this tier
+<One or two concrete sentences.>'
+if accepts; then
+  fail "the gate accepted an unedited template"
+else
+  ok "placeholder text does not satisfy the gate"
+fi
+
+echo "==> a missing or invalid tier is refused"
+for tier in "" "quick" "SERIOUSLY"; do
+  body "## Intent
+Real intent.
+
+## Invariants
+- Something true.
+
+## Validation
+- Tests: pass.
+
+## Review tier
+$tier
+
+## Why this tier
+Because."
+  if accepts; then
+    fail "the gate accepted tier '$tier'"
+  else
+    ok "tier '$tier' is refused"
+  fi
+done
+
+echo "==> trivial needs less, but still needs its reasoning"
+body '## Intent
+Fix a typo in a comment.
+
+## Validation
+- Lint: pass.
+
+## Review tier
+trivial
+
+## Why this tier
+Comment-only, no behavior change.'
+if accepts; then
+  ok "a trivial pull request needs no invariants section"
+else
+  fail "the gate demanded invariants from a trivial change"
+fi
+
+body '## Intent
+Fix a typo.
+
+## Validation
+- Lint: pass.
+
+## Review tier
+trivial
+
+## Why this tier
+'
+if accepts; then
+  fail "the gate accepted a tier with no justification"
+else
+  ok "an unjustified tier is refused at every level"
+fi
+
+echo "==> a normal or serious change must state its invariants"
+body '## Intent
+Change how merges bind.
+
+## Validation
+- Tests: pass.
+
+## Review tier
+normal
+
+## Why this tier
+Contained logic change.'
+if accepts; then
+  fail "the gate accepted a normal change with no invariants"
+else
+  ok "normal requires invariants"
+fi
+
+echo "==> evasions that look like content are still absence"
+for evasion in "n/a" "TBD" "todo" "-"; do
+  body "## Intent
+$evasion
+
+## Invariants
+- Real invariant.
+
+## Validation
+- Tests: pass.
+
+## Review tier
+normal
+
+## Why this tier
+Contained."
+  if accepts; then
+    fail "the gate accepted '$evasion' as intent"
+  else
+    ok "'$evasion' does not satisfy a required section"
+  fi
+done
+
+echo "==> placeholders inside labeled bullets are still placeholders"
+# "- Build: <exact command and result>" is the template, not a record of
+# anything that ran.
+body '## Intent
+Real intent.
+
+## Invariants
+- Real invariant.
+
+## Validation
+- Build: <exact command and result>
+- Automated tests: <exact command and result>
+
+## Review tier
+normal
+
+## Why this tier
+Contained.'
+if accepts; then
+  fail "the gate accepted labeled placeholder bullets as validation"
+else
+  ok "a labeled placeholder bullet does not satisfy validation"
+fi
+
+echo "==> n/a with a reason is honest and accepted"
+body '## Intent
+Fix prose.
+
+## Invariants
+- The rendered blocks match canon.
+
+## Validation
+- Build: n/a — documentation only, no build step
+- Automated tests: full suite, pass
+
+## Review tier
+normal
+
+## Why this tier
+Contained doc change with deterministic coverage.'
+if accepts; then
+  ok "n/a with a recorded reason satisfies the section"
+else
+  fail "the gate refused an honest n/a-with-reason"
+fi
+
+echo "==> the shipped template refuses itself"
+body "$(cat "$ROOT/.github/pull_request_template.md")"
+if accepts; then
+  fail "the unedited PR template satisfies the gate it feeds"
+else
+  ok "the unedited template is absence"
+fi
+
+echo "==> the gate refuses a body it cannot read"
+if bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/absent.md" >/dev/null 2>&1; then
+  fail "the gate passed on an unreadable body"
+else
+  ok "an unreadable body fails closed"
+fi
+
+echo "==> a multiline comment is invisible and therefore absence"
+body '## Intent
+<!--
+hidden multiline comment
+-->
+
+## Validation
+- Tests: pass.
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "a multiline HTML comment satisfied a required section"
+fi
+ok "a multiline comment does not read as evidence"
+
+echo "==> an unreadable body fails closed (non-root only)"
+# chmod does not stop root, which is what the required workflow's container
+# runs as -- the same UID trap recorded in the staging-failure fixture.
+if [ "$(id -u)" -ne 0 ]; then
+  printf '## Intent\nreal\n' >"$EVIDENCE_TMP/unreadable.md"
+  chmod 000 "$EVIDENCE_TMP/unreadable.md"
+  if bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/unreadable.md" >/dev/null 2>&1; then
+    chmod 644 "$EVIDENCE_TMP/unreadable.md"
+    fail "the gate passed on a body it could not read"
+  fi
+  chmod 644 "$EVIDENCE_TMP/unreadable.md"
+  ok "an existing but unreadable body fails closed"
+fi
+
 echo "==> PASS: audited GitHub policy lifecycle is safe and deterministic"
