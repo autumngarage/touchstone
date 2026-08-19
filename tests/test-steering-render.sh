@@ -167,7 +167,9 @@ fi
 echo "==> Rendering leaves a newline-less project tail byte-identical"
 printf '\ntrailing-sentinel-no-newline' >>"$NONL/GEMINI.md" # tail now ends without newline
 last_before="$(tail -c 1 "$NONL/GEMINI.md" | od -An -c | tr -d ' \n')"
-bash "$NONL/scripts/render-steering.sh" >/dev/null 2>&1 || true
+if ! bash "$NONL/scripts/render-steering.sh" >/dev/null 2>&1; then
+  fail "render failed on a target with a newline-less tail; preservation not exercised"
+fi
 last_after="$(tail -c 1 "$NONL/GEMINI.md" | od -An -c | tr -d ' \n')"
 if [ "$last_before" = "$last_after" ]; then
   pass "the tail's final byte is unchanged by a render"
