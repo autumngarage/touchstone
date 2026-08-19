@@ -1341,6 +1341,21 @@ else
   fail "uninstall destroyed operator content reached through the manifest path"
 fi
 
+echo "==> a lookalike manifest naming shipped files is still not ours"
+# Shape is spoofable: principles/README.md makes README.md a shipped name, so
+# an operator file of '1 2<TAB>README.md' lines passed the shape test. Our
+# manifest also describes the directory -- every checksum matches the file it
+# names -- and that is what deletion now requires.
+H44="$TMP_DIR/h44"
+mkdir -p "$H44/.touchstone/principles"
+printf '1 2\tREADME.md\n' >"$H44/.touchstone/principles/.touchstone-installed"
+bash "$INSTALL" uninstall --home "$H44" >/dev/null 2>&1 || true
+if find "$H44" -name '*.removed*' 2>/dev/null | grep -q .; then
+  pass "a lookalike manifest is retired, not deleted"
+else
+  fail "uninstall deleted a manifest-shaped operator file"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"

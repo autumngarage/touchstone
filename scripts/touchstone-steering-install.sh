@@ -835,10 +835,21 @@ case "$ACTION" in
               ;;
           esac
           manifest_name="${manifest_line#*"$(printf '\t')"}"
+          manifest_sum="${manifest_line%%"$(printf '\t')"*}"
           shipped_document "$manifest_name" || {
             manifest_ours=false
             break
           }
+          # Shape alone is spoofable (principles/README.md makes README.md a
+          # shipped name). A manifest we wrote also DESCRIBES the directory:
+          # each recorded checksum must match the file it names, and a
+          # manifest describing files that are not there is not one this run
+          # can vouch for.
+          if [ ! -f "$principles_home/$manifest_name" ] \
+            || [ "$manifest_sum" != "$(cksum <"$principles_home/$manifest_name")" ]; then
+            manifest_ours=false
+            break
+          fi
         done <"$manifest_referent"
         if [ "$manifest_ours" = true ]; then
           rm -f -- "$manifest_referent"
