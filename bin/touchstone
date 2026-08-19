@@ -18,7 +18,7 @@ TOUCHSTONE_ROOT="$(cd -P "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 usage() {
   cat <<'EOF'
 Usage:
-  touchstone validate [--json] [--project DIR] [--config FILE]
+  touchstone validate [--stage enforce|commit] [--json] [--project DIR] [--config FILE]
   touchstone adopt [--check|--dry-run] [arguments]
   touchstone upgrade [--check|--dry-run] [arguments]
   touchstone tracker claim [arguments]
