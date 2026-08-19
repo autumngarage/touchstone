@@ -972,7 +972,17 @@ unrunnable_status() {
   esac
 }
 
-if [ -n "$SETUP_COMMAND" ]; then
+# Setup provisions what the selected tasks need. A stage with no tasks needs
+# nothing, so running setup there would make an empty commit stage pay the
+# project's full provisioning cost -- the opposite of fast local feedback.
+STAGE_HAS_TASKS=false
+while IFS="$(printf '\t')" read -r _n _t _r stage_field _c; do
+  [ "$stage_field" = "$STAGE_ARG" ] || continue
+  STAGE_HAS_TASKS=true
+  break
+done <"$TASKS_FILE"
+
+if [ -n "$SETUP_COMMAND" ] && [ "$STAGE_HAS_TASKS" = true ]; then
   progress "==> setup (root): $SETUP_COMMAND"
   unrunnable="$(declared_command_unrunnable_code "$SETUP_COMMAND" "$PROJECT_ROOT")"
   if [ -n "$unrunnable" ]; then
