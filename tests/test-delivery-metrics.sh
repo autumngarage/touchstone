@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+#
+# tests/test-delivery-metrics.sh — offline coverage for the delivery-metrics
+# reporter. `collect` needs GitHub and is therefore not exercised here beyond
+# its argument handling; `report` is pure text processing and is fully covered.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT="$REPO_ROOT/scripts/delivery-metrics.sh"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-metrics-test.XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+FAILURES=0
+
+fail() {
+  echo "FAIL: $*" >&2
+  FAILURES=$((FAILURES + 1))
+}
+
+pass() { echo "  ok: $*"; }
+
+[ -f "$SCRIPT" ] || {
+  echo "ERROR: missing $SCRIPT" >&2
+  exit 1
+}
+
+# number  created  merged  lines  files  commits  reviews
+#
+# Times are epoch seconds. The small bucket carries nine records -- eight fast
+# and one slow outlier -- deliberately sized so the p90 rank distinguishes the
+# ceiling formula from nearest-rank rounding: at n=9, ceiling rank is 9 (the
+# 600m outlier) while nearest-rank rounds 8.1 down to 8 (a 10m record). The
+# bucket also asserts the median/tail distinction: small median, large max.
+FIXTURE="$TMP_DIR/records.tsv"
+cat >"$FIXTURE" <<'EOF'
+101	1786000000	1786000300	5	1	1	0
+102	1786000000	1786000600	20	2	1	0
+103	1786000000	1786000600	21	2	1	0
+104	1786000000	1786000600	22	2	1	0
+105	1786000000	1786000600	23	2	1	0
+109	1786000000	1786000600	25	2	1	0
+110	1786000000	1786000600	26	2	1	0
+111	1786000000	1786000600	27	2	1	0
+112	1786000000	1786000600	28	2	1	0
+106	1786000000	1786036000	24	2	9	11
+107	1786000000	1786003600	100	5	3	2
+108	1786000000	1786007200	4000	40	12	20
+EOF
+
+OUT="$TMP_DIR/report.txt"
+bash "$SCRIPT" report "$FIXTURE" >"$OUT" 2>&1 || fail "report exited nonzero on a valid fixture"
+
+grep -q "12 merged pull requests" "$OUT" || fail "record count not reported"
+grep -q "tiny   (<10 lines)" "$OUT" || fail "tiny bucket row missing"
+grep -q "large  (250+)" "$OUT" || fail "large bucket row missing"
+
+# Bucket assignment: 5 lines is tiny, 20-24 are small, 100 is medium, 4000 large.
+small_row="$(grep "small  (10-49)" "$OUT")"
+case "$small_row" in
+  *" 9 "*) pass "small bucket counted nine records" ;;
+  *) fail "small bucket count wrong: $small_row" ;;
+esac
+
+# The outlier must move max without dragging the median with it, and p90 must
+# report the ceiling rank: at nine records the 90th percentile is the 9th
+# sorted value (600m). Nearest-rank rounding reported the 8th (10m), so this
+# assertion fails on that implementation.
+case "$small_row" in
+  *"10m"*"600m"*"600m"*) pass "median 10m, ceiling-rank p90 600m, max 600m" ;;
+  *) fail "expected med 10m / p90 600m / max 600m in: $small_row" ;;
+esac
+
+# The slowest listing must surface the outlier by PR number.
+grep -q "slowest merged changes" "$OUT" || fail "slowest listing missing"
+grep -qE "#106 +600m" "$OUT" || fail "slowest listing did not rank the outlier first"
+
+# Merged-only scope is stated in the output, because a reader who misses it
+# will draw exactly the wrong conclusion from a healthy-looking table.
+grep -q "MERGED PULL REQUESTS ONLY" "$OUT" \
+  || fail "report does not disclose that unmerged changes are excluded"
+
+# Malformed input fails closed rather than reporting partial numbers.
+BAD="$TMP_DIR/bad.tsv"
+printf '101\t1786000000\n' >"$BAD"
+if bash "$SCRIPT" report "$BAD" >/dev/null 2>&1; then
+  fail "report accepted a record with the wrong field count"
+else
+  pass "report rejects malformed records"
+fi
+
+# An empty input is not an error, but must not print a table implying zero cost.
+EMPTY="$TMP_DIR/empty.tsv"
+: >"$EMPTY"
+empty_out="$(bash "$SCRIPT" report "$EMPTY" 2>&1)"
+[ "$empty_out" = "no records" ] || fail "empty input produced: $empty_out"
+pass "empty input reports no records"
+
+# Unknown arguments fail closed. The vendored open-pr.sh treated an unknown
+# flag as a positional and opened a PR titled '--body-file'; that class does
+# not get to reappear here.
+if bash "$SCRIPT" collect --body-file /tmp/nope >/dev/null 2>&1; then
+  fail "collect accepted an unknown argument"
+else
+  pass "collect rejects unknown arguments"
+fi
+
+if bash "$SCRIPT" nonsense >/dev/null 2>&1; then
+  fail "unknown action accepted"
+else
+  pass "unknown action rejected"
+fi
+
+if bash "$SCRIPT" collect --limit 0 >/dev/null 2>&1; then
+  fail "collect accepted --limit 0"
+else
+  pass "collect rejects a non-positive limit"
+fi
+
+if bash "$SCRIPT" collect --repo notaslug >/dev/null 2>&1; then
+  fail "collect accepted a malformed --repo"
+else
+  pass "collect rejects a malformed --repo"
+fi
+
+# Regression: the sample must be the most recently MERGED records, not the most
+# recently opened. Selecting by creation order drops a PR opened long ago and
+# merged today — the stalled case this tool exists to surface. Reported on
+# PR #917 as a P1.
+#
+# 201 opened FIRST and merged LAST (the stall); 203 opened LAST and merged
+# FIRST. Selecting two by merge time keeps {201,202}; selecting by creation
+# order keeps {203,202}. The sets differ, so this fails on the old code because
+# the stalled record is missing, not merely misordered.
+ORDERING="$TMP_DIR/ordering.tsv"
+cat >"$ORDERING" <<'EOF'
+203	1786000300	1786000400	5	1	1	0
+202	1786000200	1786500000	5	1	1	0
+201	1786000100	1786900000	5	1	1	0
+EOF
+
+selected="$(bash "$SCRIPT" select --limit 2 "$ORDERING" | cut -f1 | tr '\n' ' ')"
+if [ "$selected" = "201 202 " ]; then
+  pass "select samples by merge time, newest merge first"
+else
+  fail "select returned '$selected'; expected '201 202 ' (by merge time)"
+fi
+
+# Guard the specific inversion: a creation-ordered implementation returns 202
+# and 203 here, because 201 was opened first.
+case "$selected" in
+  *203*) fail "select kept 203, which merged first — sampling is by creation order" ;;
+  *) pass "select excludes the earliest-merged record" ;;
+esac
+
+if bash "$SCRIPT" select "$ORDERING" >/dev/null 2>&1; then
+  fail "select accepted a missing --limit"
+else
+  pass "select requires --limit"
+fi
+
+if bash "$SCRIPT" select --limit 2 --bogus "$ORDERING" >/dev/null 2>&1; then
+  fail "select accepted an unknown argument"
+else
+  pass "select rejects unknown arguments"
+fi
+
+if [ "$FAILURES" -ne 0 ]; then
+  echo "$FAILURES check(s) failed" >&2
+  exit 1
+fi
+echo "PASS tests/test-delivery-metrics.sh"
