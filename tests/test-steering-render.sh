@@ -254,13 +254,27 @@ for f in AGENTS.md GEMINI.md templates/AGENTS.md templates/GEMINI.md; do
   cp "$REPO_ROOT/$f" "$STAGEFAIL/$f"
 done
 cp "$RENDER" "$STAGEFAIL/scripts/render-steering.sh"
-chmod a-w "$STAGEFAIL/templates"
+# Deterministic staging fault, independent of UID: permission bits do not
+# stop root (the required workflow's container), so a PATH shim fails cp for
+# exactly the final destination and delegates everything else.
+mkdir -p "$STAGEFAIL/bin"
+cat >"$STAGEFAIL/bin/cp" <<'SHIM'
+#!/usr/bin/env bash
+for argument in "$@"; do
+  case "$argument" in
+    */templates/GEMINI.md.render-steering.*)
+      echo "cp: simulated staging failure for $argument" >&2
+      exit 1
+      ;;
+  esac
+done
+exec /bin/cp "$@"
+SHIM
+chmod +x "$STAGEFAIL/bin/cp"
 agents_before2="$(cksum "$STAGEFAIL/AGENTS.md")"
-if bash "$STAGEFAIL/scripts/render-steering.sh" >/dev/null 2>&1; then
-  chmod u+w "$STAGEFAIL/templates"
-  fail "render succeeded despite an unwritable destination"
+if PATH="$STAGEFAIL/bin:$PATH" bash "$STAGEFAIL/scripts/render-steering.sh" >/dev/null 2>&1; then
+  fail "render succeeded despite a failing stage for the final destination"
 else
-  chmod u+w "$STAGEFAIL/templates"
   pass "render refuses when a destination cannot be staged"
 fi
 if [ "$agents_before2" = "$(cksum "$STAGEFAIL/AGENTS.md")" ]; then
