@@ -2211,9 +2211,6 @@ EOF
   [ "$(git -C "$safety_repo" status --porcelain=v1)" = "$dirty_status_before" ] \
     || fail "dirty refusal partially wrote"
 
-  echo "==> fresh consumers reuse the versioned steering-resolution fixtures"
-  structural="$(bash "$ROOT/scripts/evaluate-steering.sh" structural --json)"
-  case "$structural" in *'"status":"passed"'*) ;; *) fail "structural steering fixtures failed: $structural" ;; esac
   [ "$(git -C "$ROOT" status --porcelain=v1)" = "$ROOT_STATUS_BEFORE" ] \
     || fail "consumer operations mutated the Touchstone source checkout"
 

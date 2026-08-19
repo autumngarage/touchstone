@@ -50,6 +50,5 @@ repository; exact sibling inventory and source-checkout snapshots prove the
 operation does not cross its declared ownership boundary.
 
 Finally, the harness invokes the versioned steering structural lane from
-`evals/steering/v1/`. Fresh-consumer proof therefore cannot pass with a broken
 driver import, precedence fixture, managed block, route, or context-size
 contract.
