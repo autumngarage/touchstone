@@ -27,9 +27,11 @@ pass() { echo "  ok: $*"; }
 
 # number  created  merged  lines  files  commits  reviews
 #
-# Times are epoch seconds. The small bucket carries one deliberate outlier so
-# the median/tail distinction is asserted, not assumed: four fast records and
-# one slow one must produce a small median and a large max.
+# Times are epoch seconds. The small bucket carries nine records -- eight fast
+# and one slow outlier -- deliberately sized so the p90 rank distinguishes the
+# ceiling formula from nearest-rank rounding: at n=9, ceiling rank is 9 (the
+# 600m outlier) while nearest-rank rounds 8.1 down to 8 (a 10m record). The
+# bucket also asserts the median/tail distinction: small median, large max.
 FIXTURE="$TMP_DIR/records.tsv"
 cat >"$FIXTURE" <<'EOF'
 101	1786000000	1786000300	5	1	1	0
@@ -37,6 +39,10 @@ cat >"$FIXTURE" <<'EOF'
 103	1786000000	1786000600	21	2	1	0
 104	1786000000	1786000600	22	2	1	0
 105	1786000000	1786000600	23	2	1	0
+109	1786000000	1786000600	25	2	1	0
+110	1786000000	1786000600	26	2	1	0
+111	1786000000	1786000600	27	2	1	0
+112	1786000000	1786000600	28	2	1	0
 106	1786000000	1786036000	24	2	9	11
 107	1786000000	1786003600	100	5	3	2
 108	1786000000	1786007200	4000	40	12	20
@@ -45,22 +51,24 @@ EOF
 OUT="$TMP_DIR/report.txt"
 bash "$SCRIPT" report "$FIXTURE" >"$OUT" 2>&1 || fail "report exited nonzero on a valid fixture"
 
-grep -q "8 merged pull requests" "$OUT" || fail "record count not reported"
+grep -q "12 merged pull requests" "$OUT" || fail "record count not reported"
 grep -q "tiny   (<10 lines)" "$OUT" || fail "tiny bucket row missing"
 grep -q "large  (250+)" "$OUT" || fail "large bucket row missing"
 
 # Bucket assignment: 5 lines is tiny, 20-24 are small, 100 is medium, 4000 large.
 small_row="$(grep "small  (10-49)" "$OUT")"
 case "$small_row" in
-  *" 5 "*) pass "small bucket counted five records" ;;
+  *" 9 "*) pass "small bucket counted nine records" ;;
   *) fail "small bucket count wrong: $small_row" ;;
 esac
 
-# The outlier must move max without dragging the median with it. Four records
-# at 10m and one at 600m: median stays 10m, max reports 600m.
+# The outlier must move max without dragging the median with it, and p90 must
+# report the ceiling rank: at nine records the 90th percentile is the 9th
+# sorted value (600m). Nearest-rank rounding reported the 8th (10m), so this
+# assertion fails on that implementation.
 case "$small_row" in
-  *"10m"*"600m"*) pass "median stays low while max exposes the outlier" ;;
-  *) fail "expected median 10m and max 600m in: $small_row" ;;
+  *"10m"*"600m"*"600m"*) pass "median 10m, ceiling-rank p90 600m, max 600m" ;;
+  *) fail "expected med 10m / p90 600m / max 600m in: $small_row" ;;
 esac
 
 # The slowest listing must surface the outlier by PR number.
