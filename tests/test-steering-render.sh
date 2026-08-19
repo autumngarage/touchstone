@@ -66,10 +66,26 @@ else
   fail "could not inject drift into the test copy; the assertion proves nothing"
 fi
 
-# Content outside the markers is the project's own and must survive rendering.
-echo "==> Rendering preserves content outside the markers"
+# Content outside the markers is the project's own and must survive rendering,
+# and the render must actually repair the drift injected above -- a renderer
+# that validates and reports success without installing the result would
+# otherwise pass every remaining check against two unchanged, still-drifted
+# files.
+echo "==> Rendering repairs drift and preserves content outside the markers"
 printf '\n<!-- sentinel-outside-block -->\n' >>"$WORK/GEMINI.md"
-bash "$WORK/scripts/render-steering.sh" >/dev/null 2>&1 || true
+if ! bash "$WORK/scripts/render-steering.sh" >/dev/null 2>&1; then
+  fail "render failed on the drifted work copy"
+fi
+if bash "$WORK/scripts/render-steering.sh" --check >/dev/null 2>&1; then
+  pass "the injected drift is repaired: --check passes after the render"
+else
+  fail "render reported success but --check still sees drift; nothing was installed"
+fi
+if grep -q "## Purpose DRIFTED" "$WORK/AGENTS.md"; then
+  fail "the drifted line survived the render"
+else
+  pass "the drifted line was replaced"
+fi
 if grep -q "sentinel-outside-block" "$WORK/GEMINI.md"; then
   pass "text after the end marker survives a render"
 else
@@ -78,7 +94,8 @@ fi
 
 # Rendering twice must produce the same bytes, or the check would flap.
 echo "==> Rendering is idempotent"
-bash "$WORK/scripts/render-steering.sh" >/dev/null 2>&1 || true
+bash "$WORK/scripts/render-steering.sh" >/dev/null 2>&1 \
+  || fail "second render failed on a just-rendered tree"
 cp "$WORK/AGENTS.md" "$TMP_DIR/first"
 bash "$WORK/scripts/render-steering.sh" >/dev/null 2>&1 || true
 if cmp -s "$TMP_DIR/first" "$WORK/AGENTS.md"; then
