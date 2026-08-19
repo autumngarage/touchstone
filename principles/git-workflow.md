@@ -403,11 +403,13 @@ git fetch origin
 EXPECTED=$(git rev-parse "origin/$(git branch --show-current)")
 # The tip you just fetched must be one you have already integrated -- normally
 # your own last push. If it is not in your local history, another agent pushed
-# while you were away; stop and reconcile instead of rewriting over them.
-git merge-base --is-ancestor "$EXPECTED" HEAD \
-  || { echo "remote moved beyond this branch; reconcile before rewriting" >&2; }
-# ...amend / squash / rebase...
-git push --force-with-lease="$(git branch --show-current):$EXPECTED"
+# while you were away; the rewrite runs only when the guard passes.
+if git merge-base --is-ancestor "$EXPECTED" HEAD; then
+  # ...amend / squash / rebase...
+  git push --force-with-lease="$(git branch --show-current):$EXPECTED"
+else
+  echo "remote moved beyond this branch; reconcile before rewriting" >&2
+fi
 ```
 
 The pin guards the window between that inspection and the push; the ancestor
@@ -477,7 +479,7 @@ DEFAULT=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
 git fetch origin
 EXPECTED=$(git rev-parse "origin/<child-branch>")
 git merge-base --is-ancestor "$EXPECTED" <child-branch> \
-  || { echo "child moved on the remote; reconcile before retargeting" >&2; }
+  || { echo "child moved on the remote; reconcile before retargeting" >&2; exit 1; }
 gh pr edit <child> --base "$DEFAULT"
 git rebase --onto "origin/$DEFAULT" "origin/<parent-branch>" <child-branch>
 git push --force-with-lease="<child-branch>:$EXPECTED"
