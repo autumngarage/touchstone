@@ -74,10 +74,16 @@ ran.
 
 Deterministic rules; classify every change.
 
-**Trivial** — documentation, comments, or formatting-only; generated-file-only
-or lockfile-only; a low-risk mechanical rename with no behavior change; or a
-change fully covered by deterministic checks with no logic or interface risk.
-Path: deterministic checks only. No local review, no deep review initiated.
+**Trivial** — *inert* documentation, comments, or formatting-only;
+generated-file-only or lockfile-only; a low-risk mechanical rename with no
+behavior change; or a change fully covered by deterministic checks with no
+logic or interface risk. Path: deterministic checks only. No initiated review.
+
+Documentation is not automatically inert. A change to steering, policy, or any
+prompt that directs how agents work — `TOUCHSTONE.md`, `AGENTS.md`,
+`CLAUDE.md`, `GEMINI.md`, the routed principles, repository policy — alters how
+every consumer project ships. Tier those by the blast radius of the behavior
+they change, never as trivial.
 
 **Normal** — ordinary contained work: small bug fixes, isolated application
 logic, localized implementation changes, safe refactors preserving a clearly
@@ -160,10 +166,15 @@ gate; it only means you request nothing extra.
 
 Review is complete when deterministic checks pass, the intended validation
 scenario passes, the tier's one review has run, valid findings are handled,
-and no merge-blocking finding remains. Re-run a reviewer only when a fix
-materially changes the risk surface — a new serialization format, ownership or
-threading change, security boundary, or public contract — never merely because
-the previous round found something.
+and no merge-blocking finding remains.
+
+**A fix commit moves the head, and exact-head review of the merged head is
+never optional.** What this document bounds is how much you *implement* and
+how many *initiated* passes you run — never whether the head that merges was
+reviewed. After a fix commit, follow `principles/git-workflow.md`: batch every
+fix into one commit, push once, and take one review for that head. Do not run
+an extra initiated pass merely because the previous round found something;
+that is a different thing from the exact-head review the gate requires.
 
 ## Commit discipline
 
