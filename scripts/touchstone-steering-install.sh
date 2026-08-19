@@ -221,10 +221,21 @@ compose_removal() {
 BLOCK="$TMP_DIR/block"
 render_block "$BLOCK"
 
+# Fail before any driver file is touched if the routed destination cannot be
+# prepared, so a bad path cannot leave three instruction files pointing at
+# documents that were never installed.
+preflight_principles() {
+  local destination="$HOME_DIR/$PRINCIPLES_RELATIVE"
+  [ -d "$PRINCIPLES_SOURCE" ] || die "routed steering documents are missing: $PRINCIPLES_SOURCE"
+  if [ -e "$destination" ] && [ ! -d "$destination" ]; then
+    die "$destination exists and is not a directory; move it before installing"
+  fi
+  mkdir -p "$destination" || die "could not create $destination"
+  [ -w "$destination" ] || die "$destination is not writable"
+}
+
 install_principles() {
   local destination="$HOME_DIR/$PRINCIPLES_RELATIVE" doc
-  [ -d "$PRINCIPLES_SOURCE" ] || die "routed steering documents are missing: $PRINCIPLES_SOURCE"
-  mkdir -p "$destination" || die "could not create $destination"
   for doc in "$PRINCIPLES_SOURCE"/*.md; do
     [ -f "$doc" ] || continue
     cp "$doc" "$destination/.$(basename "$doc").$$" || die "could not stage $(basename "$doc")"
@@ -242,6 +253,9 @@ principles_current() {
   done
   return 0
 }
+
+# Fail before any driver file is touched if the routed destination is unusable.
+[ "$ACTION" != install ] || [ "$DRY_RUN" = true ] || preflight_principles
 
 CHANGED=0
 DRIFTED=0
@@ -377,7 +391,7 @@ case "$ACTION" in
     echo "==> PASS: every supported driver reads the current contract"
     ;;
   install)
-    install_principles
+    [ "$DRY_RUN" = true ] || install_principles
     if [ "$CHANGED" -eq 0 ] && principles_current; then
       echo "==> already current: machine-level steering matches the contract"
     else
@@ -385,7 +399,18 @@ case "$ACTION" in
     fi
     ;;
   uninstall)
-    rm -rf -- "${HOME_DIR:?}/${PRINCIPLES_RELATIVE:?}"
+    # Remove only the documents this tool installed. The directory may hold
+    # the operator's own files; a recursive delete would take them too.
+    principles_home="${HOME_DIR:?}/${PRINCIPLES_RELATIVE:?}"
+    if [ -d "$principles_home" ]; then
+      for doc in "$PRINCIPLES_SOURCE"/*.md; do
+        [ -f "$doc" ] || continue
+        rm -f -- "$principles_home/$(basename "$doc")"
+      done
+      # Only if nothing of the operator's remains.
+      rmdir "$principles_home" 2>/dev/null || true
+      rmdir "$(dirname "$principles_home")" 2>/dev/null || true
+    fi
     echo "==> removed from $CHANGED file(s) plus the routed documents; content outside the markers untouched"
     ;;
 esac

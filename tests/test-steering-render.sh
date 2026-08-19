@@ -437,11 +437,34 @@ if bash "$INSTALL" check --home "$HROUTE" >/dev/null 2>&1; then
 else
   pass "a modified routed document fails check"
 fi
+# Uninstall must remove what it installed and nothing else: the directory can
+# hold the operator's own notes.
+printf 'my own note\n' >"$HROUTE/.touchstone/principles/MY-NOTES.md"
 bash "$INSTALL" uninstall --home "$HROUTE" >/dev/null 2>&1
-if [ -d "$HROUTE/.touchstone/principles" ]; then
-  fail "uninstall left the routed documents behind"
+if [ -f "$HROUTE/.touchstone/principles/MY-NOTES.md" ]; then
+  pass "an operator file in the routed directory survives uninstall"
 else
-  pass "uninstall removes the routed documents"
+  fail "uninstall deleted an operator file it did not install"
+fi
+if [ -f "$HROUTE/.touchstone/principles/git-workflow.md" ]; then
+  fail "uninstall left an installed routed document behind"
+else
+  pass "uninstall removes the documents it installed"
+fi
+
+echo "==> an unusable routed destination fails before any driver file is written"
+HBLOCK="$TMP_DIR/hblock"
+mkdir -p "$HBLOCK/.touchstone"
+printf 'not a directory\n' >"$HBLOCK/.touchstone/principles"
+if bash "$INSTALL" install --home "$HBLOCK" >/dev/null 2>&1; then
+  fail "install succeeded with an unusable routed destination"
+else
+  pass "install refuses an unusable routed destination"
+fi
+if [ -e "$HBLOCK/.claude/CLAUDE.md" ]; then
+  fail "a driver file was written before the routed destination failed"
+else
+  pass "no driver file is written when the routed destination fails"
 fi
 
 echo "==> two driver paths aliased to one file receive a single block"
