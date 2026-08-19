@@ -2476,6 +2476,44 @@ else
   pass "--check-contract validates every declared target regardless of stage"
 fi
 
+echo "==> the documented commit-hook wiring is runnable as written"
+# The contract shows a pre-commit entry invoking the commit stage. If that
+# entry is wrong the feature is undiscoverable in practice, so the exact
+# command is exercised against a project with a guard.
+WIRED="$STAGE_TMP/wired"
+make_stage_project "$WIRED" 'schema = 2
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "suite"
+target = "root"
+command = "true"
+required = true
+
+[[validation.tasks]]
+name = "guard"
+target = "root"
+stage = "commit"
+command = "echo WIRED_GUARD"
+required = true'
+wired_entry="$(grep -o 'touchstone validate --stage commit' "$ROOT/docs/validation-contract.md" | head -1)"
+if [ -n "$wired_entry" ]; then
+  pass "the contract documents a commit-stage hook entry"
+else
+  fail "the contract no longer documents how to wire the commit stage"
+fi
+out="$(cd "$WIRED" && bash "$RUN_ENGINE" validate --stage commit 2>&1)"
+case "$out" in
+  *WIRED_GUARD*) pass "the documented invocation runs the project's guard" ;;
+  *) fail "the documented invocation did not run the guard: $out" ;;
+esac
+
 echo "==> setup does not run for a stage with no tasks"
 SETUPONLY="$STAGE_TMP/setup-only"
 make_stage_project "$SETUPONLY" 'schema = 2

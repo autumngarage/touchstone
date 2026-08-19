@@ -38,6 +38,28 @@ A declaration that runs nothing at the enforcement stage fails — a gate must
 execute something. A commit stage with no tasks passes: most projects have no
 authoring guards, and that is not a broken contract.
 
+## Wiring the commit stage
+
+Declaring a commit-stage task gives the engine the capability; the project
+wires when it runs, because hooks are project-owned and Touchstone does not
+install them. The wiring is one pre-commit entry:
+
+```yaml
+  - repo: local
+    hooks:
+      - id: touchstone-authoring-guards
+        name: Touchstone authoring guards
+        entry: touchstone validate --stage commit
+        language: system
+        stages: [pre-commit]
+        always_run: true
+        pass_filenames: false
+```
+
+A project with no commit-stage tasks can add this safely: the stage runs
+nothing and passes. `--no-verify` skips it, which is the point — an authoring
+guard is fast feedback, and the enforcement stage still gates the merge.
+
 `stage` in a schema-1 file is a contract error, not a silent default. Accepting
 it would let a consumer believe it declared a guard that runs nowhere.
 
