@@ -58,6 +58,7 @@ filled() {
       # as filled. Scaffolding is stripped BEFORE the comment-state checks so
       # "- <!--" cannot hide a comment behind a bullet.
       sub(/^[-*][[:space:]]*/, "", line)
+      if (line == "") next                    # a bare list marker is nothing
       if (line ~ /^\[[ ]\]/) next            # an unchecked box records nothing
       sub(/^\[[xX]\][[:space:]]*/, "", line)
       if (line ~ /^[A-Za-z][A-Za-z0-9 \/-]*:[[:space:]]*/)

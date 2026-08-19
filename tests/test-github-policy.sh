@@ -1059,6 +1059,24 @@ if accepts; then
 fi
 ok "scaffolding cannot hide a multiline comment"
 
+echo "==> a bare list marker satisfies nothing"
+body '## Intent
+-
+*
+
+## Validation
+- Tests: pass.
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "a section of bare list markers satisfied the gate"
+fi
+ok "bare list markers are absence"
+
 echo "==> a multiline comment is invisible and therefore absence"
 body '## Intent
 <!--
