@@ -1,6 +1,6 @@
 # Engineering Principles
 
-Universal engineering standards that apply to all projects. `touchstone steering install` installs them beside each driver's user-level instruction file, and the routing table in that file names them by absolute path. No project imports or copies them.
+Universal engineering standards that apply to all projects. `touchstone steering install` installs them beside each driver's user-level instruction file, and the routing table in that file names them by absolute path. Projects are not meant to import or copy them; `adopt` and `upgrade` still stage repository copies until AUT-317 retires that path.
 
 | File | Summary |
 |------|---------|

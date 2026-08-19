@@ -54,7 +54,7 @@ TARGETS=(
 
 ACTION="${1:-}"
 [ -n "$ACTION" ] || {
-  sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '3,24p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 shift
