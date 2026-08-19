@@ -72,6 +72,9 @@ for file in \
   # loop terminates. Without these an agent treats a reviewer that always has
   # another remark as a finish line.
   assert_contains "$file" "Stop when the task is correct"
+  # The pre-PR review contract is routed, not restated; the route must exist
+  # in every rendered surface.
+  assert_contains "$file" "principles/local-review.md"
   assert_contains "$file" "deterministic gates first"
   assert_contains "$file" "Exact-head review after a fix commit is never skipped"
   assert_contains "$file" "never reopen the design space"
