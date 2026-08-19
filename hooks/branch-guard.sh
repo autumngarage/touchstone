@@ -3,7 +3,7 @@
 # hooks/branch-guard.sh — Claude Code PreToolUse hook that blocks
 # `git commit` invocations when the current branch is the project's
 # default branch (main/master). Wired via .claude/settings.json shipped
-# in templates/claude-settings.json.
+# in the project's .claude/settings.json.
 #
 # This is the deterministic enforcement layer for the never-commit-on-
 # default-branch rule documented in principles/git-workflow.md. The

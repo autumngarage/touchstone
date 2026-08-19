@@ -40,7 +40,6 @@ touchstone/
 ├── docs/           # Touchstone-specific product contract and project documentation
 ├── principles/     # The judgment layer, routed to from TOUCHSTONE.md
 ├── skills/         # User-scoped Claude Code skills
-├── templates/      # Legacy transition inputs; nothing copies them
 ├── hooks/          # branch-guard.sh — PreToolUse hook wired in .claude/settings.json
 ├── policy/         # Audited desired GitHub policy and rollback baseline
 ├── scripts/        # Issue, review, validation, compatibility, and policy operations
@@ -58,8 +57,6 @@ capability; neither may restore background propagation.
 The organization-required workflow remains pinned to an immutable Touchstone
 revision outside the consumer PR and executes the same project contract.
 
-The surviving `templates/` describe the frozen pre-strip consumer shape and are
-historical inputs for compatibility audits, not the new architecture.
 `scripts/touchstone-run.sh` is the declaration-only validation engine,
 accepting schema 1 and schema 2; its contract lives in [docs/validation-contract.md](docs/validation-contract.md).
 `scripts/touchstone-tracker.sh` owns the tracker-neutral verified claim boundary;
@@ -141,3 +138,5 @@ Lint is separate, at pre-commit: `shellcheck`, `shfmt`, `markdownlint`, `actionl
 ## Contributing
 
 Open a PR for improvements to principles, templates, scripts, hooks, or skills. The same delivery workflow above applies here — Touchstone ships through its own gate.
+
+Current replacement scope and sequencing live in the [canonical Linear execution plan](https://linear.app/autumngarage/document/touchstone-execution-plan-post-strip-baseline-cac4c56e593e), not this durable overview.

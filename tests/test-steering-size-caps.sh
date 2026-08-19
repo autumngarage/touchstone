@@ -77,18 +77,17 @@ assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 9728
 
 echo "==> AGENTS.md size cap (24 KiB — leaves headroom under Codex's 32 KiB default)"
 assert_under "AGENTS.md" "$TOUCHSTONE_ROOT/AGENTS.md" 24576
-assert_under "templates/AGENTS.md" "$TOUCHSTONE_ROOT/templates/AGENTS.md" 24576
 
 echo "==> GEMINI.md size cap (24 KiB — same headroom)"
 assert_under "GEMINI.md" "$TOUCHSTONE_ROOT/GEMINI.md" 24576
-assert_under "templates/GEMINI.md" "$TOUCHSTONE_ROOT/templates/GEMINI.md" 24576
 
 # =============================================================================
 # Path integrity — the steering docs may not name a file that does not exist.
 #
-# Scanned: this repository's own steering surface AND templates/.
+# Scanned: this repository's own steering surface.
 #
-# templates/ was excluded at first, on the theory that a template describes a
+# (templates/ was scanned here too until its deletion; it was excluded at
+# first, on the theory that a template describes a
 # downstream project's tree rather than this one. The reviewer of the strip PR
 # immediately found the hole that left: templates/AGENTS.md still told projects
 # to run a wrapper this repo had just deleted. The theory was wrong, because a
@@ -239,11 +238,10 @@ else
   echo "  OK: nothing instructs the reader to run a CLI that does not exist"
 fi
 
-# Touchstone must obey the conventions it ships. templates/gitignore has
-# shipped '.claude/worktrees/' to every project since the agent-swarm workflow
-# landed; the repo root lacked the rule, so its OWN dirty-tree guards refused
-# whenever an agent worktree existed (PR #794). Assert BOTH sides so neither
-# can drift.
+# Touchstone must obey the conventions it ships. The repo root once lacked
+# the '.claude/worktrees/' ignore its templates shipped to every project, so
+# its OWN dirty-tree guards refused whenever an agent worktree existed
+# (PR #794). templates/ is deleted; the root-side rule remains asserted.
 echo ""
 echo "==> Self-conformance: agent worktrees are ignored"
 if git -C "$TOUCHSTONE_ROOT" check-ignore -q ".claude/worktrees/probe-slice/file.txt"; then
@@ -251,12 +249,6 @@ if git -C "$TOUCHSTONE_ROOT" check-ignore -q ".claude/worktrees/probe-slice/file
 else
   echo "FAIL: touchstone's own .gitignore must ignore .claude/worktrees/ (PR #794)" >&2
   echo "      Its dirty-tree guards refuse while any agent worktree exists." >&2
-  ERRORS=$((ERRORS + 1))
-fi
-if grep -qxF '.claude/worktrees/' "$TOUCHSTONE_ROOT/templates/gitignore"; then
-  echo "    OK: templates/gitignore still ships the same rule to projects"
-else
-  echo "FAIL: templates/gitignore must ship .claude/worktrees/ to every project (PR #794)" >&2
   ERRORS=$((ERRORS + 1))
 fi
 

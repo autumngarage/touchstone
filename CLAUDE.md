@@ -12,7 +12,7 @@ Codex and other AGENTS.md-native tools read `AGENTS.md`; Gemini CLI reads `GEMIN
 
 The block above is the canonical universal contract: agent roles, the engineering principles, the never-commit-on-main rule, the required delivery workflow, and a routing table that points to deeper docs rather than inlining them. Codex and Gemini agents read the same content via the `<!-- touchstone:steering -->` managed block in `AGENTS.md` / `GEMINI.md`.
 
-**Edit `TOUCHSTONE.md`, then run `bash scripts/render-steering.sh`.** It rewrites the managed block in `AGENTS.md`, `GEMINI.md`, `templates/AGENTS.md`, and `templates/GEMINI.md` from the canonical file, leaving content outside the markers untouched. `tests/test-steering-render.sh` fails if any block drifts, so a forgotten render is caught before it ships rather than becoming four divergent contracts.
+**Edit `TOUCHSTONE.md`, then run `bash scripts/render-steering.sh`.** It rewrites the managed block in `AGENTS.md` and `GEMINI.md` from the canonical file, leaving content outside the markers untouched. `tests/test-steering-render.sh` fails if any block drifts, so a forgotten render is caught before it ships rather than becoming divergent contracts.
 
 ## Touchstone-Specific Principles
 
@@ -45,7 +45,6 @@ touchstone/
 ├── docs/           # Touchstone-specific product contract and project documentation
 ├── principles/     # The judgment layer — universal docs routed to from TOUCHSTONE.md
 ├── skills/         # User-scoped Claude Code skills
-├── templates/      # Legacy transition inputs (nothing copies them today)
 ├── hooks/          # branch-guard.sh — the PreToolUse hook wired in .claude/settings.json
 ├── scripts/        # The surviving script surface: claim-issue, respond-review,
 │                   #   touchstone-run

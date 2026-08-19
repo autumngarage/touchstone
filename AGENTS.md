@@ -123,7 +123,6 @@ You are maintaining the standard baseline for a solo developer directing many ag
 - **Adoption must stay set-and-forget.** Consumer repositories carry declarations and narrow integration points, never copied Touchstone implementation. An adopted repository remains valid without routine rewrites; evolution is backward-compatible or an explicit reviewable upgrade. `docs/product-contract.md` is the canonical boundary.
 - **Delete by default.** The burden of proof is on keeping. A change earns its way in when a real failure demanded it, not because a review round suggested it.
 - **Portfolio scope is checked-in data.** Before adding an adoption detector, commit the supported repository shapes and real generated artifacts that justify it. An absent or ambiguous shape uses the manual plan; it does not earn a speculative parser.
-- Files in `templates/` are legacy transition inputs for the frozen downstream shape, not the future adoption contract. Nothing copies them today; do not extend their detection, setup, or vendored-runner model.
 - Downstream projects are frozen on committed copies of the old scripts, deliberately. Do not try to fix them from here.
 - All shell must stay portable to macOS. The base tool surface is `bash`, `git`, `gh`, `sed`, and `awk`; policy operations additionally use `jq`, which `setup.sh` installs and verifies.
 
@@ -150,7 +149,6 @@ touchstone/
 ├── docs/           # Touchstone-specific product contract and project documentation
 ├── principles/     # The judgment layer, routed to from TOUCHSTONE.md
 ├── skills/         # User-scoped Claude Code skills
-├── templates/      # Legacy transition inputs (nothing copies them today)
 ├── hooks/          # branch-guard.sh — PreToolUse hook wired in .claude/settings.json
 ├── scripts/        # claim-issue, respond-review, touchstone-run
 ├── audits/         # Dated drift/health reports (never auto-modified)
