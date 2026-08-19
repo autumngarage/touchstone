@@ -75,10 +75,18 @@ Raw `git` and `gh` remain the active delivery workflow. Source contributors can
 exercise the three bounded operations after the branch is pushed:
 
 ```bash
-bash bin/touchstone pr open --title "fix: some change" --body-file /tmp/pr-body
+bash bin/touchstone pr open --title "fix: some change" --body-file /tmp/pr-body \
+  --expect-branch fix/some-change
 bash bin/touchstone pr status <n>
 bash bin/touchstone pr merge <n> --head <reviewed-sha>
 ```
+
+`open` acts on the branch the invoking directory has checked out, which
+differs per worktree; `--expect-branch` states which one you meant, the way
+`merge --head` states which commit was reviewed. Write the branch name out.
+`$(git branch --show-current)` reads the same checkout the command reads, so
+it agrees with a wrong worktree and binds nothing. Two pull requests were
+opened for the wrong branch before this option existed.
 
 The exact raw recovery path remains:
 

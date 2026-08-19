@@ -13,6 +13,7 @@ TITLE=""
 BODY_FILE=""
 BASE_REF=""
 EXPECTED_HEAD=""
+EXPECTED_BRANCH=""
 OPERATION="${1:-}"
 PR_NUMBER=""
 CAPTURE_STDERR_TEMP=""
@@ -41,7 +42,8 @@ esac
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  touchstone pr open --title TITLE --body-file FILE [--base BRANCH] [--project DIR] [--json]
+  touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
+                     [--expect-branch BRANCH] [--project DIR] [--json]
   touchstone pr status PR [--project DIR] [--json]
   touchstone pr merge PR --head SHA [--project DIR] [--json]
 EOF
@@ -157,9 +159,18 @@ read_with_retry() {
   done
 }
 
+# Every project Git read goes through here. #920 sanitized the resolver, but
+# each later read still followed ambient GIT_DIR/GIT_WORK_TREE, so with those
+# exported -- as hooks and some CIs do -- `--project A` reported B's branch
+# and B's head one line after the resolver had ruled B out.
+project_git() {
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+    git -C "$PROJECT_ROOT" "$@"
+}
+
 read_repository() {
   (
-    unset GH_REPO
+    unset GH_REPO GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
     cd "$PROJECT_ROOT"
     gh repo view --json nameWithOwner,url,defaultBranchRef \
       --jq '[.nameWithOwner,.url,.defaultBranchRef.name] | @tsv'
@@ -223,6 +234,11 @@ while [ "$#" -gt 0 ]; do
       BASE_REF="$2"
       shift 2
       ;;
+    --expect-branch)
+      require_option_value "$@"
+      EXPECTED_BRANCH="$2"
+      shift 2
+      ;;
     --head)
       require_option_value "$@"
       EXPECTED_HEAD="$2"
@@ -236,14 +252,14 @@ done
 case "$OPERATION" in
   open)
     [ -z "$EXPECTED_HEAD" ] \
-      || fail_input "open received an option for another operation" "Use only --title, --body-file, and --base."
+      || fail_input "open received an option for another operation" "Use only --title, --body-file, --base, and --expect-branch."
     ;;
   status)
-    [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_HEAD" ] \
+    [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_HEAD$EXPECTED_BRANCH" ] \
       || fail_input "$OPERATION does not accept mutation options" "Pass only PR, --project, and --json."
     ;;
   merge)
-    [ -z "$TITLE$BODY_FILE$BASE_REF" ] \
+    [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_BRANCH" ] \
       || fail_input "merge received an option for another operation" "Use only --head."
     ;;
 esac
@@ -264,7 +280,12 @@ if [ -n "$PROJECT_ARG" ]; then
   PROJECT_ROOT="$(cd "$PROJECT_ARG" 2>/dev/null && pwd -P)" \
     || fail_input "project directory does not exist: $PROJECT_ARG" "Pass an existing Git repository with --project."
 else
-  PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
+  # Sanitized like every other project read: this lookup chooses PROJECT_ROOT
+  # itself, so ambient GIT_DIR/GIT_WORK_TREE here selects the whole repository
+  # the command then operates on -- and --expect-branch would match, because
+  # it would be comparing against that same ambient repository's branch.
+  PROJECT_ROOT="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+    git rev-parse --show-toplevel 2>/dev/null)" \
     || fail_input "not inside a Git repository" "Run from a repository or pass --project DIR."
 fi
 # env -u: an exported GIT_DIR/GIT_WORK_TREE would resolve the ambient
@@ -275,8 +296,22 @@ PROJECT_ROOT="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_F
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 [ -z "$BODY_FILE" ] || BODY_FILE="$(absolute_input_file "$BODY_FILE")"
 
-git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1 \
+project_git rev-parse --git-dir >/dev/null 2>&1 \
   || fail_input "project is not a Git repository" "Initialize the project before using PR commands."
+
+# Bind the caller's intent to the resolved branch, the way merge binds --head.
+# Without it, open acts on whatever branch the invoking directory happens to
+# have checked out -- a different branch per worktree, which is how two pull
+# requests were opened for the wrong branch. The check is purely local, so it
+# runs before GitHub is consulted: a mismatch costs no network call and no
+# partial work.
+if [ -n "$EXPECTED_BRANCH" ]; then
+  CURRENT_BRANCH="$(project_git branch --show-current)" \
+    || fail_operation "could not read the current branch" "Repair the local Git checkout."
+  [ "$EXPECTED_BRANCH" = "$CURRENT_BRANCH" ] \
+    || fail_input "expected branch $EXPECTED_BRANCH but $PROJECT_ROOT has '${CURRENT_BRANCH:-a detached HEAD}' checked out" \
+      "Run from the intended worktree, or point --project at it."
+fi
 command -v gh >/dev/null 2>&1 \
   || fail_operation "GitHub CLI is unavailable" "Install and authenticate gh."
 read_with_retry read_repository \
@@ -294,19 +329,23 @@ REPO_SPEC="$REPO_HOST/$REPO"
 gh auth status --hostname "$REPO_HOST" >/dev/null 2>&1 \
   || fail_operation "GitHub authentication failed for $REPO_HOST" "Run 'gh auth login --hostname $REPO_HOST' and retry."
 
+# The branch is reported, not just used: the operator's only check against
+# acting on the wrong worktree used to be inferring it from the PR URL.
 emit_open_result() {
-  local state="$1" number="$2" url="$3" head="$4" request="$5"
+  local state="$1" number="$2" url="$3" head="$4" request="$5" branch="$6"
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"open","status":"%s","pullRequest":%s,"url":' "$OUTPUT_SCHEMA" "$state" "$number"
     json_string "$url"
+    printf ',"branch":'
+    json_string "$branch"
     printf ',"head":'
     json_string "$head"
     printf ',"reviewRequest":'
     json_string "$request"
     printf '}\n'
   else
-    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  review request: %s\n' \
-      "$number" "$state" "$url" "$head" "$request"
+    printf 'PR #%s: %s\n  url: %s\n  branch: %s\n  head: %s\n  review request: %s\n' \
+      "$number" "$state" "$url" "$branch" "$head" "$request"
   fi
 }
 
@@ -355,11 +394,18 @@ open_pr() {
   [ -n "$TITLE" ] || fail_input "open requires --title" "Pass the PR title explicitly."
   [ -f "$BODY_FILE" ] && [ -s "$BODY_FILE" ] \
     || fail_input "open requires a non-empty --body-file" "Put the reviewed PR description in that file."
-  branch="$(git -C "$PROJECT_ROOT" branch --show-current)" \
+  branch="$(project_git branch --show-current)" \
     || fail_operation "could not read the current branch" "Repair the local Git checkout."
   [ -n "$branch" ] || fail_input "detached HEAD cannot open a PR" "Create or switch to a feature branch."
-  local_head="$(git -C "$PROJECT_ROOT" rev-parse HEAD)"
-  remote_line="$(git -C "$PROJECT_ROOT" ls-remote --heads origin "refs/heads/$branch" 2>/dev/null)" \
+  # Re-checked here, not only up front: the repository and authentication
+  # reads sit between the two, and a worktree that changed branches in that
+  # window would otherwise pass the early check and be mutated anyway --
+  # exactly the wrong-branch pull request this option exists to prevent.
+  [ -z "$EXPECTED_BRANCH" ] || [ "$EXPECTED_BRANCH" = "$branch" ] \
+    || fail_input "expected branch $EXPECTED_BRANCH but $PROJECT_ROOT now has '$branch' checked out" \
+      "The checkout changed while the command was running; retry from a settled worktree."
+  local_head="$(project_git rev-parse HEAD)"
+  remote_line="$(project_git ls-remote --heads origin "refs/heads/$branch" 2>/dev/null)" \
     || fail_operation "could not read origin/$branch" "Push the branch and verify remote access."
   remote_head="${remote_line%%[[:space:]]*}"
   [ -n "$remote_head" ] || fail_input "origin/$branch does not exist" "Run 'git push -u origin HEAD' first."
@@ -380,7 +426,7 @@ open_pr() {
   count="$(printf '%s\n' "$rows" | awk 'NF { count++ } END { print count + 0 }')"
   [ "$count" -le 1 ] || fail_operation "multiple open pull requests use branch '$branch'" "Close or retarget duplicates."
   if [ "$count" -eq 0 ]; then
-    create_output="$(cd "$PROJECT_ROOT" && gh pr create --repo "$REPO_SPEC" --head "$branch" --base "$BASE_REF" \
+    create_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr create --repo "$REPO_SPEC" --head "$branch" --base "$BASE_REF" \
       --title "$TITLE" --body-file "$BODY_FILE" 2>&1)" || create_status=$?
     read_with_retry gh pr list --repo "$REPO_SPEC" --state open --head "$branch" --limit 100 \
       --json number,url,headRefOid,baseRefName,baseRefOid \
@@ -417,7 +463,7 @@ open_pr() {
   if [ -n "$existing_request" ]; then
     request_url="$(printf '%s\n' "$existing_request" | sed -n '1p')"
     wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url"
-    emit_open_result "$state" "$number" "$url" "$local_head" "existing:$request_url"
+    emit_open_result "$state" "$number" "$url" "$local_head" "existing:$request_url" "$branch"
     return 0
   fi
   moved_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$request_head_marker" -v author="$request_author" \
@@ -443,7 +489,7 @@ $request_marker"
     || fail_operation "review request returned $request_url but was not verified" \
       "Inspect comments before retrying; a rerun will reuse a surviving exact-binding request."
   wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url"
-  emit_open_result "$state" "$number" "$url" "$local_head" "posted:$request_url"
+  emit_open_result "$state" "$number" "$url" "$local_head" "posted:$request_url" "$branch"
 }
 
 read_pr_row() {
@@ -491,7 +537,7 @@ merge_pr() {
     final_state=already-merged
   else
     [ "$state" = OPEN ] || fail_input "PR #$PR_NUMBER is $state" "Only an open or merged PR is supported."
-    merge_output="$(cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash \
+    merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash \
       --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
     merge_diagnostic="$(clean_diagnostic "$merge_output")"
     read_with_retry gh api graphql --hostname "$REPO_HOST" \

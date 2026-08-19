@@ -152,6 +152,95 @@ else
   pass "touchstone-run.sh sources nothing"
 fi
 
+echo "==> pr open binds the branch it will act on"
+# Two pull requests were opened for the wrong branch because open acts on
+# whatever branch the invoking directory has checked out, and a worktree has a
+# different one per directory. --expect-branch states the intent; the refusal
+# is local, so it must land before GitHub is consulted -- these fixtures have
+# no remote at all, and a check that reached the network could not run here.
+WT_MAIN="$TMP_DIR/wt-main"
+git init -q "$WT_MAIN"
+git -C "$WT_MAIN" config user.email touchstone@example.com
+git -C "$WT_MAIN" config user.name Touchstone
+printf 'seed\n' >"$WT_MAIN/seed.txt"
+git -C "$WT_MAIN" add seed.txt
+git -C "$WT_MAIN" commit -qm "seed"
+git -C "$WT_MAIN" checkout -q -b feat/first
+git -C "$WT_MAIN" worktree add -q "$TMP_DIR/wt-second" -b feat/second
+
+# The option is only a safety binding if an operator can find it: the
+# unknown-argument error points at this help text.
+out="$(bash "$REPO_ROOT/scripts/touchstone-pr.sh" pr 2>&1 || true)"
+case "$out" in
+  *"--expect-branch BRANCH"*) pass "the help text advertises the branch binding" ;;
+  *) fail "usage() omits --expect-branch: $out" ;;
+esac
+
+out="$(bash "$REPO_ROOT/scripts/touchstone-pr.sh" open --project "$TMP_DIR/wt-second" --expect-branch feat/first 2>&1 || true)"
+case "$out" in
+  *"expected branch feat/first"*"feat/second"*) pass "a branch mismatch is refused, naming both branches" ;;
+  *) fail "open did not refuse a branch mismatch: $out" ;;
+esac
+case "$out" in
+  *"could not resolve the canonical base repository"*)
+    fail "open consulted GitHub before checking the branch it was given"
+    ;;
+  *) pass "the refusal happens before any network call" ;;
+esac
+
+out="$(bash "$REPO_ROOT/scripts/touchstone-pr.sh" open --project "$TMP_DIR/wt-second" --expect-branch feat/second 2>&1 || true)"
+case "$out" in
+  *"expected branch"*) fail "open refused a branch that matched: $out" ;;
+  *) pass "a matching branch proceeds past the binding" ;;
+esac
+
+out="$(bash "$REPO_ROOT/scripts/touchstone-pr.sh" open --project "$TMP_DIR/wt-second" --expect-branch 2>&1 || true)"
+case "$out" in
+  *"missing value for --expect-branch"*) pass "a bare --expect-branch is refused" ;;
+  *) fail "open accepted --expect-branch with no value: $out" ;;
+esac
+
+# An omitted value followed by another option must be reported as missing,
+# not swallowed as the branch name -- which would also silently drop the
+# output mode the caller asked for.
+out="$(bash "$REPO_ROOT/scripts/touchstone-pr.sh" open --project "$TMP_DIR/wt-second" --expect-branch --json 2>&1 || true)"
+case "$out" in
+  *"missing value for --expect-branch"*) pass "an option token is not consumed as the branch name" ;;
+  *) fail "open took --json as the branch name: $out" ;;
+esac
+
+# The implicit (no --project) path chooses PROJECT_ROOT from the working
+# directory. Unsanitized, ambient GIT_DIR selected a different repository
+# entirely -- and --expect-branch matched, because it compared against that
+# same ambient repository.
+out="$(cd "$TMP_DIR/wt-second" && GIT_DIR="$WT_MAIN/.git" GIT_WORK_TREE="$WT_MAIN" \
+  bash "$REPO_ROOT/scripts/touchstone-pr.sh" open --expect-branch feat/second 2>&1 || true)"
+case "$out" in
+  *"expected branch feat/second"*)
+    fail "ambient GIT_DIR redirected the implicit repository lookup: $out"
+    ;;
+  *) pass "the implicit lookup ignores ambient GIT_DIR too" ;;
+esac
+
+# #920 sanitized the resolver but not the reads after it, so with GIT_DIR
+# exported every later project read answered for the ambient repository --
+# here, refusing a correct --expect-branch by reporting another repo's branch.
+out="$(GIT_DIR="$WT_MAIN/.git" GIT_WORK_TREE="$WT_MAIN" \
+  bash "$REPO_ROOT/scripts/touchstone-pr.sh" open --project "$TMP_DIR/wt-second" \
+  --expect-branch feat/second 2>&1 || true)"
+case "$out" in
+  *"expected branch feat/second"*)
+    fail "ambient GIT_DIR made open read another repository's branch: $out"
+    ;;
+  *) pass "ambient GIT_DIR cannot redirect the branch binding" ;;
+esac
+
+out="$(bash "$REPO_ROOT/scripts/touchstone-pr.sh" status 1 --project "$TMP_DIR/wt-second" --expect-branch feat/second 2>&1 || true)"
+case "$out" in
+  *"does not accept mutation options"*) pass "status rejects an option that belongs to open" ;;
+  *) fail "status accepted --expect-branch: $out" ;;
+esac
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "$FAILURES check(s) failed" >&2
   exit 1
