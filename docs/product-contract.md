@@ -42,7 +42,7 @@ explain that owner's decision; they may not recompute it.
 | Require inline review threads to be resolved | GitHub conversation resolution | GitHub review thread state | An unresolved thread blocks even after a reply; resolution alone cannot satisfy the separate answer check |
 | Bind merge to the reviewed head | GitHub merge API | Expected head passed to the merge mutation | Moving the head before merge is rejected |
 | Claim work | Configured tracker adapter | Tracker-neutral claim contract | GitHub- and Linear-backed fixtures distinguish verified from unavailable transport |
-| Carry agent steering | Repository instruction files | Versioned, marked Touchstone block plus project-owned guidance | Resolved-instruction fixtures and controlled behavioral trials show each supported driver loads and follows the contract |
+| Carry agent steering | Repository instruction files | Versioned, marked Touchstone block plus project-owned guidance | Deterministic size-cap, path-integrity, and steering-contract assertions in the required suite |
 | Adopt and evolve a repository | Touchstone CLI adoption module | Versioned project declarations and reviewable plan/apply output | Fresh, current, repeat, old-compatible, and unsupported-schema fixtures |
 | Install and upgrade the local tool | Homebrew | Versioned formula and checksummed release | Install, upgrade, rollback, and no-project-mutation tests pass |
 
@@ -73,13 +73,21 @@ a copy of Touchstone's implementation:
 Touchstone does not vendor its CLI, general-purpose libraries, delivery
 wrappers, or an updater into consumer repositories.
 
-Steering confidence requires two proof lanes. Deterministic offline fixtures
-resolve the exact instruction set each supported driver receives, including
-imports, nested scope, truncation, and conflicts. Versioned behavioral trials
-then exercise real agents in disposable repositories against controls. Phrase
-presence alone is not compliance evidence, and behavioral evidence expires
-when the driver, model, or loading semantics change. Live-provider trials never
-run on the required merge path.
+Steering confidence rests on deterministic checks: the required suite asserts
+size caps, path integrity, render drift, and the contract phrases each
+supported driver file must carry.
+
+Phrase presence alone is not compliance evidence, and that limit is accepted
+knowingly: these checks prove the contract reached the file, not that an agent
+obeyed it.
+
+The behavioral lane that once measured real agents against controls was
+deleted with Milestone 6. It existed to prove the steering worked, then
+required its own trust apparatus -- an evaluator evaluating the evaluator --
+and the recursion cost more than the evidence was worth. The canary is the
+replacement: a live repository adopting and surviving a compatible release is
+stronger proof than a scripted scenario, and it needs no apparatus of its
+own.
 
 Automated checks are also insufficient as a product verdict. Before a canary,
 versioned operator journeys exercise initial installation and adoption, normal

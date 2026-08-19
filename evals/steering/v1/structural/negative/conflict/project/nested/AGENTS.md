@@ -1,1 +1,0 @@
-RULE:branch-first:ALLOW_DEFAULT_EDIT
