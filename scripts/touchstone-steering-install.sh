@@ -27,6 +27,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SOURCE="$ROOT/TOUCHSTONE.md"
+PRINCIPLES_SOURCE="$ROOT/principles"
+# Where the routed documents live on the machine. The block's routing table is
+# rewritten to point here, so `principles/git-workflow.md` resolves for an
+# agent in a repository that carries no Touchstone files.
+PRINCIPLES_RELATIVE=".touchstone/principles"
 BEGIN_MARKER='<!-- touchstone:steering:start -->'
 # The start marker may carry attributes (see restore-newline below).
 BEGIN_MARKER_RE='^<!-- touchstone:steering:start( restore-newline)? -->$'
@@ -94,6 +99,10 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 render_block() {
   local out="$1"
+  # The routing table names principles/*.md. Those documents are installed
+  # beside the block, so the paths must resolve from the agent's home rather
+  # than from a repository that no longer carries them.
+  local principles_home="$HOME_DIR/$PRINCIPLES_RELATIVE"
   {
     printf '%s\n' "$BEGIN_MARKER"
     cat <<'EOF'
@@ -102,7 +111,7 @@ render_block() {
      project's TOUCHSTONE.md upstream and reinstall. Everything outside the
      markers is yours. Remove with: touchstone steering uninstall -->
 EOF
-    cat "$SOURCE"
+    sed "s|\`principles/|\`$principles_home/|g" "$SOURCE"
     if [ -n "$(tail -c 1 "$SOURCE")" ]; then printf '\n'; fi
     printf '%s\n' "$END_MARKER"
   } >"$out"
@@ -212,6 +221,28 @@ compose_removal() {
 BLOCK="$TMP_DIR/block"
 render_block "$BLOCK"
 
+install_principles() {
+  local destination="$HOME_DIR/$PRINCIPLES_RELATIVE" doc
+  [ -d "$PRINCIPLES_SOURCE" ] || die "routed steering documents are missing: $PRINCIPLES_SOURCE"
+  mkdir -p "$destination" || die "could not create $destination"
+  for doc in "$PRINCIPLES_SOURCE"/*.md; do
+    [ -f "$doc" ] || continue
+    cp "$doc" "$destination/.$(basename "$doc").$$" || die "could not stage $(basename "$doc")"
+    mv -f -- "$destination/.$(basename "$doc").$$" "$destination/$(basename "$doc")" \
+      || die "could not install $(basename "$doc")"
+  done
+}
+
+principles_current() {
+  local destination="$HOME_DIR/$PRINCIPLES_RELATIVE" doc
+  [ -d "$destination" ] || return 1
+  for doc in "$PRINCIPLES_SOURCE"/*.md; do
+    [ -f "$doc" ] || continue
+    cmp -s "$doc" "$destination/$(basename "$doc")" || return 1
+  done
+  return 0
+}
+
 CHANGED=0
 DRIFTED=0
 NEEDS_NEWLINE_RESTORE=false
@@ -287,6 +318,15 @@ for entry in "${TARGETS[@]}"; do
       *) path="$(cd "$(dirname "$path")" && pwd -P)/$link_target" ;;
     esac
   done
+  # Two driver paths may be symlinks to one shared document. Installing it
+  # twice would have the second staging file overwrite the first and leave an
+  # orphan; the block is identical, so the first write is sufficient.
+  case " ${INSTALL_PATHS[*]-} " in
+    *" $path "*)
+      printf '  shared: %s resolves to an already-staged file\n' "$relative"
+      continue
+      ;;
+  esac
   mkdir -p "$(dirname "$path")" || die "could not create $(dirname "$path")"
   staged="$path.touchstone-steering.$$"
   # cp -p onto an existing target would copy the workspace file's mode; copy
@@ -325,6 +365,10 @@ done
 
 case "$ACTION" in
   check)
+    if ! principles_current; then
+      printf '  DRIFT: %s does not carry the current routed documents\n' "$PRINCIPLES_RELATIVE" >&2
+      DRIFTED=$((DRIFTED + 1))
+    fi
     if [ "$DRIFTED" -ne 0 ]; then
       echo "ERROR: $DRIFTED user-level steering file(s) do not carry the current contract" >&2
       echo "Run: touchstone steering install" >&2
@@ -333,13 +377,15 @@ case "$ACTION" in
     echo "==> PASS: every supported driver reads the current contract"
     ;;
   install)
-    if [ "$CHANGED" -eq 0 ]; then
+    install_principles
+    if [ "$CHANGED" -eq 0 ] && principles_current; then
       echo "==> already current: machine-level steering matches the contract"
     else
       echo "==> steering reaches every agent on this machine; repositories carry none"
     fi
     ;;
   uninstall)
-    echo "==> removed from $CHANGED file(s); content outside the markers untouched"
+    rm -rf -- "${HOME_DIR:?}/${PRINCIPLES_RELATIVE:?}"
+    echo "==> removed from $CHANGED file(s) plus the routed documents; content outside the markers untouched"
     ;;
 esac

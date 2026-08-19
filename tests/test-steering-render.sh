@@ -415,6 +415,49 @@ else
   fail "a refresh cycle changed the operator's bytes"
 fi
 
+echo "==> the routed documents are installed and the block points at them"
+HROUTE="$TMP_DIR/hroute"
+bash "$INSTALL" install --home "$HROUTE" >/dev/null 2>&1
+routed_path="$(grep -o '`[^`]*principles/git-workflow.md`' "$HROUTE/.claude/CLAUDE.md" | head -1 | tr -d '`')"
+if [ -n "$routed_path" ] && [ -f "$routed_path" ]; then
+  pass "the block's routing table resolves to an installed document"
+else
+  fail "the block routes to principles/*.md that the installer never placed: $routed_path"
+fi
+if [ "$(find "$HROUTE/.touchstone/principles" -name '*.md' | wc -l | tr -d ' ')" -gt 0 ]; then
+  pass "routed documents are installed beside the block"
+else
+  fail "no routed documents were installed"
+fi
+# Drift in a routed document must fail check: an agent reading a stale
+# principle is the failure this whole mechanism exists to prevent.
+printf '\nDRIFTED\n' >>"$HROUTE/.touchstone/principles/git-workflow.md"
+if bash "$INSTALL" check --home "$HROUTE" >/dev/null 2>&1; then
+  fail "check passed a modified routed document"
+else
+  pass "a modified routed document fails check"
+fi
+bash "$INSTALL" uninstall --home "$HROUTE" >/dev/null 2>&1
+if [ -d "$HROUTE/.touchstone/principles" ]; then
+  fail "uninstall left the routed documents behind"
+else
+  pass "uninstall removes the routed documents"
+fi
+
+echo "==> two driver paths aliased to one file receive a single block"
+HALIAS="$TMP_DIR/halias"
+ALIASREAL="$TMP_DIR/aliasreal"
+mkdir -p "$HALIAS/.claude" "$HALIAS/.codex" "$ALIASREAL"
+printf 'SHARED DOTFILE\n' >"$ALIASREAL/shared.md"
+ln -s "$ALIASREAL/shared.md" "$HALIAS/.claude/CLAUDE.md"
+ln -s "$ALIASREAL/shared.md" "$HALIAS/.codex/AGENTS.md"
+bash "$INSTALL" install --home "$HALIAS" >/dev/null 2>&1
+if [ "$(grep -c 'touchstone:steering:start' "$ALIASREAL/shared.md")" = 1 ]; then
+  pass "a shared destination receives exactly one block"
+else
+  fail "an aliased destination received $(grep -c 'touchstone:steering:start' "$ALIASREAL/shared.md") blocks"
+fi
+
 echo "==> an unrecognized start-marker attribute is refused, not normalized away"
 # A future version may add attributes. This version must not silently treat a
 # marker it does not understand as current, nor rewrite the block around it.

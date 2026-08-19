@@ -12,7 +12,8 @@ not be copied or routed into consumer projects.
 
 Steering reaches agents through the **installed tool**, not through consumer
 repositories. `touchstone steering install` writes one delimited, idempotent
-block into each supported driver's user-level instruction file
+block into each supported driver's user-level instruction file, alongside the
+`principles/*.md` documents its routing table names
 (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`); every
 driver layers project files over that, so a repository still has the last
 word without carrying a copy.
