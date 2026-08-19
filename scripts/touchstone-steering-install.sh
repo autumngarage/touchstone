@@ -150,10 +150,16 @@ compose() {
 # Remove the block and the blank line that introduced it, leaving the rest
 # byte-identical.
 compose_removal() {
-  local path="$1" out="$2" begin_line end_line tail_offset
+  local path="$1" out="$2" begin_line end_line tail_offset begin_count end_count
+  # Same validation the install path uses. Removing a block from a file with
+  # repeated or reversed markers would delete a span the operator owns.
+  begin_count="$(awk -v m="$BEGIN_MARKER" '$0 == m { c++ } END { print c + 0 }' "$path")"
+  end_count="$(awk -v m="$END_MARKER" '$0 == m { c++ } END { print c + 0 }' "$path")"
+  [ "$begin_count" = 1 ] && [ "$end_count" = 1 ] || return 1
   begin_line="$(awk -v m="$BEGIN_MARKER" '$0 == m { print NR; exit }' "$path")"
   end_line="$(awk -v m="$END_MARKER" '$0 == m { print NR; exit }' "$path")"
   [ -n "$begin_line" ] && [ -n "$end_line" ] || return 1
+  [ "$begin_line" -lt "$end_line" ] || return 1
   local keep=$((begin_line - 1)) strip_trailing_newline=false
   if [ "$keep" -gt 0 ] && [ -z "$(sed -n "${keep}p" "$path")" ]; then
     keep=$((keep - 1))
@@ -182,6 +188,9 @@ render_block "$BLOCK"
 
 CHANGED=0
 DRIFTED=0
+STAGED_PATHS=()
+INSTALL_PATHS=()
+INSTALL_LABELS=()
 
 for entry in "${TARGETS[@]}"; do
   driver="${entry%%:*}"
@@ -228,6 +237,14 @@ for entry in "${TARGETS[@]}"; do
     continue
   fi
 
+  # A symlinked instruction file is a deliberate arrangement (dotfiles repos
+  # do this). Write through to its referent instead of replacing the link
+  # with a regular file, which would silently orphan the operator's real file.
+  if [ -L "$path" ]; then
+    resolved="$(cd "$(dirname "$path")" && cd "$(dirname "$(readlink "$path")")" 2>/dev/null && pwd -P)/$(basename "$(readlink "$path")")"
+    [ -n "$resolved" ] || die "could not resolve the symlink at $path"
+    path="$resolved"
+  fi
   mkdir -p "$(dirname "$path")" || die "could not create $(dirname "$path")"
   staged="$path.touchstone-steering.$$"
   # cp -p onto an existing target would copy the workspace file's mode; copy
@@ -244,12 +261,24 @@ for entry in "${TARGETS[@]}"; do
       || chmod "$(stat -f '%Lp' "$path" 2>/dev/null || printf 644)" "$staged" 2>/dev/null \
       || printf '  warning: could not preserve permissions on %s (%s)\n' "$relative" "$existing_mode" >&2
   fi
-  mv -f -- "$staged" "$path" || {
-    rm -f -- "$staged"
-    die "could not write $path"
-  }
-  printf '  %s: %s\n' "$([ "$ACTION" = uninstall ] && printf removed || printf installed)" "$relative"
+  STAGED_PATHS+=("$staged")
+  INSTALL_PATHS+=("$path")
+  INSTALL_LABELS+=("$relative")
   CHANGED=$((CHANGED + 1))
+done
+
+# Install phase. Every payload is staged beside its destination, so a
+# malformed later driver file cannot leave earlier ones already replaced.
+index=0
+for staged in ${STAGED_PATHS[@]+"${STAGED_PATHS[@]}"}; do
+  destination="${INSTALL_PATHS[$index]}"
+  label="${INSTALL_LABELS[$index]}"
+  index=$((index + 1))
+  mv -f -- "$staged" "$destination" || {
+    for cleanup in "${STAGED_PATHS[@]}"; do rm -f -- "$cleanup"; done
+    die "could not write $destination; re-run to converge the rest"
+  }
+  printf '  %s: %s\n' "$([ "$ACTION" = uninstall ] && printf removed || printf installed)" "$label"
 done
 
 case "$ACTION" in

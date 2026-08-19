@@ -30,9 +30,11 @@ was the tax that produced that drift.
 Two costs are accepted deliberately:
 
 - **Per machine, not per repository.** An agent on a machine that never ran
-  the installer receives no steering. `touchstone steering check` reports it,
-  and adoption records the required contract version so an unsteered agent can
-  be told what it is missing rather than guessing.
+  the installer receives no steering. `touchstone steering check` reports it
+  by comparing the installed block against the contract the running tool
+  carries, so a stale or absent install is visible. There is deliberately no
+  separate version record: the installed tool *is* the version, and a second
+  number to keep in sync would be one more thing to drift.
 - **The contract must stay small.** Distribution being free removes the
   friction that previously limited growth, so the size caps in
   `tests/test-steering-size-caps.sh` are the replacement constraint: adding to
@@ -75,7 +77,7 @@ explain that owner's decision; they may not recompute it.
 | Require inline review threads to be resolved | GitHub conversation resolution | GitHub review thread state | An unresolved thread blocks even after a reply; resolution alone cannot satisfy the separate answer check |
 | Bind merge to the reviewed head | GitHub merge API | Expected head passed to the merge mutation | Moving the head before merge is rejected |
 | Claim work | Configured tracker adapter | Tracker-neutral claim contract | GitHub- and Linear-backed fixtures distinguish verified from unavailable transport |
-| Carry agent steering | Repository instruction files | Versioned, marked Touchstone block plus project-owned guidance | Deterministic size-cap, path-integrity, and steering-contract assertions in the required suite |
+| Carry agent steering | The installed tool, machine-wide | One delimited block in each driver's user-level instruction file; repositories carry none | `touchstone steering check` compares the installed block against the tool's contract; deterministic size-cap, path-integrity, and steering-contract assertions run in the required suite |
 | Adopt and evolve a repository | Touchstone CLI adoption module | Versioned project declarations and reviewable plan/apply output | Fresh, current, repeat, old-compatible, and unsupported-schema fixtures |
 | Install and upgrade the local tool | Homebrew | Versioned formula and checksummed release | Install, upgrade, rollback, and no-project-mutation tests pass |
 

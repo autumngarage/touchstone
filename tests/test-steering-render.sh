@@ -365,6 +365,37 @@ else
   fail "install widened permissions ($before_mode -> $after_mode)"
 fi
 
+echo "==> a symlinked instruction file is written through, not replaced"
+HSYM="$TMP_DIR/hsym"
+SYMREAL="$TMP_DIR/symreal"
+mkdir -p "$HSYM/.claude" "$SYMREAL"
+printf 'DOTFILES CONTENT\n' >"$SYMREAL/claude.md"
+ln -s "$SYMREAL/claude.md" "$HSYM/.claude/CLAUDE.md"
+bash "$INSTALL" install --home "$HSYM" >/dev/null 2>&1
+if [ -L "$HSYM/.claude/CLAUDE.md" ]; then
+  pass "the symlink itself is preserved"
+else
+  fail "install replaced a symlink with a regular file"
+fi
+if grep -qF '## Touchstone — Shared Agent Steering' "$SYMREAL/claude.md"; then
+  pass "the referent received the block"
+else
+  fail "install wrote past the symlink without updating its referent"
+fi
+
+echo "==> uninstall refuses a file with malformed markers"
+HBAD="$TMP_DIR/hbad"
+mkdir -p "$HBAD/.gemini"
+printf 'keep\n<!-- touchstone:steering:end -->\nmid\n<!-- touchstone:steering:start -->\ntail\n' \
+  >"$HBAD/.gemini/GEMINI.md"
+bad_before="$(cksum <"$HBAD/.gemini/GEMINI.md")"
+bash "$INSTALL" uninstall --home "$HBAD" >/dev/null 2>&1 || true
+if [ "$bad_before" = "$(cksum <"$HBAD/.gemini/GEMINI.md")" ]; then
+  pass "reversed markers leave the file untouched"
+else
+  fail "uninstall mangled a file with reversed markers"
+fi
+
 echo "==> check distinguishes operator edits from real drift"
 H3="$TMP_DIR/h3"
 bash "$INSTALL" install --home "$H3" >/dev/null
