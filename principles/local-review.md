@@ -9,11 +9,30 @@ bounded local review. The GitHub side — answering findings, thread resolution,
 the round budget, merge — lives in `principles/git-workflow.md` and is not
 restated here.
 
-**Reviewer vendors.** The local reviewer is the CodeRabbit CLI; the PR deep
-reviewer is Codex. Swapping either changes this paragraph, the project's
-review declaration, and the provider-specific recovery procedure in
-`principles/git-workflow.md` — three places, listed here so a swap can be done
-completely rather than half-done.
+**The tier routes the tool — deterministically.** Classify the change, and
+the classification picks the reviewer; no judgment is left in the loop:
+
+| Tier | Local pass before commit | Command |
+|---|---|---|
+| trivial | none | — |
+| normal | one CodeRabbit pass | `coderabbit review --agent --committed --base <default>` |
+| serious | one Codex deep review | `codex review --base <default>` |
+
+Never run both locally on one slice: measured on 2026-08-19, the two invert
+cleanly — Codex found 71 of 81 code findings on a 6k-line shell PR while
+CodeRabbit led 13 to 5 on a docs-only PR — so the second local pass buys
+duplication, not coverage. The PR-side reviewers run on open regardless and
+remain the merge authority.
+
+Local Codex reads `AGENTS.md` and applies its rules as review authority —
+observed citing this repository's own rule lines in findings — so durable
+review rules belong there, not in per-run prompts. (Its CLI accepts either
+`--base` or a custom prompt, not both, which makes `AGENTS.md` the only
+reliable channel for standing instructions.)
+
+Swapping a vendor changes this table, the project's review declaration, and
+the provider-specific recovery procedure in `principles/git-workflow.md` —
+three places, listed so a swap is done completely rather than half-done.
 
 ## Work slicing
 
@@ -104,9 +123,9 @@ data-loss risk); security (authentication, authorization, secrets, user data,
 payments, exposed APIs); public interfaces used by multiple subsystems;
 performance-critical paths; broad agent-generated or cross-system diffs that
 one focused scenario cannot validate; anything expensive to diagnose or roll
-back after merge. Path: deterministic checks, optionally one local pass for
-obvious current-diff defects, make the PR coherent and stable, then **one**
-deep review on the stable PR before merge — never on every push.
+back after merge. Path: deterministic checks, one local Codex review of the
+branch before push, make the PR coherent and stable, then **one** deep review
+on the stable PR before merge — never on every push.
 
 When torn between normal and serious, pick serious only for genuinely high
 blast radius. Many lines is not a trigger.
@@ -152,12 +171,12 @@ A project declares whether this pass is expected in its review declaration
 reviewer, the tier's local obligation is satisfied by its deterministic
 checks alone, and the PR-visible review remains unchanged.
 
-**The local pass is quota-bound.** Providers meter it, so a driver that
-re-runs after every edit exhausts the budget and blocks itself for the next
-real change. This is a second reason the rules above allow one pass per
-coherent slice and no confirming re-run. When the quota is exhausted, record
-that fact in the validation block and proceed — the PR-visible review is the
-authority and is never quota-bound by this path.
+**Local passes and PR-side reviews can share one metered pool**, depending on
+the provider's plan. A driver that re-runs locally after every edit is then
+spending the budget the merge gate depends on — a second reason the rules
+above allow one pass per coherent slice and no confirming re-run. When a
+quota is exhausted, record that fact in the validation block and proceed; the
+PR-visible review is the authority.
 
 Afterwards: triage each finding as valid, false positive, duplicate, or out of
 scope; apply only valid fixes; do not re-run the pass to confirm the
