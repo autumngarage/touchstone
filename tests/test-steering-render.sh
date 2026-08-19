@@ -1297,12 +1297,16 @@ echo "==> replacing an operator manifest preserves its bytes"
 H41="$TMP_DIR/h41"
 mkdir -p "$H41/.touchstone/principles" "$H41/dotfiles"
 printf 'IMPORTANT\tmemo\n' >"$H41/dotfiles/memo-manifest"
+cp "$H41/dotfiles/memo-manifest" "$TMP_DIR/h41-original"
 ln -s "$H41/dotfiles/memo-manifest" "$H41/.touchstone/principles/.touchstone-installed"
-bash "$INSTALL" install --home "$H41" >/dev/null 2>&1 || true
-if grep -rqF 'IMPORTANT' "$H41/.touchstone/principles/" || grep -qF 'IMPORTANT' "$H41/dotfiles/memo-manifest" 2>/dev/null; then
-  pass "the prior manifest bytes survive somewhere recoverable"
+# The install must complete: a failure before the replacement would leave the
+# original bytes in place and pass this test without exercising recovery.
+bash "$INSTALL" install --home "$H41" >/dev/null 2>&1 \
+  || fail "install did not complete over an operator manifest symlink"
+if cmp -s "$TMP_DIR/h41-original" "$H41/.touchstone/principles/.touchstone-installed.replaced"; then
+  pass "the replaced manifest bytes are preserved exactly"
 else
-  fail "install destroyed the operator manifest content it replaced"
+  fail "the preserved copy is missing or does not match the original bytes"
 fi
 
 echo "==> unknown actions and arguments fail closed"

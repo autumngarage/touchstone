@@ -491,10 +491,10 @@ install_principles() {
   local manifest_target
   manifest_target="$(resolve_link "$destination/$PRINCIPLES_MANIFEST")"
   if [ -f "$manifest_target" ] && ! cmp -s "$manifest_target" "$manifest_staged"; then
-    backup="$destination/.$PRINCIPLES_MANIFEST.replaced"
+    backup="$destination/$PRINCIPLES_MANIFEST.replaced"
     suffix=1
     while [ -e "$backup" ] || [ -L "$backup" ]; do
-      backup="$destination/.$PRINCIPLES_MANIFEST.replaced.$suffix"
+      backup="$destination/$PRINCIPLES_MANIFEST.replaced.$suffix"
       suffix=$((suffix + 1))
       [ "$suffix" -le 1000 ] || die "too many preserved manifests; clear $destination"
     done
