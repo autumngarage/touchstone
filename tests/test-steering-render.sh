@@ -415,6 +415,35 @@ else
   fail "a refresh cycle changed the operator's bytes"
 fi
 
+echo "==> an unrecognized start-marker attribute is refused, not normalized away"
+# A future version may add attributes. This version must not silently treat a
+# marker it does not understand as current, nor rewrite the block around it.
+HATTR="$TMP_DIR/hattr"
+bash "$INSTALL" install --home "$HATTR" >/dev/null 2>&1
+python3 - "$HATTR/.claude/CLAUDE.md" <<'PYEOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+p.write_text(p.read_text().replace(
+  "<!-- touchstone:steering:start -->",
+  "<!-- touchstone:steering:start future-feature -->", 1))
+PYEOF
+attr_before="$(cksum <"$HATTR/.claude/CLAUDE.md")"
+if bash "$INSTALL" check --home "$HATTR" >/dev/null 2>&1; then
+  fail "check accepted a start marker with an unknown attribute"
+else
+  pass "an unknown marker attribute fails check"
+fi
+if bash "$INSTALL" install --home "$HATTR" >/dev/null 2>&1; then
+  fail "install rewrote a block whose marker it does not understand"
+else
+  pass "install refuses a marker it does not understand"
+fi
+if [ "$attr_before" = "$(cksum <"$HATTR/.claude/CLAUDE.md")" ]; then
+  pass "the refused file is left untouched"
+else
+  fail "install modified a file it refused"
+fi
+
 echo "==> a multi-hop symlink chain is followed to its final referent"
 HCHAIN="$TMP_DIR/hchain"
 CHAINREAL="$TMP_DIR/chainreal"

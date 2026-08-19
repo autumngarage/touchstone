@@ -29,7 +29,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SOURCE="$ROOT/TOUCHSTONE.md"
 BEGIN_MARKER='<!-- touchstone:steering:start -->'
 # The start marker may carry attributes (see restore-newline below).
-BEGIN_MARKER_RE='^<!-- touchstone:steering:start( [^>]*)? -->$'
+BEGIN_MARKER_RE='^<!-- touchstone:steering:start( restore-newline)? -->$'
+# Any start-marker-shaped line, so an unrecognized attribute is detected as a
+# marker this version does not understand rather than ignored as prose.
+BEGIN_MARKER_ANY='^<!-- touchstone:steering:start( .*)? -->$'
 END_MARKER='<!-- touchstone:steering:end -->'
 
 # driver:relative path. Every supported driver reads a user-level instruction
@@ -118,8 +121,12 @@ compose() {
     return 0
   fi
 
-  begin_count="$(awk -v m="$BEGIN_MARKER_RE" '$0 ~ m { c++ } END { print c + 0 }' "$path")"
+  begin_count="$(awk -v m="$BEGIN_MARKER_ANY" '$0 ~ m { c++ } END { print c + 0 }' "$path")"
   end_count="$(awk -v m="$END_MARKER" '$0 == m { c++ } END { print c + 0 }' "$path")"
+  unknown_attr="$(awk -v any="$BEGIN_MARKER_ANY" -v known="$BEGIN_MARKER_RE" \
+    '$0 ~ any && $0 !~ known { c++ } END { print c + 0 }' "$path")"
+  [ "$unknown_attr" = 0 ] \
+    || die "$path carries a start marker with an attribute this version does not understand; upgrade touchstone or remove the block by hand"
 
   if [ "$begin_count" = 0 ] && [ "$end_count" = 0 ]; then
     # No managed block yet: append, preserving the operator's own content.
@@ -144,7 +151,7 @@ compose() {
 
   [ "$begin_count" = 1 ] || die "$path has $begin_count exact-line start markers, expected 0 or 1"
   [ "$end_count" = 1 ] || die "$path has $end_count exact-line end markers, expected 0 or 1"
-  begin_line="$(awk -v m="$BEGIN_MARKER_RE" '$0 ~ m { print NR; exit }' "$path")"
+  begin_line="$(awk -v m="$BEGIN_MARKER_ANY" '$0 ~ m { print NR; exit }' "$path")"
   end_line="$(awk -v m="$END_MARKER" '$0 == m { print NR; exit }' "$path")"
   [ "$begin_line" -lt "$end_line" ] || die "$path has its end marker before its start marker"
 
