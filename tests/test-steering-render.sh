@@ -1187,6 +1187,24 @@ else
   pass "the instruction path is a regular file"
 fi
 
+echo "==> a dangling link at a routed name is a collision, not an absence"
+# A symlink to a file that does not exist yet is not `-e`, so it read as
+# absent and was replaced by a regular file -- the operator's link gone with
+# nothing preserved, and install exiting 0.
+H35="$TMP_DIR/h35"
+mkdir -p "$H35/.touchstone/principles"
+ln -s "missing/notes" "$H35/.touchstone/principles/git-workflow.md"
+if bash "$INSTALL" install --home "$H35" >/dev/null 2>&1; then
+  fail "install replaced a dangling operator symlink and reported success"
+else
+  pass "a dangling link at a shipped name is refused"
+fi
+if [ -L "$H35/.touchstone/principles/git-workflow.md" ]; then
+  pass "the operator's symlink survives"
+else
+  fail "the operator's symlink was destroyed"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"

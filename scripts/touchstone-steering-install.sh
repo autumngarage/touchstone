@@ -320,7 +320,11 @@ preflight_principles() {
     # A file we did not install belongs to the operator. Detect it here, before
     # any driver file is written, so the refusal costs nothing.
     :
-    if [ -e "$destination/$name" ] && ! principles_owned "$name"; then
+    # -L as well as -e: a dangling symlink is not `-e`, so a link the operator
+    # made to a file that does not exist yet read as "absent" and was replaced
+    # by a regular file, losing the link with nothing preserved.
+    if { [ -e "$destination/$name" ] || [ -L "$destination/$name" ]; } \
+      && ! principles_owned "$name"; then
       die "$PRINCIPLES_RELATIVE/$name exists and was not installed by touchstone; move it before installing"
     fi
   done
