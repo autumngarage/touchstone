@@ -232,24 +232,57 @@ preflight_principles() {
   fi
   mkdir -p "$destination" || die "could not create $destination"
   [ -w "$destination" ] || die "$destination is not writable"
+  local doc
+  for doc in "$PRINCIPLES_SOURCE"/*.md; do
+    [ -f "$doc" ] || continue
+    if [ -d "$destination/$(basename "$doc")" ]; then
+      die "$PRINCIPLES_RELATIVE/$(basename "$doc") is a directory; move it before installing"
+    fi
+  done
+}
+
+# Render one routed document with its cross-references pointing at the
+# installed copies. These documents reference each other by `principles/...`;
+# unrewritten, those links resolve nowhere on a machine whose repositories
+# carry no Touchstone files.
+render_principle() {
+  local source="$1" out="$2" principles_home="$HOME_DIR/$PRINCIPLES_RELATIVE"
+  sed "s|\`principles/|\`$principles_home/|g" "$source" >"$out"
 }
 
 install_principles() {
-  local destination="$HOME_DIR/$PRINCIPLES_RELATIVE" doc
+  local destination="$HOME_DIR/$PRINCIPLES_RELATIVE" doc name staged
   for doc in "$PRINCIPLES_SOURCE"/*.md; do
     [ -f "$doc" ] || continue
-    cp "$doc" "$destination/.$(basename "$doc").$$" || die "could not stage $(basename "$doc")"
-    mv -f -- "$destination/.$(basename "$doc").$$" "$destination/$(basename "$doc")" \
-      || die "could not install $(basename "$doc")"
+    name="$(basename "$doc")"
+    staged="$destination/.$name.$$"
+    render_principle "$doc" "$staged" || {
+      rm -f -- "$staged"
+      die "could not stage $name"
+    }
+    # An existing file this tool did not write is the operator's. Replacing it
+    # silently would destroy their work; refuse and name the conflict.
+    if [ -e "$destination/$name" ] && ! cmp -s "$destination/$name" "$staged"; then
+      if [ ! -f "$destination/$name" ] || ! grep -qF "$PRINCIPLES_RELATIVE" "$destination/$name" 2>/dev/null; then
+        rm -f -- "$staged"
+        die "$PRINCIPLES_RELATIVE/$name exists and was not installed by touchstone; move it before installing"
+      fi
+    fi
+    mv -f -- "$staged" "$destination/$name" || {
+      rm -f -- "$staged"
+      die "could not install $name"
+    }
   done
 }
 
 principles_current() {
   local destination="$HOME_DIR/$PRINCIPLES_RELATIVE" doc
   [ -d "$destination" ] || return 1
+  local rendered="$TMP_DIR/.principle-check"
   for doc in "$PRINCIPLES_SOURCE"/*.md; do
     [ -f "$doc" ] || continue
-    cmp -s "$doc" "$destination/$(basename "$doc")" || return 1
+    render_principle "$doc" "$rendered" || return 1
+    cmp -s "$rendered" "$destination/$(basename "$doc")" || return 1
   done
   return 0
 }
@@ -331,6 +364,10 @@ for entry in "${TARGETS[@]}"; do
       /*) path="$link_target" ;;
       *) path="$(cd "$(dirname "$path")" && pwd -P)/$link_target" ;;
     esac
+    # Collapse lexical components so two spellings of one file dedupe.
+    case "$path" in
+      */*) path="$(cd "$(dirname "$path")" 2>/dev/null && pwd -P)/$(basename "$path")" ;;
+    esac
   done
   # Two driver paths may be symlinks to one shared document. Installing it
   # twice would have the second staging file overwrite the first and leave an
@@ -399,6 +436,11 @@ case "$ACTION" in
     fi
     ;;
   uninstall)
+    if [ "$DRY_RUN" = true ]; then
+      printf '  would remove: %s\n' "$PRINCIPLES_RELATIVE"
+      echo "==> dry run: nothing was removed"
+      exit 0
+    fi
     # Remove only the documents this tool installed. The directory may hold
     # the operator's own files; a recursive delete would take them too.
     principles_home="${HOME_DIR:?}/${PRINCIPLES_RELATIVE:?}"

@@ -452,6 +452,49 @@ else
   pass "uninstall removes the documents it installed"
 fi
 
+echo "==> installed routed documents cross-reference each other correctly"
+HXREF="$TMP_DIR/hxref"
+bash "$INSTALL" install --home "$HXREF" >/dev/null 2>&1
+xref="$(grep -o '`[^`]*principles/[a-z-]*\.md`' "$HXREF/.touchstone/principles/git-workflow.md" 2>/dev/null | head -1 | tr -d '`')"
+if [ -n "$xref" ] && [ -f "$xref" ]; then
+  pass "a routed document's own references resolve to installed files"
+else
+  fail "installed documents cross-reference paths that do not exist: $xref"
+fi
+
+echo "==> an operator file sharing a bundled name is refused, not replaced"
+printf 'MY OWN NOTES\n' >"$HXREF/.touchstone/principles/git-workflow.md"
+if bash "$INSTALL" install --home "$HXREF" >/dev/null 2>&1; then
+  fail "install replaced a file it did not write"
+else
+  pass "install refuses a routed name the operator owns"
+fi
+if grep -qF 'MY OWN NOTES' "$HXREF/.touchstone/principles/git-workflow.md"; then
+  pass "the operator's file is intact after the refusal"
+else
+  fail "install destroyed an operator file"
+fi
+
+echo "==> uninstall honors --dry-run"
+HDRY="$TMP_DIR/hdry"
+bash "$INSTALL" install --home "$HDRY" >/dev/null 2>&1
+bash "$INSTALL" uninstall --home "$HDRY" --dry-run >/dev/null 2>&1
+if [ -f "$HDRY/.touchstone/principles/git-workflow.md" ] \
+  && grep -qF 'touchstone:steering:start' "$HDRY/.claude/CLAUDE.md"; then
+  pass "uninstall --dry-run removes nothing"
+else
+  fail "uninstall --dry-run removed files"
+fi
+
+echo "==> a directory where a routed document belongs is refused"
+HDIR="$TMP_DIR/hdir"
+mkdir -p "$HDIR/.touchstone/principles/git-workflow.md"
+if bash "$INSTALL" install --home "$HDIR" >/dev/null 2>&1; then
+  fail "install accepted a directory in place of a routed document"
+else
+  pass "a directory collision is refused"
+fi
+
 echo "==> an unusable routed destination fails before any driver file is written"
 HBLOCK="$TMP_DIR/hblock"
 mkdir -p "$HBLOCK/.touchstone"
