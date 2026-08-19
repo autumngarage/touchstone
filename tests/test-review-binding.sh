@@ -769,6 +769,9 @@ EOF
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"opened"'
   assert_has "$TMP/out" '"reviewRequest":"posted:'
+  # The result names the branch it acted on. Two pull requests were opened for
+  # the wrong branch, and nothing in the output would have shown it.
+  assert_has "$TMP/out" '"branch":"feat/test"'
   assert_has "$GH_CALLS" "pr create --repo github.com/autumngarage/current --head feat/test --base main --title Test PR --body-file $canonical_body"
   [ "$(grep -c '^pr comment' "$GH_CALLS")" -eq 1 ] || fail "open did not post one review request"
   rm -f "$TMP/state/review-request"
@@ -789,6 +792,24 @@ EOF
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewRequest":"posted:https://example.test/pr/7#issuecomment-1"'
   assert_not_has "$TMP/out" 'comment debug detail'
+  # Human-readable output carries the branch too: the JSON mode is not the
+  # one an operator reads while shipping.
+  rm -f "$TMP/state/review-request"
+  GH_MODE=comment_success_stderr run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body"
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'branch: feat/test'
+  # A matching --expect-branch reaches a successful open rather than being
+  # refused somewhere along the way.
+  rm -f "$TMP/state/review-request"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-branch feat/test --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"branch":"feat/test"'
+  # A mismatch refuses before any GitHub call is made.
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-branch feat/other --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'expected branch feat/other'
+  [ ! -s "$GH_CALLS" ] || fail "a refused branch binding still called gh"
   run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewRequest":"existing:'

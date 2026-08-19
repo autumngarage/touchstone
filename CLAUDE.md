@@ -72,7 +72,9 @@ Release history lives in `git log` and `gh release list` — there is no `CHANGE
 Raw `git` and `gh` remain the active delivery workflow until distribution
 lands. In this source checkout, `bash bin/touchstone pr open|status|merge`
 exercises the three bounded operations; `docs/pr-cli-contract.md` records their stable
-schema and exact raw equivalents.
+schema and exact raw equivalents. Pass `--expect-branch "$(git branch --show-current)"`
+to `open`: it acts on whatever branch the invoking directory has checked out,
+which differs per worktree.
 
 ## Distribution — currently absent
 

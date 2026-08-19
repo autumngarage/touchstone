@@ -201,6 +201,19 @@ case "$out" in
   *) fail "open took --json as the branch name: $out" ;;
 esac
 
+# #920 sanitized the resolver but not the reads after it, so with GIT_DIR
+# exported every later project read answered for the ambient repository --
+# here, refusing a correct --expect-branch by reporting another repo's branch.
+out="$(GIT_DIR="$WT_MAIN/.git" GIT_WORK_TREE="$WT_MAIN" \
+  bash "$REPO_ROOT/scripts/touchstone-pr.sh" open --project "$TMP_DIR/wt-second" \
+  --expect-branch feat/second 2>&1 || true)"
+case "$out" in
+  *"expected branch feat/second"*)
+    fail "ambient GIT_DIR made open read another repository's branch: $out"
+    ;;
+  *) pass "ambient GIT_DIR cannot redirect the branch binding" ;;
+esac
+
 out="$(bash "$REPO_ROOT/scripts/touchstone-pr.sh" status 1 --project "$TMP_DIR/wt-second" --expect-branch feat/second 2>&1 || true)"
 case "$out" in
   *"does not accept mutation options"*) pass "status rejects an option that belongs to open" ;;
