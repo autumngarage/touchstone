@@ -218,6 +218,31 @@ else
   fail "the refused render modified a target"
 fi
 
+# A malformed later target must not leave earlier targets replaced: rendering
+# is all-or-nothing across the target set.
+echo "==> A malformed later target leaves every earlier target untouched"
+PARTIAL="$TMP_DIR/partial"
+mkdir -p "$PARTIAL/scripts" "$PARTIAL/templates"
+cp "$REPO_ROOT/TOUCHSTONE.md" "$PARTIAL/TOUCHSTONE.md"
+printf '\n<!-- force a drift so a real render would rewrite AGENTS.md -->\n# Drift %s\n' "$$" >>"$PARTIAL/TOUCHSTONE.md"
+for f in AGENTS.md GEMINI.md templates/AGENTS.md templates/GEMINI.md; do
+  cp "$REPO_ROOT/$f" "$PARTIAL/$f"
+done
+cp "$RENDER" "$PARTIAL/scripts/render-steering.sh"
+grep -v '^<!-- touchstone:steering:end -->$' "$PARTIAL/templates/GEMINI.md" >"$PARTIAL/templates/GEMINI.md.tmp" \
+  && mv "$PARTIAL/templates/GEMINI.md.tmp" "$PARTIAL/templates/GEMINI.md"
+agents_before="$(cksum "$PARTIAL/AGENTS.md")"
+if bash "$PARTIAL/scripts/render-steering.sh" >/dev/null 2>&1; then
+  fail "render succeeded despite a malformed final target"
+else
+  pass "render refuses when any target is malformed"
+fi
+if [ "$agents_before" = "$(cksum "$PARTIAL/AGENTS.md")" ]; then
+  pass "the first target was not replaced before the refusal"
+else
+  fail "a malformed later target left an earlier target already replaced"
+fi
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "$FAILURES check(s) failed" >&2
   exit 1

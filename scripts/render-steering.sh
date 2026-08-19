@@ -111,11 +111,20 @@ render_one() {
 DRIFTED=0
 CHANGED=0
 
+# Phase 1: validate and render every target into the workspace. A malformed
+# fourth target must not leave the first three already replaced, so no target
+# is touched until every render has succeeded.
 for target in "${TARGETS[@]}"; do
   path="$ROOT/$target"
   [ -f "$path" ] || die "steering target is missing: $target"
   rendered="$TMP_DIR/$(printf '%s' "$target" | tr '/' '_')"
   render_one "$path" "$rendered"
+done
+
+# Phase 2: report or install. Every render above succeeded.
+for target in "${TARGETS[@]}"; do
+  path="$ROOT/$target"
+  rendered="$TMP_DIR/$(printf '%s' "$target" | tr '/' '_')"
 
   if cmp -s "$path" "$rendered"; then
     [ "$CHECK_ONLY" = true ] && printf '  ok: %s matches TOUCHSTONE.md\n' "$target"
