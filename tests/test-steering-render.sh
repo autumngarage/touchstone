@@ -1134,6 +1134,39 @@ else
   pass "the dry run and the real install agree"
 fi
 
+echo "==> uninstall deletes only bytes it can prove it rendered"
+# The manifest shares a trust domain with the files it describes, so it can
+# never authorize destroying content. Ownership that does not depend on it:
+# render what this release installs for that name and compare bytes.
+H32="$TMP_DIR/h32"
+mkdir -p "$H32/.touchstone/principles"
+printf 'MY OWN git-workflow NOTES\n' >"$H32/.touchstone/principles/git-workflow.md"
+printf '%s\tgit-workflow.md\n' "$(cksum <"$H32/.touchstone/principles/git-workflow.md")" \
+  >"$H32/.touchstone/principles/.touchstone-installed"
+bash "$INSTALL" uninstall --home "$H32" >/dev/null 2>&1 || true
+if grep -rqF 'MY OWN git-workflow NOTES' "$H32/.touchstone/principles/"; then
+  pass "an operator file at a shipped name is retired, not destroyed"
+else
+  fail "uninstall destroyed content on a self-authenticating manifest entry"
+fi
+
+# And the ordinary case still removes cleanly, or "recoverable" would just
+# mean "never cleans up".
+H33="$TMP_DIR/h33"
+bash "$INSTALL" install --home "$H33" >/dev/null 2>&1
+bash "$INSTALL" uninstall --home "$H33" >/dev/null 2>&1
+leftovers=""
+for leftover in "$H33/.touchstone/principles"/* "$H33/.touchstone/principles"/.*; do
+  [ -f "$leftover" ] || continue
+  case "$(basename "$leftover")" in .touchstone-installed) continue ;; esac
+  leftovers="$leftovers $(basename "$leftover")"
+done
+if [ -z "$leftovers" ]; then
+  pass "a genuine install is still removed completely"
+else
+  fail "uninstall left files behind after an ordinary install: $leftovers"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"

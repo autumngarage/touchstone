@@ -702,11 +702,33 @@ case "$ACTION" in
           fi
           # Among names we do ship, the checksum still decides: a document
           # edited after install carries the operator's content now.
-          if [ "$recorded_sum" != "$(cksum <"$principles_home/$recorded")" ]; then
+          # Ownership that does not depend on the manifest: render what this
+          # release would install for that name and compare bytes. A file
+          # identical to our own output is provably ours, and the check is
+          # reproducible by anyone. Only that earns an outright delete.
+          if render_principle "$PRINCIPLES_SOURCE/$recorded" "$TMP_DIR/.verify" \
+            && cmp -s "$TMP_DIR/.verify" "$principles_home/$recorded"; then
+            rm -f -- "$principles_home/$recorded"
+          elif [ "$recorded_sum" = "$(cksum <"$principles_home/$recorded")" ]; then
+            # The manifest says ours but the bytes are not what we render --
+            # an older release's content, or an edit. The manifest shares a
+            # trust domain with the file it describes, so it cannot authorize
+            # destroying content. Retire it instead: recoverable either way.
+            retired="$principles_home/.$recorded.removed"
+            retire_suffix=1
+            while [ -e "$retired" ] || [ -L "$retired" ]; do
+              retired="$principles_home/.$recorded.removed.$retire_suffix"
+              retire_suffix=$((retire_suffix + 1))
+              [ "$retire_suffix" -le 1000 ] || break
+            done
+            if mv -f -- "$principles_home/$recorded" "$retired" 2>/dev/null; then
+              printf '  retired: %s -> %s\n' "$recorded" "$(basename "$retired")"
+            else
+              printf '  kept: %s could not be retired\n' "$recorded" >&2
+            fi
+          else
             printf '  kept: %s does not match what was installed\n' "$recorded" >&2
-            continue
           fi
-          rm -f -- "$principles_home/$recorded"
         done <"$principles_home/$PRINCIPLES_MANIFEST"
         rm -f -- "$principles_home/$PRINCIPLES_MANIFEST"
       fi
