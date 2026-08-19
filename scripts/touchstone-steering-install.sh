@@ -365,7 +365,7 @@ principles_owned() {
 }
 
 install_principles() {
-  local destination="$HOME_DIR/$PRINCIPLES_RELATIVE" doc name staged
+  local destination="$HOME_DIR/$PRINCIPLES_RELATIVE" doc name staged backup suffix
   for doc in "$PRINCIPLES_SOURCE"/*.md; do
     [ -f "$doc" ] || continue
     name="$(basename "$doc")"
@@ -380,9 +380,20 @@ install_principles() {
     # provenance check that has no trust root, make the overwrite recoverable
     # -- the bytes survive whether or not the ownership claim was honest.
     if [ -f "$destination/$name" ] && ! cmp -s "$destination/$name" "$staged"; then
-      cp -p -- "$destination/$name" "$destination/.$name.replaced" \
+      # Never clobber to make a backup. An earlier upgrade's backup can be the
+      # only surviving copy of operator content, and a symlink at that path
+      # would send the write somewhere else entirely, so find a free name
+      # rather than trusting the obvious one to be unused.
+      backup="$destination/.$name.replaced"
+      suffix=1
+      while [ -e "$backup" ] || [ -L "$backup" ]; do
+        backup="$destination/.$name.replaced.$suffix"
+        suffix=$((suffix + 1))
+        [ "$suffix" -le 1000 ] || die "too many preserved copies of $name; clear $destination"
+      done
+      cp -p -- "$destination/$name" "$backup" \
         || die "could not preserve the existing $name before replacing it"
-      printf '  preserved: %s -> .%s.replaced\n' "$name" "$name"
+      printf '  preserved: %s -> %s\n' "$name" "$(basename "$backup")"
     fi
     mv -f -- "$staged" "$destination/$name" || {
       rm -f -- "$staged"

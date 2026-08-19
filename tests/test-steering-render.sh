@@ -1039,6 +1039,26 @@ else
   fail "reconciliation deleted a document the operator had edited"
 fi
 
+echo "==> preserving a replaced document never clobbers an earlier copy"
+# An earlier upgrade's backup can be the only surviving copy of operator
+# content, so the backup itself must not be overwritten to make a backup.
+H27="$TMP_DIR/h27"
+mkdir -p "$H27/.touchstone/principles"
+printf 'FIRST OPERATOR FILE\n' >"$H27/.touchstone/principles/git-workflow.md"
+printf '%s\tgit-workflow.md\n' "$(cksum <"$H27/.touchstone/principles/git-workflow.md")" \
+  >"$H27/.touchstone/principles/.touchstone-installed"
+bash "$INSTALL" install --home "$H27" >/dev/null 2>&1 || true
+printf 'SECOND OPERATOR EDIT\n' >"$H27/.touchstone/principles/git-workflow.md"
+printf '%s\tgit-workflow.md\n' "$(cksum <"$H27/.touchstone/principles/git-workflow.md")" \
+  >>"$H27/.touchstone/principles/.touchstone-installed"
+bash "$INSTALL" install --home "$H27" >/dev/null 2>&1 || true
+if grep -rqF 'FIRST OPERATOR FILE' "$H27/.touchstone/principles/" \
+  && grep -rqF 'SECOND OPERATOR EDIT' "$H27/.touchstone/principles/"; then
+  pass "both preserved copies survive a second replacement"
+else
+  fail "a later upgrade destroyed an earlier preserved copy"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"
