@@ -1277,7 +1277,9 @@ echo "==> a failed install leaves no staging file in the operator's directories"
 # committing it left an orphan in ~/.claude.
 H40="$TMP_DIR/h40"
 mkdir -p "$H40/.claude" "$H40/.codex/AGENTS.md"
-bash "$INSTALL" install --home "$H40" >/dev/null 2>&1 || true
+if bash "$INSTALL" install --home "$H40" >/dev/null 2>&1; then
+  fail "install succeeded despite a directory at an instruction path"
+fi
 orphans=""
 for orphan in "$H40"/.claude/.* "$H40"/.codex/.*; do
   case "$(basename "$orphan")" in *touchstone-steering*) orphans="$orphans $(basename "$orphan")" ;; esac
@@ -1286,6 +1288,21 @@ if [ -z "$orphans" ]; then
   pass "a mid-install failure leaves no staging orphan"
 else
   fail "staging files survived a failed install:$orphans"
+fi
+
+echo "==> replacing an operator manifest preserves its bytes"
+# The manifest is not independent ownership evidence, so content we did not
+# write is preserved before replacement -- including through a live symlink,
+# where the referent held the bytes.
+H41="$TMP_DIR/h41"
+mkdir -p "$H41/.touchstone/principles" "$H41/dotfiles"
+printf 'IMPORTANT\tmemo\n' >"$H41/dotfiles/memo-manifest"
+ln -s "$H41/dotfiles/memo-manifest" "$H41/.touchstone/principles/.touchstone-installed"
+bash "$INSTALL" install --home "$H41" >/dev/null 2>&1 || true
+if grep -rqF 'IMPORTANT' "$H41/.touchstone/principles/" || grep -qF 'IMPORTANT' "$H41/dotfiles/memo-manifest" 2>/dev/null; then
+  pass "the prior manifest bytes survive somewhere recoverable"
+else
+  fail "install destroyed the operator manifest content it replaced"
 fi
 
 echo "==> unknown actions and arguments fail closed"

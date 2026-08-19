@@ -484,7 +484,24 @@ install_principles() {
       fi
     done <"$destination/$PRINCIPLES_MANIFEST"
   fi
-  mv -f -- "$manifest_staged" "$(resolve_link "$destination/$PRINCIPLES_MANIFEST")" \
+  # Same preservation rule the routed documents follow: the manifest is not
+  # independent ownership evidence, so bytes we did not write are preserved
+  # before the replacement -- including through a live symlink, where the
+  # referent is the file whose content would otherwise be lost.
+  local manifest_target
+  manifest_target="$(resolve_link "$destination/$PRINCIPLES_MANIFEST")"
+  if [ -f "$manifest_target" ] && ! cmp -s "$manifest_target" "$manifest_staged"; then
+    backup="$destination/.$PRINCIPLES_MANIFEST.replaced"
+    suffix=1
+    while [ -e "$backup" ] || [ -L "$backup" ]; do
+      backup="$destination/.$PRINCIPLES_MANIFEST.replaced.$suffix"
+      suffix=$((suffix + 1))
+      [ "$suffix" -le 1000 ] || die "too many preserved manifests; clear $destination"
+    done
+    cp -p -- "$manifest_target" "$backup" \
+      || die "could not preserve the existing manifest before replacing it"
+  fi
+  mv -f -- "$manifest_staged" "$manifest_target" \
     || die "could not record the installed document manifest"
 }
 
@@ -714,7 +731,10 @@ case "$ACTION" in
     if [ "$CHANGED" -eq 0 ] && principles_current; then
       echo "==> already current: machine-level steering matches the contract"
     else
-      echo "==> steering reaches every agent on this machine; repositories carry none"
+      # Only the machine-level claim: adopt/upgrade still install repository
+      # copies that override this block (docs/product-contract.md, AUT-317),
+      # and a success message must not report a migration it did not perform.
+      echo "==> machine-level steering installed for every supported agent"
     fi
     ;;
   uninstall)
