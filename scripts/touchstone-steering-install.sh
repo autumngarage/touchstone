@@ -115,10 +115,18 @@ render_block() {
      project's TOUCHSTONE.md upstream and reinstall. Everything outside the
      markers is yours. Remove with: touchstone steering uninstall -->
 EOF
-    sed "s|\`principles/|\`$principles_home/|g" "$SOURCE"
+    sed "s|\`principles/|\`$(sed_replacement "$principles_home")/|g" "$SOURCE"
     if [ -n "$(tail -c 1 "$SOURCE")" ]; then printf '\n'; fi
     printf '%s\n' "$END_MARKER"
   } >"$out"
+}
+
+# A home path is data, not sed replacement syntax. `&` means "the whole match"
+# and the delimiter ends the replacement, so a home like `home&name` silently
+# produced routes to directories that do not exist -- silently because install
+# and check render the same wrong value and therefore agree.
+sed_replacement() {
+  printf '%s' "$1" | sed 's/[&|\\]/\\&/g'
 }
 
 # Rebuild one file: everything before the block, the block, everything after.
@@ -215,8 +223,16 @@ compose_removal() {
     : >"$out"
   fi
   if [ "$strip_trailing_newline" = true ] && [ -s "$out" ]; then
-    # Drop the newline install added after the operator's last line.
-    printf '%s' "$(cat "$out")" >"$out.trimmed" && mv -f -- "$out.trimmed" "$out"
+    # Drop the one newline install added after the operator's last line --
+    # exactly one byte. A `$(cat)` round-trip strips every trailing newline,
+    # so content the operator added just above the block came back short of
+    # the blank lines they wrote, even though check accepts such edits.
+    local prefix_bytes
+    prefix_bytes="$(wc -c <"$out" | tr -d ' ')"
+    if [ "$(tail -c 1 "$out" | od -An -c | tr -d ' ')" = "\\n" ]; then
+      head -c "$((prefix_bytes - 1))" "$out" >"$out.trimmed" \
+        && mv -f -- "$out.trimmed" "$out"
+    fi
   fi
   tail_offset="$(head -n "$end_line" "$path" | wc -c | tr -d ' ')"
   tail -c "+$((tail_offset + 1))" "$path" >>"$out"
@@ -242,10 +258,20 @@ preflight_principles() {
   local manifest="$destination/$PRINCIPLES_MANIFEST" recorded
   if [ -e "$manifest" ]; then
     [ -f "$manifest" ] || die "$PRINCIPLES_RELATIVE/$PRINCIPLES_MANIFEST is not a regular file; move it before installing"
-    while IFS= read -r recorded; do
-      [ -n "$recorded" ] || continue
+    local tab line
+    tab="$(printf '\t')"
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      # Split by hand rather than by IFS: a line with no tab at all would
+      # otherwise land entirely in the checksum field, leaving the name empty
+      # and the entry skipped as blank -- which is how a traversing entry
+      # could slip past this refusal.
+      case "$line" in
+        *"$tab"*) recorded="${line#*"$tab"}" ;;
+        *) die "$PRINCIPLES_RELATIVE/$PRINCIPLES_MANIFEST has an entry with no recorded checksum: $line" ;;
+      esac
       case "$recorded" in
-        */* | . | .. | -*)
+        '' | */* | . | .. | -*)
           die "$PRINCIPLES_RELATIVE/$PRINCIPLES_MANIFEST contains an entry that is not a plain name: $recorded"
           ;;
       esac
@@ -274,13 +300,16 @@ preflight_principles() {
 # carry no Touchstone files.
 render_principle() {
   local source="$1" out="$2" principles_home="$HOME_DIR/$PRINCIPLES_RELATIVE"
-  sed "s|\`principles/|\`$principles_home/|g" "$source" >"$out"
+  sed "s|\`principles/|\`$(sed_replacement "$principles_home")/|g" "$source" >"$out"
 }
 
+# Ownership is recorded per entry as `checksum<TAB>name`; match on the name
+# field alone, because a document we installed and then reinstall over has
+# legitimately drifted from its recorded checksum.
 principles_owned() {
   local name="$1" manifest="$HOME_DIR/$PRINCIPLES_RELATIVE/$PRINCIPLES_MANIFEST"
   [ -f "$manifest" ] || return 1
-  grep -qxF "$name" "$manifest"
+  cut -f 2- <"$manifest" | grep -qxF "$name"
 }
 
 install_principles() {
@@ -297,7 +326,7 @@ install_principles() {
       rm -f -- "$staged"
       die "could not install $name"
     }
-    printf '%s\n' "$name" >>"$destination/.$PRINCIPLES_MANIFEST.$$"
+    printf '%s\t%s\n' "$(cksum <"$destination/$name")" "$name" >>"$destination/.$PRINCIPLES_MANIFEST.$$"
   done
   mv -f -- "$destination/.$PRINCIPLES_MANIFEST.$$" "$destination/$PRINCIPLES_MANIFEST" \
     || die "could not record the installed document manifest"
@@ -313,7 +342,9 @@ principles_current() {
   for doc in "$PRINCIPLES_SOURCE"/*.md; do
     [ -f "$doc" ] || continue
     doc_name="$(basename "$doc")"
-    grep -qxF "$doc_name" "$destination/$PRINCIPLES_MANIFEST" || return 1
+    [ -f "$destination/$doc_name" ] || return 1
+    grep -qxF "$(cksum <"$destination/$doc_name")	$doc_name" \
+      "$destination/$PRINCIPLES_MANIFEST" || return 1
   done
   for doc in "$PRINCIPLES_SOURCE"/*.md; do
     [ -f "$doc" ] || continue
@@ -485,7 +516,7 @@ case "$ACTION" in
       # operator owns is left alone even across releases that change which
       # documents ship.
       if [ -f "$principles_home/$PRINCIPLES_MANIFEST" ]; then
-        while IFS= read -r recorded; do
+        while IFS="$(printf '\t')" read -r recorded_sum recorded; do
           [ -n "$recorded" ] || continue
           # Entries are plain basenames. Anything else -- a path separator, a
           # parent reference, a leading dash -- is a corrupted or edited
@@ -497,6 +528,15 @@ case "$ACTION" in
               ;;
           esac
           [ -f "$principles_home/$recorded" ] || continue
+          # A name alone proves nothing: appending `mine.md` to the manifest
+          # would otherwise authorize deleting the operator's file. The
+          # recorded checksum is written at install from the bytes we wrote,
+          # so an entry we did not write cannot carry a matching one, and a
+          # file edited since install is no longer ours to remove.
+          if [ "$recorded_sum" != "$(cksum <"$principles_home/$recorded")" ]; then
+            printf '  kept: %s does not match what was installed\n' "$recorded" >&2
+            continue
+          fi
           rm -f -- "$principles_home/$recorded"
         done <"$principles_home/$PRINCIPLES_MANIFEST"
         rm -f -- "$principles_home/$PRINCIPLES_MANIFEST"

@@ -440,17 +440,31 @@ fi
 # Uninstall must remove what it installed and nothing else: the directory can
 # hold the operator's own notes.
 printf 'my own note\n' >"$HROUTE/.touchstone/principles/MY-NOTES.md"
-bash "$INSTALL" uninstall --home "$HROUTE" >/dev/null 2>&1
+uninstall_report="$(bash "$INSTALL" uninstall --home "$HROUTE" 2>&1 || true)"
 if [ -f "$HROUTE/.touchstone/principles/MY-NOTES.md" ]; then
   pass "an operator file in the routed directory survives uninstall"
 else
   fail "uninstall deleted an operator file it did not install"
 fi
-if [ -f "$HROUTE/.touchstone/principles/git-workflow.md" ]; then
-  fail "uninstall left an installed routed document behind"
+if [ -f "$HROUTE/.touchstone/principles/agent-swarms.md" ]; then
+  fail "uninstall left an untouched installed document behind"
 else
   pass "uninstall removes the documents it installed"
 fi
+# git-workflow.md was edited above. The edit is the operator's, so uninstall
+# keeps the file rather than destroying content it did not write -- and says
+# so, because a silent skip would read as a clean removal.
+if [ -f "$HROUTE/.touchstone/principles/git-workflow.md" ]; then
+  pass "a document edited after install is kept, not deleted"
+else
+  fail "uninstall deleted a document the operator had edited"
+fi
+case "$uninstall_report" in
+  *"git-workflow.md does not match what was installed"*)
+    pass "the kept document is reported, not silently skipped"
+    ;;
+  *) fail "uninstall skipped an edited document without saying so: $uninstall_report" ;;
+esac
 
 echo "==> installed routed documents cross-reference each other correctly"
 HXREF="$TMP_DIR/hxref"
@@ -555,13 +569,9 @@ echo "==> an unrecognized start-marker attribute is refused, not normalized away
 # marker it does not understand as current, nor rewrite the block around it.
 HATTR="$TMP_DIR/hattr"
 bash "$INSTALL" install --home "$HATTR" >/dev/null 2>&1
-python3 - "$HATTR/.claude/CLAUDE.md" <<'PYEOF'
-import sys, pathlib
-p = pathlib.Path(sys.argv[1])
-p.write_text(p.read_text().replace(
-  "<!-- touchstone:steering:start -->",
-  "<!-- touchstone:steering:start future-feature -->", 1))
-PYEOF
+sed 's|^<!-- touchstone:steering:start -->$|<!-- touchstone:steering:start future-feature -->|' \
+  "$HATTR/.claude/CLAUDE.md" >"$HATTR/.claude/CLAUDE.md.edit"
+mv -f "$HATTR/.claude/CLAUDE.md.edit" "$HATTR/.claude/CLAUDE.md"
 attr_before="$(cksum <"$HATTR/.claude/CLAUDE.md")"
 if bash "$INSTALL" check --home "$HATTR" >/dev/null 2>&1; then
   fail "check accepted a start marker with an unknown attribute"
@@ -657,11 +667,9 @@ if bash "$INSTALL" check --home "$H3" >/dev/null 2>&1; then
 else
   fail "check called an operator edit outside the block drift"
 fi
-python3 - "$H3/.codex/AGENTS.md" <<'PY'
-import sys, pathlib
-p = pathlib.Path(sys.argv[1])
-p.write_text(p.read_text().replace("## Purpose", "## Purpose TAMPERED", 1))
-PY
+sed '1,/^## Purpose$/ s|^## Purpose$|## Purpose TAMPERED|' \
+  "$H3/.codex/AGENTS.md" >"$H3/.codex/AGENTS.md.edit"
+mv -f "$H3/.codex/AGENTS.md.edit" "$H3/.codex/AGENTS.md"
 if bash "$INSTALL" check --home "$H3" >/dev/null 2>&1; then
   fail "check passed a tampered managed block"
 else
@@ -725,6 +733,65 @@ if bash "$INSTALL" check --home "$H10" >/dev/null 2>&1; then
   fail "check passed an install whose ownership record is gone"
 else
   pass "a missing ownership manifest fails check"
+fi
+
+echo "==> a name appended to the manifest cannot authorize a delete"
+# A plain basename is a weak ownership claim: appending `mine.md` to the
+# manifest would otherwise make uninstall delete the operator's file, since
+# check only requires the expected entries to be present.
+H11="$TMP_DIR/h11"
+bash "$INSTALL" install --home "$H11" >/dev/null
+printf 'my own work\n' >"$H11/.touchstone/principles/mine.md"
+printf 'X\tmine.md\n' >>"$H11/.touchstone/principles/.touchstone-installed"
+bash "$INSTALL" uninstall --home "$H11" >/dev/null 2>&1 || true
+if [ -f "$H11/.touchstone/principles/mine.md" ]; then
+  pass "a manifest entry whose checksum does not match is not deleted"
+else
+  fail "an appended manifest name authorized deleting an operator file"
+fi
+
+echo "==> a home path is data, not sed replacement syntax"
+# `&` means "the whole match" in a sed replacement, so a home containing one
+# produced routes to directories that do not exist -- and install and check
+# agreed, because both rendered the same wrong value.
+H12="$TMP_DIR/amp&home"
+bash "$INSTALL" install --home "$H12" >/dev/null
+route="$(grep -o '`[^`]*principles/git-workflow\.md`' "$H12/.claude/CLAUDE.md" | head -1 | tr -d '`')"
+if [ -n "$route" ] && [ -f "$route" ]; then
+  pass "a home containing '&' still routes to a file that exists"
+else
+  fail "the routed path does not exist: $route"
+fi
+if bash "$INSTALL" check --home "$H12" >/dev/null 2>&1; then
+  pass "check agrees with a correctly escaped install"
+else
+  fail "check disagreed with its own install under an '&' home"
+fi
+
+echo "==> uninstall removes one added byte, not every trailing newline"
+# check accepts operator edits outside the markers, so uninstall must return
+# the file byte-for-byte -- including blank lines the operator left above the
+# block, which a \$(cat) round-trip silently ate.
+H13="$TMP_DIR/h13"
+mkdir -p "$H13/.claude"
+printf 'my notes\n\n\n' >"$H13/.claude/CLAUDE.md"
+cp "$H13/.claude/CLAUDE.md" "$TMP_DIR/h13-before"
+bash "$INSTALL" install --home "$H13" >/dev/null
+bash "$INSTALL" uninstall --home "$H13" >/dev/null
+if cmp -s "$TMP_DIR/h13-before" "$H13/.claude/CLAUDE.md"; then
+  pass "content before the block survives the round trip byte-for-byte"
+else
+  fail "uninstall changed operator content it had accepted as valid"
+fi
+
+echo "==> the suite needs no interpreter beyond the shell"
+# The required check runs tests/test-*.sh on a machine whose base tools are
+# the shell and coreutils. A fixture edit reaching for python3 turns a
+# missing optional interpreter into a red required check.
+if grep -n '^[^#]*python3 ' "$0" >/dev/null 2>&1; then
+  fail "this test invokes python3, which is not part of the base tool surface"
+else
+  pass "fixture edits use the supported shell toolchain"
 fi
 
 echo "==> unknown actions and arguments fail closed"
