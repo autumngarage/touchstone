@@ -137,6 +137,6 @@ Lint is separate, at pre-commit: `shellcheck`, `shfmt`, `markdownlint`, `actionl
 
 ## Contributing
 
-Open a PR for improvements to principles, templates, scripts, hooks, or skills. The same delivery workflow above applies here — Touchstone ships through its own gate.
+Open a PR for improvements to principles, scripts, hooks, or skills. The same delivery workflow above applies here — Touchstone ships through its own gate.
 
 Current replacement scope and sequencing live in the [canonical Linear execution plan](https://linear.app/autumngarage/document/touchstone-execution-plan-post-strip-baseline-cac4c56e593e), not this durable overview.

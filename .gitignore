@@ -15,7 +15,6 @@ credentials.json
 *.p12
 
 # Agent worktrees (parallel agent slices; see principles/agent-swarms.md).
-# templates/gitignore ships this rule to every project — touchstone must
-# apply it to itself, or its own dirty-tree guards (release, update, sync)
-# refuse whenever an agent worktree exists, which is most of the time.
+# Touchstone's own dirty-tree guards refuse whenever an agent worktree
+# exists, which is most of the time, so it must apply this rule to itself.
 .claude/worktrees/
