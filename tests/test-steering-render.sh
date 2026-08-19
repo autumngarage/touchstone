@@ -1309,6 +1309,23 @@ else
   fail "the preserved copy is missing or does not match the original bytes"
 fi
 
+echo "==> every start-marker shape in the source is refused"
+# A literal comparison missed the attributed form, so install wrote two start
+# markers into every driver file and exited 0; check then rejected its own
+# output.
+H42_SRC="$TMP_DIR/attributed-source"
+mkdir -p "$H42_SRC/scripts" "$H42_SRC/principles"
+cp "$REPO_ROOT/TOUCHSTONE.md" "$H42_SRC/TOUCHSTONE.md"
+cp "$INSTALL" "$H42_SRC/scripts/$(basename "$INSTALL")"
+cp "$REPO_ROOT"/principles/*.md "$H42_SRC/principles/"
+printf '\n<!-- touchstone:steering:start restore-newline -->\n' >>"$H42_SRC/TOUCHSTONE.md"
+H42="$TMP_DIR/h42"
+if bash "$H42_SRC/scripts/$(basename "$INSTALL")" install --home "$H42" >/dev/null 2>&1; then
+  fail "an attributed start marker in the source was accepted"
+else
+  pass "an attributed start marker in the source is refused"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"

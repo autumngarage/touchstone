@@ -106,11 +106,14 @@ esac
 
 # A marker line in the source would be copied into the block and make the very
 # next check reject it.
-for marker in "$BEGIN_MARKER" "$END_MARKER"; do
-  if awk -v m="$marker" '$0 == m { found = 1 } END { exit !found }' "$SOURCE"; then
-    die "canonical steering contains a managed marker line; document markers only in inline code"
-  fi
-done
+# Every start-marker shape, not only the plain one: the attributed form
+# (`start restore-newline`) slipped past a literal comparison, and install
+# then wrote two start markers into every driver file before check rejected
+# the result.
+if awk -v m="$BEGIN_MARKER_ANY" '$0 ~ m { found = 1 } END { exit !found }' "$SOURCE" \
+  || awk -v m="$END_MARKER" '$0 == m { found = 1 } END { exit !found }' "$SOURCE"; then
+  die "canonical steering contains a managed marker line; document markers only in inline code"
+fi
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-steering-install.XXXXXX")" || die "could not create workspace"
 # Staging files are created in the destination directory, not the workspace,
@@ -795,9 +798,17 @@ case "$ACTION" in
             while [ -e "$retired" ] || [ -L "$retired" ]; do
               retired="$principles_home/.$recorded.removed.$retire_suffix"
               retire_suffix=$((retire_suffix + 1))
-              [ "$retire_suffix" -le 1000 ] || break
+              # Refuse rather than break: breaking left the loop holding an
+              # occupied name, and the mv below then destroyed that backup --
+              # the same defect already fixed in the .replaced loop.
+              if [ "$retire_suffix" -gt 1000 ]; then
+                printf '  kept: %s has too many preserved copies to retire\n' "$recorded" >&2
+                retired=""
+                break
+              fi
             done
-            if mv -f -- "$(resolve_link "$principles_home/$recorded")" "$retired" 2>/dev/null; then
+            if [ -n "$retired" ] \
+              && mv -f -- "$(resolve_link "$principles_home/$recorded")" "$retired" 2>/dev/null; then
               printf '  retired: %s -> %s\n' "$recorded" "$(basename "$retired")"
             else
               printf '  kept: %s could not be retired\n' "$recorded" >&2
