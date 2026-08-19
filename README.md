@@ -96,7 +96,8 @@ git checkout -b fix/some-slug
 git commit -m "fix: what changed"
 git push -u origin HEAD
 gh pr create                      # put `Fixes AUT-123` (or `Closes #123`) in the PR body
-# open through `bin/touchstone pr open` so the review request binds head+base
+bash bin/touchstone pr open --title "fix: what changed" --body-file /tmp/pr-body \
+  --expect-branch fix/some-slug   # posts the review request bound to head+base
 # ... answer every finding, fix the high-severity ones, resolve every thread ...
 gh pr merge <n> --squash --match-head-commit "$(gh pr view <n> --json headRefOid --jq .headRefOid)"
 gh pr view <n> --json state,mergedAt      # confirm; the merge exit code lies in both directions
