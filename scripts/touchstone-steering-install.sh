@@ -754,6 +754,35 @@ case "$ACTION" in
       # operator owns is left alone even across releases that change which
       # documents ship.
       if [ -f "$principles_home/$PRINCIPLES_MANIFEST" ]; then
+        # Judge the manifest's self-description NOW, against the directory as
+        # it stands before this run deletes the documents it lists --
+        # afterwards even our own manifest would fail its own check.
+        manifest_referent="$(resolve_link "$principles_home/$PRINCIPLES_MANIFEST")"
+        manifest_ours=true
+        while IFS= read -r manifest_line; do
+          [ -n "$manifest_line" ] || continue
+          case "$manifest_line" in
+            *[0-9]" "*[0-9]"$(printf '\t')"*) ;;
+            *)
+              manifest_ours=false
+              break
+              ;;
+          esac
+          manifest_name="${manifest_line#*"$(printf '\t')"}"
+          manifest_sum="${manifest_line%%"$(printf '\t')"*}"
+          shipped_document "$manifest_name" || {
+            manifest_ours=false
+            break
+          }
+          # Shape alone is spoofable (principles/README.md makes README.md a
+          # shipped name). A manifest we wrote also DESCRIBES the directory:
+          # each recorded checksum must match the file it names.
+          if [ ! -f "$principles_home/$manifest_name" ] \
+            || [ "$manifest_sum" != "$(cksum <"$principles_home/$manifest_name")" ]; then
+            manifest_ours=false
+            break
+          fi
+        done <"$manifest_referent"
         while IFS="$(printf '\t')" read -r recorded_sum recorded; do
           [ -n "$recorded" ] || continue
           # Entries are plain basenames. Anything else -- a path separator, a
@@ -823,34 +852,7 @@ case "$ACTION" in
         # `cksum size<TAB>shipped-name` lines; an operator's notes file that a
         # symlink happens to reach never matches that shape, so it is retired
         # by rename rather than destroyed.
-        manifest_referent="$(resolve_link "$principles_home/$PRINCIPLES_MANIFEST")"
-        manifest_ours=true
-        while IFS= read -r manifest_line; do
-          [ -n "$manifest_line" ] || continue
-          case "$manifest_line" in
-            *[0-9]" "*[0-9]"$(printf '\t')"*) ;;
-            *)
-              manifest_ours=false
-              break
-              ;;
-          esac
-          manifest_name="${manifest_line#*"$(printf '\t')"}"
-          manifest_sum="${manifest_line%%"$(printf '\t')"*}"
-          shipped_document "$manifest_name" || {
-            manifest_ours=false
-            break
-          }
-          # Shape alone is spoofable (principles/README.md makes README.md a
-          # shipped name). A manifest we wrote also DESCRIBES the directory:
-          # each recorded checksum must match the file it names, and a
-          # manifest describing files that are not there is not one this run
-          # can vouch for.
-          if [ ! -f "$principles_home/$manifest_name" ] \
-            || [ "$manifest_sum" != "$(cksum <"$principles_home/$manifest_name")" ]; then
-            manifest_ours=false
-            break
-          fi
-        done <"$manifest_referent"
+        # Verdict computed above, before the documents were removed.
         if [ "$manifest_ours" = true ]; then
           rm -f -- "$manifest_referent"
         else
