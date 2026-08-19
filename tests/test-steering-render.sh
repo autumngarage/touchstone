@@ -97,7 +97,8 @@ echo "==> Rendering is idempotent"
 bash "$WORK/scripts/render-steering.sh" >/dev/null 2>&1 \
   || fail "second render failed on a just-rendered tree"
 cp "$WORK/AGENTS.md" "$TMP_DIR/first"
-bash "$WORK/scripts/render-steering.sh" >/dev/null 2>&1 || true
+bash "$WORK/scripts/render-steering.sh" >/dev/null 2>&1 \
+  || fail "third render failed; idempotence not exercised"
 if cmp -s "$TMP_DIR/first" "$WORK/AGENTS.md"; then
   pass "a second render changes nothing"
 else
