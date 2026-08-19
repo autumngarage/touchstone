@@ -11,7 +11,7 @@ generated project declaration is owned by
 `touchstone adopt --dry-run` prints the complete proposed diff. Plain
 `touchstone adopt` applies that same plan. `touchstone upgrade` exposes the same
 three modes but refreshes only Touchstone-owned steering bytes; it never
-rewrites an accepted schema-v1 declaration.
+rewrites an accepted declaration of any supported schema.
 
 Both commands accept `--json` and `--project DIR`. Fresh adoption accepts
 repeated `--task NAME=COMMAND` arguments for the explicit manual path and
@@ -79,7 +79,7 @@ sources under `.touchstone/`, and create or replace only the exact
 Everything outside those markers remains project-owned. Updates preserve each
 existing file's mode as project-owned metadata.
 
-Existing valid schema-v1 declarations remain byte-for-byte unchanged. Adopt
+Existing valid declarations of any supported schema remain byte-for-byte unchanged. Adopt
 fills missing steering integration points without refreshing existing managed
 sources; explicit upgrade refreshes them. Symlinks, malformed or repeated
 markers, ignored managed outputs, untracked existing managed output,

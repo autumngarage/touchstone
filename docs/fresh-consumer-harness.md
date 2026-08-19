@@ -26,7 +26,7 @@ command, using fakes for the locked npm and Python setup declarations.
 
 ## Compatibility and policy lanes
 
-The compatibility lane starts from the oldest supported schema-v1 shape. A
+The compatibility lane starts from schema 1, the oldest supported shape. A
 newer runtime validates it without migration; adoption adds the missing tracker
 declaration and current marked steering through check/dry-run/apply while
 preserving the project-owned validation command. The separate upgrade check

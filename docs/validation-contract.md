@@ -1,6 +1,6 @@
 # Validation Contract
 
-This document owns Touchstone's schema-v1 validation boundary. The canonical
+This document owns Touchstone's validation boundary: schema 1 and schema 2, which differ only by the optional task `stage` key. The canonical
 example is [`.touchstone.toml`](../.touchstone.toml); other documentation links
 here instead of copying the shape.
 
@@ -56,7 +56,7 @@ Schema 1 is a deliberately narrow TOML subset:
   escapes and intentionally rejects multiline strings and broader TOML syntax.
 
 The last restriction is part of the versioned contract, not an incomplete
-parser. A future schema may add syntax without changing what schema 1 means.
+parser. Schema 2 demonstrates the rule: it adds syntax without changing what schema 1 means, and a schema-1 file is read exactly as it was before schema 2 existed.
 
 ## Verdict semantics
 
