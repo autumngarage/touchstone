@@ -236,6 +236,22 @@ preflight_principles() {
   fi
   mkdir -p "$destination" || die "could not create $destination"
   [ -w "$destination" ] || die "$destination is not writable"
+  # A manifest that exists without the documents it claims is not ours: either
+  # the operator wrote it, or an install was interrupted. Refuse rather than
+  # trusting it to say what may be deleted later.
+  local manifest="$destination/$PRINCIPLES_MANIFEST" recorded
+  if [ -e "$manifest" ]; then
+    [ -f "$manifest" ] || die "$PRINCIPLES_RELATIVE/$PRINCIPLES_MANIFEST is not a regular file; move it before installing"
+    while IFS= read -r recorded; do
+      [ -n "$recorded" ] || continue
+      case "$recorded" in
+        */* | . | .. | -*)
+          die "$PRINCIPLES_RELATIVE/$PRINCIPLES_MANIFEST contains an entry that is not a plain name: $recorded"
+          ;;
+      esac
+    done <"$manifest"
+  fi
+
   local doc name
   for doc in "$PRINCIPLES_SOURCE"/*.md; do
     [ -f "$doc" ] || continue
@@ -245,6 +261,7 @@ preflight_principles() {
     fi
     # A file we did not install belongs to the operator. Detect it here, before
     # any driver file is written, so the refusal costs nothing.
+    :
     if [ -e "$destination/$name" ] && ! principles_owned "$name"; then
       die "$PRINCIPLES_RELATIVE/$name exists and was not installed by touchstone; move it before installing"
     fi
@@ -289,7 +306,15 @@ install_principles() {
 principles_current() {
   local destination="$HOME_DIR/$PRINCIPLES_RELATIVE" doc
   [ -d "$destination" ] || return 1
-  local rendered="$TMP_DIR/.principle-check"
+  # The manifest is part of the installed state: without it, uninstall cannot
+  # tell our documents from the operator's, so a missing manifest is drift.
+  [ -f "$destination/$PRINCIPLES_MANIFEST" ] || return 1
+  local rendered="$TMP_DIR/.principle-check" doc_name
+  for doc in "$PRINCIPLES_SOURCE"/*.md; do
+    [ -f "$doc" ] || continue
+    doc_name="$(basename "$doc")"
+    grep -qxF "$doc_name" "$destination/$PRINCIPLES_MANIFEST" || return 1
+  done
   for doc in "$PRINCIPLES_SOURCE"/*.md; do
     [ -f "$doc" ] || continue
     render_principle "$doc" "$rendered" || return 1
@@ -462,6 +487,16 @@ case "$ACTION" in
       if [ -f "$principles_home/$PRINCIPLES_MANIFEST" ]; then
         while IFS= read -r recorded; do
           [ -n "$recorded" ] || continue
+          # Entries are plain basenames. Anything else -- a path separator, a
+          # parent reference, a leading dash -- is a corrupted or edited
+          # manifest and must never direct a delete outside this directory.
+          case "$recorded" in
+            */* | . | .. | -*)
+              printf '  skipped: manifest entry is not a plain name: %s\n' "$recorded" >&2
+              continue
+              ;;
+          esac
+          [ -f "$principles_home/$recorded" ] || continue
           rm -f -- "$principles_home/$recorded"
         done <"$principles_home/$PRINCIPLES_MANIFEST"
         rm -f -- "$principles_home/$PRINCIPLES_MANIFEST"

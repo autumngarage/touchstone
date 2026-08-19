@@ -686,6 +686,47 @@ else
   pass "--dry-run leaves the filesystem alone"
 fi
 
+echo "==> a manifest entry that is not a plain name never directs a delete"
+# The manifest tells uninstall which documents are ours. If a corrupted or
+# hand-edited entry could carry a path, uninstall would delete outside the
+# directory it manages -- so entries are basenames or they are not honored.
+H8="$TMP_DIR/h8"
+mkdir -p "$H8/bystander"
+bash "$INSTALL" install --home "$H8" >/dev/null
+printf 'do not delete me\n' >"$H8/bystander/keep.md"
+printf '../../bystander/keep.md\n' >>"$H8/.touchstone/principles/.touchstone-installed"
+bash "$INSTALL" uninstall --home "$H8" >/dev/null 2>&1 || true
+if [ -f "$H8/bystander/keep.md" ]; then
+  pass "a traversing manifest entry is refused, not followed"
+else
+  fail "uninstall deleted a file outside the directory it manages"
+fi
+
+echo "==> a manifest the operator already owns is not adopted"
+H9="$TMP_DIR/h9"
+mkdir -p "$H9/.touchstone/principles"
+printf '../../etc/passwd\n' >"$H9/.touchstone/principles/.touchstone-installed"
+if bash "$INSTALL" install --home "$H9" >/dev/null 2>&1; then
+  fail "install adopted a pre-existing manifest with a traversing entry"
+else
+  pass "a pre-existing manifest is inspected before it is trusted"
+fi
+if [ -e "$H9/.claude/CLAUDE.md" ]; then
+  fail "install wrote a driver file before refusing"
+else
+  pass "the refusal costs no partial install"
+fi
+
+echo "==> a deleted manifest is drift, not a clean install"
+H10="$TMP_DIR/h10"
+bash "$INSTALL" install --home "$H10" >/dev/null
+rm -f "$H10/.touchstone/principles/.touchstone-installed"
+if bash "$INSTALL" check --home "$H10" >/dev/null 2>&1; then
+  fail "check passed an install whose ownership record is gone"
+else
+  pass "a missing ownership manifest fails check"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"
