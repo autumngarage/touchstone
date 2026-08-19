@@ -445,8 +445,11 @@ yours and unmerged, and it gets more expensive the longer you wait — an amend
 before review costs nothing, the same amend after three review rounds costs all
 three.
 
-Do not rewrite a branch another agent or worktree is building on, a branch
-serving as the base of an open stacked PR, or anything already merged. The
+Do not rewrite a branch another agent or worktree is building on, or anything
+already merged. A branch serving as the base of an open stacked PR is
+rewritten only as part of the chain retargeting below — parent first, each
+child deliberately, its own children retargeted in turn — never as an
+isolated amend that silently invalidates the stack above it. The
 lease is not an ownership check: it compares only the remote ref's value, so a
 collaborator with *unpushed* work on the branch is invisible to it — the
 remote still equals `$EXPECTED`, the push succeeds, and they discover the
