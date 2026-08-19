@@ -1115,16 +1115,24 @@ echo "==> a dry run validates the nearest existing ancestor"
 # Third instance of this class: the parent is absent, so checking only the
 # parent skipped validation entirely and the dry run promised an install that
 # fails at mkdir.
-H31="$TMP_DIR/h31"
-mkdir -p "$H31/.touchstone/principles"
-chmod 0555 "$H31"
+#
+# The fault is a non-directory ancestor rather than permission bits, which do
+# not stop the required workflow's root user -- the same reason the
+# staging-failure fixture above uses a shim instead of chmod. A regular file
+# is not a directory for any UID, and placing it two levels up means only a
+# check that walks upward from an absent parent can see it.
+H31="$TMP_DIR/h31-file/home"
+printf 'a regular file where a directory should be\n' >"$TMP_DIR/h31-file"
 if bash "$INSTALL" install --home "$H31" --dry-run >/dev/null 2>&1; then
-  chmod 0755 "$H31"
-  fail "a dry run promised an install its unwritable ancestor forbids"
+  fail "a dry run promised an install an unusable driver parent forbids"
 else
-  pass "a dry run walks to the nearest existing ancestor"
+  pass "a dry run refuses what the real install refuses"
 fi
-chmod 0755 "$H31"
+if bash "$INSTALL" install --home "$H31" >/dev/null 2>&1; then
+  fail "the real install accepted an unusable driver parent"
+else
+  pass "the dry run and the real install agree"
+fi
 
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
