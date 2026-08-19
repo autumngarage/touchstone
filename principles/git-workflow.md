@@ -401,9 +401,18 @@ head; after rewriting, push against exactly that value:
 ```bash
 git fetch origin
 EXPECTED=$(git rev-parse "origin/$(git branch --show-current)")
+# The tip you just fetched must be one you have already integrated -- normally
+# your own last push. If it is not in your local history, another agent pushed
+# while you were away; stop and reconcile instead of rewriting over them.
+git merge-base --is-ancestor "$EXPECTED" HEAD \
+  || { echo "remote moved beyond this branch; reconcile before rewriting" >&2; }
 # ...amend / squash / rebase...
 git push --force-with-lease="$(git branch --show-current):$EXPECTED"
 ```
+
+The pin guards the window between that inspection and the push; the ancestor
+check *is* the inspection. Pinning a tip you never verified is the bare lease
+with extra steps.
 
 Never bare `--force`, and don't trust bare `--force-with-lease` either: it
 compares against your remote-tracking ref, and any background fetch — another
@@ -467,6 +476,8 @@ parallelization mechanism when exact-head evidence is required.
 DEFAULT=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
 git fetch origin
 EXPECTED=$(git rev-parse "origin/<child-branch>")
+git merge-base --is-ancestor "$EXPECTED" <child-branch> \
+  || { echo "child moved on the remote; reconcile before retargeting" >&2; }
 gh pr edit <child> --base "$DEFAULT"
 git rebase --onto "origin/$DEFAULT" "origin/<parent-branch>" <child-branch>
 git push --force-with-lease="<child-branch>:$EXPECTED"
