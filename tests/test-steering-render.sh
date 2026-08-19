@@ -794,6 +794,47 @@ else
   pass "fixture edits use the supported shell toolchain"
 fi
 
+echo "==> a driver path that is not a regular file is refused"
+# compose reads a missing path as an empty prefix and `mv` onto a directory
+# moves the payload inside it, so this reported a successful install while
+# leaving the instruction file absent and check immediately reporting drift.
+H14="$TMP_DIR/h14"
+mkdir -p "$H14/.claude/CLAUDE.md"
+if bash "$INSTALL" install --home "$H14" >/dev/null 2>&1; then
+  fail "install claimed success with a directory at the instruction path"
+else
+  pass "a non-regular driver path is refused"
+fi
+if [ -d "$H14/.claude/CLAUDE.md" ] && [ -z "$(ls -A "$H14/.claude/CLAUDE.md")" ]; then
+  pass "the refusal left nothing inside the directory"
+else
+  fail "install wrote into the directory at the instruction path"
+fi
+
+echo "==> a dry run answers whether the install could succeed"
+# The one answer a dry run must never give is "this would reach every agent"
+# for an install that fails immediately.
+H15="$TMP_DIR/h15"
+mkdir -p "$H15/.touchstone"
+printf 'not a directory\n' >"$H15/.touchstone/principles"
+if bash "$INSTALL" install --home "$H15" --dry-run >/dev/null 2>&1; then
+  fail "a dry run reported success for an install that cannot proceed"
+else
+  pass "a dry run refuses what the real install would refuse"
+fi
+
+H16="$TMP_DIR/h16"
+if bash "$INSTALL" install --home "$H16" --dry-run >/dev/null 2>&1; then
+  pass "a clean dry run still succeeds"
+else
+  fail "a dry run refused a home that installs fine"
+fi
+if [ -e "$H16/.touchstone" ] || [ -e "$H16/.claude" ]; then
+  fail "the dry run created directories"
+else
+  pass "validating a dry run still writes nothing"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"

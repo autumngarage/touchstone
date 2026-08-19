@@ -250,8 +250,22 @@ preflight_principles() {
   if [ -e "$destination" ] && [ ! -d "$destination" ]; then
     die "$destination exists and is not a directory; move it before installing"
   fi
-  mkdir -p "$destination" || die "could not create $destination"
-  [ -w "$destination" ] || die "$destination is not writable"
+  if [ -d "$destination" ]; then
+    [ -w "$destination" ] || die "$destination is not writable"
+  elif [ "$DRY_RUN" = true ]; then
+    # A dry run must not create anything, but it must still answer the
+    # question it is asked: could this install proceed? Check the nearest
+    # existing ancestor instead of creating the directory.
+    local ancestor="$destination"
+    while [ ! -e "$ancestor" ] && [ "$ancestor" != "/" ] && [ "$ancestor" != "." ]; do
+      ancestor="$(dirname "$ancestor")"
+    done
+    [ -d "$ancestor" ] || die "$ancestor exists and is not a directory; move it before installing"
+    [ -w "$ancestor" ] || die "$ancestor is not writable"
+  else
+    mkdir -p "$destination" || die "could not create $destination"
+    [ -w "$destination" ] || die "$destination is not writable"
+  fi
   # A manifest that exists without the documents it claims is not ours: either
   # the operator wrote it, or an install was interrupted. Refuse rather than
   # trusting it to say what may be deleted later.
@@ -354,8 +368,10 @@ principles_current() {
   return 0
 }
 
-# Fail before any driver file is touched if the routed destination is unusable.
-[ "$ACTION" != install ] || [ "$DRY_RUN" = true ] || preflight_principles
+# Fail before any driver file is touched if a destination is unusable. A dry
+# run runs the same checks: reporting an install that would immediately fail
+# as "would reach every agent" is the one answer a dry run must never give.
+[ "$ACTION" != install ] || preflight_principles
 
 CHANGED=0
 DRIFTED=0
@@ -369,6 +385,13 @@ for entry in "${TARGETS[@]}"; do
   relative="${entry#*:}"
   path="$HOME_DIR/$relative"
   composed="$TMP_DIR/$driver"
+
+  # compose reads a non-existent path as an empty prefix, and `mv` onto a
+  # directory moves the payload *inside* it -- so a driver path that is a
+  # directory installed "successfully" and left the instruction file absent.
+  if [ -e "$path" ] && [ ! -f "$path" ]; then
+    die "$relative exists and is not a regular file; move it before installing"
+  fi
 
   case "$ACTION" in
     install | check)
