@@ -194,6 +194,29 @@ else
   fail "render mutated the trailing byte outside the markers ($last_before -> $last_after)"
 fi
 
+# A marker line inside the canonical source would be copied into every block
+# and rejected by the very next validation. Both modes must refuse up front.
+echo "==> A marker line in the canonical source is refused"
+MARKED="$TMP_DIR/marked"
+mkdir -p "$MARKED/scripts" "$MARKED/templates"
+cp "$REPO_ROOT/TOUCHSTONE.md" "$MARKED/TOUCHSTONE.md"
+printf '\n<!-- touchstone:steering:end -->\n' >>"$MARKED/TOUCHSTONE.md"
+for f in AGENTS.md GEMINI.md templates/AGENTS.md templates/GEMINI.md; do
+  cp "$REPO_ROOT/$f" "$MARKED/$f"
+done
+cp "$RENDER" "$MARKED/scripts/render-steering.sh"
+before_marked="$(cksum "$MARKED/AGENTS.md")"
+if bash "$MARKED/scripts/render-steering.sh" >/dev/null 2>&1; then
+  fail "render accepted a source containing a marker line"
+else
+  pass "render refuses a source containing a marker line"
+fi
+if [ "$before_marked" = "$(cksum "$MARKED/AGENTS.md")" ]; then
+  pass "no target was touched by the refused render"
+else
+  fail "the refused render modified a target"
+fi
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "$FAILURES check(s) failed" >&2
   exit 1

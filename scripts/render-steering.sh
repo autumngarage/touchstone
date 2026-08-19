@@ -54,6 +54,15 @@ die() {
 
 [ -f "$SOURCE" ] || die "canonical steering is missing: $SOURCE"
 
+# The source must not itself contain a marker line: the block copy would
+# inject a second marker into every target, and the very next validation
+# would reject all four files the render just reported as updated.
+for marker in "$BEGIN_MARKER" "$END_MARKER"; do
+  if awk -v m="$marker" '$0 == m { found = 1 } END { exit !found }' "$SOURCE"; then
+    die "canonical steering contains a managed marker line; document markers only in inline code, never on their own line"
+  fi
+done
+
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-render-steering.XXXXXX")" || die "could not create workspace"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
