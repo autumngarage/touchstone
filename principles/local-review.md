@@ -9,9 +9,11 @@ bounded local review. The GitHub side — answering findings, thread resolution,
 the round budget, merge — lives in `principles/git-workflow.md` and is not
 restated here.
 
-**Reviewer vendors are named once, here.** The local reviewer is the CodeRabbit
-CLI; the PR deep reviewer is Codex. Swapping either changes this paragraph and
-nothing else.
+**Reviewer vendors.** The local reviewer is the CodeRabbit CLI; the PR deep
+reviewer is Codex. Swapping either changes this paragraph, the project's
+review declaration, and the provider-specific recovery procedure in
+`principles/git-workflow.md` — three places, listed here so a swap can be done
+completely rather than half-done.
 
 ## Work slicing
 
@@ -27,7 +29,10 @@ Split before committing if any are true:
 - A behavior change is mixed with a broad refactor, rename, or formatting
   sweep (`Separate behavior changes from tidying`, in the engineering
   principles, is the standing rule).
-- Generated files or lockfiles ride along with substantive code.
+- Generated files or lockfiles ride along with substantive code — **unless**
+  the generated output is required to stay in sync with the source changed in
+  the same slice (rendered steering surfaces, compiled schemas). Those land
+  together; splitting them ships a broken intermediate state.
 - The change cannot be explained in two sentences.
 - Validation requires multiple independent scenarios.
 - A public-interface change plus its call-site migration obscures the intended
@@ -114,11 +119,15 @@ what automation does not cover. Projects with a schema-2 declaration run
 `touchstone validate --stage commit`. AI review complements these; it never
 replaces them.
 
+A check that does not apply is recorded as `n/a` with the reason — a
+documentation-only change has no targeted build. Recording `n/a` is honest;
+claiming a check ran is not, and the two must never be confused.
+
 ## The local review pass
 
 Once per coherent normal change, after deterministic checks pass. Stage only
-the intended slice; exclude unrelated files, generated artifacts, and
-accidental formatting. State the intent and risks. Use this contract:
+the intended slice; exclude unrelated files, accidental formatting, and any
+generated artifact that is not required to land with this change. State the intent and risks. Use this contract:
 
 > Review only the staged diff against the stated intent and invariants.
 > Report at most 3 high-confidence, actionable defects introduced by this
@@ -131,9 +140,29 @@ accidental formatting. State the intent and risks. Use this contract:
 > concerns, or anything outside the stated scope. If no high-confidence issue
 > exists, say: "No high-confidence defects introduced by this diff."
 
+Invoke it against the slice, passing the contract as additional instructions:
+
+```bash
+coderabbit review --agent --committed --base "$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's|^origin/||')" \
+  -c /path/to/contract.md      # --uncommitted to review staged work instead
+```
+
+A project declares whether this pass is expected in its review declaration
+(`.touchstone-review.toml`). Where a project does not configure a local
+reviewer, the tier's local obligation is satisfied by its deterministic
+checks alone, and the PR-visible review remains unchanged.
+
+**The local pass is quota-bound.** Providers meter it, so a driver that
+re-runs after every edit exhausts the budget and blocks itself for the next
+real change. This is a second reason the rules above allow one pass per
+coherent slice and no confirming re-run. When the quota is exhausted, record
+that fact in the validation block and proceed — the PR-visible review is the
+authority and is never quota-bound by this path.
+
 Afterwards: triage each finding as valid, false positive, duplicate, or out of
-scope; apply only valid fixes; never re-run until the reviewer says nothing;
-never expand the slice to address adjacent or pre-existing findings.
+scope; apply only valid fixes; do not re-run the pass to confirm the
+reviewer is now quiet; never expand the slice to address adjacent or
+pre-existing findings.
 
 ## The deep review pass
 
@@ -164,9 +193,20 @@ gate; it only means you request nothing extra.
 
 ## Stop conditions
 
-Review is complete when deterministic checks pass, the intended validation
-scenario passes, the tier's one review has run, valid findings are handled,
-and no merge-blocking finding remains.
+Review is complete when deterministic checks pass (or are recorded as not
+applicable), the intended validation scenario passes, valid findings are
+handled, no merge-blocking finding remains, and the tier's review obligation
+is met:
+
+- **trivial** — no initiated review; deterministic checks alone complete it.
+- **normal** — one local pass has run and its findings are triaged.
+- **serious** — one deep review has run on the stable PR.
+
+After a bounded pass, fix the valid findings and stop. Do not run a
+confirming local pass to see whether the reviewer is satisfied; run another
+only if a fix materially changed the risk surface — a new serialization
+format, ownership or threading change, security boundary, or public
+contract.
 
 **A fix commit moves the head, and exact-head review of the merged head is
 never optional.** What this document bounds is how much you *implement* and
