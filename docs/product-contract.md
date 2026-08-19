@@ -8,6 +8,39 @@ This is Touchstone project strategy, not universal engineering guidance. It is
 loaded only by this repository's project-specific agent instructions and must
 not be copied or routed into consumer projects.
 
+## Steering distribution
+
+Steering reaches agents through the **installed tool**, not through consumer
+repositories. `touchstone steering install` writes one delimited, idempotent
+block into each supported driver's user-level instruction file
+(`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`); every
+driver layers project files over that, so a repository still has the last
+word without carrying a copy.
+
+This is the mechanism by which contract improvements reach every project at
+once. A steering change ships with the tool; no repository is rewritten, no
+pull request is opened per consumer, and nothing drifts because nothing is
+duplicated.
+
+Copying was the alternative and it failed measurably: on 2026-08-18, zero of
+ten consumer repositories carried a block matching this contract, and several
+instructed agents to do what the contract forbids. The per-repository refresh
+was the tax that produced that drift.
+
+Two costs are accepted deliberately:
+
+- **Per machine, not per repository.** An agent on a machine that never ran
+  the installer receives no steering. `touchstone steering check` reports it,
+  and adoption records the required contract version so an unsteered agent can
+  be told what it is missing rather than guessing.
+- **The contract must stay small.** Distribution being free removes the
+  friction that previously limited growth, so the size caps in
+  `tests/test-steering-size-caps.sh` are the replacement constraint: adding to
+  steering requires removing from it or routing the content to `principles/*`.
+
+Content outside the managed markers belongs to the operator and is never
+touched; `uninstall` removes the block and leaves the rest byte-identical.
+
 ## Outcome
 
 Touchstone is the standard delivery baseline for one person directing many
