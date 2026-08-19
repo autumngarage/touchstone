@@ -383,6 +383,38 @@ else
   fail "install wrote past the symlink without updating its referent"
 fi
 
+echo "==> the newline hint survives a refresh and does not leak between drivers"
+HREF="$TMP_DIR/href"
+mkdir -p "$HREF/.claude" "$HREF/.codex"
+printf 'MINE\nno trailing newline' >"$HREF/.claude/CLAUDE.md"
+printf 'OTHER has a newline\n' >"$HREF/.codex/AGENTS.md"
+ref_claude="$(cksum <"$HREF/.claude/CLAUDE.md")"
+ref_codex="$(cksum <"$HREF/.codex/AGENTS.md")"
+bash "$INSTALL" install --home "$HREF" >/dev/null 2>&1
+bash "$INSTALL" install --home "$HREF" >/dev/null 2>&1
+if grep -q 'restore-newline' "$HREF/.claude/CLAUDE.md"; then
+  pass "the hint survives a second install"
+else
+  fail "a refresh dropped the restore hint"
+fi
+if grep -q 'restore-newline' "$HREF/.codex/AGENTS.md"; then
+  fail "the hint leaked from one driver file to another"
+else
+  pass "the hint does not leak between drivers"
+fi
+if bash "$INSTALL" check --home "$HREF" >/dev/null 2>&1; then
+  pass "check accepts an attributed start marker"
+else
+  fail "check rejected its own attributed marker"
+fi
+bash "$INSTALL" uninstall --home "$HREF" >/dev/null 2>&1
+if [ "$ref_claude" = "$(cksum <"$HREF/.claude/CLAUDE.md")" ] \
+  && [ "$ref_codex" = "$(cksum <"$HREF/.codex/AGENTS.md")" ]; then
+  pass "both files return to their exact original bytes after a refresh cycle"
+else
+  fail "a refresh cycle changed the operator's bytes"
+fi
+
 echo "==> a multi-hop symlink chain is followed to its final referent"
 HCHAIN="$TMP_DIR/hchain"
 CHAINREAL="$TMP_DIR/chainreal"

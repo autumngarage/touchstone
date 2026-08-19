@@ -109,6 +109,9 @@ EOF
 # Byte-exact outside the markers, including a tail that ends without a newline.
 compose() {
   local path="$1" block="$2" out="$3" begin_line end_line begin_count end_count tail_offset
+  # Per-target state: a previous driver's newline-less file must not mark this
+  # one for restoration.
+  NEEDS_NEWLINE_RESTORE=false
 
   if [ ! -f "$path" ]; then
     cat "$block" >"$out"
@@ -145,12 +148,21 @@ compose() {
   end_line="$(awk -v m="$END_MARKER" '$0 == m { print NR; exit }' "$path")"
   [ "$begin_line" -lt "$end_line" ] || die "$path has its end marker before its start marker"
 
+  # A refresh must preserve the hint the first install recorded: the operator's
+  # own content still lacks the trailing newline the block replaced.
+  case "$(sed -n "${begin_line}p" "$path")" in
+    *restore-newline*) NEEDS_NEWLINE_RESTORE=true ;;
+  esac
   if [ "$((begin_line - 1))" -gt 0 ]; then
     head -n "$((begin_line - 1))" "$path" >"$out"
   else
     : >"$out"
   fi
-  cat "$block" >>"$out"
+  if [ "$NEEDS_NEWLINE_RESTORE" = true ]; then
+    sed "1s|.*|<!-- touchstone:steering:start restore-newline -->|" "$block" >>"$out"
+  else
+    cat "$block" >>"$out"
+  fi
   tail_offset="$(head -n "$end_line" "$path" | wc -c | tr -d ' ')"
   tail -c "+$((tail_offset + 1))" "$path" >>"$out"
 }
@@ -234,8 +246,8 @@ for entry in "${TARGETS[@]}"; do
   # tail rebuilt from the same file would hide real block drift.
   if [ "$ACTION" = check ]; then
     if [ -f "$path" ] \
-      && awk -v b="$BEGIN_MARKER" -v e="$END_MARKER" \
-        '$0 == b { inside = 1 } inside { print } $0 == e { inside = 0 }' "$path" \
+      && awk -v b="$BEGIN_MARKER_RE" -v e="$END_MARKER" -v plain="$BEGIN_MARKER" \
+        '$0 ~ b { inside = 1; print plain; next } inside { print } $0 == e { inside = 0 }' "$path" \
       | cmp -s - "$BLOCK"; then
       printf '  ok: %s carries the current contract\n' "$relative"
     else
