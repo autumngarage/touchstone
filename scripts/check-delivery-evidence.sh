@@ -53,17 +53,21 @@ filled() {
     { line = $0
       sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
       if (line == "") next
+      # A bullet, task box, or "Label:" prefix is scaffolding, not content:
+      # judge what follows it, or "- Build: <exact command and result>" reads
+      # as filled. Scaffolding is stripped BEFORE the comment-state checks so
+      # "- <!--" cannot hide a comment behind a bullet.
+      sub(/^[-*][[:space:]]*/, "", line)
+      if (line ~ /^\[[ ]\]/) next            # an unchecked box records nothing
+      sub(/^\[[xX]\][[:space:]]*/, "", line)
+      if (line ~ /^[A-Za-z][A-Za-z0-9 \/-]*:[[:space:]]*/)
+        sub(/^[A-Za-z][A-Za-z0-9 \/-]*:[[:space:]]*/, "", line)
+      sub(/^[[:space:]]+/, "", line)
       # Comments are invisible in the rendered body, so nothing inside one is
-      # evidence -- including a comment opened on one line and closed on a
-      # later one, which the single-line pattern below cannot see.
+      # evidence -- including a comment opened on one line and closed later.
       if (in_comment) { if (line ~ /-->/) in_comment = 0; next }
       if (line ~ /^<!--/ && line !~ /-->/) { in_comment = 1; next }
       if (line ~ /^<!--.*-->$/) next          # single-line comment
-      # A bullet or "Label:" prefix is scaffolding, not content: judge what
-      # follows it, or "- Build: <exact command and result>" reads as filled.
-      sub(/^[-*][[:space:]]*/, "", line)
-      if (line ~ /^[A-Za-z][A-Za-z0-9 \/-]*:[[:space:]]*/)
-        sub(/^[A-Za-z][A-Za-z0-9 \/-]*:[[:space:]]*/, "", line)
       sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
       if (line == "") next
       if (line ~ /^<.*>$/) next               # unedited <placeholder>

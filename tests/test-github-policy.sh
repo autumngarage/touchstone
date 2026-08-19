@@ -1005,6 +1005,60 @@ else
   ok "an unreadable body fails closed"
 fi
 
+echo "==> the gate is actually installed, not only correct"
+# The parser being right proves nothing if the workflow stops publishing the
+# context or the policy stops requiring it -- either half can be removed and
+# every direct-invocation assertion stays green.
+grep -q '^name: delivery evidence$' "$ROOT/.github/workflows/delivery-evidence.yml" \
+  || fail "the delivery-evidence workflow no longer publishes its required context name"
+grep -q 'check-delivery-evidence.sh' "$ROOT/.github/workflows/delivery-evidence.yml" \
+  || fail "the delivery-evidence workflow no longer invokes the parser"
+# grep, not an interpreter: the required loop runs where the shell and
+# coreutils are the whole base tool surface.
+grep -A 2 '"context": "delivery evidence"' "$ROOT/policy/github/touchstone-main.json" \
+  | grep -q '"integration_id": 15368' \
+  || fail "the policy no longer requires 'delivery evidence' bound to GitHub Actions"
+ok "workflow publishes the context and the policy requires it from Actions"
+
+echo "==> unchecked task boxes and bullet-hidden comments are absence"
+body '## Intent
+- [ ] Build
+- [ ] Test
+
+## Invariants
+- [ ] something
+
+## Validation
+- [ ] Tests pass locally
+
+## Review tier
+normal
+
+## Why this tier
+- [ ] contained'
+if accepts; then
+  fail "a body of unchecked task boxes satisfied the gate"
+fi
+ok "unchecked task-list scaffolding records nothing"
+
+body '## Intent
+- <!--
+hidden behind a bullet
+-->
+
+## Validation
+- Tests: pass.
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "a comment hidden behind a bullet satisfied a required section"
+fi
+ok "scaffolding cannot hide a multiline comment"
+
 echo "==> a multiline comment is invisible and therefore absence"
 body '## Intent
 <!--
