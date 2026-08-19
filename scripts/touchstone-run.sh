@@ -425,7 +425,19 @@ resolve_target() {
   esac
 }
 
+# Preflight only the targets the selected stage will actually use. A
+# commit-stage guard may point at a directory that exists on a developer's
+# machine and not in CI; resolving it during the enforcement run would fail a
+# gate over a path that run never touches.
 while IFS="$(printf '\t')" read -r target_name target_path; do
+  target_in_stage=false
+  while IFS="$(printf '\t')" read -r _tn task_target _tr task_stage _tc; do
+    [ "$task_stage" = "$STAGE_ARG" ] || continue
+    [ "$task_target" = "$target_name" ] || continue
+    target_in_stage=true
+    break
+  done <"$TASKS_FILE"
+  [ "$target_in_stage" = true ] || continue
   resolve_target "$target_name" "$target_path" || true
 done <"$TARGETS_FILE"
 

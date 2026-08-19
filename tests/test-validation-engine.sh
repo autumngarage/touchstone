@@ -2426,6 +2426,49 @@ else
   pass "an unsupported schema is rejected"
 fi
 
+echo "==> a commit-only target absent in CI does not fail the enforcement run"
+# An authoring guard may point at a directory that exists on a developer's
+# machine and not on a runner. Preflighting every declared target regardless
+# of stage would fail the gate over a path the enforcement run never touches.
+SPLITTARGET="$STAGE_TMP/split-target"
+make_stage_project "$SPLITTARGET" 'schema = 2
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "src"
+path = "src"
+
+[[validation.targets]]
+name = "devonly"
+path = "dev-workspace"
+
+[[validation.tasks]]
+name = "suite"
+target = "src"
+command = "true"
+required = true
+
+[[validation.tasks]]
+name = "guard"
+target = "devonly"
+stage = "commit"
+command = "true"
+required = true'
+mkdir -p "$SPLITTARGET/src"
+if bash "$RUN_ENGINE" validate --project "$SPLITTARGET" >/dev/null 2>&1; then
+  pass "the enforcement run ignores a target only the commit stage uses"
+else
+  fail "an absent commit-stage target failed the enforcement run"
+fi
+# The converse must still hold: a target the selected stage uses is checked.
+if bash "$RUN_ENGINE" validate --stage commit --project "$SPLITTARGET" >/dev/null 2>&1; then
+  fail "the commit stage passed with its own target missing"
+else
+  pass "a missing target the selected stage uses still fails"
+fi
+
 echo "==> setup does not run for a stage with no tasks"
 SETUPONLY="$STAGE_TMP/setup-only"
 make_stage_project "$SETUPONLY" 'schema = 2
