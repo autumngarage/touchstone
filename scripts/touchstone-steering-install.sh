@@ -769,7 +769,11 @@ case "$ACTION" in
             printf '  kept: %s does not match what was installed\n' "$recorded" >&2
           fi
         done <"$principles_home/$PRINCIPLES_MANIFEST"
-        rm -f -- "$principles_home/$PRINCIPLES_MANIFEST"
+        # Same rule as the routed documents: install wrote the referent, so
+        # remove that, then clear the pointer it leaves dangling.
+        rm -f -- "$(resolve_link "$principles_home/$PRINCIPLES_MANIFEST")"
+        [ ! -L "$principles_home/$PRINCIPLES_MANIFEST" ] \
+          || rm -f -- "$principles_home/$PRINCIPLES_MANIFEST"
       fi
       # Only if nothing of the operator's remains.
       rmdir "$principles_home" 2>/dev/null || true

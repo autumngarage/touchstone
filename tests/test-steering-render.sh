@@ -1254,6 +1254,20 @@ else
   pass "uninstall removes the referent install wrote"
 fi
 
+echo "==> uninstall removes the manifest install wrote through a link"
+H39="$TMP_DIR/h39"
+bash "$INSTALL" install --home "$H39" >/dev/null 2>&1
+mkdir -p "$H39/dotfiles"
+mv "$H39/.touchstone/principles/.touchstone-installed" "$H39/dotfiles/manifest"
+ln -s "$H39/dotfiles/manifest" "$H39/.touchstone/principles/.touchstone-installed"
+bash "$INSTALL" install --home "$H39" >/dev/null 2>&1 || true
+bash "$INSTALL" uninstall --home "$H39" >/dev/null 2>&1 || true
+if [ -e "$H39/dotfiles/manifest" ]; then
+  fail "uninstall left the manifest at the symlink's referent"
+else
+  pass "uninstall removes the manifest referent too"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"
