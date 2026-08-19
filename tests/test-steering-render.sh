@@ -1246,8 +1246,10 @@ bash "$INSTALL" install --home "$H38" >/dev/null 2>&1
 mkdir -p "$H38/dotfiles"
 mv "$H38/.touchstone/principles/git-workflow.md" "$H38/dotfiles/git-workflow.md"
 ln -s "$H38/dotfiles/git-workflow.md" "$H38/.touchstone/principles/git-workflow.md"
-bash "$INSTALL" install --home "$H38" >/dev/null 2>&1 || true
-bash "$INSTALL" uninstall --home "$H38" >/dev/null 2>&1 || true
+bash "$INSTALL" install --home "$H38" >/dev/null 2>&1 \
+  || fail "install did not update the symlinked routed document"
+bash "$INSTALL" uninstall --home "$H38" >/dev/null 2>&1 \
+  || fail "uninstall did not remove the symlinked routed document"
 if [ -e "$H38/dotfiles/git-workflow.md" ]; then
   fail "uninstall left the managed document at the symlink's referent"
 else
@@ -1262,10 +1264,28 @@ mv "$H39/.touchstone/principles/.touchstone-installed" "$H39/dotfiles/manifest"
 ln -s "$H39/dotfiles/manifest" "$H39/.touchstone/principles/.touchstone-installed"
 bash "$INSTALL" install --home "$H39" >/dev/null 2>&1 || true
 bash "$INSTALL" uninstall --home "$H39" >/dev/null 2>&1 || true
-if [ -e "$H39/dotfiles/manifest" ]; then
-  fail "uninstall left the manifest at the symlink's referent"
+if [ -e "$H39/dotfiles/manifest" ] \
+  || [ -L "$H39/.touchstone/principles/.touchstone-installed" ]; then
+  fail "uninstall left the manifest referent or a dangling pointer to it"
 else
   pass "uninstall removes the manifest referent too"
+fi
+
+echo "==> a failed install leaves no staging file in the operator's directories"
+# Staging files live in the destination directory, not the workspace, so the
+# workspace trap never reached them: a failure between staging one driver and
+# committing it left an orphan in ~/.claude.
+H40="$TMP_DIR/h40"
+mkdir -p "$H40/.claude" "$H40/.codex/AGENTS.md"
+bash "$INSTALL" install --home "$H40" >/dev/null 2>&1 || true
+orphans=""
+for orphan in "$H40"/.claude/.* "$H40"/.codex/.*; do
+  case "$(basename "$orphan")" in *touchstone-steering*) orphans="$orphans $(basename "$orphan")" ;; esac
+done
+if [ -z "$orphans" ]; then
+  pass "a mid-install failure leaves no staging orphan"
+else
+  fail "staging files survived a failed install:$orphans"
 fi
 
 echo "==> unknown actions and arguments fail closed"

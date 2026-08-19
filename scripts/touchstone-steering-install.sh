@@ -113,7 +113,18 @@ for marker in "$BEGIN_MARKER" "$END_MARKER"; do
 done
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-steering-install.XXXXXX")" || die "could not create workspace"
-trap 'rm -rf "$TMP_DIR"' EXIT
+# Staging files are created in the destination directory, not the workspace,
+# so removing TMP_DIR does not reach them. Any die between staging a file and
+# committing it would otherwise leave an orphan in the operator's ~/.claude.
+STAGED_TEMPORARIES=()
+cleanup_workspace() {
+  rm -rf "$TMP_DIR"
+  local leftover
+  for leftover in ${STAGED_TEMPORARIES[@]+"${STAGED_TEMPORARIES[@]}"}; do
+    rm -f -- "$leftover"
+  done
+}
+trap cleanup_workspace EXIT
 
 render_block() {
   local out="$1"
@@ -367,11 +378,14 @@ resolve_link() {
   printf '%s\n' "$target"
 }
 
+# Returns through STAGED_PATH rather than stdout: a command substitution runs
+# in a subshell, so recording the path in STAGED_TEMPORARIES there would be
+# lost and the cleanup trap would never see it.
 stage_path() {
-  local directory="$1" prefix="$2" staged
-  staged="$(mktemp "$directory/.$prefix.XXXXXXXX")" \
+  local directory="$1" prefix="$2"
+  STAGED_PATH="$(mktemp "$directory/.$prefix.XXXXXXXX")" \
     || die "could not create a staging file in $directory"
-  printf '%s\n' "$staged"
+  STAGED_TEMPORARIES+=("$STAGED_PATH")
 }
 
 shipped_document() {
@@ -400,11 +414,13 @@ principles_owned() {
 
 install_principles() {
   local destination="$HOME_DIR/$PRINCIPLES_RELATIVE" doc name staged backup suffix manifest_staged
-  manifest_staged="$(stage_path "$destination" "$PRINCIPLES_MANIFEST")"
+  stage_path "$destination" "$PRINCIPLES_MANIFEST"
+  manifest_staged="$STAGED_PATH"
   for doc in "$PRINCIPLES_SOURCE"/*.md; do
     [ -f "$doc" ] || continue
     name="$(basename "$doc")"
-    staged="$(stage_path "$destination" "$name")"
+    stage_path "$destination" "$name"
+    staged="$STAGED_PATH"
     render_principle "$doc" "$staged" || {
       rm -f -- "$staged"
       die "could not stage $name"
@@ -644,7 +660,8 @@ for entry in "${TARGETS[@]}"; do
     continue
   fi
   mkdir -p "$(dirname "$path")" || die "could not create $(dirname "$path")"
-  staged="$(stage_path "$(dirname "$path")" "$(basename "$path").touchstone-steering")"
+  stage_path "$(dirname "$path")" "$(basename "$path").touchstone-steering"
+  staged="$STAGED_PATH"
   # cp -p onto an existing target would copy the workspace file's mode; copy
   # the payload, then restore the target's own permissions. An instruction
   # file the operator restricted to 0600 must not become world-readable
