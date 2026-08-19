@@ -110,6 +110,8 @@ render_one() {
 
 DRIFTED=0
 CHANGED=0
+STAGED_PATHS=()
+INSTALL_TARGETS=()
 
 # Phase 1: validate and render every target into the workspace. A malformed
 # fourth target must not leave the first three already replaced, so no target
@@ -138,21 +140,35 @@ for target in "${TARGETS[@]}"; do
     continue
   fi
 
-  # Same-directory staging plus rename: a redirection onto the target would
-  # truncate it before writing, so a full disk or an interrupt mid-copy could
-  # destroy project-owned bytes the error path cannot restore. rename(2)
-  # within one filesystem replaces the file whole or not at all.
+  # Stage beside the target; installation is deferred until every changed
+  # target has staged successfully, so a full disk or unwritable directory
+  # discovered at the fourth copy leaves the first three untouched.
   staged="$path.render-steering.$$"
   if ! cp "$rendered" "$staged"; then
     rm -f -- "$staged"
+    for cleanup in "${STAGED_PATHS[@]:-}"; do rm -f -- "$cleanup"; done
     die "could not stage $target"
   fi
-  mv -f -- "$staged" "$path" || {
-    rm -f -- "$staged"
-    die "could not replace $target"
+  STAGED_PATHS+=("$staged")
+  INSTALL_TARGETS+=("$target")
+  CHANGED=$((CHANGED + 1))
+done
+
+# Install phase: rename each staged file over its target. rename(2) within
+# one filesystem replaces a file whole or not at all, and every payload is
+# already written, so the only remaining failure is the rename itself -- a
+# same-directory metadata operation. POSIX offers no multi-file atomic
+# rename; this sequence is the floor, and a failure here names the target so
+# recovery is one re-run.
+index=0
+for target in ${INSTALL_TARGETS[@]+"${INSTALL_TARGETS[@]}"}; do
+  staged="${STAGED_PATHS[$index]}"
+  index=$((index + 1))
+  mv -f -- "$staged" "$ROOT/$target" || {
+    for cleanup in "${STAGED_PATHS[@]}"; do rm -f -- "$cleanup"; done
+    die "could not replace $target; re-run to converge the remaining targets"
   }
   printf '  updated: %s\n' "$target"
-  CHANGED=$((CHANGED + 1))
 done
 
 if [ "$CHECK_ONLY" = true ]; then

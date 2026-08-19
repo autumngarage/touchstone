@@ -243,6 +243,32 @@ else
   fail "a malformed later target left an earlier target already replaced"
 fi
 
+# Staging failures must also be all-or-nothing: an unwritable later target
+# directory discovered at copy time leaves earlier targets untouched.
+echo "==> An unwritable later destination leaves every earlier target untouched"
+STAGEFAIL="$TMP_DIR/stagefail"
+mkdir -p "$STAGEFAIL/scripts" "$STAGEFAIL/templates"
+cp "$REPO_ROOT/TOUCHSTONE.md" "$STAGEFAIL/TOUCHSTONE.md"
+printf '\n# drift %s\n' "$$" >>"$STAGEFAIL/TOUCHSTONE.md"
+for f in AGENTS.md GEMINI.md templates/AGENTS.md templates/GEMINI.md; do
+  cp "$REPO_ROOT/$f" "$STAGEFAIL/$f"
+done
+cp "$RENDER" "$STAGEFAIL/scripts/render-steering.sh"
+chmod a-w "$STAGEFAIL/templates"
+agents_before2="$(cksum "$STAGEFAIL/AGENTS.md")"
+if bash "$STAGEFAIL/scripts/render-steering.sh" >/dev/null 2>&1; then
+  chmod u+w "$STAGEFAIL/templates"
+  fail "render succeeded despite an unwritable destination"
+else
+  chmod u+w "$STAGEFAIL/templates"
+  pass "render refuses when a destination cannot be staged"
+fi
+if [ "$agents_before2" = "$(cksum "$STAGEFAIL/AGENTS.md")" ]; then
+  pass "no earlier target was replaced before the staging failure"
+else
+  fail "a staging failure left an earlier target already replaced"
+fi
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "$FAILURES check(s) failed" >&2
   exit 1
