@@ -1,0 +1,34 @@
+name: delivery evidence
+
+# Verifies the pull request records the evidence its review tier requires.
+#
+# `pull_request_target` runs the workflow from the default branch, so a pull
+# request cannot edit the check that judges it. No pull request code is checked
+# out or executed here: the only inputs are the repository's own script and the
+# body text, which is passed through a file rather than an expression so its
+# contents can never be interpolated into a shell command.
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    name: delivery evidence
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Verify recorded evidence
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s' "$PR_BODY" >"$RUNNER_TEMP/pr-body.md"
+          bash scripts/check-delivery-evidence.sh "$RUNNER_TEMP/pr-body.md"
