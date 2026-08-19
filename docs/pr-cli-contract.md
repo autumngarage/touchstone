@@ -9,6 +9,7 @@ precondition for recovery.
 
 ```text
 touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
+                   [--expect-branch BRANCH]
 touchstone pr status PR
 touchstone pr merge PR --head SHA
 ```
@@ -36,6 +37,14 @@ taking this document's word for it.
   equivalent: compare `git rev-parse HEAD` with
   `git ls-remote`, inspect `gh pr list`, create with `gh pr create`, re-read,
   then inspect comments/status before `gh pr comment --body "@codex review"`.
+
+  `--expect-branch` binds the caller's intent to the branch the resolved
+  project actually has checked out, the way `merge --head` binds the reviewed
+  commit. It is optional and purely local: a mismatch is refused before
+  GitHub is consulted. It exists because `open` otherwise acts on whatever
+  branch the invoking directory happens to be on, and a worktree has a
+  different one per directory — which opened two pull requests for the wrong
+  branch. The result payload names the branch acted on for the same reason.
 
   Why not the raw sequence: the required `review-binding` check writes its
   marker only for a request comment matching its exact grammar, so a driver

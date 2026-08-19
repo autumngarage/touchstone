@@ -152,6 +152,52 @@ else
   pass "touchstone-run.sh sources nothing"
 fi
 
+echo "==> pr open binds the branch it will act on"
+# Two pull requests were opened for the wrong branch because open acts on
+# whatever branch the invoking directory has checked out, and a worktree has a
+# different one per directory. --expect-branch states the intent; the refusal
+# is local, so it must land before GitHub is consulted -- these fixtures have
+# no remote at all, and a check that reached the network could not run here.
+WT_MAIN="$TMP_DIR/wt-main"
+git init -q "$WT_MAIN"
+git -C "$WT_MAIN" config user.email touchstone@example.com
+git -C "$WT_MAIN" config user.name Touchstone
+printf 'seed\n' >"$WT_MAIN/seed.txt"
+git -C "$WT_MAIN" add seed.txt
+git -C "$WT_MAIN" commit -qm "seed"
+git -C "$WT_MAIN" checkout -q -b feat/first
+git -C "$WT_MAIN" worktree add -q "$TMP_DIR/wt-second" -b feat/second
+
+out="$(bash "$REPO_ROOT/scripts/touchstone-pr.sh" open --project "$TMP_DIR/wt-second" --expect-branch feat/first 2>&1 || true)"
+case "$out" in
+  *"expected branch feat/first"*"feat/second"*) pass "a branch mismatch is refused, naming both branches" ;;
+  *) fail "open did not refuse a branch mismatch: $out" ;;
+esac
+case "$out" in
+  *"could not resolve the canonical base repository"*)
+    fail "open consulted GitHub before checking the branch it was given"
+    ;;
+  *) pass "the refusal happens before any network call" ;;
+esac
+
+out="$(bash "$REPO_ROOT/scripts/touchstone-pr.sh" open --project "$TMP_DIR/wt-second" --expect-branch feat/second 2>&1 || true)"
+case "$out" in
+  *"expected branch"*) fail "open refused a branch that matched: $out" ;;
+  *) pass "a matching branch proceeds past the binding" ;;
+esac
+
+out="$(bash "$REPO_ROOT/scripts/touchstone-pr.sh" open --project "$TMP_DIR/wt-second" --expect-branch 2>&1 || true)"
+case "$out" in
+  *"--expect-branch requires a branch name"*) pass "a bare --expect-branch is refused" ;;
+  *) fail "open accepted --expect-branch with no value: $out" ;;
+esac
+
+out="$(bash "$REPO_ROOT/scripts/touchstone-pr.sh" status 1 --project "$TMP_DIR/wt-second" --expect-branch feat/second 2>&1 || true)"
+case "$out" in
+  *"does not accept mutation options"*) pass "status rejects an option that belongs to open" ;;
+  *) fail "status accepted --expect-branch: $out" ;;
+esac
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "$FAILURES check(s) failed" >&2
   exit 1

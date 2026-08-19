@@ -13,6 +13,7 @@ TITLE=""
 BODY_FILE=""
 BASE_REF=""
 EXPECTED_HEAD=""
+EXPECTED_BRANCH=""
 OPERATION="${1:-}"
 PR_NUMBER=""
 CAPTURE_STDERR_TEMP=""
@@ -223,6 +224,11 @@ while [ "$#" -gt 0 ]; do
       BASE_REF="$2"
       shift 2
       ;;
+    --expect-branch)
+      [ "$#" -ge 2 ] || fail_input "--expect-branch requires a branch name" "Pass the branch you intend to open a pull request for."
+      EXPECTED_BRANCH="$2"
+      shift 2
+      ;;
     --head)
       require_option_value "$@"
       EXPECTED_HEAD="$2"
@@ -236,14 +242,14 @@ done
 case "$OPERATION" in
   open)
     [ -z "$EXPECTED_HEAD" ] \
-      || fail_input "open received an option for another operation" "Use only --title, --body-file, and --base."
+      || fail_input "open received an option for another operation" "Use only --title, --body-file, --base, and --expect-branch."
     ;;
   status)
-    [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_HEAD" ] \
+    [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_HEAD$EXPECTED_BRANCH" ] \
       || fail_input "$OPERATION does not accept mutation options" "Pass only PR, --project, and --json."
     ;;
   merge)
-    [ -z "$TITLE$BODY_FILE$BASE_REF" ] \
+    [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_BRANCH" ] \
       || fail_input "merge received an option for another operation" "Use only --head."
     ;;
 esac
@@ -277,6 +283,20 @@ PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 
 git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1 \
   || fail_input "project is not a Git repository" "Initialize the project before using PR commands."
+
+# Bind the caller's intent to the resolved branch, the way merge binds --head.
+# Without it, open acts on whatever branch the invoking directory happens to
+# have checked out -- a different branch per worktree, which is how two pull
+# requests were opened for the wrong branch. The check is purely local, so it
+# runs before GitHub is consulted: a mismatch costs no network call and no
+# partial work.
+if [ -n "$EXPECTED_BRANCH" ]; then
+  CURRENT_BRANCH="$(git -C "$PROJECT_ROOT" branch --show-current)" \
+    || fail_operation "could not read the current branch" "Repair the local Git checkout."
+  [ "$EXPECTED_BRANCH" = "$CURRENT_BRANCH" ] \
+    || fail_input "expected branch $EXPECTED_BRANCH but $PROJECT_ROOT has '${CURRENT_BRANCH:-a detached HEAD}' checked out" \
+      "Run from the intended worktree, or point --project at it."
+fi
 command -v gh >/dev/null 2>&1 \
   || fail_operation "GitHub CLI is unavailable" "Install and authenticate gh."
 read_with_retry read_repository \
@@ -294,19 +314,23 @@ REPO_SPEC="$REPO_HOST/$REPO"
 gh auth status --hostname "$REPO_HOST" >/dev/null 2>&1 \
   || fail_operation "GitHub authentication failed for $REPO_HOST" "Run 'gh auth login --hostname $REPO_HOST' and retry."
 
+# The branch is reported, not just used: the operator's only check against
+# acting on the wrong worktree used to be inferring it from the PR URL.
 emit_open_result() {
-  local state="$1" number="$2" url="$3" head="$4" request="$5"
+  local state="$1" number="$2" url="$3" head="$4" request="$5" branch="$6"
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"open","status":"%s","pullRequest":%s,"url":' "$OUTPUT_SCHEMA" "$state" "$number"
     json_string "$url"
+    printf ',"branch":'
+    json_string "$branch"
     printf ',"head":'
     json_string "$head"
     printf ',"reviewRequest":'
     json_string "$request"
     printf '}\n'
   else
-    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  review request: %s\n' \
-      "$number" "$state" "$url" "$head" "$request"
+    printf 'PR #%s: %s\n  url: %s\n  branch: %s\n  head: %s\n  review request: %s\n' \
+      "$number" "$state" "$url" "$branch" "$head" "$request"
   fi
 }
 
@@ -417,7 +441,7 @@ open_pr() {
   if [ -n "$existing_request" ]; then
     request_url="$(printf '%s\n' "$existing_request" | sed -n '1p')"
     wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url"
-    emit_open_result "$state" "$number" "$url" "$local_head" "existing:$request_url"
+    emit_open_result "$state" "$number" "$url" "$local_head" "existing:$request_url" "$branch"
     return 0
   fi
   moved_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$request_head_marker" -v author="$request_author" \
@@ -443,7 +467,7 @@ $request_marker"
     || fail_operation "review request returned $request_url but was not verified" \
       "Inspect comments before retrying; a rerun will reuse a surviving exact-binding request."
   wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url"
-  emit_open_result "$state" "$number" "$url" "$local_head" "posted:$request_url"
+  emit_open_result "$state" "$number" "$url" "$local_head" "posted:$request_url" "$branch"
 }
 
 read_pr_row() {
