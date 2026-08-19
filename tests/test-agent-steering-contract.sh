@@ -544,12 +544,13 @@ assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
   "Adoption is compilation"
 assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
   "Explicit non-goals"
-assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
-  "Deterministic offline fixtures"
+# The behavioral proof lane was deleted with Milestone 6; its assertions go
+# with it. What survives is the honesty limit -- phrase presence is not
+# compliance evidence -- which the contract must keep stating.
 assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
   "presence alone is not compliance evidence"
-assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
-  "Live-provider trials never"
+assert_not_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "Live-provider trials"
 assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
   "versioned operator journeys"
 assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
