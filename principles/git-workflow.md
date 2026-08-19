@@ -73,13 +73,17 @@ Set `expected` to the exact tracker item being reconciled, using the grammar
 declared by `.touchstone-tracker.toml`; a generic GitHub-or-Linear pattern can
 accept the wrong tracker or Linear team key.
 
-**Requesting review.** The PR-visible reviewer runs asynchronously against the exact pushed head:
+**Review starts by itself** — do not request one. The PR-visible reviewer is
+configured to review on pull-request open and runs asynchronously against the
+exact pushed head.
 
-```bash
-gh pr comment <n> --body "@codex review"
-```
+Never type a review-request marker by hand. A hand-written request carries no
+base coordinates, so the `review-binding` check fails closed on it, and the
+PR-open sequencer then refuses to repair it — the pull request wedges until the
+comment is deleted. When a later head needs re-review, re-run the project's
+PR-open command; it is idempotent and posts a request the gate can bind.
 
-**Head convergence.** A pre-commit or pre-push hook can create a *newer* commit than the one you thought you were pushing. Always request review against the head that actually landed on the remote:
+**Head convergence.** A pre-commit or pre-push hook can create a *newer* commit than the one you thought you were pushing. Review binds the head that actually landed on the remote, so confirm which one that is before reading a verdict as covering your work:
 
 ```bash
 git rev-parse HEAD                       # local

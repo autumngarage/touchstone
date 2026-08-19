@@ -61,13 +61,23 @@ for file in \
   assert_contains "$file" 'Fixes AUT-123'
   assert_not_contains "$file" "list every GitHub issue found"
   assert_contains "$file" "Do not infer adoption from this document"
-  assert_contains "$file" "missing enforcement is a rollout gap"
+  assert_contains "$file" "a rollout gap, not permission to skip it"
   assert_contains "$file" "A security-review quota notice is never a blocker"
   assert_contains "$file" "bounded stalled-request recovery"
   assert_contains "$file" "Keep review subordinate to scope"
   assert_contains "$file" "review cannot amend approved scope"
   assert_contains "$file" "Answering is not implementing"
-  assert_contains "$file" "answer and route out-of-scope findings"
+  assert_contains "$file" "answer and route whatever you are not fixing"
+  # The bounded-review rule: severity decides what gets implemented, and the
+  # loop terminates. Without these an agent treats a reviewer that always has
+  # another remark as a finish line.
+  assert_contains "$file" "Stop when the task is correct"
+  assert_contains "$file" "deterministic gates first"
+  assert_contains "$file" "one** re-review"
+  assert_contains "$file" "never to reopen the design space"
+  # Review is automatic on PR open; a hand-typed request wedges the PR.
+  assert_contains "$file" "Review starts by itself when the pull request opens"
+  assert_contains "$file" "never type a request marker by hand"
   assert_contains "$file" "Stop widened work and requests on that shape"
   assert_contains "$file" "in-scope fixes still proceed to exact-head review"
   assert_contains "$file" "follow the capability across replacement PRs"
@@ -116,7 +126,7 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   # Every agent-facing workflow needs the complete, copyable GitHub path. A
   # recovery rule is useless if the driver cannot reliably request, answer,
   # bind, and merge the ordinary review first.
-  assert_contains "$file" 'gh pr comment <n> --body "@codex review"'
+  assert_contains "$file" "do not request one"
   assert_contains "$file" "headRefOid"
   assert_contains "$file" "resolveReviewThread"
   assert_contains "$file" "--match-head-commit"

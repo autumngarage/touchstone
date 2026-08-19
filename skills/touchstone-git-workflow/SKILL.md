@@ -40,8 +40,8 @@ Your unstaged changes carry over. The trigger is *edit time*, not commit time �
 2. Branch (before any edit)
 3. Commit (explicit file paths, concise message, one concern per commit)
 4. `git push -u origin HEAD`, then `gh pr create` — put the configured close (`Closes #123` or `Fixes AUT-123`) in the PR body, not only a commit
-5. Request review: `gh pr comment <n> --body "@codex review"` — against the head that actually landed on the remote
-6. Inspect GitHub's complete review surface; follow the raw reply and GraphQL `resolveReviewThread` procedure in `principles/git-workflow.md` for every finding
+5. Review starts by itself on PR open — do not request one, and never type a request marker by hand (it fails the binding check and wedges the PR)
+6. Inspect GitHub's complete review surface; answer every finding but implement only the high-severity ones (correctness, crashes, data loss, security, broken behaviour, performance, lifecycle) — route the rest. Then at most one re-review, to confirm no regression. Follow the raw reply and GraphQL `resolveReviewThread` procedure in `principles/git-workflow.md`
 7. Use the repository's declared merge boundary with `<reviewed-sha>`, or the raw `gh pr merge <n> --squash --match-head-commit <reviewed-sha>` fallback; then confirm `state == MERGED`
 8. Clean up locally (`git branch -d <feature>`, or `-D` after confirming the content landed)
 
