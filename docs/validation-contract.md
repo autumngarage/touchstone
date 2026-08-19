@@ -86,7 +86,9 @@ A declaration is a promise. A required command that is missing, cannot start,
 or exits nonzero fails. A command whose process starts and returns 126 or 127
 counts as ran; a command head the shell cannot start does not. Earlier target
 failures remain failures even when later targets pass. A validation in which no
-task ran fails.
+task ran fails at the enforcement stage, where a gate must execute something;
+a commit stage with no declared tasks passes, because most projects have no
+authoring guards and that is not a broken contract.
 
 Human output and `--json` both report ran, skipped, and failed counts. JSON is
 the stable automation boundary and identifies every failing task, target,

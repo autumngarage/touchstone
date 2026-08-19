@@ -456,7 +456,7 @@ if [ "$CHECK_CONTRACT" = true ]; then
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":1,"verdict":"valid"}\n'
   else
-    printf 'schema-v1 contract is valid\n'
+    printf 'schema-v%s contract is valid\n' "$SCHEMA_VERSION"
   fi
   exit 0
 fi

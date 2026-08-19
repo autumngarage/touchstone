@@ -2476,6 +2476,33 @@ else
   pass "--check-contract validates every declared target regardless of stage"
 fi
 
+echo "==> contract identity reports the declared schema, not a fixed version"
+V2ID="$STAGE_TMP/v2-identity"
+make_stage_project "$V2ID" 'schema = 2
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "suite"
+target = "root"
+command = "true"
+required = true'
+out="$(bash "$RUN_ENGINE" validate --check-contract --project "$V2ID" 2>&1)"
+case "$out" in
+  *"schema-v2 contract is valid"*) pass "a schema-2 declaration reports v2 identity" ;;
+  *) fail "contract identity did not follow the declaration: $out" ;;
+esac
+out="$(bash "$RUN_ENGINE" validate --check-contract --project "$V1" 2>&1)"
+case "$out" in
+  *"schema-v1 contract is valid"*) pass "a schema-1 declaration still reports v1 identity" ;;
+  *) fail "schema-1 identity changed: $out" ;;
+esac
+
 echo "==> the documented commit-hook wiring is runnable as written"
 # The contract shows a pre-commit entry invoking the commit stage. If that
 # entry is wrong the feature is undiscoverable in practice, so the exact
