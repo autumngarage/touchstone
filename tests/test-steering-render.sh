@@ -1095,6 +1095,37 @@ else
   pass "the dry run and the real install agree on driver parents"
 fi
 
+echo "==> pruning a no-longer-shipped name preserves the bytes"
+# A checksum the manifest recorded is not proof the manifest is honest: an
+# entry naming an operator's file can carry that file's own checksum. Same
+# answer as the overwrite path -- keep the bytes.
+H30="$TMP_DIR/h30"
+mkdir -p "$H30/.touchstone/principles"
+printf 'MY FILE\n' >"$H30/.touchstone/principles/mine.md"
+printf '%s\tmine.md\n' "$(cksum <"$H30/.touchstone/principles/mine.md")" \
+  >"$H30/.touchstone/principles/.touchstone-installed"
+bash "$INSTALL" install --home "$H30" >/dev/null 2>&1 || true
+if grep -rqF 'MY FILE' "$H30/.touchstone/principles/"; then
+  pass "reconciliation retires a file without destroying it"
+else
+  fail "reconciliation deleted content on a self-authenticating entry"
+fi
+
+echo "==> a dry run validates the nearest existing ancestor"
+# Third instance of this class: the parent is absent, so checking only the
+# parent skipped validation entirely and the dry run promised an install that
+# fails at mkdir.
+H31="$TMP_DIR/h31"
+mkdir -p "$H31/.touchstone/principles"
+chmod 0555 "$H31"
+if bash "$INSTALL" install --home "$H31" --dry-run >/dev/null 2>&1; then
+  chmod 0755 "$H31"
+  fail "a dry run promised an install its unwritable ancestor forbids"
+else
+  pass "a dry run walks to the nearest existing ancestor"
+fi
+chmod 0755 "$H31"
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"

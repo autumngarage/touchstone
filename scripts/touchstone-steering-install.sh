@@ -405,15 +405,29 @@ install_principles() {
   # installed behind: the old manifest is the only record that we wrote it,
   # and replacing that manifest is the moment the knowledge is lost.
   if [ -f "$destination/$PRINCIPLES_MANIFEST" ]; then
-    local prior_sum prior_name
+    local prior_sum prior_name pruned prune_suffix
     while IFS="$(printf '\t')" read -r prior_sum prior_name; do
       [ -n "$prior_name" ] || continue
       case "$prior_name" in */* | . | .. | -*) continue ;; esac
       shipped_document "$prior_name" && continue
       [ -f "$destination/$prior_name" ] || continue
       if [ "$prior_sum" = "$(cksum <"$destination/$prior_name")" ]; then
-        rm -f -- "$destination/$prior_name"
-        printf '  removed: %s (no longer shipped)\n' "$prior_name"
+        # A checksum the manifest recorded is not proof the manifest is
+        # honest -- an entry naming an operator's file can carry that file's
+        # own checksum. Same answer as the overwrite path: keep the bytes, so
+        # a dishonest entry costs a stray file rather than their content.
+        pruned="$destination/.$prior_name.replaced"
+        prune_suffix=1
+        while [ -e "$pruned" ] || [ -L "$pruned" ]; do
+          pruned="$destination/.$prior_name.replaced.$prune_suffix"
+          prune_suffix=$((prune_suffix + 1))
+          [ "$prune_suffix" -le 1000 ] || break
+        done
+        if mv -f -- "$destination/$prior_name" "$pruned" 2>/dev/null; then
+          printf '  retired: %s -> %s (no longer shipped)\n' "$prior_name" "$(basename "$pruned")"
+        else
+          printf '  kept: %s could not be retired\n' "$prior_name" >&2
+        fi
       else
         printf '  kept: %s is no longer shipped but has been edited\n' "$prior_name" >&2
       fi
@@ -562,9 +576,14 @@ for entry in "${TARGETS[@]}"; do
   if [ -e "$parent" ] && [ ! -d "$parent" ]; then
     die "$parent exists and is not a directory; move it before installing"
   fi
-  if [ -d "$parent" ] && [ ! -w "$parent" ]; then
-    die "$parent is not writable"
-  fi
+  # An absent parent is created later, so the question is whether it *can* be:
+  # walk to the nearest existing ancestor, as the routed preflight does.
+  ancestor="$parent"
+  while [ ! -e "$ancestor" ] && [ "$ancestor" != "/" ] && [ "$ancestor" != "." ]; do
+    ancestor="$(dirname "$ancestor")"
+  done
+  [ -d "$ancestor" ] || die "$ancestor exists and is not a directory; move it before installing"
+  [ -w "$ancestor" ] || die "$ancestor is not writable"
 
   if [ "$DRY_RUN" = true ]; then
     printf '  would update: %s\n' "$path"
