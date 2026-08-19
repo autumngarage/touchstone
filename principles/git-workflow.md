@@ -73,11 +73,17 @@ Set `expected` to the exact tracker item being reconciled, using the grammar
 declared by `.touchstone-tracker.toml`; a generic GitHub-or-Linear pattern can
 accept the wrong tracker or Linear team key.
 
-**Do not request review by hand** — open through the project's PR-open
-sequencer, which posts a request bound to the exact head and base. The
-PR-visible reviewer runs asynchronously against that head. Raw `gh pr create`
-alone does not produce a request the `review-binding` gate can bind, so a PR
-opened that way waits on a gate that will never pass.
+**Request review through the sequencer, not by hand** — open through the
+project's PR-open command, which posts the request and confirms the gate bound
+it to the exact head and base. Raw `gh pr create` alone posts no request, so a
+PR opened that way waits on a gate with nothing to evaluate.
+
+A bare `@codex review` from an OWNER, MEMBER, or COLLABORATOR is separately
+valid: `review-binding` derives the live head and base itself and publishes the
+trusted marker. That is what bounded stalled-request recovery below depends on.
+What must never be hand-written is a comment carrying the *sequencer's* marker —
+the sequencer reads it as a request for other coordinates and refuses to repair
+anything, wedging the pull request until the comment is deleted.
 
 Never type a review-request marker by hand. A hand-written request carries no
 base coordinates, so the `review-binding` check fails closed on it, and the
@@ -331,8 +337,8 @@ PR's bug.
 
 **Classify every finding before touching anything.** Four dispositions, in the order to consider them:
 
-1. **Fix here** — a *high-severity* defect the diff creates, or any defect that
-   violates a recorded acceptance criterion or invariant. High severity means
+1. **Fix here** — a *high-severity* defect the diff creates, or a
+   *high-severity* violation of a recorded acceptance criterion or invariant. High severity means
    correctness, crashes, data loss, security, broken behaviour, unacceptable
    performance, or lifecycle failure. Fix it in the batch.
    A scope boundary never permits the PR to ship its own regression; fix or
