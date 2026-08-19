@@ -3,7 +3,12 @@
 # scripts/touchstone-run.sh — execute schema-v1 .touchstone.toml declarations.
 #
 # Usage:
-#   bash scripts/touchstone-run.sh validate [--check-contract] [--json] [--project DIR] [--config FILE]
+#   bash scripts/touchstone-run.sh validate [--stage STAGE] [--check-contract] [--json] [--project DIR] [--config FILE]
+#
+# --stage selects which declared tasks run. Default 'enforce' runs every task
+# a gate must see; 'commit' runs only authoring guards, which are local fast
+# feedback and never a gate. Schema 1 has no stages: all its tasks are
+# enforce-stage, so schema-1 declarations behave identically.
 #
 # This is the single validation engine used by the local CLI boundary and the
 # organization-required workflow. It executes declarations; it never detects a
@@ -18,6 +23,7 @@ JSON_MODE=false
 CHECK_CONTRACT=false
 PROJECT_ARG=""
 CONFIG_ARG=".touchstone.toml"
+STAGE_ARG="enforce"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -28,6 +34,20 @@ while [ "$#" -gt 0 ]; do
     --check-contract)
       CHECK_CONTRACT=true
       shift
+      ;;
+    --stage)
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --stage requires a stage name" >&2
+        exit 2
+      }
+      case "$2" in
+        enforce | commit) STAGE_ARG="$2" ;;
+        *)
+          echo "ERROR: unknown stage '$2'; expected 'enforce' or 'commit'" >&2
+          exit 2
+          ;;
+      esac
+      shift 2
       ;;
     --project)
       [ "$#" -ge 2 ] || {
@@ -221,6 +241,7 @@ BLOCK_PATH=""
 BLOCK_TARGET=""
 BLOCK_COMMAND=""
 BLOCK_REQUIRED=""
+BLOCK_STAGE=""
 SEEN_KEYS=""
 
 key_seen() {
@@ -257,8 +278,11 @@ finalize_block() {
     if awk -F '\t' -v name="$BLOCK_NAME" '$1 == name { found=1 } END { exit !found }' "$TASKS_FILE"; then
       config_error "duplicate task '$BLOCK_NAME'"
     fi
-    printf '%s\t%s\t%s\t%s\n' \
-      "$BLOCK_NAME" "$BLOCK_TARGET" "$BLOCK_REQUIRED" "$BLOCK_COMMAND" >>"$TASKS_FILE"
+    # Schema 1 declares no stages; every task is enforce-stage, preserving
+    # schema-1 meaning exactly.
+    [ -n "$BLOCK_STAGE" ] || BLOCK_STAGE=enforce
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+      "$BLOCK_NAME" "$BLOCK_TARGET" "$BLOCK_REQUIRED" "$BLOCK_STAGE" "$BLOCK_COMMAND" >>"$TASKS_FILE"
   fi
 
   BLOCK=""
@@ -267,6 +291,7 @@ finalize_block() {
   BLOCK_TARGET=""
   BLOCK_COMMAND=""
   BLOCK_REQUIRED=""
+  BLOCK_STAGE=""
   SEEN_KEYS=""
 }
 
@@ -352,21 +377,31 @@ while IFS= read -r line || [ -n "$line" ]; do
       parse_scalar "$raw_value" || config_error "task required must be true or false at line $LINE_NUMBER"
       BLOCK_REQUIRED="$PARSED_VALUE"
       ;;
+    task:stage)
+      [ "$SCHEMA_VERSION" = 2 ] \
+        || config_error "task stage requires schema = 2 at line $LINE_NUMBER"
+      parse_string "$raw_value" || config_error "task stage must be a single-line basic string at line $LINE_NUMBER"
+      case "$PARSED_VALUE" in
+        enforce | commit) BLOCK_STAGE="$PARSED_VALUE" ;;
+        *) config_error "unknown task stage '$PARSED_VALUE' at line $LINE_NUMBER; expected 'enforce' or 'commit'" ;;
+      esac
+      ;;
     *) config_error "unknown key '$key' in $SECTION at line $LINE_NUMBER" ;;
   esac
 done <"$CONFIG_FILE"
 finalize_block
 
-[ "$SCHEMA_VERSION" = 1 ] || {
-  if [ -z "$SCHEMA_VERSION" ]; then config_error "missing schema = 1"; fi
-  config_error "unsupported schema '$SCHEMA_VERSION'; this runtime accepts schema 1"
-}
+case "$SCHEMA_VERSION" in
+  1 | 2) ;;
+  "") config_error "missing schema = 1" ;;
+  *) config_error "unsupported schema '$SCHEMA_VERSION'; this runtime accepts schema 1 and 2" ;;
+esac
 [ "$VALIDATION_SEEN" = true ] || config_error "missing [validation] section"
 [ "$RUNTIME" = bash ] || config_error "schema 1 requires runtime = \"bash\""
 [ -s "$TARGETS_FILE" ] || config_error "schema 1 requires at least one explicit target"
 [ -s "$TASKS_FILE" ] || config_error "schema 1 requires at least one explicit task"
 
-while IFS="$(printf '\t')" read -r task_name task_target _task_required _task_command; do
+while IFS="$(printf '\t')" read -r task_name task_target _task_required _task_stage _task_command; do
   if ! awk -F '\t' -v name="$task_target" '$1 == name { found=1 } END { exit !found }' "$TARGETS_FILE"; then
     config_error "task '$task_name' references unknown target '$task_target'"
   fi
@@ -957,7 +992,10 @@ if [ -n "$SETUP_COMMAND" ]; then
   fi
 fi
 
-while IFS="$(printf '\t')" read -r task_name task_target _task_required task_command; do
+while IFS="$(printf '\t')" read -r task_name task_target _task_required task_stage task_command; do
+  # Stage selection. Authoring guards are local fast feedback and must never
+  # execute in the enforcement run, where a staged-tree check is meaningless.
+  [ "$task_stage" = "$STAGE_ARG" ] || continue
   target_path="$(awk -F '\t' -v name="$task_target" '$1 == name { print $2; exit }' "$TARGETS_FILE")"
   if [ -z "$task_command" ]; then
     SKIPPED=$((SKIPPED + 1))
@@ -987,7 +1025,11 @@ while IFS="$(printf '\t')" read -r task_name task_target _task_required task_com
   record_failure "$task_name" "$task_target" "$status" command-failed
 done <"$TASKS_FILE"
 
-if [ "$RAN" -eq 0 ] && [ "$FAILED" -eq 0 ]; then
+# A declaration that runs nothing at the enforcement stage cannot be a gate,
+# so that stays a failure. The commit stage is optional fast feedback: a
+# project with no authoring guards has nothing to run there, and that is a
+# pass, not a broken contract.
+if [ "$RAN" -eq 0 ] && [ "$FAILED" -eq 0 ] && [ "$STAGE_ARG" = enforce ]; then
   progress "ERROR: NOTHING RAN; required validation cannot pass without executing a task"
   record_failure validation root 1 nothing-ran
 fi

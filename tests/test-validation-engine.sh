@@ -695,7 +695,7 @@ for fixture in unsupported duplicate escape unknown; do
   dir="$TMP_DIR/$fixture"
   write_contract "$dir" "true"
   case "$fixture" in
-    unsupported) sed 's/schema = 1/schema = 2/' "$dir/.touchstone.toml" >"$dir/new" ;;
+    unsupported) sed 's/schema = 1/schema = 3/' "$dir/.touchstone.toml" >"$dir/new" ;;
     duplicate)
       awk '{ print; if ($0 == "path = \".\"") print "name = \"root-again\"" }' \
         "$dir/.touchstone.toml" >"$dir/new"
@@ -1479,7 +1479,7 @@ assert_contains "$ADOPTION/ambiguous.json" 'competing project evidence found: np
 
 UNSUPPORTED="$ADOPTION/unsupported"
 new_adoption_repo "$UNSUPPORTED"
-printf 'schema = 2\n' >"$UNSUPPORTED/.touchstone.toml"
+printf 'schema = 3\n' >"$UNSUPPORTED/.touchstone.toml"
 git -C "$UNSUPPORTED" add .touchstone.toml
 git -C "$UNSUPPORTED" commit -qm unsupported
 run_adoption "$ADOPTION/unsupported.out" adopt --dry-run --project "$UNSUPPORTED"

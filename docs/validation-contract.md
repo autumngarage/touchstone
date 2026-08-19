@@ -11,9 +11,39 @@ engine: the future Homebrew CLI invokes it locally, and the organization
 required workflow invokes the same reviewed revision remotely. Neither path
 detects a project type, package manager, command, or target.
 
+## Schema 2 — execution stages
+
+Schema 2 adds one optional key and changes nothing else. A task may declare
+`stage = "commit"`; the default is `"enforce"`.
+
+* **enforce** — what a gate must see. The organization-required workflow and
+  `touchstone-run.sh validate` run exactly these.
+* **commit** — an authoring guard: local fast feedback, run by
+  `validate --stage commit`, never by the enforcement run.
+
+The distinction exists because a project invariant that holds *per commit*
+cannot be enforced by a check that only runs at push. By then the commit
+exists and the cheap fix is gone; the remaining fix is a history rewrite. That
+is not hypothetical — it stalled a delivery mid-flight, and the driver had to
+ask an operator to choose between three bad options.
+
+An authoring guard is **fast feedback, never a gate**. `--no-verify` skips it,
+and a project must not delete its enforcement-stage check because a
+commit-stage guard exists; the two are complements, not alternatives. A
+staged-tree check is also meaningless in CI, which is why stage lives in the
+declaration: the engine can exclude authoring guards from the enforcement run
+rather than each project inventing its own wiring.
+
+A declaration that runs nothing at the enforcement stage fails — a gate must
+execute something. A commit stage with no tasks passes: most projects have no
+authoring guards, and that is not a broken contract.
+
+`stage` in a schema-1 file is a contract error, not a silent default. Accepting
+it would let a consumer believe it declared a guard that runs nowhere.
+
 Schema 1 is a deliberately narrow TOML subset:
 
-- `schema = 1` at the root;
+- `schema = 1` at the root (or `schema = 2`, which adds only `stage`);
 - one `[validation]` table with `runtime = "bash"` and an optional, non-empty
   `setup` command;
 - one or more `[[validation.targets]]` tables, each with a unique `name` and a
@@ -44,7 +74,9 @@ Tests and adapters that need a different location pass the explicit
 `--project` or `--config` arguments.
 
 Missing, malformed, ambiguous, path-escaping, and unsupported-schema contracts
-fail closed. A repository that still has `.touchstone-config` receives an
+fail closed. Schema 1 and 2 are both accepted; every schema-1 declaration means
+exactly what it meant before schema 2 existed, and `tests/test-validation-stages.sh`
+asserts that. A repository that still has `.touchstone-config` receives an
 explicit migration error; frozen consumers keep their committed legacy runner
 until a reviewable adoption plan creates `.touchstone.toml`.
 
