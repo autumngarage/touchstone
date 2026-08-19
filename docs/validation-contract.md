@@ -75,7 +75,7 @@ Tests and adapters that need a different location pass the explicit
 
 Missing, malformed, ambiguous, path-escaping, and unsupported-schema contracts
 fail closed. Schema 1 and 2 are both accepted; every schema-1 declaration means
-exactly what it meant before schema 2 existed, and `tests/test-validation-stages.sh`
+exactly what it meant before schema 2 existed, and `tests/test-validation-engine.sh`
 asserts that. A repository that still has `.touchstone-config` receives an
 explicit migration error; frozen consumers keep their committed legacy runner
 until a reviewable adoption plan creates `.touchstone.toml`.

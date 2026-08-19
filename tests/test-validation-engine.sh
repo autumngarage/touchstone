@@ -2226,7 +2226,9 @@ echo ""
 echo "==> Schema-2 execution stages"
 RUN_ENGINE="$ROOT/scripts/touchstone-run.sh"
 STAGE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-stages.XXXXXX")"
-trap 'rm -rf "$STAGE_TMP"' EXIT
+# Do not install a second EXIT trap: it would replace the suite's own and
+# leak the primary workspace. Extend the existing cleanup instead.
+trap 'rm -rf "$TMP_DIR" "$STAGE_TMP"' EXIT
 FAILURES=0
 fail() {
   echo "FAIL: $*" >&2
