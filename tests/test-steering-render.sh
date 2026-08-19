@@ -383,6 +383,62 @@ else
   fail "install wrote past the symlink without updating its referent"
 fi
 
+echo "==> a multi-hop symlink chain is followed to its final referent"
+HCHAIN="$TMP_DIR/hchain"
+CHAINREAL="$TMP_DIR/chainreal"
+mkdir -p "$HCHAIN/.gemini" "$CHAINREAL"
+printf 'REAL CONTENT\n' >"$CHAINREAL/real.md"
+ln -s "$CHAINREAL/real.md" "$CHAINREAL/mid.md"
+ln -s "$CHAINREAL/mid.md" "$HCHAIN/.gemini/GEMINI.md"
+bash "$INSTALL" install --home "$HCHAIN" >/dev/null 2>&1
+if [ -L "$HCHAIN/.gemini/GEMINI.md" ] && [ -L "$CHAINREAL/mid.md" ]; then
+  pass "every link in the chain survives"
+else
+  fail "install replaced a link in a multi-hop chain"
+fi
+if grep -qF '## Touchstone — Shared Agent Steering' "$CHAINREAL/real.md"; then
+  pass "the final referent received the block"
+else
+  fail "install did not reach the end of the symlink chain"
+fi
+
+echo "==> operator content matching the separator hint does not collide"
+HCOL="$TMP_DIR/hcol"
+mkdir -p "$HCOL/.claude"
+printf 'X\n<!-- touchstone:steering:no-trailing-newline -->\n' >"$HCOL/.claude/CLAUDE.md"
+col_before="$(cksum <"$HCOL/.claude/CLAUDE.md")"
+bash "$INSTALL" install --home "$HCOL" >/dev/null 2>&1
+bash "$INSTALL" uninstall --home "$HCOL" >/dev/null 2>&1
+if [ "$col_before" = "$(cksum <"$HCOL/.claude/CLAUDE.md")" ]; then
+  pass "a line resembling install metadata is preserved verbatim"
+else
+  fail "install metadata collided with operator content"
+fi
+
+echo "==> uninstall distinguishes malformed markers from an absent block"
+HNONE="$TMP_DIR/hnone"
+mkdir -p "$HNONE/.claude"
+printf 'just my notes\n' >"$HNONE/.claude/CLAUDE.md"
+none_out="$(bash "$INSTALL" uninstall --home "$HNONE" 2>&1)"
+none_status=$?
+case "$none_out" in
+  *"no managed block"*)
+    [ "$none_status" -eq 0 ] \
+      && pass "a file with no managed block is reported absent, not an error" \
+      || fail "uninstall exited $none_status on a block-free file"
+    ;;
+  *) fail "uninstall did not report the block-free file: $none_out" ;;
+esac
+HMAL="$TMP_DIR/hmal"
+mkdir -p "$HMAL/.claude"
+printf 'a\n<!-- touchstone:steering:end -->\nb\n<!-- touchstone:steering:start -->\nc\n' \
+  >"$HMAL/.claude/CLAUDE.md"
+if bash "$INSTALL" uninstall --home "$HMAL" >/dev/null 2>&1; then
+  fail "uninstall accepted malformed markers"
+else
+  pass "malformed markers refuse loudly rather than reporting absence"
+fi
+
 echo "==> uninstall refuses a file with malformed markers"
 HBAD="$TMP_DIR/hbad"
 mkdir -p "$HBAD/.gemini"

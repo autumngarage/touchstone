@@ -28,6 +28,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SOURCE="$ROOT/TOUCHSTONE.md"
 BEGIN_MARKER='<!-- touchstone:steering:start -->'
+# The start marker may carry attributes (see restore-newline below).
+BEGIN_MARKER_RE='^<!-- touchstone:steering:start( [^>]*)? -->$'
 END_MARKER='<!-- touchstone:steering:end -->'
 
 # driver:relative path. Every supported driver reads a user-level instruction
@@ -113,7 +115,7 @@ compose() {
     return 0
   fi
 
-  begin_count="$(awk -v m="$BEGIN_MARKER" '$0 == m { c++ } END { print c + 0 }' "$path")"
+  begin_count="$(awk -v m="$BEGIN_MARKER_RE" '$0 ~ m { c++ } END { print c + 0 }' "$path")"
   end_count="$(awk -v m="$END_MARKER" '$0 == m { c++ } END { print c + 0 }' "$path")"
 
   if [ "$begin_count" = 0 ] && [ "$end_count" = 0 ]; then
@@ -124,16 +126,22 @@ compose() {
     # newline this append had to add.
     if [ -s "$path" ] && [ -n "$(tail -c 1 "$path")" ]; then
       printf '\n' >>"$out"
-      printf '<!-- touchstone:steering:no-trailing-newline -->\n' >>"$out"
+      NEEDS_NEWLINE_RESTORE=true
     fi
     printf '\n' >>"$out"
-    cat "$block" >>"$out"
+    # The start marker carries the restore hint as an attribute, so it cannot
+    # collide with a line the operator legitimately wrote.
+    if [ "$NEEDS_NEWLINE_RESTORE" = true ]; then
+      sed "1s|.*|<!-- touchstone:steering:start restore-newline -->|" "$block" >>"$out"
+    else
+      cat "$block" >>"$out"
+    fi
     return 0
   fi
 
   [ "$begin_count" = 1 ] || die "$path has $begin_count exact-line start markers, expected 0 or 1"
   [ "$end_count" = 1 ] || die "$path has $end_count exact-line end markers, expected 0 or 1"
-  begin_line="$(awk -v m="$BEGIN_MARKER" '$0 == m { print NR; exit }' "$path")"
+  begin_line="$(awk -v m="$BEGIN_MARKER_RE" '$0 ~ m { print NR; exit }' "$path")"
   end_line="$(awk -v m="$END_MARKER" '$0 == m { print NR; exit }' "$path")"
   [ "$begin_line" -lt "$end_line" ] || die "$path has its end marker before its start marker"
 
@@ -153,23 +161,22 @@ compose_removal() {
   local path="$1" out="$2" begin_line end_line tail_offset begin_count end_count
   # Same validation the install path uses. Removing a block from a file with
   # repeated or reversed markers would delete a span the operator owns.
-  begin_count="$(awk -v m="$BEGIN_MARKER" '$0 == m { c++ } END { print c + 0 }' "$path")"
+  begin_count="$(awk -v m="$BEGIN_MARKER_RE" '$0 ~ m { c++ } END { print c + 0 }' "$path")"
   end_count="$(awk -v m="$END_MARKER" '$0 == m { c++ } END { print c + 0 }' "$path")"
-  [ "$begin_count" = 1 ] && [ "$end_count" = 1 ] || return 1
-  begin_line="$(awk -v m="$BEGIN_MARKER" '$0 == m { print NR; exit }' "$path")"
+  if [ "$begin_count" = 0 ] && [ "$end_count" = 0 ]; then return 1; fi
+  [ "$begin_count" = 1 ] && [ "$end_count" = 1 ] || return 2
+  begin_line="$(awk -v m="$BEGIN_MARKER_RE" '$0 ~ m { print NR; exit }' "$path")"
   end_line="$(awk -v m="$END_MARKER" '$0 == m { print NR; exit }' "$path")"
-  [ -n "$begin_line" ] && [ -n "$end_line" ] || return 1
-  [ "$begin_line" -lt "$end_line" ] || return 1
+  [ -n "$begin_line" ] && [ -n "$end_line" ] || return 2
+  [ "$begin_line" -lt "$end_line" ] || return 2
   local keep=$((begin_line - 1)) strip_trailing_newline=false
   if [ "$keep" -gt 0 ] && [ -z "$(sed -n "${keep}p" "$path")" ]; then
     keep=$((keep - 1))
   fi
-  # The marker install left when it had to add a separating newline.
-  if [ "$keep" -gt 0 ] \
-    && [ "$(sed -n "${keep}p" "$path")" = '<!-- touchstone:steering:no-trailing-newline -->' ]; then
-    keep=$((keep - 1))
-    strip_trailing_newline=true
-  fi
+  # The hint the install recorded on the start marker itself.
+  case "$(sed -n "${begin_line}p" "$path")" in
+    *restore-newline*) strip_trailing_newline=true ;;
+  esac
   if [ "$keep" -gt 0 ]; then
     head -n "$keep" "$path" >"$out"
   else
@@ -188,6 +195,7 @@ render_block "$BLOCK"
 
 CHANGED=0
 DRIFTED=0
+NEEDS_NEWLINE_RESTORE=false
 STAGED_PATHS=()
 INSTALL_PATHS=()
 INSTALL_LABELS=()
@@ -203,10 +211,20 @@ for entry in "${TARGETS[@]}"; do
       compose "$path" "$BLOCK" "$composed"
       ;;
     uninstall)
-      if [ ! -f "$path" ] || ! compose_removal "$path" "$composed"; then
+      if [ ! -e "$path" ]; then
         printf '  absent: %s\n' "$relative"
         continue
       fi
+      removal_status=0
+      compose_removal "$path" "$composed" || removal_status=$?
+      case "$removal_status" in
+        0) ;;
+        1)
+          printf '  absent: %s (no managed block)\n' "$relative"
+          continue
+          ;;
+        *) die "$relative has malformed markers; refusing to remove a span that may be yours" ;;
+      esac
       ;;
     *) die "unknown action '$ACTION'; expected install, check, or uninstall" ;;
   esac
@@ -240,11 +258,16 @@ for entry in "${TARGETS[@]}"; do
   # A symlinked instruction file is a deliberate arrangement (dotfiles repos
   # do this). Write through to its referent instead of replacing the link
   # with a regular file, which would silently orphan the operator's real file.
-  if [ -L "$path" ]; then
-    resolved="$(cd "$(dirname "$path")" && cd "$(dirname "$(readlink "$path")")" 2>/dev/null && pwd -P)/$(basename "$(readlink "$path")")"
-    [ -n "$resolved" ] || die "could not resolve the symlink at $path"
-    path="$resolved"
-  fi
+  hops=0
+  while [ -L "$path" ]; do
+    hops=$((hops + 1))
+    [ "$hops" -le 16 ] || die "symlink chain too deep at $path"
+    link_target="$(readlink "$path")"
+    case "$link_target" in
+      /*) path="$link_target" ;;
+      *) path="$(cd "$(dirname "$path")" && pwd -P)/$link_target" ;;
+    esac
+  done
   mkdir -p "$(dirname "$path")" || die "could not create $(dirname "$path")"
   staged="$path.touchstone-steering.$$"
   # cp -p onto an existing target would copy the workspace file's mode; copy
