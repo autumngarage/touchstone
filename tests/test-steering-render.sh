@@ -835,6 +835,24 @@ else
   pass "validating a dry run still writes nothing"
 fi
 
+echo "==> a dry run predicts a symlink chain it cannot resolve"
+# Symlink resolution is read-only, so a dry run that skipped it reported
+# success for an install that dies at `symlink chain too deep`.
+H17="$TMP_DIR/h17"
+mkdir -p "$H17/.claude"
+ln -s loop-a "$H17/.claude/CLAUDE.md"
+ln -s CLAUDE.md "$H17/.claude/loop-a"
+if bash "$INSTALL" install --home "$H17" --dry-run >/dev/null 2>&1; then
+  fail "a dry run predicted success for an unresolvable symlink chain"
+else
+  pass "a dry run refuses a symlink chain the install cannot resolve"
+fi
+if bash "$INSTALL" install --home "$H17" >/dev/null 2>&1; then
+  fail "the real install accepted an unresolvable symlink chain"
+else
+  pass "the dry run and the real install agree"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"

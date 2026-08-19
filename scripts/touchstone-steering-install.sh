@@ -432,19 +432,14 @@ for entry in "${TARGETS[@]}"; do
     continue
   fi
 
-  if [ -f "$path" ] && cmp -s "$path" "$composed"; then
-    continue
-  fi
-
-  if [ "$DRY_RUN" = true ]; then
-    printf '  would update: %s\n' "$path"
-    CHANGED=$((CHANGED + 1))
-    continue
-  fi
-
   # A symlinked instruction file is a deliberate arrangement (dotfiles repos
   # do this). Write through to its referent instead of replacing the link
   # with a regular file, which would silently orphan the operator's real file.
+  #
+  # Resolved before the dry-run exit below, because resolution is read-only
+  # and a chain that cannot resolve must fail the prediction too -- a dry run
+  # that reports success for an install that dies on a symlink loop is
+  # exactly the wrong answer.
   hops=0
   while [ -L "$path" ]; do
     hops=$((hops + 1))
@@ -459,6 +454,17 @@ for entry in "${TARGETS[@]}"; do
       */*) path="$(cd "$(dirname "$path")" 2>/dev/null && pwd -P)/$(basename "$path")" ;;
     esac
   done
+
+  if [ -f "$path" ] && cmp -s "$path" "$composed"; then
+    continue
+  fi
+
+  if [ "$DRY_RUN" = true ]; then
+    printf '  would update: %s\n' "$path"
+    CHANGED=$((CHANGED + 1))
+    continue
+  fi
+
   # Two driver paths may be symlinks to one shared document. Installing it
   # twice would have the second staging file overwrite the first and leave an
   # orphan; the block is identical, so the first write is sufficient.
