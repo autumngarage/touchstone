@@ -67,13 +67,23 @@ assert_under() {
 # number would restore the exact defect the cap is supposed to be protecting
 # clarity for.
 #
-# Derivation unchanged: TOUCHSTONE.md is inlined into AGENTS.md as the managed
-# block. At <= 9.5 KiB the rendered block stays under ~10 KiB, and AGENTS.md
-# sits near 16.4 KiB against its 24 KiB cap — roughly 8 KiB of project-tail
-# headroom, comfortably more than the >14 KiB claim this note used to make
-# about a smaller tail.
-echo "==> TOUCHSTONE.md size cap (9.5 KiB — lean router)"
-assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 9728
+# Raised to 10.5 KiB on 2026-08-19, deliberately, for two rules that bound the
+# review loop: review starts on PR open (so a hand-typed request, which fails
+# the binding check closed and wedges the sequencer, is never written), and
+# only high-severity findings are implemented, followed by at most one
+# re-review. The occasion was PR #925 spending twenty review rounds on a
+# change that was correct and tested after three. A contract that cannot say
+# when to stop costs far more context than the bytes saved by not saying it.
+#
+# Paid for in part by trimming the Purpose section, where two paragraphs
+# separately described where enforcement lives; they are now one.
+#
+# Derivation: TOUCHSTONE.md is inlined into AGENTS.md as the managed block. At
+# <= 10.5 KiB, AGENTS.md sits near 18.8 KiB against its 24 KiB cap — about
+# 5.7 KiB of project-tail headroom, still comfortably more than any consumer
+# tail measured.
+echo "==> TOUCHSTONE.md size cap (10.5 KiB — lean router)"
+assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 10752
 
 echo "==> AGENTS.md size cap (24 KiB — leaves headroom under Codex's 32 KiB default)"
 assert_under "AGENTS.md" "$TOUCHSTONE_ROOT/AGENTS.md" 24576

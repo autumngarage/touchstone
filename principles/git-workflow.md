@@ -73,13 +73,22 @@ Set `expected` to the exact tracker item being reconciled, using the grammar
 declared by `.touchstone-tracker.toml`; a generic GitHub-or-Linear pattern can
 accept the wrong tracker or Linear team key.
 
-**Requesting review.** The PR-visible reviewer runs asynchronously against the exact pushed head:
+**Request review through the sequencer, not by hand** — open through the
+project's PR-open command, which posts the request and confirms the gate bound
+it to the exact head and base. Raw `gh pr create` alone posts no request, so a
+PR opened that way waits on a gate with nothing to evaluate.
 
-```bash
-gh pr comment <n> --body "@codex review"
-```
+A bare `@codex review` from an OWNER, MEMBER, or COLLABORATOR is separately
+valid: `review-binding` derives the live head and base itself and publishes the
+trusted marker. That is what bounded stalled-request recovery below depends on.
+What must never be hand-written is a comment carrying the *sequencer's* marker —
+the sequencer reads it as a request for other coordinates and refuses to repair
+anything, wedging the pull request until the comment is deleted.
 
-**Head convergence.** A pre-commit or pre-push hook can create a *newer* commit than the one you thought you were pushing. Always request review against the head that actually landed on the remote:
+When a later head needs re-review, re-run the project's PR-open command; it is
+idempotent and confirms the gate bound the request.
+
+**Head convergence.** A pre-commit or pre-push hook can create a *newer* commit than the one you thought you were pushing. Review binds the head that actually landed on the remote, so confirm which one that is before reading a verdict as covering your work:
 
 ```bash
 git rev-parse HEAD                       # local
@@ -325,10 +334,16 @@ PR's bug.
 
 **Classify every finding before touching anything.** Four dispositions, in the order to consider them:
 
-1. **Fix here** — any defect the diff creates, plus any defect that violates a
-   recorded acceptance criterion or invariant. Fix it in the batch. A scope
-   boundary never permits the PR to ship its own regression; fix or revert that
-   behavior here even when it falls outside the planned product change.
+1. **Fix here** — a *high-severity* defect the diff creates, or a
+   *high-severity* violation of a recorded acceptance criterion or invariant. High severity means
+   correctness, crashes, data loss, security, broken behaviour, unacceptable
+   performance, or lifecycle failure. Fix it in the batch.
+   A scope boundary never permits the PR to ship its own regression; fix or
+   revert that behavior here even when it falls outside the planned change.
+   A diff-created finding *below* that threshold takes disposition 4: answer
+   it, route it to an issue, resolve the thread. Fixing every low-severity
+   remark a reviewer raises is the expansion this budget exists to stop, and
+   "the diff created it" does not by itself make it worth another round.
 2. **Fix and audit the class** — the in-scope finding is one instance of a
    shape. Grep for siblings before responding
    (`principles/audit-weak-points.md`); fix in-scope siblings and route any

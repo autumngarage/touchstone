@@ -95,9 +95,10 @@ git checkout -b fix/some-slug
 # ... edit, then stage explicit paths ...
 git commit -m "fix: what changed"
 git push -u origin HEAD
-gh pr create                      # put `Fixes AUT-123` (or `Closes #123`) in the PR body
-gh pr comment <n> --body "@codex review"
-# ... answer every finding, resolve every thread ...
+printf 'What changed and why.\n\nFixes AUT-123\n' >/tmp/pr-body
+bash bin/touchstone pr open --title "fix: what changed" --body-file /tmp/pr-body \
+  --expect-branch fix/some-slug   # creates the PR and posts the bound review request
+# ... answer every finding, fix the high-severity ones, resolve every thread ...
 gh pr merge <n> --squash --match-head-commit "$(gh pr view <n> --json headRefOid --jq .headRefOid)"
 gh pr view <n> --json state,mergedAt      # confirm; the merge exit code lies in both directions
 ```

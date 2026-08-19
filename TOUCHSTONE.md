@@ -8,13 +8,11 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 
 That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar.
 
-**GitHub's effective repository policy is the enforcement authority.** Where the Touchstone policy has been installed and verified, the protected validation workflow and required `review-binding` check must pass, every finding must be answered, every thread must be resolved, and native rules reject direct and force pushes and branch deletion. Do not infer adoption from this document: inspect the repository's effective rules.
+**GitHub's effective repository policy is the enforcement authority.** Where the Touchstone policy is installed and verified, the protected validation workflow and required `review-binding` check must pass, every finding must be answered, every thread must be resolved, and native rules reject direct and force pushes and branch deletion; emergency admin bypass is limited to pull requests, where GitHub records it. Local hooks are fast feedback, not the boundary. Do not infer adoption from this document: inspect the repository's effective rules — and a repository without that enforcement still does not authorize a direct push.
 
-**Review is always required.** The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so approval count does not represent it. Where `review-binding` is required, GitHub binds trusted review evidence and answers to the exact head. Until that gate is installed and verified, exact-head review remains mandatory driver procedure and the missing enforcement is a rollout gap, not permission to skip it.
+**Review is always required.** The AI reviewer reports `COMMENTED`, not `APPROVED`, so approval count does not represent it; `review-binding` binds trusted evidence and answers to the exact head. Where that gate is absent, exact-head review remains mandatory driver procedure — a rollout gap, not permission to skip it.
 
 **A security-review quota notice is never a blocker.** It is provisional, not review evidence. Keep watching, then use bounded stalled-request recovery.
-
-Local hooks are fast feedback; configured GitHub policy is the real boundary. An adopted policy limits emergency admin bypass to pull requests, where GitHub records it. A repository without that enforcement still does not authorize a driver to push directly.
 
 To hold those lines, Touchstone does three things and nothing else:
 
@@ -48,7 +46,8 @@ Non-negotiable. Every code change is reviewed against them. Full rationale lives
 - **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill (Claude) or read `principles/audit-weak-points.md` (other drivers).
 - **Isolate file-writing subagents** — parallel agents use dedicated worktrees and disjoint file ownership by default.
 - **File tracked bugs** — open an item in the configured tracker when you find a bug, here or in an upstream tool. Don't silently work around it.
-- **Keep review subordinate to scope** — review cannot amend approved scope. Fix diff-created/in-scope defects; route the rest. Three rounds follow the capability across replacement PRs; closing or renaming never resets the budget.
+- **Keep review subordinate to scope** — review cannot amend approved scope. Fix diff-created/in-scope defects that meet the severity bar below; route the rest. Three rounds follow the capability across replacement PRs; closing or renaming never resets the budget.
+- **Stop when the task is correct, not when review runs out of remarks** — deterministic gates first (build, tests, linters, static analysis), then review. Implement only high-severity findings: correctness, crashes, data loss, security, broken behaviour, unacceptable performance, lifecycle failures. Answer and route the rest; never reopen the design space. Expect one confirming re-review; `principles/git-workflow.md` caps it at three finding-bearing rounds. **Exact-head review after a fix commit is never skipped** — this bounds what you implement, never what gets reviewed. A reviewer always has another remark; that is not a finish line.
 
 ## Never commit on the default branch
 
@@ -63,8 +62,8 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 3. **Claim tracked work before implementation.** Use the configured tracker's race-safe claim before editing or dispatching an agent. Claim every item in a bundle so two agents do not ship competing fixes; an unavailable transport is unverifiable, never success.
 4. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
 5. **Reconcile tracked work.** Before opening the PR, list every tracker item found, claimed, fixed, partially fixed, or made stale. Fixed items get the configured closing reference in the PR body; partial or stale items get a tracker note explaining the evidence or remaining gap. Do not leave shipped work stale silently.
-6. **Ship.** `git push -u origin HEAD`, then `gh pr create`. Put the configured closing reference (`Closes #123` or `Fixes AUT-123`) in the **PR body**, not only a commit. Request review by commenting `@codex review` on the PR.
-7. **Answer every piece of PR feedback before merging.** Answering is not implementing; classify against approved scope, then answer and route out-of-scope findings. Stop widened work and requests on that shape; in-scope fixes still proceed to exact-head review. Inspect GitHub's complete review surface, reply to each comment, and resolve every thread via `principles/git-workflow.md`; unresolved threads and `CHANGES_REQUESTED` block merge.
+6. **Ship.** `git push -u origin HEAD`, then `gh pr create`. Put the configured closing reference (`Closes #123` or `Fixes AUT-123`) in the **PR body**, not only a commit. Where the project has a PR-open sequencer, open through it: it posts the request and confirms the gate bound it to the exact head and base. Re-review a later head by re-running it; it is idempotent. **Never put the sequencer's marker in a comment you write yourself** — it then reads its own marker as a request for other coordinates and refuses to repair anything, wedging the PR. A bare `@codex review` from a collaborator is separately valid; bounded stalled-request recovery needs exactly that, and nothing else does.
+7. **Answer every piece of PR feedback before merging.** Answering is not implementing; classify by scope *and severity*, then answer and route whatever you are not fixing. Stop widened work and requests on that shape; in-scope fixes still proceed to exact-head review. Inspect GitHub's complete review surface, reply to each comment, and resolve every thread via `principles/git-workflow.md`; unresolved threads and `CHANGES_REQUESTED` block merge.
 8. **Merge.** Use a project-documented executable merge boundary when present; otherwise run `gh pr merge <n> --squash --match-head-commit <sha>`. Always bind the reviewed head and confirm GitHub state, regardless of exit code.
 9. **Clean up after merge.** Delete the local branch if it persists.
 
