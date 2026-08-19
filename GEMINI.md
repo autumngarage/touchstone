@@ -111,7 +111,9 @@ For deep references on specific topics, read `principles/*.md` files via the rou
 ## Delivery
 
 In this source checkout, use `bash bin/touchstone pr open|status|merge` for the
-three bounded PR operations. Pass `--expect-branch "$(git branch --show-current)"`
-to `open`: it acts on whatever branch the invoking directory has checked out,
-which differs per worktree. Their raw recovery equivalents and complete
+three bounded PR operations. Pass `--expect-branch <branch>` to `open` with the branch name written out:
+it acts on whatever branch the invoking directory has checked out, which
+differs per worktree. Never derive it from `$(git branch --show-current)` —
+that reads the same checkout the command reads, so it agrees with a wrong
+worktree and binds nothing. Their raw recovery equivalents and complete
 lifecycle remain in `principles/git-workflow.md`.

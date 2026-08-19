@@ -536,6 +536,13 @@ case "$1 ${2:-}" in
     ;;
   "repo view")
     [ "${GH_MODE:-ok}" != success_stderr ] || printf 'repo debug detail\n' >&2
+    # The window the late re-check exists for: the repository read is one of
+    # the calls that sit between the two branch comparisons, so switching the
+    # checkout here is exactly the race a real worktree can lose.
+    if [ -n "${GH_SWITCH_BRANCH_IN:-}" ]; then
+      git -C "$GH_SWITCH_BRANCH_IN" checkout -q -b feat/moved 2>/dev/null \
+        || git -C "$GH_SWITCH_BRANCH_IN" checkout -q feat/moved
+    fi
     if [ -n "${GH_REPO:-}" ]; then
       printf '%s\thttps://%s/%s\tmain\n' "$GH_REPO" "${GH_REPO_HOST:-github.com}" "$GH_REPO"
     else
@@ -810,6 +817,20 @@ EOF
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'expected branch feat/other'
   [ ! -s "$GH_CALLS" ] || fail "a refused branch binding still called gh"
+  # The late re-check is the only thing standing between a checkout that
+  # moves mid-command and a wrong-branch mutation. Delete it and the two
+  # assertions above still pass, so exercise the race directly: the mock
+  # switches the branch during the repository read, between the two
+  # comparisons.
+  : >"$GH_CALLS"
+  GH_SWITCH_BRANCH_IN="$TMP/project" run_pr "$TMP/out" open --title 'Test PR' \
+    --body-file "$TMP/body" --expect-branch feat/test --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'now has'
+  if grep -qE '^pr create|^pr comment' "$GH_CALLS"; then
+    fail "a checkout that moved mid-command still mutated the pull request"
+  fi
+  git -C "$TMP/project" checkout -q feat/test
   run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewRequest":"existing:'
