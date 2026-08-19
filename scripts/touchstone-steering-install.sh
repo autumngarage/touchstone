@@ -818,8 +818,47 @@ case "$ACTION" in
           fi
         done <"$principles_home/$PRINCIPLES_MANIFEST"
         # Same rule as the routed documents: install wrote the referent, so
-        # remove that, then clear the pointer it leaves dangling.
-        rm -f -- "$(resolve_link "$principles_home/$PRINCIPLES_MANIFEST")"
+        # that is what uninstall may remove -- but only after proving the
+        # bytes are plausibly ours. A manifest we wrote is nothing but
+        # `cksum size<TAB>shipped-name` lines; an operator's notes file that a
+        # symlink happens to reach never matches that shape, so it is retired
+        # by rename rather than destroyed.
+        manifest_referent="$(resolve_link "$principles_home/$PRINCIPLES_MANIFEST")"
+        manifest_ours=true
+        while IFS= read -r manifest_line; do
+          [ -n "$manifest_line" ] || continue
+          case "$manifest_line" in
+            *[0-9]" "*[0-9]"$(printf '\t')"*) ;;
+            *)
+              manifest_ours=false
+              break
+              ;;
+          esac
+          manifest_name="${manifest_line#*"$(printf '\t')"}"
+          shipped_document "$manifest_name" || {
+            manifest_ours=false
+            break
+          }
+        done <"$manifest_referent"
+        if [ "$manifest_ours" = true ]; then
+          rm -f -- "$manifest_referent"
+        else
+          retired="$principles_home/$PRINCIPLES_MANIFEST.removed"
+          retire_suffix=1
+          while [ -e "$retired" ] || [ -L "$retired" ]; do
+            retired="$principles_home/$PRINCIPLES_MANIFEST.removed.$retire_suffix"
+            retire_suffix=$((retire_suffix + 1))
+            [ "$retire_suffix" -le 1000 ] || {
+              retired=""
+              break
+            }
+          done
+          if [ -n "$retired" ] && mv -f -- "$manifest_referent" "$retired" 2>/dev/null; then
+            printf '  retired: manifest content this tool cannot verify -> %s\n' "$(basename "$retired")" >&2
+          else
+            printf '  kept: manifest content this tool cannot verify\n' >&2
+          fi
+        fi
         [ ! -L "$principles_home/$PRINCIPLES_MANIFEST" ] \
           || rm -f -- "$principles_home/$PRINCIPLES_MANIFEST"
       fi

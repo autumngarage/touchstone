@@ -1326,6 +1326,21 @@ else
   pass "an attributed start marker in the source is refused"
 fi
 
+echo "==> uninstall retires manifest bytes it cannot verify"
+# The manifest referent is only deleted when its content matches the shape
+# this tool writes; an operator's file a symlink happens to reach is retired
+# by rename, never destroyed.
+H43="$TMP_DIR/h43"
+mkdir -p "$H43/.touchstone/principles" "$H43/dotfiles"
+printf 'my arbitrary notes\n' >"$H43/dotfiles/notes"
+ln -s "$H43/dotfiles/notes" "$H43/.touchstone/principles/.touchstone-installed"
+bash "$INSTALL" uninstall --home "$H43" >/dev/null 2>&1 || true
+if grep -rqlF 'my arbitrary notes' "$H43" >/dev/null 2>&1; then
+  pass "unverifiable manifest bytes survive uninstall"
+else
+  fail "uninstall destroyed operator content reached through the manifest path"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"
