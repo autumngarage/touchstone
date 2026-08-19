@@ -40,8 +40,9 @@ taking this document's word for it.
 
   `--expect-branch` binds the caller's intent to the branch the resolved
   project actually has checked out, the way `merge --head` binds the reviewed
-  commit. It is optional and purely local: a mismatch is refused before
-  GitHub is consulted. It exists because `open` otherwise acts on whatever
+  commit. It is optional and checked twice: once up front, so a mismatch is
+  refused before GitHub is consulted at all, and again where the branch is
+  selected, because the checkout can change while those reads are in flight. It exists because `open` otherwise acts on whatever
   branch the invoking directory happens to be on, and a worktree has a
   different one per directory — which opened two pull requests for the wrong
   branch. The result payload names the branch acted on for the same reason.

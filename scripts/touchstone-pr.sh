@@ -225,7 +225,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --expect-branch)
-      [ "$#" -ge 2 ] || fail_input "--expect-branch requires a branch name" "Pass the branch you intend to open a pull request for."
+      require_option_value "$@"
       EXPECTED_BRANCH="$2"
       shift 2
       ;;
@@ -382,6 +382,13 @@ open_pr() {
   branch="$(git -C "$PROJECT_ROOT" branch --show-current)" \
     || fail_operation "could not read the current branch" "Repair the local Git checkout."
   [ -n "$branch" ] || fail_input "detached HEAD cannot open a PR" "Create or switch to a feature branch."
+  # Re-checked here, not only up front: the repository and authentication
+  # reads sit between the two, and a worktree that changed branches in that
+  # window would otherwise pass the early check and be mutated anyway --
+  # exactly the wrong-branch pull request this option exists to prevent.
+  [ -z "$EXPECTED_BRANCH" ] || [ "$EXPECTED_BRANCH" = "$branch" ] \
+    || fail_input "expected branch $EXPECTED_BRANCH but $PROJECT_ROOT now has '$branch' checked out" \
+      "The checkout changed while the command was running; retry from a settled worktree."
   local_head="$(git -C "$PROJECT_ROOT" rev-parse HEAD)"
   remote_line="$(git -C "$PROJECT_ROOT" ls-remote --heads origin "refs/heads/$branch" 2>/dev/null)" \
     || fail_operation "could not read origin/$branch" "Push the branch and verify remote access."

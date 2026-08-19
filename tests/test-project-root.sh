@@ -188,8 +188,17 @@ esac
 
 out="$(bash "$REPO_ROOT/scripts/touchstone-pr.sh" open --project "$TMP_DIR/wt-second" --expect-branch 2>&1 || true)"
 case "$out" in
-  *"--expect-branch requires a branch name"*) pass "a bare --expect-branch is refused" ;;
+  *"missing value for --expect-branch"*) pass "a bare --expect-branch is refused" ;;
   *) fail "open accepted --expect-branch with no value: $out" ;;
+esac
+
+# An omitted value followed by another option must be reported as missing,
+# not swallowed as the branch name -- which would also silently drop the
+# output mode the caller asked for.
+out="$(bash "$REPO_ROOT/scripts/touchstone-pr.sh" open --project "$TMP_DIR/wt-second" --expect-branch --json 2>&1 || true)"
+case "$out" in
+  *"missing value for --expect-branch"*) pass "an option token is not consumed as the branch name" ;;
+  *) fail "open took --json as the branch name: $out" ;;
 esac
 
 out="$(bash "$REPO_ROOT/scripts/touchstone-pr.sh" status 1 --project "$TMP_DIR/wt-second" --expect-branch feat/second 2>&1 || true)"
