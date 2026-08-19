@@ -853,6 +853,53 @@ else
   pass "the dry run and the real install agree"
 fi
 
+echo "==> a line inserted above the block keeps its own newline"
+# restore-newline says install added a newline after content that had none.
+# Trimming "the last byte" assumed nothing sat between that newline and the
+# marker; a line the operator inserted there lost its terminator instead.
+H18="$TMP_DIR/h18"
+mkdir -p "$H18/.claude"
+printf 'abc' >"$H18/.claude/CLAUDE.md"
+bash "$INSTALL" install --home "$H18" >/dev/null
+marker_line="$(grep -n '^<!-- touchstone:steering:start' "$H18/.claude/CLAUDE.md" | cut -d: -f1)"
+{
+  head -n "$((marker_line - 1))" "$H18/.claude/CLAUDE.md"
+  printf 'OPERATOR\n'
+  tail -n "+$marker_line" "$H18/.claude/CLAUDE.md"
+} >"$H18/.claude/CLAUDE.md.edit"
+mv -f "$H18/.claude/CLAUDE.md.edit" "$H18/.claude/CLAUDE.md"
+bash "$INSTALL" uninstall --home "$H18" >/dev/null
+if [ "$(tail -c 1 "$H18/.claude/CLAUDE.md" | od -An -c | tr -d ' ')" = "\\n" ]; then
+  pass "the inserted line keeps the newline that terminates it"
+else
+  fail "uninstall ate the newline of a line the operator inserted"
+fi
+case "$(cat "$H18/.claude/CLAUDE.md")" in
+  *OPERATOR*) pass "the inserted content itself survives" ;;
+  *) fail "the inserted content was lost" ;;
+esac
+
+echo "==> a relative --home still routes absolutely"
+# Routes are followed by agents started anywhere. A relative --home embedded
+# paths that resolve only from this command's working directory, and check
+# agreed because it rendered the same broken value.
+H19_PARENT="$TMP_DIR/relative-home"
+mkdir -p "$H19_PARENT"
+(
+  cd "$TMP_DIR" || exit 1
+  bash "$INSTALL" install --home relative-home >/dev/null
+)
+route="$(grep -o '`[^`]*principles/git-workflow\.md`' "$H19_PARENT/.claude/CLAUDE.md" | head -1 | tr -d '`')"
+case "$route" in
+  /*) pass "a relative --home renders absolute routes" ;;
+  *) fail "the rendered route is relative: $route" ;;
+esac
+if [ -n "$route" ] && [ -f "$route" ]; then
+  pass "the absolute route resolves to a file that exists"
+else
+  fail "the rendered route does not exist: $route"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"

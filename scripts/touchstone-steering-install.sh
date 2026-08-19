@@ -88,6 +88,21 @@ die() {
 }
 
 [ -n "$HOME_DIR" ] || die "no home directory: set HOME or pass --home"
+# The rendered routes are absolute paths agents follow from wherever they are
+# started. A relative --home would embed routes that resolve only from this
+# command's working directory -- and check would agree, because it renders the
+# same broken value. Canonicalize the existing part; the rest is created later.
+case "$HOME_DIR" in
+  /*) ;;
+  *)
+    if [ -d "$HOME_DIR" ]; then
+      HOME_DIR="$(cd "$HOME_DIR" && pwd -P)" || die "could not resolve --home: $HOME_DIR"
+    else
+      HOME_DIR="$(cd "$(dirname "$HOME_DIR")" 2>/dev/null && pwd -P)/$(basename "$HOME_DIR")" \
+        || die "could not resolve --home: $HOME_DIR"
+    fi
+    ;;
+esac
 [ -f "$SOURCE" ] || die "canonical steering is missing: $SOURCE"
 
 # A marker line in the source would be copied into the block and make the very
@@ -209,9 +224,10 @@ compose_removal() {
   end_line="$(awk -v m="$END_MARKER" '$0 == m { print NR; exit }' "$path")"
   [ -n "$begin_line" ] && [ -n "$end_line" ] || return 2
   [ "$begin_line" -lt "$end_line" ] || return 2
-  local keep=$((begin_line - 1)) strip_trailing_newline=false
+  local keep=$((begin_line - 1)) strip_trailing_newline=false separator_found=false
   if [ "$keep" -gt 0 ] && [ -z "$(sed -n "${keep}p" "$path")" ]; then
     keep=$((keep - 1))
+    separator_found=true
   fi
   # The hint the install recorded on the start marker itself.
   case "$(sed -n "${begin_line}p" "$path")" in
@@ -222,11 +238,14 @@ compose_removal() {
   else
     : >"$out"
   fi
-  if [ "$strip_trailing_newline" = true ] && [ -s "$out" ]; then
-    # Drop the one newline install added after the operator's last line --
-    # exactly one byte. A `$(cat)` round-trip strips every trailing newline,
-    # so content the operator added just above the block came back short of
-    # the blank lines they wrote, even though check accepts such edits.
+  # Remove the newline install added after the operator's last line -- but
+  # only when install's blank-line separator sat directly before the marker,
+  # which proves nothing was inserted between them and that the last remaining
+  # byte is therefore ours. If the operator added a line there, the separator
+  # is buried at an offset we cannot recover, and trimming would eat the
+  # newline terminating *their* line instead. Leaving one extra blank line is
+  # the right error to make: never delete a byte you cannot prove you own.
+  if [ "$strip_trailing_newline" = true ] && [ "$separator_found" = true ] && [ -s "$out" ]; then
     local prefix_bytes
     prefix_bytes="$(wc -c <"$out" | tr -d ' ')"
     if [ "$(tail -c 1 "$out" | od -An -c | tr -d ' ')" = "\\n" ]; then
