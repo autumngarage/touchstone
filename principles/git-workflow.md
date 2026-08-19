@@ -85,11 +85,8 @@ What must never be hand-written is a comment carrying the *sequencer's* marker â
 the sequencer reads it as a request for other coordinates and refuses to repair
 anything, wedging the pull request until the comment is deleted.
 
-Never type a review-request marker by hand. A hand-written request carries no
-base coordinates, so the `review-binding` check fails closed on it, and the
-PR-open sequencer then refuses to repair it â€” the pull request wedges until the
-comment is deleted. When a later head needs re-review, re-run the project's
-PR-open command; it is idempotent and posts a request the gate can bind.
+When a later head needs re-review, re-run the project's PR-open command; it is
+idempotent and confirms the gate bound the request.
 
 **Head convergence.** A pre-commit or pre-push hook can create a *newer* commit than the one you thought you were pushing. Review binds the head that actually landed on the remote, so confirm which one that is before reading a verdict as covering your work:
 
