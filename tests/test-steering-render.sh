@@ -900,6 +900,43 @@ else
   fail "the rendered route does not exist: $route"
 fi
 
+echo "==> a correct checksum is not provenance"
+# cksum is unkeyed and reproducible: anyone who can append a manifest line can
+# also compute the right checksum for an operator's file. Provenance comes
+# from the set of documents this tool ships, which the manifest cannot forge.
+H20="$TMP_DIR/h20"
+bash "$INSTALL" install --home "$H20" >/dev/null
+printf 'my own work\n' >"$H20/.touchstone/principles/mine.md"
+printf '%s\tmine.md\n' "$(cksum <"$H20/.touchstone/principles/mine.md")" \
+  >>"$H20/.touchstone/principles/.touchstone-installed"
+if bash "$INSTALL" check --home "$H20" >/dev/null 2>&1; then
+  fail "check passed a manifest carrying an entry this tool never installs"
+else
+  pass "an extra manifest entry is drift"
+fi
+bash "$INSTALL" uninstall --home "$H20" >/dev/null 2>&1 || true
+if [ -f "$H20/.touchstone/principles/mine.md" ]; then
+  pass "a valid checksum on an unshipped name still does not authorize a delete"
+else
+  fail "a forged manifest entry deleted an operator file"
+fi
+
+echo "==> a relative --home with missing components stays under it"
+# Resolving component by component let a failed `cd` drop the prefix, so
+# `--home new/child` resolved to `/child` -- a privileged install would have
+# written to the filesystem root.
+H21="$TMP_DIR/h21-parent"
+mkdir -p "$H21"
+(
+  cd "$H21" || exit 1
+  bash "$INSTALL" install --home new/child >/dev/null 2>&1
+)
+if [ -f "$H21/new/child/.claude/CLAUDE.md" ]; then
+  pass "the install landed under the requested relative path"
+else
+  fail "the install did not land under the requested path"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"

@@ -95,12 +95,11 @@ die() {
 case "$HOME_DIR" in
   /*) ;;
   *)
-    if [ -d "$HOME_DIR" ]; then
-      HOME_DIR="$(cd "$HOME_DIR" && pwd -P)" || die "could not resolve --home: $HOME_DIR"
-    else
-      HOME_DIR="$(cd "$(dirname "$HOME_DIR")" 2>/dev/null && pwd -P)/$(basename "$HOME_DIR")" \
-        || die "could not resolve --home: $HOME_DIR"
-    fi
+    # Prefix the working directory rather than resolving component by
+    # component: with `new/child`, a `cd $(dirname ...)` that fails leaves the
+    # basename to stand alone, and the assignment succeeds as `/child` -- a
+    # privileged install would then write to the filesystem root.
+    HOME_DIR="$(pwd -P)/$HOME_DIR" || die "could not resolve --home: $HOME_DIR"
     ;;
 esac
 [ -f "$SOURCE" ] || die "canonical steering is missing: $SOURCE"
@@ -339,6 +338,17 @@ render_principle() {
 # Ownership is recorded per entry as `checksum<TAB>name`; match on the name
 # field alone, because a document we installed and then reinstall over has
 # legitimately drifted from its recorded checksum.
+# The set of documents this tool installs. It is the authority on what may be
+# deleted: the manifest records what was written, but cannot vouch for itself.
+shipped_document() {
+  local candidate="$1" doc
+  for doc in "$PRINCIPLES_SOURCE"/*.md; do
+    [ -f "$doc" ] || continue
+    [ "$(basename "$doc")" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
 principles_owned() {
   local name="$1" manifest="$HOME_DIR/$PRINCIPLES_RELATIVE/$PRINCIPLES_MANIFEST"
   [ -f "$manifest" ] || return 1
@@ -370,7 +380,15 @@ principles_current() {
   [ -d "$destination" ] || return 1
   # The manifest is part of the installed state: without it, uninstall cannot
   # tell our documents from the operator's, so a missing manifest is drift.
+  # An *extra* entry is drift too -- it is the shape a corrupted manifest
+  # takes, and check reporting the install as current would hide it until
+  # uninstall acted on it.
   [ -f "$destination/$PRINCIPLES_MANIFEST" ] || return 1
+  local recorded_name
+  while IFS= read -r recorded_name; do
+    [ -n "$recorded_name" ] || continue
+    shipped_document "$recorded_name" || return 1
+  done < <(cut -f 2- <"$destination/$PRINCIPLES_MANIFEST")
   local rendered="$TMP_DIR/.principle-check" doc_name
   for doc in "$PRINCIPLES_SOURCE"/*.md; do
     [ -f "$doc" ] || continue
@@ -576,11 +594,17 @@ case "$ACTION" in
               ;;
           esac
           [ -f "$principles_home/$recorded" ] || continue
-          # A name alone proves nothing: appending `mine.md` to the manifest
-          # would otherwise authorize deleting the operator's file. The
-          # recorded checksum is written at install from the bytes we wrote,
-          # so an entry we did not write cannot carry a matching one, and a
-          # file edited since install is no longer ours to remove.
+          # Provenance comes from the shipped set, not from the manifest. cksum
+          # is unkeyed and reproducible, so anyone who can append a line can
+          # also compute a matching checksum for an operator's file -- the
+          # manifest cannot vouch for itself. A name this tool never ships is
+          # therefore never deleted, whatever the manifest claims.
+          if ! shipped_document "$recorded"; then
+            printf '  kept: %s is recorded but is not a document this tool installs\n' "$recorded" >&2
+            continue
+          fi
+          # Among names we do ship, the checksum still decides: a document
+          # edited after install carries the operator's content now.
           if [ "$recorded_sum" != "$(cksum <"$principles_home/$recorded")" ]; then
             printf '  kept: %s does not match what was installed\n' "$recorded" >&2
             continue
