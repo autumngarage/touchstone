@@ -34,7 +34,7 @@ The offline lane resolves and byte-compares these documented behaviors:
   and expands relative `@file.md` imports. See the
   [Gemini CLI GEMINI.md documentation](https://geminicli.com/docs/cli/gemini-md/).
 
-It also proves all four hand-maintained managed blocks resolve to the canonical
+It also proves all four rendered managed blocks resolve to the canonical
 `TOUCHSTONE.md`, Claude imports exist, size caps hold, routed paths resolve,
 unsupported subcommands are absent, missing imports fail, and conflicting rule
 IDs are detected. The required CI invokes only this lane; it is deterministic,
