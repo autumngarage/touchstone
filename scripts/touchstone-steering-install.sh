@@ -288,8 +288,9 @@ preflight_principles() {
   # the operator wrote it, or an install was interrupted. Refuse rather than
   # trusting it to say what may be deleted later.
   local manifest="$destination/$PRINCIPLES_MANIFEST" recorded
-  if [ -e "$manifest" ]; then
-    [ -f "$manifest" ] || die "$PRINCIPLES_RELATIVE/$PRINCIPLES_MANIFEST is not a regular file; move it before installing"
+  if [ -e "$manifest" ] || [ -L "$manifest" ]; then
+    [ -e "$manifest" ] || die "$PRINCIPLES_RELATIVE/$PRINCIPLES_MANIFEST is a dangling symlink; move it before installing"
+    [ -f "$(resolve_link "$manifest")" ] || die "$PRINCIPLES_RELATIVE/$PRINCIPLES_MANIFEST is not a regular file; move it before installing"
     local tab line
     tab="$(printf '\t')"
     while IFS= read -r line; do
@@ -348,6 +349,24 @@ render_principle() {
 # a PID, which recurs -- can be pre-created as a symlink, and `cp` would then
 # follow it: the payload overwrites the link's referent and the `mv` installs
 # the symlink as the driver's instruction path. Reproduced in review.
+# Follow a symlink to its final referent, the way the driver path does. A
+# symlinked routed document is the same deliberate arrangement -- a dotfiles
+# repository holding the real file -- and replacing the link with a regular
+# file silently orphans it. Bounded like the driver resolution.
+resolve_link() {
+  local target="$1" hops=0 link_target
+  while [ -L "$target" ]; do
+    hops=$((hops + 1))
+    [ "$hops" -le 16 ] || die "symlink chain too deep at $target"
+    link_target="$(readlink "$target")"
+    case "$link_target" in
+      /*) target="$link_target" ;;
+      *) target="$(cd "$(dirname "$target")" && pwd -P)/$link_target" ;;
+    esac
+  done
+  printf '%s\n' "$target"
+}
+
 stage_path() {
   local directory="$1" prefix="$2" staged
   staged="$(mktemp "$directory/.$prefix.XXXXXXXX")" \
@@ -411,7 +430,7 @@ install_principles() {
         || die "could not preserve the existing $name before replacing it"
       printf '  preserved: %s -> %s\n' "$name" "$(basename "$backup")"
     fi
-    mv -f -- "$staged" "$destination/$name" || {
+    mv -f -- "$staged" "$(resolve_link "$destination/$name")" || {
       rm -f -- "$staged"
       die "could not install $name"
     }
@@ -449,7 +468,7 @@ install_principles() {
       fi
     done <"$destination/$PRINCIPLES_MANIFEST"
   fi
-  mv -f -- "$manifest_staged" "$destination/$PRINCIPLES_MANIFEST" \
+  mv -f -- "$manifest_staged" "$(resolve_link "$destination/$PRINCIPLES_MANIFEST")" \
     || die "could not record the installed document manifest"
 }
 

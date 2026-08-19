@@ -1205,6 +1205,38 @@ else
   fail "the operator's symlink was destroyed"
 fi
 
+echo "==> a symlinked routed document is written through, not replaced"
+# Same deliberate arrangement the driver path already respects: a dotfiles
+# repository holds the real file. Replacing the link with a regular file
+# silently orphans it.
+H36="$TMP_DIR/h36"
+bash "$INSTALL" install --home "$H36" >/dev/null 2>&1
+mkdir -p "$H36/dotfiles"
+mv "$H36/.touchstone/principles/git-workflow.md" "$H36/dotfiles/git-workflow.md"
+ln -s "$H36/dotfiles/git-workflow.md" "$H36/.touchstone/principles/git-workflow.md"
+bash "$INSTALL" install --home "$H36" >/dev/null 2>&1 || true
+if [ -L "$H36/.touchstone/principles/git-workflow.md" ]; then
+  pass "the routed document's symlink is preserved"
+else
+  fail "install replaced a symlinked routed document with a regular file"
+fi
+if [ -s "$H36/dotfiles/git-workflow.md" ]; then
+  pass "the referent still holds the content"
+else
+  fail "the referent was orphaned"
+fi
+
+echo "==> a symlink at the manifest path is not silently replaced"
+H37="$TMP_DIR/h37"
+mkdir -p "$H37/.touchstone/principles"
+ln -s "nowhere" "$H37/.touchstone/principles/.touchstone-installed"
+bash "$INSTALL" install --home "$H37" >/dev/null 2>&1 || true
+if [ -L "$H37/.touchstone/principles/.touchstone-installed" ]; then
+  pass "a dangling manifest symlink is refused, not overwritten"
+else
+  fail "install replaced the operator's manifest symlink"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"
