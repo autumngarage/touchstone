@@ -743,7 +743,11 @@ case "$ACTION" in
           # reproducible by anyone. Only that earns an outright delete.
           if render_principle "$PRINCIPLES_SOURCE/$recorded" "$TMP_DIR/.verify" \
             && cmp -s "$TMP_DIR/.verify" "$principles_home/$recorded"; then
-            rm -f -- "$principles_home/$recorded"
+            # Install writes through a symlink, so uninstall must remove what
+            # it wrote -- the referent -- and leave the operator's link. The
+            # asymmetry deleted the link and kept the document.
+            rm -f -- "$(resolve_link "$principles_home/$recorded")"
+            [ ! -L "$principles_home/$recorded" ] || rm -f -- "$principles_home/$recorded"
           elif [ "$recorded_sum" = "$(cksum <"$principles_home/$recorded")" ]; then
             # The manifest says ours but the bytes are not what we render --
             # an older release's content, or an edit. The manifest shares a
@@ -756,7 +760,7 @@ case "$ACTION" in
               retire_suffix=$((retire_suffix + 1))
               [ "$retire_suffix" -le 1000 ] || break
             done
-            if mv -f -- "$principles_home/$recorded" "$retired" 2>/dev/null; then
+            if mv -f -- "$(resolve_link "$principles_home/$recorded")" "$retired" 2>/dev/null; then
               printf '  retired: %s -> %s\n' "$recorded" "$(basename "$retired")"
             else
               printf '  kept: %s could not be retired\n' "$recorded" >&2

@@ -1237,6 +1237,23 @@ else
   fail "install replaced the operator's manifest symlink"
 fi
 
+echo "==> uninstall removes what install wrote through a symlink"
+# Install follows the link and writes the referent, so uninstall must remove
+# the referent. Removing the link instead deleted the operator's pointer and
+# left the managed document sitting in their dotfiles directory.
+H38="$TMP_DIR/h38"
+bash "$INSTALL" install --home "$H38" >/dev/null 2>&1
+mkdir -p "$H38/dotfiles"
+mv "$H38/.touchstone/principles/git-workflow.md" "$H38/dotfiles/git-workflow.md"
+ln -s "$H38/dotfiles/git-workflow.md" "$H38/.touchstone/principles/git-workflow.md"
+bash "$INSTALL" install --home "$H38" >/dev/null 2>&1 || true
+bash "$INSTALL" uninstall --home "$H38" >/dev/null 2>&1 || true
+if [ -e "$H38/dotfiles/git-workflow.md" ]; then
+  fail "uninstall left the managed document at the symlink's referent"
+else
+  pass "uninstall removes the referent install wrote"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"
