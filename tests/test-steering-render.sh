@@ -1077,6 +1077,24 @@ else
   fail "a referent was skipped as already staged when it was not"
 fi
 
+echo "==> a dry run refuses an unusable driver parent too"
+# Same rule as the routed destination, and the same defect found twice: a
+# dry run that reports an install the real command cannot perform is the one
+# answer it must never give.
+H29="$TMP_DIR/h29"
+mkdir -p "$H29"
+printf 'not a directory\n' >"$H29/.claude"
+if bash "$INSTALL" install --home "$H29" --dry-run >/dev/null 2>&1; then
+  fail "a dry run predicted success with a regular file at ~/.claude"
+else
+  pass "a dry run refuses an unusable driver parent"
+fi
+if bash "$INSTALL" install --home "$H29" >/dev/null 2>&1; then
+  fail "the real install accepted an unusable driver parent"
+else
+  pass "the dry run and the real install agree on driver parents"
+fi
+
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then
   fail "an unknown action was accepted"

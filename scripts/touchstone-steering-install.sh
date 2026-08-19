@@ -554,6 +554,18 @@ for entry in "${TARGETS[@]}"; do
     continue
   fi
 
+  # The same rule the routed destination follows: a dry run must refuse what
+  # the real install would refuse. Checking the parent is read-only, so it
+  # belongs before the prediction rather than after it -- otherwise a home
+  # whose ~/.claude is a regular file is reported as a clean install.
+  parent="$(dirname "$path")"
+  if [ -e "$parent" ] && [ ! -d "$parent" ]; then
+    die "$parent exists and is not a directory; move it before installing"
+  fi
+  if [ -d "$parent" ] && [ ! -w "$parent" ]; then
+    die "$parent is not writable"
+  fi
+
   if [ "$DRY_RUN" = true ]; then
     printf '  would update: %s\n' "$path"
     CHANGED=$((CHANGED + 1))
