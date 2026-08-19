@@ -165,6 +165,60 @@ Contained."
   fi
 done
 
+echo "==> placeholders inside labeled bullets are still placeholders"
+# "- Build: <exact command and result>" is the template, not a record of
+# anything that ran.
+body '## Intent
+Real intent.
+
+## Invariants
+- Real invariant.
+
+## Validation
+- Build: <exact command and result>
+- Automated tests: <exact command and result>
+
+## Review tier
+normal
+
+## Why this tier
+Contained.'
+if accepts; then
+  fail "the gate accepted labeled placeholder bullets as validation"
+else
+  pass "a labeled placeholder bullet does not satisfy validation"
+fi
+
+echo "==> n/a with a reason is honest and accepted"
+body '## Intent
+Fix prose.
+
+## Invariants
+- The rendered blocks match canon.
+
+## Validation
+- Build: n/a — documentation only, no build step
+- Automated tests: full suite, pass
+
+## Review tier
+normal
+
+## Why this tier
+Contained doc change with deterministic coverage.'
+if accepts; then
+  pass "n/a with a recorded reason satisfies the section"
+else
+  fail "the gate refused an honest n/a-with-reason"
+fi
+
+echo "==> the shipped template refuses itself"
+body "$(cat "$REPO_ROOT/.github/pull_request_template.md")"
+if accepts; then
+  fail "the unedited PR template satisfies the gate it feeds"
+else
+  pass "the unedited template is absence"
+fi
+
 echo "==> the gate refuses a body it cannot read"
 if bash "$CHECK" "$TMP_DIR/absent.md" >/dev/null 2>&1; then
   fail "the gate passed on an unreadable body"

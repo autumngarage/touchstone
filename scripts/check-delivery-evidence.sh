@@ -53,8 +53,15 @@ filled() {
     { line = $0
       sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
       if (line == "") next
-      if (line ~ /^<.*>$/) next              # unedited <placeholder>
-      if (line ~ /^[-*][[:space:]]*$/) next  # empty bullet
+      if (line ~ /^<!--.*-->$/) next          # template comment
+      # A bullet or "Label:" prefix is scaffolding, not content: judge what
+      # follows it, or "- Build: <exact command and result>" reads as filled.
+      sub(/^[-*][[:space:]]*/, "", line)
+      if (line ~ /^[A-Za-z][A-Za-z0-9 \/-]*:[[:space:]]*/)
+        sub(/^[A-Za-z][A-Za-z0-9 \/-]*:[[:space:]]*/, "", line)
+      sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+      if (line == "") next
+      if (line ~ /^<.*>$/) next               # unedited <placeholder>
       if (tolower(line) ~ /^(n\/a|tbd|todo|none)[.]?$/) next
       found = 1
     }

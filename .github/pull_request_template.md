@@ -1,27 +1,24 @@
-## Summary
+## Intent
+<!-- The exact user-visible or system behavior this change creates or fixes. -->
 
-<!-- What does this PR do and why? 1-3 sentences. -->
+## Invariants
+<!-- Conditions that must remain true. Required for normal and serious tiers. -->
 
-## Changes
+## Risk areas
+<!-- Only real risks introduced by this change, and the blast radius. -->
 
-<!-- Bulleted list of what changed. -->
+## Validation
+<!-- Record what actually ran. A check that does not apply is `n/a — <reason>`.
+     Never claim a build, test, or manual validation happened unless it did. -->
+- Build:
+- Automated tests:
+- Manual validation:
 
-## Testing
+## Out of scope
+<!-- Intentionally excluded related work, and where it is tracked. -->
 
-<!-- How was this tested? Include commands run, manual checks, or "see new tests." -->
+## Review tier
+<!-- trivial | normal | serious — rules in principles/local-review.md -->
 
-- [ ] Tests pass locally
-- [ ] No new silent failures (no `except: pass`, no swallowed errors)
-- [ ] No new code paths that diverge between environments
-
-## Risk
-
-<!-- What could go wrong? What's the blast radius? -->
-
-- [ ] Low risk — isolated change, no shared state affected
-- [ ] Medium risk — touches shared infrastructure or data paths
-- [ ] High risk — touches critical paths (see AGENTS.md for high-scrutiny list)
-
-## Rollback
-
-<!-- How would you revert this if it breaks? Is it a clean revert or does it need data migration? -->
+## Why this tier
+<!-- One or two concrete sentences from the tier rules. -->
