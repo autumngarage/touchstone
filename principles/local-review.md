@@ -187,9 +187,10 @@ for quota to run an initiated pass; the PR-visible review is the authority
 either way.
 
 Afterwards: triage each finding as valid, false positive, duplicate, or out of
-scope; apply only valid fixes; do not re-run the pass to confirm the
-reviewer is now quiet; never expand the slice to address adjacent or
-pre-existing findings.
+scope; apply valid **high-severity** fixes and answer-and-route valid findings
+below the bar, exactly as the delivery contract does on the PR side; do not
+re-run the pass to confirm the reviewer is now quiet; never expand the slice
+to address adjacent or pre-existing findings.
 
 ## The deep review pass
 
