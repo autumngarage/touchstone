@@ -758,9 +758,15 @@ case "$ACTION" in
         # it stands before this run deletes the documents it lists --
         # afterwards even our own manifest would fail its own check.
         manifest_referent="$(resolve_link "$principles_home/$PRINCIPLES_MANIFEST")"
-        manifest_ours=true
+        # Ours must be PROVEN, so it starts false and only an entry that
+        # checks out establishes it -- an empty file proves nothing and a
+        # zero-entry loop must not leave the presumption standing.
+        manifest_ours=false
+        manifest_entries=0
         while IFS= read -r manifest_line; do
           [ -n "$manifest_line" ] || continue
+          manifest_entries=$((manifest_entries + 1))
+          manifest_ours=true
           case "$manifest_line" in
             *[0-9]" "*[0-9]"$(printf '\t')"*) ;;
             *)
@@ -852,8 +858,9 @@ case "$ACTION" in
         # `cksum size<TAB>shipped-name` lines; an operator's notes file that a
         # symlink happens to reach never matches that shape, so it is retired
         # by rename rather than destroyed.
-        # Verdict computed above, before the documents were removed.
-        if [ "$manifest_ours" = true ]; then
+        # Verdict computed above, before the documents were removed. Zero
+        # entries proves nothing either way.
+        if [ "$manifest_ours" = true ] && [ "$manifest_entries" -gt 0 ]; then
           rm -f -- "$manifest_referent"
         else
           retired="$principles_home/$PRINCIPLES_MANIFEST.removed"
