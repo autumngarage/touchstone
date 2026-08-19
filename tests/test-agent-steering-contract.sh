@@ -73,11 +73,11 @@ for file in \
   # another remark as a finish line.
   assert_contains "$file" "Stop when the task is correct"
   assert_contains "$file" "deterministic gates first"
-  assert_contains "$file" "one** re-review"
-  assert_contains "$file" "never to reopen the design space"
+  assert_contains "$file" "Exact-head review after a fix commit is never skipped"
+  assert_contains "$file" "never reopen the design space"
   # Review is automatic on PR open; a hand-typed request wedges the PR.
-  assert_contains "$file" "Review starts by itself when the pull request opens"
-  assert_contains "$file" "never type a request marker by hand"
+  assert_contains "$file" "bound to the exact head and base"
+  assert_contains "$file" "Never type a request marker by hand"
   assert_contains "$file" "Stop widened work and requests on that shape"
   assert_contains "$file" "in-scope fixes still proceed to exact-head review"
   assert_contains "$file" "follow the capability across replacement PRs"
@@ -126,7 +126,7 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   # Every agent-facing workflow needs the complete, copyable GitHub path. A
   # recovery rule is useless if the driver cannot reliably request, answer,
   # bind, and merge the ordinary review first.
-  assert_contains "$file" "do not request one"
+  assert_contains "$file" "request review by hand"
   assert_contains "$file" "headRefOid"
   assert_contains "$file" "resolveReviewThread"
   assert_contains "$file" "--match-head-commit"

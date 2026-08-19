@@ -73,9 +73,11 @@ Set `expected` to the exact tracker item being reconciled, using the grammar
 declared by `.touchstone-tracker.toml`; a generic GitHub-or-Linear pattern can
 accept the wrong tracker or Linear team key.
 
-**Review starts by itself** — do not request one. The PR-visible reviewer is
-configured to review on pull-request open and runs asynchronously against the
-exact pushed head.
+**Do not request review by hand** — open through the project's PR-open
+sequencer, which posts a request bound to the exact head and base. The
+PR-visible reviewer runs asynchronously against that head. Raw `gh pr create`
+alone does not produce a request the `review-binding` gate can bind, so a PR
+opened that way waits on a gate that will never pass.
 
 Never type a review-request marker by hand. A hand-written request carries no
 base coordinates, so the `review-binding` check fails closed on it, and the
