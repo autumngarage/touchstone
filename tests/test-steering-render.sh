@@ -40,12 +40,10 @@ fi
 # single-word divergence inside a managed block, and require detection.
 echo "==> The drift check can actually fail"
 WORK="$TMP_DIR/repo"
-mkdir -p "$WORK/scripts" "$WORK/templates"
+mkdir -p "$WORK/scripts"
 cp "$REPO_ROOT/TOUCHSTONE.md" "$WORK/TOUCHSTONE.md"
 cp "$REPO_ROOT/AGENTS.md" "$WORK/AGENTS.md"
 cp "$REPO_ROOT/GEMINI.md" "$WORK/GEMINI.md"
-cp "$REPO_ROOT/templates/AGENTS.md" "$WORK/templates/AGENTS.md"
-cp "$REPO_ROOT/templates/GEMINI.md" "$WORK/templates/GEMINI.md"
 cp "$RENDER" "$WORK/scripts/render-steering.sh"
 
 # Change content inside the block only.
@@ -119,9 +117,9 @@ fi
 # with exit 0. Both modes must refuse it. Reported as P2 on PR #919.
 echo "==> An indented marker is refused, not silently duplicated"
 INDENTED="$TMP_DIR/indented"
-mkdir -p "$INDENTED/scripts" "$INDENTED/templates"
+mkdir -p "$INDENTED/scripts"
 cp "$REPO_ROOT/TOUCHSTONE.md" "$INDENTED/TOUCHSTONE.md"
-for f in AGENTS.md GEMINI.md templates/AGENTS.md templates/GEMINI.md; do
+for f in AGENTS.md GEMINI.md; do
   cp "$REPO_ROOT/$f" "$INDENTED/$f"
 done
 cp "$RENDER" "$INDENTED/scripts/render-steering.sh"
@@ -146,9 +144,9 @@ fi
 
 echo "==> Reversed marker order is refused"
 REVERSED="$TMP_DIR/reversed"
-mkdir -p "$REVERSED/scripts" "$REVERSED/templates"
+mkdir -p "$REVERSED/scripts"
 cp "$REPO_ROOT/TOUCHSTONE.md" "$REVERSED/TOUCHSTONE.md"
-for f in AGENTS.md GEMINI.md templates/AGENTS.md templates/GEMINI.md; do
+for f in AGENTS.md GEMINI.md; do
   cp "$REPO_ROOT/$f" "$REVERSED/$f"
 done
 cp "$RENDER" "$REVERSED/scripts/render-steering.sh"
@@ -170,9 +168,9 @@ fi
 # one, mutating bytes outside the markers the script promises not to touch.
 echo "==> A newline-less source still renders a valid, re-checkable block"
 NONL="$TMP_DIR/nonl"
-mkdir -p "$NONL/scripts" "$NONL/templates"
+mkdir -p "$NONL/scripts"
 printf '%s' "$(cat "$REPO_ROOT/TOUCHSTONE.md")" >"$NONL/TOUCHSTONE.md" # strips final newline
-for f in AGENTS.md GEMINI.md templates/AGENTS.md templates/GEMINI.md; do
+for f in AGENTS.md GEMINI.md; do
   cp "$REPO_ROOT/$f" "$NONL/$f"
 done
 cp "$RENDER" "$NONL/scripts/render-steering.sh"
@@ -199,10 +197,10 @@ fi
 # and rejected by the very next validation. Both modes must refuse up front.
 echo "==> A marker line in the canonical source is refused"
 MARKED="$TMP_DIR/marked"
-mkdir -p "$MARKED/scripts" "$MARKED/templates"
+mkdir -p "$MARKED/scripts"
 cp "$REPO_ROOT/TOUCHSTONE.md" "$MARKED/TOUCHSTONE.md"
 printf '\n<!-- touchstone:steering:end -->\n' >>"$MARKED/TOUCHSTONE.md"
-for f in AGENTS.md GEMINI.md templates/AGENTS.md templates/GEMINI.md; do
+for f in AGENTS.md GEMINI.md; do
   cp "$REPO_ROOT/$f" "$MARKED/$f"
 done
 cp "$RENDER" "$MARKED/scripts/render-steering.sh"
@@ -222,15 +220,15 @@ fi
 # is all-or-nothing across the target set.
 echo "==> A malformed later target leaves every earlier target untouched"
 PARTIAL="$TMP_DIR/partial"
-mkdir -p "$PARTIAL/scripts" "$PARTIAL/templates"
+mkdir -p "$PARTIAL/scripts"
 cp "$REPO_ROOT/TOUCHSTONE.md" "$PARTIAL/TOUCHSTONE.md"
 printf '\n<!-- force a drift so a real render would rewrite AGENTS.md -->\n# Drift %s\n' "$$" >>"$PARTIAL/TOUCHSTONE.md"
-for f in AGENTS.md GEMINI.md templates/AGENTS.md templates/GEMINI.md; do
+for f in AGENTS.md GEMINI.md; do
   cp "$REPO_ROOT/$f" "$PARTIAL/$f"
 done
 cp "$RENDER" "$PARTIAL/scripts/render-steering.sh"
-grep -v '^<!-- touchstone:steering:end -->$' "$PARTIAL/templates/GEMINI.md" >"$PARTIAL/templates/GEMINI.md.tmp" \
-  && mv "$PARTIAL/templates/GEMINI.md.tmp" "$PARTIAL/templates/GEMINI.md"
+grep -v '^<!-- touchstone:steering:end -->$' "$PARTIAL/GEMINI.md" >"$PARTIAL/GEMINI.md.tmp" \
+  && mv "$PARTIAL/GEMINI.md.tmp" "$PARTIAL/GEMINI.md"
 agents_before="$(cksum "$PARTIAL/AGENTS.md")"
 if bash "$PARTIAL/scripts/render-steering.sh" >/dev/null 2>&1; then
   fail "render succeeded despite a malformed final target"
@@ -247,10 +245,10 @@ fi
 # directory discovered at copy time leaves earlier targets untouched.
 echo "==> An unwritable later destination leaves every earlier target untouched"
 STAGEFAIL="$TMP_DIR/stagefail"
-mkdir -p "$STAGEFAIL/scripts" "$STAGEFAIL/templates"
+mkdir -p "$STAGEFAIL/scripts"
 cp "$REPO_ROOT/TOUCHSTONE.md" "$STAGEFAIL/TOUCHSTONE.md"
 printf '\n# drift %s\n' "$$" >>"$STAGEFAIL/TOUCHSTONE.md"
-for f in AGENTS.md GEMINI.md templates/AGENTS.md templates/GEMINI.md; do
+for f in AGENTS.md GEMINI.md; do
   cp "$REPO_ROOT/$f" "$STAGEFAIL/$f"
 done
 cp "$RENDER" "$STAGEFAIL/scripts/render-steering.sh"
@@ -262,7 +260,7 @@ cat >"$STAGEFAIL/bin/cp" <<'SHIM'
 #!/usr/bin/env bash
 for argument in "$@"; do
   case "$argument" in
-    */templates/GEMINI.md.render-steering.*)
+    */GEMINI.md.render-steering.*)
       echo "cp: simulated staging failure for $argument" >&2
       exit 1
       ;;

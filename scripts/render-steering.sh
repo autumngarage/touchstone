@@ -29,8 +29,6 @@ END_MARKER='<!-- touchstone:steering:end -->'
 TARGETS=(
   "AGENTS.md"
   "GEMINI.md"
-  "templates/AGENTS.md"
-  "templates/GEMINI.md"
 )
 
 CHECK_ONLY=false

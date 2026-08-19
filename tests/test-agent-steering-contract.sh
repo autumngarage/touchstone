@@ -30,14 +30,11 @@ assert_not_contains() {
 }
 
 echo "==> TOUCHSTONE.md and managed AGENTS blocks expose the driver/reviewer contract"
-# TOUCHSTONE.md is the single source of truth. AGENTS.md and templates/AGENTS.md
-# inline its content as a hand-maintained copy of the same block.
+# AGENTS.md and GEMINI.md inline the managed block.
 for file in \
   "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
   "$TOUCHSTONE_ROOT/AGENTS.md" \
-  "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
-  "$TOUCHSTONE_ROOT/GEMINI.md" \
-  "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do
+  "$TOUCHSTONE_ROOT/GEMINI.md"; do
   assert_contains "$file" "Agent Roles And Fallbacks"
   assert_contains "$file" "Driving CLI"
   assert_contains "$file" "PR-visible reviewer"
@@ -77,17 +74,6 @@ for file in \
   assert_contains "$file" "closing or renaming never resets the budget"
   assert_not_contains "$file" "Review is an enforced gate."
 done
-
-# Project-owned template guidance must not override the managed tracker-neutral
-# contract with the legacy GitHub-only claim path or closing grammar.
-assert_not_contains "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
-  'Claim every GitHub issue you are actively implementing'
-assert_not_contains "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
-  'bash scripts/claim-issue.sh <n>'
-assert_contains "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
-  'Claim every configured-tracker item through its supported adapter or API'
-assert_contains "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
-  "fixed items get that tracker's closing reference"
 
 GIT_WORKFLOW_SKILL="$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md"
 assert_contains "$GIT_WORKFLOW_SKILL" "Inspect the repository's effective rules"
@@ -174,18 +160,12 @@ echo "==> Claude entry files import the TOUCHSTONE.md steering router"
 # so the contract phrases are inlined into agent context via TOUCHSTONE.md
 # rather than literally appearing in CLAUDE.md. Asserting the import is the
 # verification contract.
-for file in \
-  "$TOUCHSTONE_ROOT/CLAUDE.md" \
-  "$TOUCHSTONE_ROOT/templates/CLAUDE.md"; do
-  assert_contains "$file" "@TOUCHSTONE.md"
-done
+assert_contains "$TOUCHSTONE_ROOT/CLAUDE.md" "@TOUCHSTONE.md"
 
 echo "==> Gemini entry files name the driving CLI role inline"
-# GEMINI.md (and templates/GEMINI.md) carry the managed steering block inlined
-# as a hand-maintained copy, so the contract phrases must appear directly.
-for file in \
-  "$TOUCHSTONE_ROOT/GEMINI.md" \
-  "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do
+# GEMINI.md carries the managed block inline, so the contract phrases must
+# appear directly.
+for file in "$TOUCHSTONE_ROOT/GEMINI.md" "$TOUCHSTONE_ROOT/AGENTS.md"; do
   assert_contains "$file" "Agent Roles And Fallbacks"
   assert_contains "$file" "Driving CLI"
   assert_contains "$file" "PR-visible reviewer"
@@ -492,8 +472,7 @@ assert_not_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md
 # would silently lose the guidance.
 echo "==> memory hygiene is routed, not inlined, and the route is intact"
 assert_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "principles/memory-hygiene.md"
-for file in "$TOUCHSTONE_ROOT/AGENTS.md" "$TOUCHSTONE_ROOT/GEMINI.md" \
-  "$TOUCHSTONE_ROOT/templates/AGENTS.md" "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do
+for file in "$TOUCHSTONE_ROOT/AGENTS.md" "$TOUCHSTONE_ROOT/GEMINI.md"; do
   assert_contains "$file" "principles/memory-hygiene.md"
 done
 # The index downstream projects receive must list it, or they get an
@@ -510,8 +489,7 @@ assert_contains "$TOUCHSTONE_ROOT/principles/memory-hygiene.md" "timestamped bac
 # rule depends on stops being stated anywhere.
 echo "==> the three-role purpose is stated in every driver's contract"
 for file in "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$TOUCHSTONE_ROOT/AGENTS.md" \
-  "$TOUCHSTONE_ROOT/GEMINI.md" "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
-  "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do
+  "$TOUCHSTONE_ROOT/GEMINI.md"; do
   assert_contains "$file" "Humans approve plans"
   assert_contains "$file" "GitHub reviews code"
   # The adopted gate's conditions are load-bearing, but universal steering may
@@ -526,12 +504,9 @@ done
 # into the universal steering copied to consumer projects. Consumer agents own
 # their project's product scope; they must not be routed into our portfolio plan.
 echo "==> product strategy stays project-owned"
-for file in "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
-  "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
-  "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do
-  assert_not_contains "$file" "product-contract.md"
-  assert_not_contains "$file" "Adoption is set-and-forget"
-done
+# (Previously also asserted on the templates/ copies; templates are deleted.)
+assert_not_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "product-contract.md"
+assert_not_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "Adoption is set-and-forget"
 for file in "$TOUCHSTONE_ROOT/AGENTS.md" "$TOUCHSTONE_ROOT/CLAUDE.md" \
   "$TOUCHSTONE_ROOT/GEMINI.md"; do
   assert_contains "$file" "docs/product-contract.md"
@@ -598,9 +573,6 @@ GATE_FILES="
 $TOUCHSTONE_ROOT/TOUCHSTONE.md
 $TOUCHSTONE_ROOT/AGENTS.md
 $TOUCHSTONE_ROOT/GEMINI.md
-$TOUCHSTONE_ROOT/templates/AGENTS.md
-$TOUCHSTONE_ROOT/templates/GEMINI.md
-$TOUCHSTONE_ROOT/templates/CLAUDE.md
 $TOUCHSTONE_ROOT/README.md
 $TOUCHSTONE_ROOT/principles/git-workflow.md
 $TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md
