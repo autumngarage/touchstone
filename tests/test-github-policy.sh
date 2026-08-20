@@ -1310,6 +1310,48 @@ else
   fail "the gate refused a valid body using a double-backtick span"
 fi
 
+echo "==> the tier is one word; whitespace does not assemble one"
+for bad_tier in 'nor mal' 'nor
+mal'; do
+  body "## Intent
+real
+
+## Invariants
+- x
+
+## Validation
+- Tests: pass
+
+## Review tier
+$bad_tier
+
+## Why this tier
+x"
+  if accepts; then
+    fail "a tier containing whitespace was normalized into a valid one"
+  fi
+done
+ok "internal whitespace never assembles a valid tier"
+
+echo "==> a 4-space-indented delimiter inside a fence closes nothing"
+body '```
+    ```
+## Intent
+real
+## Invariants
+- x
+## Validation
+- Tests: pass
+## Review tier
+normal
+## Why this tier
+x
+```'
+if accepts; then
+  fail "an indented delimiter line was treated as a fence closer"
+fi
+ok "fence delimiters honor the three-space indentation bound"
+
 echo "==> a bare list marker satisfies nothing"
 body '## Intent
 -

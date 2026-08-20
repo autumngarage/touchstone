@@ -56,14 +56,14 @@ awk '
     # is visible text, not a comment opener -- treating it as one swallowed
     # the rest of the body of any PR that mentions the token.
     if (in_fence) {
-      if (match(line, /^[[:space:]]*(`{3,}|~{3,})[[:space:]]*$/)) {
+      if (match(line, /^ {0,3}(`{3,}|~{3,})[[:space:]]*$/)) {
         seg = line
         gsub(/[[:space:]]/, "", seg)
         if (substr(seg, 1, 1) == fence_char && length(seg) >= fence_len) in_fence = 0
       }
       print; next
     }
-    if (!in_comment && match(line, /^[[:space:]]*(`{3,}|~{3,})/)) {
+    if (!in_comment && match(line, /^ {0,3}(`{3,}|~{3,})/)) {
       seg = substr(line, RSTART, RLENGTH)
       gsub(/[[:space:]]/, "", seg)
       fence_char = substr(seg, 1, 1); fence_len = length(seg); in_fence = 1
@@ -117,14 +117,14 @@ awk '
 section() {
   awk -v want="## $1" '
     in_fence {
-      if (match($0, /^[[:space:]]*(`{3,}|~{3,})[[:space:]]*$/)) {
+      if (match($0, /^ {0,3}(`{3,}|~{3,})[[:space:]]*$/)) {
         seg = $0
         gsub(/[[:space:]]/, "", seg)
         if (substr(seg, 1, 1) == fence_char && length(seg) >= fence_len) in_fence = 0
       }
       if (grabbing) print; next
     }
-    match($0, /^[[:space:]]*(`{3,}|~{3,})/) {
+    match($0, /^ {0,3}(`{3,}|~{3,})/) {
       seg = substr($0, RSTART, RLENGTH)
       gsub(/[[:space:]]/, "", seg)
       fence_char = substr(seg, 1, 1); fence_len = length(seg); in_fence = 1
@@ -175,7 +175,10 @@ report() {
 }
 
 TIER_RAW="$(section "Review tier")"
-TIER="$(printf '%s\n' "$TIER_RAW" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+# Edge-trim and lowercase only: deleting internal whitespace would normalize
+# a visibly invalid 'nor mal' into an accepted tier.
+TIER="$(printf '%s\n' "$TIER_RAW" | awk 'NF { n++; line = $0 } END { if (n == 1) print line }' \
+  | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
 case " $REQUIRED_TIERS " in
   *" $TIER "*) ;;
   *)
