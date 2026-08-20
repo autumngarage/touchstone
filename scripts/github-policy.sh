@@ -409,9 +409,6 @@ restore_branch_protection() {
 
 restore_policy_state() {
   local expected_ruleset="$1" expected_protection="$2" expected_repo_ruleset="${3:-null}" expected_auto_merge="${4:-}" current current_protection payload id
-  if [ -n "$expected_auto_merge" ] && [ "$expected_auto_merge" != null ]; then
-    set_auto_merge "$expected_auto_merge" || return $?
-  fi
   if [ "$expected_protection" != null ]; then
     restore_branch_protection "$expected_protection" || return $?
   fi
@@ -441,6 +438,11 @@ restore_policy_state() {
     fi
   fi
   verify_policy_state "$expected_ruleset" "$expected_protection" "$expected_repo_ruleset" || return $?
+  # Last, after every protective layer is back: a failure here leaves the
+  # branch protected and reports the one setting that did not restore.
+  if [ -n "$expected_auto_merge" ] && [ "$expected_auto_merge" != null ]; then
+    set_auto_merge "$expected_auto_merge" || return $?
+  fi
 }
 
 COMMAND="${1:-}"
