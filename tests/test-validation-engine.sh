@@ -258,7 +258,7 @@ run_capture "$OPTIONAL_ONLY" "$TMP_DIR/nothing.out"
 [ "$RUN_STATUS" -eq 1 ] || fail "nothing-ran validation did not fail"
 assert_contains "$TMP_DIR/nothing.out.err" "NOTHING RAN"
 
-echo "==> unavailable and command-owned 126/127 stay distinct"
+echo "==> an unstartable command keeps the shell's 126/127 and is labelled as such"
 for code in 126 127; do
   UNAVAILABLE="$TMP_DIR/unavailable-$code"
   if [ "$code" -eq 126 ]; then
@@ -271,13 +271,7 @@ for code in 126 127; do
   [ "$RUN_STATUS" -eq "$code" ] || fail "unavailable command did not retain $code"
   assert_contains "$TMP_DIR/unavailable-$code.out" '"ran":0'
   assert_contains "$TMP_DIR/unavailable-$code.out" '"reason":"command-not-started"'
-
-  OWNED="$TMP_DIR/owned-$code"
-  write_contract "$OWNED" "bash -c \\\"exit $code\\\""
-  run_capture "$OWNED" "$TMP_DIR/owned-$code.out" --json
-  [ "$RUN_STATUS" -eq "$code" ] || fail "command-owned exit did not retain $code"
-  assert_contains "$TMP_DIR/owned-$code.out" '"ran":1'
-  assert_contains "$TMP_DIR/owned-$code.out" '"reason":"command-failed"'
+  assert_contains "$TMP_DIR/unavailable-$code.out" '"verdict":"failed"'
 done
 
 MISSING_INTERPRETER="$TMP_DIR/missing-interpreter"
@@ -287,301 +281,26 @@ chmod +x "$MISSING_INTERPRETER/needs-missing-runtime"
 PATH="$MISSING_INTERPRETER:$PATH" run_capture \
   "$MISSING_INTERPRETER" "$TMP_DIR/missing-interpreter.out" --json
 case "$RUN_STATUS" in 126 | 127) ;; *) fail "missing shebang interpreter did not retain the shell status" ;; esac
-assert_contains "$TMP_DIR/missing-interpreter.out" '"ran":0'
 assert_contains "$TMP_DIR/missing-interpreter.out" '"reason":"command-not-started"'
+assert_contains "$TMP_DIR/missing-interpreter.out" '"verdict":"failed"'
 
-RELATIVE_INTERPRETER="$TMP_DIR/relative-interpreter"
-write_contract "$RELATIVE_INTERPRETER" "./relative-interpreter-script || true"
-printf '#!bash\nbody must not run\n' >"$RELATIVE_INTERPRETER/relative-interpreter-script"
-chmod +x "$RELATIVE_INTERPRETER/relative-interpreter-script"
-run_capture "$RELATIVE_INTERPRETER" "$TMP_DIR/relative-interpreter.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "non-path shebang interpreter was resolved through PATH"
-assert_contains "$TMP_DIR/relative-interpreter.out" '"ran":0'
-assert_contains "$TMP_DIR/relative-interpreter.out" '"reason":"command-not-started"'
+echo "==> any other non-zero exit is command-failed and counts as ran"
+OWNED="$TMP_DIR/owned-exit"
+write_contract "$OWNED" "bash -c \\\"exit 3\\\""
+run_capture "$OWNED" "$TMP_DIR/owned-exit.out" --json
+[ "$RUN_STATUS" -eq 3 ] || fail "command-owned exit did not retain 3"
+assert_contains "$TMP_DIR/owned-exit.out" '"ran":1'
+assert_contains "$TMP_DIR/owned-exit.out" '"reason":"command-failed"'
 
-DIRECTORY_INTERPRETER="$TMP_DIR/directory-interpreter"
-mkdir -p "$DIRECTORY_INTERPRETER/interpreter-dir"
-write_contract "$DIRECTORY_INTERPRETER" "./directory-interpreter-script || true"
-printf '#!%s\nbody must not run\n' "$DIRECTORY_INTERPRETER/interpreter-dir" >"$DIRECTORY_INTERPRETER/directory-interpreter-script"
-chmod +x "$DIRECTORY_INTERPRETER/directory-interpreter-script"
-run_capture "$DIRECTORY_INTERPRETER" "$TMP_DIR/directory-interpreter.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "directory shebang interpreter was treated as executable"
-assert_contains "$TMP_DIR/directory-interpreter.out" '"ran":0'
-assert_contains "$TMP_DIR/directory-interpreter.out" '"reason":"command-not-started"'
-
-CRLF_INTERPRETER="$TMP_DIR/crlf-interpreter"
-write_contract "$CRLF_INTERPRETER" "./crlf-interpreter-script || true"
-printf '#!/bin/bash\r\nbody must not run\n' >"$CRLF_INTERPRETER/crlf-interpreter-script"
-chmod +x "$CRLF_INTERPRETER/crlf-interpreter-script"
-run_capture "$CRLF_INTERPRETER" "$TMP_DIR/crlf-interpreter.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "CRLF shebang interpreter was normalized into a valid path"
-assert_contains "$TMP_DIR/crlf-interpreter.out" '"ran":0'
-assert_contains "$TMP_DIR/crlf-interpreter.out" '"reason":"command-not-started"'
-
-CRLF_ARGUMENT="$TMP_DIR/crlf-argument"
-write_contract "$CRLF_ARGUMENT" "./crlf-argument-script || true"
-printf '#!/bin/bash -e\r\nprintf body-may-not-run\n' >"$CRLF_ARGUMENT/crlf-argument-script"
-chmod +x "$CRLF_ARGUMENT/crlf-argument-script"
-run_capture "$CRLF_ARGUMENT" "$TMP_DIR/crlf-argument.out" --json
-[ "$RUN_STATUS" -eq 0 ] || fail "CR in a shebang argument was treated as part of the interpreter path"
-assert_contains "$TMP_DIR/crlf-argument.out" '"ran":1'
-assert_contains "$TMP_DIR/crlf-argument.out" '"verdict":"passed"'
-
-ENV_OPTIONS="$TMP_DIR/env-options"
-write_contract "$ENV_OPTIONS" "./env-options-script"
-printf '#!/usr/bin/env -S -u FOO bash\nprintf env-ran > marker\n' >"$ENV_OPTIONS/env-options-script"
-chmod +x "$ENV_OPTIONS/env-options-script"
-FOO=present run_capture "$ENV_OPTIONS" "$TMP_DIR/env-options.out" --json
-[ "$RUN_STATUS" -eq 0 ] || fail "env option arguments were mistaken for the interpreter"
-[ "$(cat "$ENV_OPTIONS/marker")" = env-ran ] || fail "env shebang script did not run"
-
-CUSTOM_ENV="$TMP_DIR/custom-env"
-write_contract "$CUSTOM_ENV" "./custom-env-script"
-cat >"$CUSTOM_ENV/env" <<'EOF'
-#!/bin/bash
-exec /bin/bash "$@"
-EOF
-printf '#!%s/env\nprintf custom-env-ran > marker\n' "$CUSTOM_ENV" >"$CUSTOM_ENV/custom-env-script"
-chmod +x "$CUSTOM_ENV/env" "$CUSTOM_ENV/custom-env-script"
-run_capture "$CUSTOM_ENV" "$TMP_DIR/custom-env.out" --json
-[ "$RUN_STATUS" -eq 0 ] || fail "custom interpreter named env was parsed as the env utility"
-[ "$(cat "$CUSTOM_ENV/marker")" = custom-env-ran ] || fail "custom env-named interpreter did not run"
-
-for env_header in '-S -i bash' '-S -u PATH bash' '-S PATH=/bin bash'; do
-  case "$env_header" in
-    *'-i'*) env_case=clean ;;
-    *'-u'*) env_case="unset" ;;
-    *) env_case=assignment ;;
-  esac
-  ENV_CHANGED="$TMP_DIR/env-$env_case"
-  write_contract "$ENV_CHANGED" "PATH= ./env-changed-script"
-  printf '#!/usr/bin/env %s\nprintf env-changed > marker\n' "$env_header" >"$ENV_CHANGED/env-changed-script"
-  chmod +x "$ENV_CHANGED/env-changed-script"
-  run_capture "$ENV_CHANGED" "$TMP_DIR/env-$env_case.out" --json
-  [ "$RUN_STATUS" -eq 0 ] || fail "env $env_case PATH semantics rejected a runnable interpreter"
-  [ "$(cat "$ENV_CHANGED/marker")" = env-changed ] || fail "env $env_case script did not run"
-done
-
-for env_header in '-S -v missing-touchstone-command' '-S - missing-touchstone-command'; do
-  case "$env_header" in
-    *'-v'*) env_case=debug ;;
-    *) env_case=bare-clean ;;
-  esac
-  ENV_MISSING="$TMP_DIR/env-missing-$env_case"
-  write_contract "$ENV_MISSING" "./env-missing-script"
-  printf '#!/usr/bin/env %s\nbody must not run\n' "$env_header" >"$ENV_MISSING/env-missing-script"
-  chmod +x "$ENV_MISSING/env-missing-script"
-  run_capture "$ENV_MISSING" "$TMP_DIR/env-missing-$env_case.out" --json
-  [ "$RUN_STATUS" -eq 127 ] || fail "env $env_case missing interpreter did not retain 127"
-  assert_contains "$TMP_DIR/env-missing-$env_case.out" '"ran":0'
-  assert_contains "$TMP_DIR/env-missing-$env_case.out" '"reason":"command-not-started"'
-done
-
-ENV_CLUSTERED="$TMP_DIR/env-clustered"
-write_contract "$ENV_CLUSTERED" "./env-clustered-script || true"
-printf '#!/usr/bin/env -S -iv missing-touchstone-command\nbody must not run\n' >"$ENV_CLUSTERED/env-clustered-script"
-chmod +x "$ENV_CLUSTERED/env-clustered-script"
-run_capture "$ENV_CLUSTERED" "$TMP_DIR/env-clustered.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "clustered env flags laundered a missing interpreter"
-assert_contains "$TMP_DIR/env-clustered.out" '"ran":0'
-assert_contains "$TMP_DIR/env-clustered.out" '"reason":"command-not-started"'
-
-ENV_CLUSTERED_ARGUMENT="$TMP_DIR/env-clustered-argument"
-write_contract "$ENV_CLUSTERED_ARGUMENT" "./env-clustered-argument-script || true"
-printf '#!/usr/bin/env -S -iu PATH missing-touchstone-command\nbody must not run\n' >"$ENV_CLUSTERED_ARGUMENT/env-clustered-argument-script"
-chmod +x "$ENV_CLUSTERED_ARGUMENT/env-clustered-argument-script"
-run_capture "$ENV_CLUSTERED_ARGUMENT" "$TMP_DIR/env-clustered-argument.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "clustered env argument option laundered a missing interpreter"
-assert_contains "$TMP_DIR/env-clustered-argument.out" '"ran":0'
-assert_contains "$TMP_DIR/env-clustered-argument.out" '"reason":"command-not-started"'
-
-ENV_SPLIT_ATTACHED="$TMP_DIR/env-split-attached"
-write_contract "$ENV_SPLIT_ATTACHED" "./env-split-attached-script || true"
-printf '#!/usr/bin/env -Siv bash\nbody must not run\n' >"$ENV_SPLIT_ATTACHED/env-split-attached-script"
-chmod +x "$ENV_SPLIT_ATTACHED/env-split-attached-script"
-run_capture "$ENV_SPLIT_ATTACHED" "$TMP_DIR/env-split-attached.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "attached env split-string argument was parsed as flags"
-assert_contains "$TMP_DIR/env-split-attached.out" '"ran":0'
-assert_contains "$TMP_DIR/env-split-attached.out" '"reason":"command-not-started"'
-
-ENV_SPLIT_QUOTED="$TMP_DIR/env-split-quoted"
-write_contract "$ENV_SPLIT_QUOTED" "./env-split-quoted-script"
-printf '#!/usr/bin/env -S"bash"\nprintf split-quoted-ran > marker\n' >"$ENV_SPLIT_QUOTED/env-split-quoted-script"
-chmod +x "$ENV_SPLIT_QUOTED/env-split-quoted-script"
-run_capture "$ENV_SPLIT_QUOTED" "$TMP_DIR/env-split-quoted.out" --json
-[ "$RUN_STATUS" -eq 0 ] || fail "quoted attached env split-string command was not decoded"
-[ "$(cat "$ENV_SPLIT_QUOTED/marker")" = split-quoted-ran ] || fail "quoted attached env split-string command did not run"
-
-ENV_SPLIT_DETACHED="$TMP_DIR/env-split-detached"
-write_contract "$ENV_SPLIT_DETACHED" "./env-split-detached-script"
-printf '#!/usr/bin/env -S "bash"\nprintf split-detached-ran > marker\n' >"$ENV_SPLIT_DETACHED/env-split-detached-script"
-chmod +x "$ENV_SPLIT_DETACHED/env-split-detached-script"
-run_capture "$ENV_SPLIT_DETACHED" "$TMP_DIR/env-split-detached.out" --json
-[ "$RUN_STATUS" -eq 0 ] || fail "quoted detached env split-string command was not decoded"
-[ "$(cat "$ENV_SPLIT_DETACHED/marker")" = split-detached-ran ] || fail "quoted detached env split-string command did not run"
-
-ENV_LITERAL_QUOTES="$TMP_DIR/env-literal-quotes"
-write_contract "$ENV_LITERAL_QUOTES" "./env-literal-quotes-script || true"
-printf '#!/usr/bin/env "bash"\nprintf body-must-not-run > marker\n' >"$ENV_LITERAL_QUOTES/env-literal-quotes-script"
-chmod +x "$ENV_LITERAL_QUOTES/env-literal-quotes-script"
-run_capture "$ENV_LITERAL_QUOTES" "$TMP_DIR/env-literal-quotes.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "ordinary env arguments were decoded without -S"
-assert_contains "$TMP_DIR/env-literal-quotes.out" '"ran":0'
-assert_contains "$TMP_DIR/env-literal-quotes.out" '"reason":"command-not-started"'
-[ ! -e "$ENV_LITERAL_QUOTES/marker" ] || fail "literal-quote env body unexpectedly ran"
-
-ENV_UNSPLIT_ARGUMENT="$TMP_DIR/env-unsplit-argument"
-write_contract "$ENV_UNSPLIT_ARGUMENT" "./env-unsplit-argument-script || true"
-printf '#!/usr/bin/env bash -e\nprintf body-must-not-run > marker\n' >"$ENV_UNSPLIT_ARGUMENT/env-unsplit-argument-script"
-chmod +x "$ENV_UNSPLIT_ARGUMENT/env-unsplit-argument-script"
-run_capture "$ENV_UNSPLIT_ARGUMENT" "$TMP_DIR/env-unsplit-argument.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "ordinary env optional argument was split without -S"
-assert_contains "$TMP_DIR/env-unsplit-argument.out" '"ran":0'
-assert_contains "$TMP_DIR/env-unsplit-argument.out" '"reason":"command-not-started"'
-[ ! -e "$ENV_UNSPLIT_ARGUMENT/marker" ] || fail "unsplit env argument body unexpectedly ran"
-
-ENV_DASH_COMMAND="$TMP_DIR/env-dash-command"
-mkdir -p "$ENV_DASH_COMMAND/bin"
-write_contract "$ENV_DASH_COMMAND" "PATH=$ENV_DASH_COMMAND/bin ./env-dash-script"
-printf '#!/bin/bash\nprintf dash-ran > marker\n' >"$ENV_DASH_COMMAND/bin/-i"
-printf '#!/usr/bin/env -S -- -i\nbody must not run\n' >"$ENV_DASH_COMMAND/env-dash-script"
-chmod +x "$ENV_DASH_COMMAND/bin/-i" "$ENV_DASH_COMMAND/env-dash-script"
-run_capture "$ENV_DASH_COMMAND" "$TMP_DIR/env-dash-command.out" --json
-[ "$RUN_STATUS" -eq 0 ] || fail "env option terminator rejected a dash-prefixed command"
-[ "$(cat "$ENV_DASH_COMMAND/marker")" = dash-ran ] || fail "dash-prefixed env command did not run"
-
-ENV_BUILTIN="$TMP_DIR/env-builtin"
-mkdir -p "$ENV_BUILTIN/empty"
-write_contract "$ENV_BUILTIN" "PATH=$ENV_BUILTIN/empty ./env-builtin-script"
-printf '#!/usr/bin/env echo\nbody must not run\n' >"$ENV_BUILTIN/env-builtin-script"
-chmod +x "$ENV_BUILTIN/env-builtin-script"
-run_capture "$ENV_BUILTIN" "$TMP_DIR/env-builtin.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "builtin-only env interpreter did not retain 127"
-assert_contains "$TMP_DIR/env-builtin.out" '"ran":0'
-assert_contains "$TMP_DIR/env-builtin.out" '"reason":"command-not-started"'
-
-ASSIGNMENT_COMMAND="$TMP_DIR/assignment-command"
-write_contract "$ASSIGNMENT_COMMAND" "FIRST=one SECOND=two missing-touchstone-command"
-run_capture "$ASSIGNMENT_COMMAND" "$TMP_DIR/assignment-command.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "assignment-prefixed unavailable command did not retain 127"
-assert_contains "$TMP_DIR/assignment-command.out" '"ran":0'
-assert_contains "$TMP_DIR/assignment-command.out" '"reason":"command-not-started"'
-
-FALLBACK_COMMAND="$TMP_DIR/fallback-command"
-write_contract "$FALLBACK_COMMAND" "missing-touchstone-command || true"
-run_capture "$FALLBACK_COMMAND" "$TMP_DIR/fallback-command.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "fallback laundered an unavailable command"
-assert_contains "$TMP_DIR/fallback-command.out" '"ran":0'
-assert_contains "$TMP_DIR/fallback-command.out" '"reason":"command-not-started"'
-
-COMMAND_BUILTIN="$TMP_DIR/command-builtin"
-write_contract "$COMMAND_BUILTIN" "command missing-touchstone-command || true"
-run_capture "$COMMAND_BUILTIN" "$TMP_DIR/command-builtin.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "command builtin laundered an unavailable command"
-assert_contains "$TMP_DIR/command-builtin.out" '"ran":0'
-assert_contains "$TMP_DIR/command-builtin.out" '"reason":"command-not-started"'
-
-for command_form in 'command -p missing-touchstone-command || true' \
-  'command -- missing-touchstone-command || true' \
-  'FIRST=one command missing-touchstone-command || true'; do
-  write_contract "$COMMAND_BUILTIN" "$command_form"
-  run_capture "$COMMAND_BUILTIN" "$TMP_DIR/command-builtin.out" --json
-  [ "$RUN_STATUS" -eq 127 ] || fail "command builtin option/assignment form laundered an unavailable command"
-  assert_contains "$TMP_DIR/command-builtin.out" '"ran":0'
-done
-
-write_contract "$COMMAND_BUILTIN" "command -v missing-touchstone-command || true"
-run_capture "$COMMAND_BUILTIN" "$TMP_DIR/command-query.out" --json
-[ "$RUN_STATUS" -eq 0 ] || fail "command query form was mistaken for an executable launch"
-assert_contains "$TMP_DIR/command-query.out" '"ran":1'
-
-COMMAND_DEFAULT_PATH="$TMP_DIR/command-default-path"
-write_contract "$COMMAND_DEFAULT_PATH" "PATH= command -p sh -c 'printf default-path-ran > marker'"
-run_capture "$COMMAND_DEFAULT_PATH" "$TMP_DIR/command-default-path.out" --json
-[ "$RUN_STATUS" -eq 0 ] || fail "command -p did not use the default utility path"
-[ "$(cat "$COMMAND_DEFAULT_PATH/marker")" = default-path-ran ] || fail "command -p task did not run"
-
-write_contract "$COMMAND_DEFAULT_PATH" "PATH= command -p command sh -c 'printf nested-default-path-ran > marker'"
-run_capture "$COMMAND_DEFAULT_PATH" "$TMP_DIR/command-nested-default-path.out" --json
-[ "$RUN_STATUS" -eq 0 ] || fail "command -p default path did not reach a nested command builtin"
-[ "$(cat "$COMMAND_DEFAULT_PATH/marker")" = nested-default-path-ran ] || fail "nested command -p task did not run"
-
-COMMAND_CHILD_PATH="$TMP_DIR/command-child-path"
-write_contract "$COMMAND_CHILD_PATH" "PATH= command -p ./command-child-path-script || true"
-printf '#!/usr/bin/env sh\nprintf child-path-ran > marker\n' >"$COMMAND_CHILD_PATH/command-child-path-script"
-chmod +x "$COMMAND_CHILD_PATH/command-child-path-script"
-run_capture "$COMMAND_CHILD_PATH" "$TMP_DIR/command-child-path.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "command -p replaced the child environment PATH"
-assert_contains "$TMP_DIR/command-child-path.out" '"ran":0'
-assert_contains "$TMP_DIR/command-child-path.out" '"reason":"command-not-started"'
-[ ! -e "$COMMAND_CHILD_PATH/marker" ] || fail "command -p env-shebang body unexpectedly ran"
-
-NEGATED_COMMAND="$TMP_DIR/negated-command"
-write_contract "$NEGATED_COMMAND" "! missing-touchstone-command"
-run_capture "$NEGATED_COMMAND" "$TMP_DIR/negated-command.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "negation laundered an unavailable command"
-assert_contains "$TMP_DIR/negated-command.out" '"ran":0'
-assert_contains "$TMP_DIR/negated-command.out" '"reason":"command-not-started"'
-
-TIMED_COMMAND="$TMP_DIR/timed-command"
-write_contract "$TIMED_COMMAND" "time -p missing-touchstone-command || true"
-run_capture "$TIMED_COMMAND" "$TMP_DIR/timed-command.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "time prefix laundered an unavailable command"
-assert_contains "$TMP_DIR/timed-command.out" '"ran":0'
-assert_contains "$TMP_DIR/timed-command.out" '"reason":"command-not-started"'
-
-ASSIGNMENT_TIMED="$TMP_DIR/assignment-timed"
-write_contract "$ASSIGNMENT_TIMED" "PATH= time true || true"
-run_capture "$ASSIGNMENT_TIMED" "$TMP_DIR/assignment-timed.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "assignment-prefixed external time was mistaken for a keyword"
-assert_contains "$TMP_DIR/assignment-timed.out" '"ran":0'
-assert_contains "$TMP_DIR/assignment-timed.out" '"reason":"command-not-started"'
-
-QUOTED_ASSIGNMENT="$TMP_DIR/quoted-assignment"
-write_contract "$QUOTED_ASSIGNMENT" "LABEL=\\\"two words\\\" missing-touchstone-command"
-run_capture "$QUOTED_ASSIGNMENT" "$TMP_DIR/quoted-assignment.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "quoted-assignment unavailable command did not retain 127"
-assert_contains "$TMP_DIR/quoted-assignment.out" '"ran":0'
-assert_contains "$TMP_DIR/quoted-assignment.out" '"reason":"command-not-started"'
-
-PATH_ASSIGNMENT="$TMP_DIR/path-assignment"
-mkdir -p "$PATH_ASSIGNMENT/bin"
-printf '#!/bin/bash\nprintf path-ran > marker\n' >"$PATH_ASSIGNMENT/bin/declared-tool"
-chmod +x "$PATH_ASSIGNMENT/bin/declared-tool"
-write_contract "$PATH_ASSIGNMENT" "PATH=bin declared-tool"
-run_capture "$PATH_ASSIGNMENT" "$TMP_DIR/path-assignment.out" --json
-[ "$RUN_STATUS" -eq 0 ] || fail "literal PATH assignment was ignored during preflight"
-[ "$(cat "$PATH_ASSIGNMENT/marker")" = path-ran ] || fail "PATH-resolved tool did not run"
-
-PATH_APPEND="$TMP_DIR/path-append"
-write_contract "$PATH_APPEND" "PATH= PATH+=/bin sh -c 'printf path-append-ran > marker'"
-run_capture "$PATH_APPEND" "$TMP_DIR/path-append.out" --json
-[ "$RUN_STATUS" -eq 0 ] || fail "PATH append assignment was not modeled during preflight"
-[ "$(cat "$PATH_APPEND/marker")" = path-append-ran ] || fail "PATH append assignment task did not run"
-
-QUOTED_EQUALS_HEAD="$TMP_DIR/quoted-equals-head"
-write_contract "$QUOTED_EQUALS_HEAD" "\\\"FAKE=assignment\\\" ignored-argument"
-printf '#!/usr/bin/env bash\nexit 127\n' >"$QUOTED_EQUALS_HEAD/FAKE=assignment"
-chmod +x "$QUOTED_EQUALS_HEAD/FAKE=assignment"
-PATH="$QUOTED_EQUALS_HEAD:$PATH" run_capture \
-  "$QUOTED_EQUALS_HEAD" "$TMP_DIR/quoted-equals-head.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "quoted equals command did not retain its exit"
-assert_contains "$TMP_DIR/quoted-equals-head.out" '"ran":1'
-assert_contains "$TMP_DIR/quoted-equals-head.out" '"reason":"command-failed"'
-
-QUOTED_MISSING_HEAD="$TMP_DIR/quoted-missing-head"
-write_contract "$QUOTED_MISSING_HEAD" "\\\"missing tool\\\""
-run_capture "$QUOTED_MISSING_HEAD" "$TMP_DIR/quoted-missing-head.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "quoted missing command did not retain 127"
-assert_contains "$TMP_DIR/quoted-missing-head.out" '"ran":0'
-assert_contains "$TMP_DIR/quoted-missing-head.out" '"reason":"command-not-started"'
-
-QUOTED_KEYWORD="$TMP_DIR/quoted-keyword"
-write_contract "$QUOTED_KEYWORD" "\\\"if\\\""
-run_capture "$QUOTED_KEYWORD" "$TMP_DIR/quoted-keyword.out" --json
-[ "$RUN_STATUS" -eq 127 ] || fail "quoted keyword command did not retain 127"
-assert_contains "$TMP_DIR/quoted-keyword.out" '"ran":0'
-assert_contains "$TMP_DIR/quoted-keyword.out" '"reason":"command-not-started"'
+echo "==> the engine executes the declaration exactly and never predicts startability"
+# What a declared command does with its own exit status is the project's
+# promise: the engine runs it and reports what the shell returned.
+SWALLOWED="$TMP_DIR/swallowed"
+write_contract "$SWALLOWED" "missing-touchstone-command || true"
+run_capture "$SWALLOWED" "$TMP_DIR/swallowed.out" --json
+[ "$RUN_STATUS" -eq 0 ] || fail "a declaration that swallows its own status was second-guessed"
+assert_contains "$TMP_DIR/swallowed.out" '"ran":1'
+assert_contains "$TMP_DIR/swallowed.out" '"verdict":"passed"'
 
 echo "==> a later passing target cannot launder an earlier failure"
 MONOREPO="$TMP_DIR/monorepo"

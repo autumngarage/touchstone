@@ -83,9 +83,13 @@ parser. Schema 2 demonstrates the rule: it adds syntax without changing what sch
 ## Verdict semantics
 
 A declaration is a promise. A required command that is missing, cannot start,
-or exits nonzero fails. A command whose process starts and returns 126 or 127
-counts as ran; a command head the shell cannot start does not. Earlier target
-failures remain failures even when later targets pass. A validation in which no
+or exits nonzero fails. The engine executes each command exactly as declared
+and reports what the shell returned: exit 126 or 127 is labelled
+`command-not-started` and does not count as ran; any other non-zero exit is
+`command-failed`. The engine never predicts whether a command can start
+ahead of the shell, so what a declared command does with its own exit status
+is the project's promise. Earlier target failures remain failures even when
+later targets pass. A validation in which no
 task ran fails at the enforcement stage, where a gate must execute something;
 a commit stage with no declared tasks passes, because most projects have no
 authoring guards and that is not a broken contract.
