@@ -194,10 +194,28 @@ assert_contains "$TMP_DIR/contract-only.out" "schema-v1 contract is valid"
 [ ! -e "$CONTRACT_ONLY/command-ran" ] || fail "contract check executed a task"
 run_capture "$CONTRACT_ONLY" "$TMP_DIR/contract-only-json.out" --check-contract --json
 [ "$RUN_STATUS" -eq 0 ] || fail "JSON contract-only validation failed"
-[ "$(cat "$TMP_DIR/contract-only-json.out")" = '{"schema":1,"verdict":"valid"}' ] \
+[ "$(cat "$TMP_DIR/contract-only-json.out")" = '{"schema":1,"verdict":"valid","runner":"ubuntu-latest"}' ] \
   || fail "contract-only JSON payload changed"
 [ ! -e "$CONTRACT_ONLY/setup-ran" ] || fail "JSON contract check executed setup"
 [ ! -e "$CONTRACT_ONLY/command-ran" ] || fail "JSON contract check executed a task"
+
+echo "==> a declared runner is reported for the central workflow to schedule on"
+RUNNER_DECL="$TMP_DIR/runner-decl"
+write_contract "$RUNNER_DECL" "true"
+awk '{ print; if ($0 == "runtime = \"bash\"") print "runner = \"macos-15\"" }' \
+  "$RUNNER_DECL/.touchstone.toml" >"$RUNNER_DECL/with-runner"
+mv "$RUNNER_DECL/with-runner" "$RUNNER_DECL/.touchstone.toml"
+run_capture "$RUNNER_DECL" "$TMP_DIR/runner-decl.out" --check-contract --json
+[ "$RUN_STATUS" -eq 0 ] || fail "a declared runner was refused"
+[ "$(cat "$TMP_DIR/runner-decl.out")" = '{"schema":1,"verdict":"valid","runner":"macos-15"}' ] \
+  || fail "declared runner not reported: $(cat "$TMP_DIR/runner-decl.out")"
+run_capture "$RUNNER_DECL" "$TMP_DIR/runner-decl-run.out" --json
+[ "$RUN_STATUS" -eq 0 ] || fail "validation with a declared runner failed locally"
+sed 's/^runner = .*/runner = "not a label!"/' "$RUNNER_DECL/.touchstone.toml" >"$RUNNER_DECL/bad"
+mv "$RUNNER_DECL/bad" "$RUNNER_DECL/.touchstone.toml"
+run_capture "$RUNNER_DECL" "$TMP_DIR/runner-bad.out" --check-contract
+[ "$RUN_STATUS" -ne 0 ] || fail "a malformed runner label was accepted"
+assert_contains "$TMP_DIR/runner-bad.out.err" "runner must be a GitHub-hosted runner label"
 
 echo "==> optional undeclared task skips visibly"
 cat >>"$SMALL/.touchstone.toml" <<'EOF'
