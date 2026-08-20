@@ -257,7 +257,7 @@ GATE_REQUIRED="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/rules/branches/$BASE_
 if [ "$GATE_REQUIRED" = true ]; then
   # The pinned gate runs under a workflow id the repository does not list; a
   # local workflow sharing the name is listed and is not the gate.
-  LOCAL_WORKFLOW_IDS="$(gh_read api --paginate "repos/$REPO_OWNER/$REPO_NAME/actions/workflows?per_page=100" --jq '[.workflows[].id]' | tr -d '\n' | sed 's/\]\[/,/g')" \
+  LOCAL_WORKFLOW_IDS="$(gh_read api --paginate "repos/$REPO_OWNER/$REPO_NAME/actions/workflows?per_page=100" --jq '.workflows[].id' | awk 'BEGIN { printf "[" } NF { if (n++) printf ","; printf "%s", $1 } END { printf "]" }')" \
     || fail "could not list the repository's workflows: $LOCAL_WORKFLOW_IDS"
   attempt=1
   while :; do

@@ -781,21 +781,30 @@ case "$1 ${2:-}" in
         printf 'completed %s 2\n' "${GH_GATE_CONCLUSION:-success}"
       fi
     elif has 'actions/workflows?' "$@"; then
-      printf '[1,2,3]\n'
+      printf '1\n2\n3\n'
     elif has 'rules/branches/' "$@"; then
       if [ -f "$GH_STATE/review-gate" ]; then printf 'true\n'; else printf 'false\n'; fi
     elif has 'actions/runs?head_sha=' "$@"; then
+      # Real selector over a real list: the pinned gate (run 77, unlisted
+      # workflow id 999) next to a NEWER repository-local decoy of the same
+      # name (run 78, listed workflow id 2) and another PR's run (79). Only
+      # the jq the CLI passes decides which one it sees.
       if [ -f "$GH_STATE/review-gate" ]; then
         if [ -f "$GH_STATE/gate-in-progress" ]; then
           left="$(cat "$GH_STATE/gate-in-progress")"
           if [ "$left" -le 1 ]; then rm -f "$GH_STATE/gate-in-progress"; else echo $((left - 1)) >"$GH_STATE/gate-in-progress"; fi
-          printf '77 in_progress\n'
+          gate_status=in_progress
         else
-          printf '77 completed\n'
+          gate_status=completed
         fi
+        runs="{\"workflow_runs\":[
+          {\"id\":77,\"name\":\"review-gate\",\"event\":\"pull_request\",\"status\":\"$gate_status\",\"workflow_id\":999,\"pull_requests\":[{\"number\":7}]},
+          {\"id\":78,\"name\":\"review-gate\",\"event\":\"pull_request\",\"status\":\"completed\",\"workflow_id\":2,\"pull_requests\":[{\"number\":7}]},
+          {\"id\":79,\"name\":\"review-gate\",\"event\":\"pull_request\",\"status\":\"completed\",\"workflow_id\":999,\"pull_requests\":[{\"number\":8}]}]}"
       else
-        printf ' \n'
+        runs='{"workflow_runs":[]}'
       fi
+      printf '%s' "$runs" | jq -r "$(value_after --jq "$@")"
     elif has '/issues/comments/1' "$@"; then
       [ "${GH_MODE:-ok}" = live_comment_invalid ] || printf '%s\n' 1
     elif has '/issues/7/comments' "$@"; then
@@ -1109,6 +1118,7 @@ echo "gh: debug detail for $*" >&2
   exit 1
 }
 has() { local needle="$1"; shift; for arg in "$@"; do [[ "$arg" == *"$needle"* ]] && return 0; done; return 1; }
+value_after() { local wanted="$1"; shift; while [ "$#" -gt 0 ]; do if [ "$1" = "$wanted" ]; then printf '%s\n' "$2"; return 0; fi; shift; done; return 1; }
 case "$1 $2" in
   "repo view")
     echo "autumngarage/current"
@@ -1139,7 +1149,7 @@ case "$1 $2" in
     ;;
   "api --paginate")
     if has 'actions/workflows' "$@"; then
-      echo "[1,2,3]"
+      printf '1\n2\n3\n'
     elif [ -f "$GH_STATE/replies" ]; then
       echo "<!-- touchstone:respond-review comment=51 -->"
     fi
@@ -1152,13 +1162,17 @@ case "$1 $2" in
       if [ -f "$GH_STATE/gate-in-progress" ]; then
         left="$(cat "$GH_STATE/gate-in-progress")"
         if [ "$left" -le 1 ]; then rm -f "$GH_STATE/gate-in-progress"; else echo $((left - 1)) >"$GH_STATE/gate-in-progress"; fi
-        echo "77 in_progress"
+        gate_status=in_progress
       else
-        echo "77 completed"
+        gate_status=completed
       fi
+      runs="{\"workflow_runs\":[
+        {\"id\":77,\"name\":\"review-gate\",\"status\":\"$gate_status\",\"workflow_id\":999,\"pull_requests\":[{\"number\":7}]},
+        {\"id\":78,\"name\":\"review-gate\",\"status\":\"completed\",\"workflow_id\":2,\"pull_requests\":[{\"number\":7}]}]}"
     else
-      echo " "
+      runs='{"workflow_runs":[]}'
     fi
+    printf '%s' "$runs" | jq -r "$(value_after --jq "$@")"
     ;;
   "api -X")
     # POST .../actions/runs/77/rerun

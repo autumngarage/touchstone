@@ -405,10 +405,11 @@ rerun_review_gate() {
   # A required workflow runs under a workflow id the repository does not list
   # among its own; a repository-local workflow that happens to share the name
   # is listed. Only the unlisted one is the pinned gate.
+  # One id per line across pages, folded into a JSON array with awk.
   read_with_retry gh api --hostname "$REPO_HOST" --paginate "repos/$REPO/actions/workflows?per_page=100" \
-    --jq '[.workflows[].id]' \
+    --jq '.workflows[].id' \
     || fail_operation "could not list the repository's workflows: $READ_OUTPUT" "Retry after GitHub recovers."
-  local_workflow_ids="$(printf '%s' "$READ_OUTPUT" | tr -d '\n' | sed 's/\]\[/,/g')"
+  local_workflow_ids="$(printf '%s\n' "$READ_OUTPUT" | awk 'BEGIN { printf "[" } NF { if (n++) printf ","; printf "%s", $1 } END { printf "]" }')"
   while :; do
     # Scoped to this pull request: two open PRs can share a head SHA, and
     # re-running the other one's gate would prove nothing about this request.
