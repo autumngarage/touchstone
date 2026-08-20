@@ -73,7 +73,7 @@ awk '
 # opens a comment it does not close renders as nothing at all on GitHub while
 # its text would read as evidence here. That is refused, with the remedy,
 # rather than parsed.
-if awk 'NF { exit !(index($0, "<!--") > 0) } END { if (NR == 0) exit 1 }' "$STRIPPED_BODY"; then
+if awk 'NF { line = $0; sub(/^[[:space:]]+/, "", line); exit !(index(line, "<!--") == 1) } END { if (NR == 0) exit 1 }' "$STRIPPED_BODY"; then
   die "the body opens an HTML comment on its first line and does not close it there; close it on the same line or remove it (HTML comments are recognised one line at a time)"
 fi
 

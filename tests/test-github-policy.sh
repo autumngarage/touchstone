@@ -1477,6 +1477,25 @@ else
   fail "the gate refused a valid body over a multi-line code span"
 fi
 
+body 'Support the literal `<!--` token in an opening sentence.
+
+## Intent
+Real intent.
+
+## Validation
+- Tests: pass.
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  ok "a first line that merely mentions the opener is visible text"
+else
+  fail "the first-line guard refused a body whose opening sentence mentions the token"
+fi
+
 echo "==> a heading may carry up to three leading spaces"
 body '   ## Intent
 Real intent.
