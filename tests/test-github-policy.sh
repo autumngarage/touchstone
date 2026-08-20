@@ -1005,20 +1005,11 @@ else
   ok "an unreadable body fails closed"
 fi
 
-echo "==> the gate is actually installed, not only correct"
-# The parser being right proves nothing if the workflow stops publishing the
-# context or the policy stops requiring it -- either half can be removed and
-# every direct-invocation assertion stays green.
-grep -q '^name: delivery evidence$' "$ROOT/.github/workflows/delivery-evidence.yml" \
-  || fail "the delivery-evidence workflow no longer publishes its required context name"
-grep -q 'check-delivery-evidence.sh' "$ROOT/.github/workflows/delivery-evidence.yml" \
-  || fail "the delivery-evidence workflow no longer invokes the parser"
-# grep, not an interpreter: the required loop runs where the shell and
-# coreutils are the whole base tool surface.
-grep -A 2 '"context": "delivery evidence"' "$ROOT/policy/github/touchstone-main.json" \
-  | grep -q '"integration_id": 15368' \
-  || fail "the policy no longer requires 'delivery evidence' bound to GitHub Actions"
-ok "workflow publishes the context and the policy requires it from Actions"
+# Installation of this check as a required gate is deliberately absent here:
+# a repository workflow on pull_request_target never reports on a merge-queue
+# commit, so requiring its context would eject every queue entry. The gate
+# ships as a required workflow from touchstone-workflows (AUT-332 / 3.1),
+# which runs from the pinned source on pull_request and merge_group alike.
 
 echo "==> unchecked task boxes and bullet-hidden comments are absence"
 body '## Intent
