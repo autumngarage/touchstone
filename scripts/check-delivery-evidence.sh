@@ -119,7 +119,11 @@ filled() {
       if (line == "") next
       # A fence delimiter is scaffolding too: an empty fenced block has two
       # delimiter lines and no content.
-      if (line ~ /^(`{3,}|~{3,})/) next
+      # A backtick fence whose info string contains a backtick is not a fence
+      # (CommonMark), exactly as section() treats it; tilde fences have no
+      # such rule.
+      if (line ~ /^~{3,}/) next
+      if (match(line, /^`{3,}/) && index(substr(line, RLENGTH + 1), "`") == 0) next
       # Bullets, task boxes, and "Label:" prefixes are scaffolding, not
       # content: judge what follows. Stripped repeatedly, so "- -" or a
       # nested empty list cannot smuggle a marker through as evidence.
@@ -137,6 +141,9 @@ filled() {
       sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
       if (line == "") next
       if (line ~ /^<.*>$/) next               # unedited <placeholder>
+      # The template ships an em dash after n/a; under LC_ALL=C it is three
+      # bytes, not [[:punct:]], so dashes are normalised by byte first.
+      gsub(/\342\200\223|\342\200\224/, "-", line)
       if (tolower(line) ~ /^(n\/a|tbd|todo|none)[[:space:][:punct:]]*$/) next
       found = 1
     }

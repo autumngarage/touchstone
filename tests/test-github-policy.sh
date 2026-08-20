@@ -1688,6 +1688,28 @@ if accepts; then
   fail "n/a followed only by a separator counted as a reason"
 fi
 ok "n/a needs a reason, not a dash"
+if LC_ALL=C accepts; then
+  fail "under LC_ALL=C an em dash after n/a counted as a reason"
+fi
+ok "the em dash is recognised byte-wise under the C locale"
+body '## Intent
+```inline`code``` is visible text, not a fence.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  ok "a backtick line with a backtick in its info string is content"
+else
+  fail "a non-fence backtick line was dropped as a delimiter"
+fi
 body '## Intent
 ```
 real intent inside a fence
