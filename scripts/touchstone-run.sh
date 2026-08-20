@@ -362,7 +362,7 @@ while IFS= read -r line || [ -n "$line" ]; do
       # The whole label is checked, not just its prefix: a glob suffix like
       # `ubuntu-*` would accept spaces and shell metacharacters after the
       # family. LC_ALL=C keeps the ranges literal under every locale.
-      printf '%s' "$RUNNER" | LC_ALL=C grep -Eq '^(ubuntu|macos|windows)-[a-z0-9][a-z0-9.-]*$' \
+      LC_ALL=C awk 'BEGIN { exit !(ARGV[1] ~ /^(ubuntu|macos|windows)-[a-z0-9][a-z0-9.-]*$/) }' "$RUNNER" \
         || config_error "runner must be a GitHub-hosted runner label (ubuntu-*, macos-*, windows-*), got '$RUNNER' at line $LINE_NUMBER"
       ;;
     validation:setup)
