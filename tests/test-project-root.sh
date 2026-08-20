@@ -166,12 +166,13 @@ printf '%s\n' "$out" | awk '/^touchstone v[0-9]+\.[0-9]+\.[0-9]+$/ { ok = 1 } EN
 BROKEN_ROOT="$TMP_DIR/broken-version"
 mkdir -p "$BROKEN_ROOT/bin" "$BROKEN_ROOT/scripts"
 cp "$REPO_ROOT/bin/touchstone" "$BROKEN_ROOT/bin/touchstone"
-printf 'not a version\n' >"$BROKEN_ROOT/VERSION"
-if bash "$BROKEN_ROOT/bin/touchstone" version >/dev/null 2>&1; then
-  fail "a malformed VERSION file still reported a version"
-else
-  pass "a malformed VERSION refuses loudly"
-fi
+for bad_version in 'not a version' '3' '3.0' '3.0.0.1' '3 . 0 . 0' ''; do
+  printf '%s\n' "$bad_version" >"$BROKEN_ROOT/VERSION"
+  if bash "$BROKEN_ROOT/bin/touchstone" version >/dev/null 2>&1; then
+    fail "a malformed VERSION ('$bad_version') still reported a version"
+  fi
+done
+pass "malformed VERSION shapes all refuse loudly"
 
 echo "==> pr open binds the branch it will act on"
 # Two pull requests were opened for the wrong branch because open acts on

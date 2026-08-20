@@ -48,17 +48,28 @@ case "$COMMAND" in
     # both depend on this exact "touchstone v<semver>" shape -- so an
     # unreadable, empty, or malformed VERSION fails loudly instead of
     # printing a shape nothing downstream can use.
-    RELEASED_VERSION="$(tr -d '[:space:]' <"$TOUCHSTONE_ROOT/VERSION")" || {
+    # Edge-trim only: stripping internal whitespace would launder '3 . 0 . 0'
+    # into trusted output. Exactly three numeric components, nothing else.
+    RELEASED_VERSION="$(head -n 1 "$TOUCHSTONE_ROOT/VERSION")" || {
       echo "ERROR: could not read $TOUCHSTONE_ROOT/VERSION" >&2
       exit 1
     }
+    RELEASED_VERSION="${RELEASED_VERSION#"${RELEASED_VERSION%%[![:space:]]*}"}"
+    RELEASED_VERSION="${RELEASED_VERSION%"${RELEASED_VERSION##*[![:space:]]}"}"
     case "$RELEASED_VERSION" in
-      *[!0-9.]* | . | .* | *. | *..* | '')
-        echo "ERROR: VERSION is not a dotted release number: '$RELEASED_VERSION'" >&2
+      [0-9]*.[0-9]*.[0-9]*) ;;
+      *)
+        echo "ERROR: VERSION is not a MAJOR.MINOR.PATCH release number: '$RELEASED_VERSION'" >&2
         exit 1
         ;;
     esac
-    printf 'touchstone v%s\n' "$RELEASED_VERSION"
+    if printf '%s\n' "$RELEASED_VERSION" \
+      | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+      printf 'touchstone v%s\n' "$RELEASED_VERSION"
+    else
+      echo "ERROR: VERSION is not a MAJOR.MINOR.PATCH release number: '$RELEASED_VERSION'" >&2
+      exit 1
+    fi
     ;;
   steering)
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-steering-install.sh" "$@"
