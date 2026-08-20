@@ -62,6 +62,19 @@ refuses a policy whose name does not exactly match that marker. A generic or
 same-purpose organization ruleset without that marker is never treated as
 Touchstone-owned and is never updated or deleted by this script.
 
+## Consumer policies
+
+Every adopted repository's policy is an exact derivation of the canonical
+one — `scripts/derive-consumer-policy.sh REPOSITORY` — checked in under
+`policy/github/consumers/` and refused by the test suite if it drifts. Apply
+one with `scripts/github-policy.sh apply policy/github/consumers/REPOSITORY.json`
+only once all three hold: the repository has adopted (`touchstone adopt`);
+the canonical policy no longer lists the `review-binding` status context
+(the consumer has no publisher for it — the pinned `review-gate` workflow is
+its replacement); and its `validate` runs on `merge_group`. Applying earlier
+requires a check nothing there can produce and blocks every merge and queue
+entry.
+
 ## Live canary testing
 
 [`autumngarage/touchstone-policy-canary`](https://github.com/autumngarage/touchstone-policy-canary)
@@ -82,13 +95,7 @@ derived policy makes backup and rollback demand an unrelated file.
 
 ```bash
 canary_policy="$(mktemp)"
-jq '
-  .repository = "touchstone-policy-canary"
-  | .rollbackPrerequisites.repositoryFiles = []
-  | .managedRuleset.name = "Touchstone policy v1: autumngarage/touchstone-policy-canary@main"
-  | .managedRuleset.conditions.repository_name.include = ["touchstone-policy-canary"]
-  | .managedRepositoryRuleset.name = "Touchstone merge queue v1: autumngarage/touchstone-policy-canary@main"
-' policy/github/touchstone-main.json >"$canary_policy"
+bash scripts/derive-consumer-policy.sh touchstone-policy-canary >"$canary_policy"
 ```
 
 The empty canary prerequisite list is deliberate: rollback restores the fresh
