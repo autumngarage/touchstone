@@ -646,6 +646,12 @@ case "$1 ${2:-}" in
       else
         printf '%s\t%s\t%s\n' "$GH_HEAD" "$GH_BASE_REF" "$GH_BASE_SHA"
       fi
+    elif has '--json headRefOid,baseRefName' "$@"; then
+      if [ "${GH_MODE:-ok}" = moved_during_gate ]; then
+        printf 'moved-head\t%s\n' "$GH_BASE_REF"
+      else
+        printf '%s\t%s\n' "$GH_HEAD" "$GH_BASE_REF"
+      fi
     elif has '--json body' "$@"; then
       if [ -f "$GH_STATE/pr-body" ]; then
         cat "$GH_STATE/pr-body"
@@ -749,20 +755,56 @@ case "$1 ${2:-}" in
   api*)
     if has 'actions/runs/77/rerun' "$@"; then
       echo "rerun 77" >>"$GH_STATE/gate-reruns"
+      # After a re-run the run is in progress until the fake says otherwise.
+      [ -f "$GH_STATE/gate-after-rerun" ] || echo 2 >"$GH_STATE/gate-after-rerun"
+    elif has 'actions/runs/77' "$@"; then
+      # Single-run read. Before a re-run: attempt 1 completed. Right after a
+      # re-run GitHub may still report attempt 1 completed (stale), then the
+      # new attempt in progress, then attempt 2 completed.
+      if has '.run_attempt' "$@" && ! has 'status' "$@"; then
+        if [ -f "$GH_STATE/gate-after-rerun" ]; then
+          left="$(cat "$GH_STATE/gate-after-rerun")"
+          if [ "$left" -ge 2 ]; then echo 1 >"$GH_STATE/gate-after-rerun"; printf '1\n'; else rm -f "$GH_STATE/gate-after-rerun"; printf '2\n'; fi
+        else
+          printf '1\n'
+        fi
+      elif [ -f "$GH_STATE/gate-after-rerun" ]; then
+        left="$(cat "$GH_STATE/gate-after-rerun")"
+        if [ "$left" -ge 2 ]; then
+          echo 1 >"$GH_STATE/gate-after-rerun"
+          printf 'completed success 1\n'
+        else
+          rm -f "$GH_STATE/gate-after-rerun"
+          printf 'in_progress  2\n'
+        fi
+      else
+        printf 'completed %s 2\n' "${GH_GATE_CONCLUSION:-success}"
+      fi
+    elif has 'actions/workflows?' "$@"; then
+      printf '1\n2\n3\n'
     elif has 'rules/branches/' "$@"; then
       if [ -f "$GH_STATE/review-gate" ]; then printf 'true\n'; else printf 'false\n'; fi
     elif has 'actions/runs?head_sha=' "$@"; then
+      # Real selector over a real list: the pinned gate (run 77, unlisted
+      # workflow id 999) next to a NEWER repository-local decoy of the same
+      # name (run 78, listed workflow id 2) and another PR's run (79). Only
+      # the jq the CLI passes decides which one it sees.
       if [ -f "$GH_STATE/review-gate" ]; then
         if [ -f "$GH_STATE/gate-in-progress" ]; then
           left="$(cat "$GH_STATE/gate-in-progress")"
           if [ "$left" -le 1 ]; then rm -f "$GH_STATE/gate-in-progress"; else echo $((left - 1)) >"$GH_STATE/gate-in-progress"; fi
-          printf '77 in_progress\n'
+          gate_status=in_progress
         else
-          printf '77 completed\n'
+          gate_status=completed
         fi
+        runs="{\"workflow_runs\":[
+          {\"id\":77,\"name\":\"review-gate\",\"event\":\"pull_request\",\"status\":\"$gate_status\",\"workflow_id\":999,\"pull_requests\":[{\"number\":7}]},
+          {\"id\":78,\"name\":\"review-gate\",\"event\":\"pull_request\",\"status\":\"completed\",\"workflow_id\":2,\"pull_requests\":[{\"number\":7}]},
+          {\"id\":79,\"name\":\"review-gate\",\"event\":\"pull_request\",\"status\":\"completed\",\"workflow_id\":999,\"pull_requests\":[{\"number\":8}]}]}"
       else
-        printf ' \n'
+        runs='{"workflow_runs":[]}'
       fi
+      printf '%s' "$runs" | jq -r "$(value_after --jq "$@")"
     elif has '/issues/comments/1' "$@"; then
       [ "${GH_MODE:-ok}" = live_comment_invalid ] || printf '%s\n' 1
     elif has '/issues/7/comments' "$@"; then
@@ -979,6 +1021,31 @@ EOF
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'touchstone pr open'
 
+  echo "==> merge asks the pinned gate to re-evaluate, then asks GitHub to merge"
+  touch "$TMP/state/review-gate" "$TMP/state/pr-exists"
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
+    || fail "merge did not ask the review gate to re-evaluate before requesting the merge"
+  assert_has "$GH_CALLS" 'pr merge'
+  # The stale superseded attempt was visible once after the POST; merge waited
+  # for attempt 2 to appear before asking GitHub to merge.
+  [ "$(grep -c "actions/runs/77 --jq .run_attempt" "$GH_CALLS")" -ge 3 ] \
+    || fail "merge did not wait for the new gate attempt to be visible: $(grep -c 'actions/runs/77 ' "$GH_CALLS") run reads"
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
+  GH_MODE=moved_during_gate run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'moved (head moved-head'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  # The verdict is GitHub's: merge is requested regardless of what the gate
+  # will conclude; GitHub arms auto-merge or enqueues.
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
+  GH_GATE_CONCLUSION=failure run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'pr merge'
+  rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
+
   echo "==> merge binds both mutation and reconciliation to the reviewed head"
   rm -f "$TMP/state/merged"
   run_pr "$TMP/out" merge 7 --json
@@ -1051,6 +1118,7 @@ echo "gh: debug detail for $*" >&2
   exit 1
 }
 has() { local needle="$1"; shift; for arg in "$@"; do [[ "$arg" == *"$needle"* ]] && return 0; done; return 1; }
+value_after() { local wanted="$1"; shift; while [ "$#" -gt 0 ]; do if [ "$1" = "$wanted" ]; then printf '%s\n' "$2"; return 0; fi; shift; done; return 1; }
 case "$1 $2" in
   "repo view")
     echo "autumngarage/current"
@@ -1076,13 +1144,15 @@ case "$1 $2" in
     echo 1 >>"$GH_STATE/replies"
     echo "71"
     ;;
-  "api --paginate")
-    if [ -f "$GH_STATE/replies" ]; then
-      echo "<!-- touchstone:respond-review comment=51 -->"
-    fi
-    ;;
   "pr view")
     printf 'abcdef0123456789abcdef0123456789abcdef01\tmain\n'
+    ;;
+  "api --paginate")
+    if has 'actions/workflows' "$@"; then
+      printf '1\n2\n3\n'
+    elif [ -f "$GH_STATE/replies" ]; then
+      echo "<!-- touchstone:respond-review comment=51 -->"
+    fi
     ;;
   "api repos/autumngarage/current/rules/branches/main")
     if [ -f "$GH_STATE/review-gate" ]; then echo true; else echo false; fi
@@ -1092,13 +1162,17 @@ case "$1 $2" in
       if [ -f "$GH_STATE/gate-in-progress" ]; then
         left="$(cat "$GH_STATE/gate-in-progress")"
         if [ "$left" -le 1 ]; then rm -f "$GH_STATE/gate-in-progress"; else echo $((left - 1)) >"$GH_STATE/gate-in-progress"; fi
-        echo "77 in_progress"
+        gate_status=in_progress
       else
-        echo "77 completed"
+        gate_status=completed
       fi
+      runs="{\"workflow_runs\":[
+        {\"id\":77,\"name\":\"review-gate\",\"status\":\"$gate_status\",\"workflow_id\":999,\"pull_requests\":[{\"number\":7}]},
+        {\"id\":78,\"name\":\"review-gate\",\"status\":\"completed\",\"workflow_id\":2,\"pull_requests\":[{\"number\":7}]}]}"
     else
-      echo " "
+      runs='{"workflow_runs":[]}'
     fi
+    printf '%s' "$runs" | jq -r "$(value_after --jq "$@")"
     ;;
   "api -X")
     # POST .../actions/runs/77/rerun

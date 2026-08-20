@@ -385,20 +385,51 @@ review_gate_required() {
   [ "$READ_OUTPUT" = true ]
 }
 
+wait_for_new_attempt() {
+  local run_id="$1" prior="$2" attempt=1 seen
+  while :; do
+    read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$run_id" --jq '.run_attempt' \
+      || fail_operation "could not read review-gate run $run_id: $READ_OUTPUT" "Retry after GitHub recovers."
+    seen="$READ_OUTPUT"
+    case "$seen$prior" in *[!0-9]* | "") fail_operation "review-gate run $run_id reported a non-numeric attempt ('$seen' after '$prior')" "Inspect the run in the Actions tab." ;; esac
+    [ "$seen" -le "$prior" ] || return 0
+    [ "$attempt" -lt "$GATE_ATTEMPTS" ] \
+      || fail_operation "review-gate run $run_id did not start its new attempt within $((GATE_ATTEMPTS * GATE_RETRY_DELAY))s" "Check the Actions tab, then retry."
+    attempt=$((attempt + 1))
+    sleep "$GATE_RETRY_DELAY"
+  done
+}
+
 rerun_review_gate() {
-  local number="$1" head="$2" attempt=1 run_id status
+  local number="$1" head="$2" attempt=1 run_id status prior_attempt local_workflow_ids
+  # A required workflow runs under a workflow id the repository does not list
+  # among its own; a repository-local workflow that happens to share the name
+  # is listed. Only the unlisted one is the pinned gate.
+  # One id per line across pages, folded into a JSON array with awk.
+  read_with_retry gh api --hostname "$REPO_HOST" --paginate "repos/$REPO/actions/workflows?per_page=100" \
+    --jq '.workflows[].id' \
+    || fail_operation "could not list the repository's workflows: $READ_OUTPUT" "Retry after GitHub recovers."
+  local_workflow_ids="$(printf '%s\n' "$READ_OUTPUT" | awk 'BEGIN { printf "[" } NF { if (n++) printf ","; printf "%s", $1 } END { printf "]" }')"
   while :; do
     # Scoped to this pull request: two open PRs can share a head SHA, and
     # re-running the other one's gate would prove nothing about this request.
     read_with_retry gh api --hostname "$REPO_HOST" \
       "repos/$REPO/actions/runs?head_sha=$head&per_page=100" \
-      --jq "[.workflow_runs[] | select(.name == \"review-gate\" and (.event == \"pull_request\" or .event == \"merge_group\") and any(.pull_requests[]?; .number == $number))] | sort_by(.id) | last | \"\(.id // \"\") \(.status // \"\")\"" \
+      --jq "[.workflow_runs[] | select(.name == \"review-gate\" and (.event == \"pull_request\" or .event == \"merge_group\") and any(.pull_requests[]?; .number == $number) and ((.workflow_id as \$w | $local_workflow_ids | index(\$w)) == null))] | sort_by(.id) | last | \"\(.id // \"\") \(.status // \"\")\"" \
       || fail_operation "could not inspect review-gate runs for $head: $READ_OUTPUT" "Retry after GitHub recovers."
     read -r run_id status <<<"$READ_OUTPUT"
     if [ -n "$run_id" ] && [ "$status" = completed ]; then
+      # A re-run keeps the run id and increments run_attempt. GitHub can keep
+      # exposing the superseded attempt's verdict for a moment after the POST;
+      # wait until the new attempt is visible so nothing downstream reads the
+      # old one as current. This waits for visibility, never for a verdict.
+      read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$run_id" --jq '.run_attempt' \
+        || fail_operation "could not read review-gate run $run_id: $READ_OUTPUT" "Retry after GitHub recovers."
+      prior_attempt="$READ_OUTPUT"
       gh api --hostname "$REPO_HOST" -X POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>&1 \
         || fail_operation "could not re-run review-gate run $run_id" "Re-run it from the Actions tab, then retry."
       REVIEW_GATE_RUN_ID="$run_id"
+      wait_for_new_attempt "$run_id" "$prior_attempt"
       return 0
     fi
     [ "$attempt" -lt "$GATE_ATTEMPTS" ] \
@@ -407,6 +438,16 @@ rerun_review_gate() {
     attempt=$((attempt + 1))
     sleep "$GATE_RETRY_DELAY"
   done
+}
+
+verify_live_head_and_base_ref() {
+  local number="$1" head="$2" base_ref="$3" live_head live_base
+  read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json headRefOid,baseRefName \
+    --jq '[.headRefOid,.baseRefName] | @tsv' \
+    || fail_operation "could not re-read PR coordinates: $READ_OUTPUT" "Inspect GitHub before retrying."
+  IFS="$(printf '\t')" read -r live_head live_base <<<"$READ_OUTPUT"
+  [ "$live_head" = "$head" ] && [ "$live_base" = "$base_ref" ] \
+    || fail_input "PR #$number moved (head $live_head on $live_base) while the review gate was re-run" "Re-review the live head, then retry."
 }
 
 verify_live_coordinates() {
@@ -615,6 +656,18 @@ merge_pr() {
     final_state=already-merged
   else
     [ "$state" = OPEN ] || fail_input "PR #$PR_NUMBER is $state" "Only an open or merged PR is supported."
+    # A required workflow cannot see a review that lands after the request.
+    # Ask it to evaluate what is on the PR now, then ask GitHub to merge:
+    # auto-merge arms while the run is pending and the queue admits the PR
+    # when it is green. The verdict is GitHub's; this only requests it.
+    if review_gate_required "$base"; then
+      rerun_review_gate "$number" "$head"
+      # Requesting the re-run can wait for an in-progress run; the head and
+      # the base *ref* must still be what the evaluation covers. The base tip
+      # may advance -- the gate binds by ancestry.
+      verify_live_head_and_base_ref "$number" "$head" "$base"
+      [ "$JSON_MODE" = true ] || printf 'Review gate re-run requested for run %s; GitHub merges when it passes.\n' "$REVIEW_GATE_RUN_ID" >&2
+    fi
     merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash \
       --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
     merge_diagnostic="$(clean_diagnostic "$merge_output")"

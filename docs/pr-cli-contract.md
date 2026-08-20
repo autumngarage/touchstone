@@ -82,9 +82,15 @@ taking this document's word for it.
 - `merge` requires the caller's exact reviewed head, passes it through
   `--match-head-commit`, and re-reads state and head after the mutation. It
   accepts merged, queued, or auto-merge-enabled only while the reconciled head
-  still equals the reviewed head. Raw equivalent: `gh pr merge --squash
-  --match-head-commit SHA`, then re-read `state`, `headRefOid`, merge queue, and
-  auto-merge state.
+  still equals the reviewed head. Where the base branch requires the pinned
+  `review-gate` workflow, it first asks that gate to re-evaluate the evidence
+  present now (a required workflow cannot see a review that lands after the
+  request) and then asks GitHub to merge; auto-merge arms while the run is
+  pending and the queue admits the PR when it passes — the verdict stays
+  GitHub's. Raw equivalent: `gh api -X POST
+  repos/O/R/actions/runs/ID/rerun` on the gate's run for the head, then
+  `gh pr merge --squash --match-head-commit SHA`, then re-read `state`,
+  `headRefOid`, merge queue, and auto-merge state.
 
   Why not the raw sequence: `gh pr merge` exit codes lie in both directions —
   nonzero after a merge that actually succeeded, and zero having merely *armed*
