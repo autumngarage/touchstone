@@ -1005,25 +1005,20 @@ EOF
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'touchstone pr open'
 
-  echo "==> merge re-runs the pinned gate on current evidence before enqueueing"
+  echo "==> merge asks the pinned gate to re-evaluate, then asks GitHub to merge"
   touch "$TMP/state/review-gate" "$TMP/state/pr-exists"
   rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
   run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 0
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
-    || fail "merge did not re-run the review gate before enqueueing"
-  [ "$(grep -c 'actions/runs/77 ' "$GH_CALLS")" -ge 3 ] \
-    || fail "merge accepted a stale completed attempt instead of waiting for the re-run's attempt"
-  rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
-  GH_MODE=moved_during_gate run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
-  assert_rc "$RUN_RC" 2
-  assert_has "$TMP/out" 'moved (head moved-head'
-  assert_not_has "$GH_CALLS" 'pr merge'
+    || fail "merge did not ask the review gate to re-evaluate before requesting the merge"
+  assert_has "$GH_CALLS" 'pr merge'
+  # The verdict is GitHub's: merge is requested regardless of what the gate
+  # will conclude; GitHub arms auto-merge or enqueues.
   rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
   GH_GATE_CONCLUSION=failure run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
-  assert_rc "$RUN_RC" 1
-  assert_has "$TMP/out" 'concluded failure on current evidence'
-  assert_not_has "$GH_CALLS" 'pr merge'
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
 
   echo "==> merge binds both mutation and reconciliation to the reviewed head"

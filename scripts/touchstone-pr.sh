@@ -396,12 +396,6 @@ rerun_review_gate() {
       || fail_operation "could not inspect review-gate runs for $head: $READ_OUTPUT" "Retry after GitHub recovers."
     read -r run_id status <<<"$READ_OUTPUT"
     if [ -n "$run_id" ] && [ "$status" = completed ]; then
-      # A re-run keeps the run id and increments run_attempt; record the
-      # attempt being superseded so a stale read cannot pass off the old
-      # verdict as the new one.
-      read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$run_id" --jq '.run_attempt' \
-        || fail_operation "could not read review-gate run $run_id: $READ_OUTPUT" "Retry after GitHub recovers."
-      REVIEW_GATE_PRIOR_ATTEMPT="$READ_OUTPUT"
       gh api --hostname "$REPO_HOST" -X POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>&1 \
         || fail_operation "could not re-run review-gate run $run_id" "Re-run it from the Actions tab, then retry."
       REVIEW_GATE_RUN_ID="$run_id"
@@ -413,44 +407,6 @@ rerun_review_gate() {
     attempt=$((attempt + 1))
     sleep "$GATE_RETRY_DELAY"
   done
-}
-
-# Re-run the pinned gate on current evidence and wait for its verdict. A
-# required workflow cannot see a review that lands after the request, so
-# merge asks for one evaluation of what is on the PR now before enqueueing.
-refresh_review_gate_before_merge() {
-  local number="$1" head="$2" attempt=1 run_id status conclusion
-  rerun_review_gate "$number" "$head"
-  run_id="$REVIEW_GATE_RUN_ID"
-  while :; do
-    read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$run_id" \
-      --jq '"\(.status) \(.conclusion // "") \(.run_attempt)"' \
-      || fail_operation "could not read review-gate run $run_id: $READ_OUTPUT" "Retry after GitHub recovers."
-    read -r status conclusion attempt_seen <<<"$READ_OUTPUT"
-    # Only the attempt after the re-run counts; a stale read still shows the
-    # superseded attempt as completed.
-    if [ "$status" = completed ] && [ "${attempt_seen:-0}" -gt "${REVIEW_GATE_PRIOR_ATTEMPT:-0}" ]; then
-      [ "$conclusion" = success ] \
-        || fail_operation "review-gate run $run_id concluded $conclusion on current evidence" "Answer the open findings or request a fresh review, then retry."
-      [ "$JSON_MODE" = true ] || printf 'Review gate run %s passed on current evidence.\n' "$run_id" >&2
-      return 0
-    fi
-    [ "$attempt" -lt "$GATE_ATTEMPTS" ] \
-      || fail_operation "review-gate run $run_id did not complete within $((GATE_ATTEMPTS * GATE_RETRY_DELAY))s" "Wait for it in the Actions tab, then retry."
-    [ "$JSON_MODE" = true ] || printf 'Review gate run %s %s; retrying in %ss.\n' "$run_id" "$status" "$GATE_RETRY_DELAY" >&2
-    attempt=$((attempt + 1))
-    sleep "$GATE_RETRY_DELAY"
-  done
-}
-
-verify_live_head_and_base_ref() {
-  local number="$1" head="$2" base_ref="$3" live_head live_base
-  read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json headRefOid,baseRefName \
-    --jq '[.headRefOid,.baseRefName] | @tsv' \
-    || fail_operation "could not re-read PR coordinates: $READ_OUTPUT" "Inspect GitHub before retrying."
-  IFS="$(printf '\t')" read -r live_head live_base <<<"$READ_OUTPUT"
-  [ "$live_head" = "$head" ] && [ "$live_base" = "$base_ref" ] \
-    || fail_input "PR #$number moved (head $live_head on $live_base) while the review gate re-ran" "Re-review the live head, then retry."
 }
 
 verify_live_coordinates() {
@@ -659,12 +615,13 @@ merge_pr() {
     final_state=already-merged
   else
     [ "$state" = OPEN ] || fail_input "PR #$PR_NUMBER is $state" "Only an open or merged PR is supported."
+    # A required workflow cannot see a review that lands after the request.
+    # Ask it to evaluate what is on the PR now, then ask GitHub to merge:
+    # auto-merge arms while the run is pending and the queue admits the PR
+    # when it is green. The verdict is GitHub's; this only requests it.
     if review_gate_required "$base"; then
-      refresh_review_gate_before_merge "$number" "$head"
-      # The wait can be minutes. The head and the base *ref* must still be
-      # live; the base *tip* may advance underneath -- the gate binds by
-      # ancestry and the queue validates the merged result.
-      verify_live_head_and_base_ref "$number" "$head" "$base"
+      rerun_review_gate "$number" "$head"
+      [ "$JSON_MODE" = true ] || printf 'Review gate re-run requested for run %s; GitHub merges when it passes.\n' "$REVIEW_GATE_RUN_ID" >&2
     fi
     merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash \
       --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
