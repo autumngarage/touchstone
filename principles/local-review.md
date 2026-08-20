@@ -149,18 +149,13 @@ claiming a check ran is not, and the two must never be confused.
 
 Once per coherent normal change, after deterministic checks pass. Stage only
 the intended slice; exclude unrelated files, accidental formatting, and any
-generated artifact that is not required to land with this change. State the intent and risks. Use this contract:
+generated artifact that is not required to land with this change. State the
+intent and risks.
 
-> Review only the staged diff against the stated intent and invariants.
-> Report at most 3 high-confidence, actionable defects introduced by this
-> change. Prioritize crashes, incorrect behavior, data loss, security issues,
-> broken contracts, unsafe lifetimes, concurrency failures, compatibility
-> breaks, and meaningful performance regressions. For every finding: cite the
-> exact file and code path, explain the concrete failure scenario, propose the
-> minimal local fix. Do not report style, naming, formatting, comments,
-> refactors, cleanup, architecture proposals, pre-existing issues, speculative
-> concerns, or anything outside the stated scope. If no high-confidence issue
-> exists, say: "No high-confidence defects introduced by this diff."
+The review contract is the tracked file `principles/local-review-contract.md`
+— bounded findings, severity priorities, the exact no-defects sentence — so
+the invocation below is executable as written, and machine-level consumers
+receive the same file beside this document.
 
 Invoke it against the slice, passing the contract as additional instructions:
 
@@ -169,7 +164,7 @@ Invoke it against the slice, passing the contract as additional instructions:
 # staged slice. The serious tier's branch-level pre-push review is
 # `codex review --base <default>` (its CLI has no --committed flag; --base
 # alone selects the branch diff, and it cannot combine with a prompt).
-coderabbit review --agent --uncommitted -c /path/to/contract.md
+coderabbit review --agent --uncommitted -c principles/local-review-contract.md
 ```
 
 A project declares whether this pass is expected in its review declaration
