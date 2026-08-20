@@ -69,10 +69,13 @@ def answers_body_finding($id):
           # A bare request binds the head and base that were current when it
           # was posted: only one posted after this head was pushed, and after
           # the last base retarget, can be about this head on this base.
-          $head_committed_at != "" and (.created_at // "") > $head_committed_at
-          and (.created_at // "") > $base_retargeted_at
+          $head_committed_at != "" and ((.updated_at // .created_at // "") > $head_committed_at)
+          and ((.updated_at // .created_at // "") > $base_retargeted_at)
         end)
-    | {at: .created_at, id: .id, author: .user.login}
+    # An edited request counts from its edit: comments are mutable, and a
+    # request back-dated by editing an older comment must not make earlier
+    # evidence look like it answered it.
+    | {at: (.updated_at // .created_at), id: .id, author: .user.login}
   ] | unique_by(.id) | sort_by(.at) as $requests
 | ($requests[-1].at // "") as $threshold
 | [

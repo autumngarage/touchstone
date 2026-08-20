@@ -51,6 +51,7 @@ run_case "marker for another head does not bind" '.issueComments[0].body |= sub(
 run_case "marker base must be the tip or an ancestor" '.pr.acceptableBaseShas = ["3333333333333333333333333333333333333333"]' failure "no trusted review request"
 run_case "an advanced base keeps the request" '.pr.baseSha = "3333333333333333333333333333333333333333" | .pr.acceptableBaseShas = ["3333333333333333333333333333333333333333", "'"$BASE_SHA"'"]' success
 run_case "retargeted base ref invalidates the marker" '.pr.baseRef = "release"' failure "no trusted review request"
+run_case "an edited request counts from its edit, not its creation" '.issueComments[0].updated_at = "2026-08-20T10:30:00Z"' failure "no trusted exact-head"
 run_case "a non-collaborator cannot request" '.issueComments[0].author_association = "NONE"' failure "no trusted review request"
 run_case "the result must postdate the request" '.issueComments[1].created_at = "2026-08-20T10:01:00Z"' failure "no trusted exact-head"
 run_case "moved head invalidates evidence" '.pr.headSha = "3333333333333333333333333333333333333333"' failure "no trusted exact-head"
