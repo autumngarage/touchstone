@@ -89,7 +89,11 @@ echo "==> Exact head and base binding"
 run_case "clean exact-head result passes" '.' success
 run_case "pre-review state fails" '.statuses = []' failure "no trusted review request"
 run_case "moved head invalidates evidence" '.pr.headSha = "3333333333333333333333333333333333333333"' failure "no trusted exact-head"
-run_case "moved base invalidates request" '.pr.baseSha = "3333333333333333333333333333333333333333"' failure "no trusted review request"
+run_case "an unrelated base invalidates request" '.pr.baseSha = "3333333333333333333333333333333333333333"' failure "no trusted review request"
+run_case "an advanced base keeps the request: main moving under an open PR does not unmake its review" \
+  '.pr.baseSha = "3333333333333333333333333333333333333333" | .pr.acceptableBaseShas = ["3333333333333333333333333333333333333333", "'"$BASE_SHA"'"]' success
+run_case "an acceptable-base list without the request base still fails" \
+  '.pr.baseSha = "3333333333333333333333333333333333333333" | .pr.acceptableBaseShas = ["3333333333333333333333333333333333333333"]' failure "no trusted review request"
 run_case "retargeted base ref invalidates request even at the same commit" '.pr.baseRef = "release" | .pr.baseRefHash = "3333333333333333333333333333333333333333"' failure "no trusted review request"
 run_case "shared head fails closed" '.pr.openHeadPulls = [42, 43]' failure "not uniquely scoped"
 run_case "untrusted request marker creator fails" '.statuses[0].creator.login = "attacker"' failure "no trusted review request"
