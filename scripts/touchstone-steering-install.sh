@@ -475,9 +475,14 @@ install_principles() {
         while [ -e "$pruned" ] || [ -L "$pruned" ]; do
           pruned="$destination/.$prior_name.replaced.$prune_suffix"
           prune_suffix=$((prune_suffix + 1))
-          [ "$prune_suffix" -le 1000 ] || break
+          # Refuse, never clobber: breaking with an occupied name in hand
+          # lets the mv below destroy that preserved copy.
+          if [ "$prune_suffix" -gt 1000 ]; then
+            pruned=""
+            break
+          fi
         done
-        if mv -f -- "$destination/$prior_name" "$pruned" 2>/dev/null; then
+        if [ -n "$pruned" ] && mv -f -- "$destination/$prior_name" "$pruned" 2>/dev/null; then
           printf '  retired: %s -> %s (no longer shipped)\n' "$prior_name" "$(basename "$pruned")"
         else
           printf '  kept: %s could not be retired\n' "$prior_name" >&2
@@ -737,7 +742,12 @@ case "$ACTION" in
       # Only the machine-level claim: adopt/upgrade still install repository
       # copies that override this block (docs/product-contract.md, AUT-317),
       # and a success message must not report a migration it did not perform.
-      echo "==> machine-level steering installed for every supported agent"
+      # A dry run performed nothing at all, and must say so.
+      if [ "$DRY_RUN" = true ]; then
+        echo "==> dry run: predictions above; nothing was installed"
+      else
+        echo "==> machine-level steering installed for every supported agent"
+      fi
     fi
     ;;
   uninstall)
