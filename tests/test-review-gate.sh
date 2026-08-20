@@ -18,7 +18,7 @@ HEAD_SHA="1111111111111111111111111111111111111111"
 BASE_SHA="2222222222222222222222222222222222222222"
 cat >"$TMP_DIR/base.json" <<EOF2
 {"contractVersion":2,"complete":true,"trustedAuthors":["chatgpt-codex-connector[bot]"],
- "pr":{"number":42,"state":"open","headSha":"$HEAD_SHA","baseRef":"main","baseSha":"$BASE_SHA","acceptableBaseShas":["$BASE_SHA"],"headCommittedAt":"2026-08-20T10:00:00Z","openHeadPulls":[42]},
+ "pr":{"number":42,"state":"open","headSha":"$HEAD_SHA","baseRef":"main","baseSha":"$BASE_SHA","acceptableBaseShas":["$BASE_SHA"],"headCurrentSince":"2026-08-20T10:00:00Z","openHeadPulls":[42]},
  "issueComments":[
   {"id":100,"created_at":"2026-08-20T10:05:00Z","author_association":"OWNER","user":{"login":"henry"},"body":"@codex review\n\n<!-- touchstone:pr-open head=$HEAD_SHA base=main base_sha=$BASE_SHA -->"},
   {"id":101,"created_at":"2026-08-20T10:20:00Z","author_association":"NONE","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** \`1111111111\`","resolved_review_sha":"$HEAD_SHA"}],
@@ -52,6 +52,8 @@ run_case "marker base must be the tip or an ancestor" '.pr.acceptableBaseShas = 
 run_case "an advanced base keeps the request" '.pr.baseSha = "3333333333333333333333333333333333333333" | .pr.acceptableBaseShas = ["3333333333333333333333333333333333333333", "'"$BASE_SHA"'"]' success
 run_case "retargeted base ref invalidates the marker" '.pr.baseRef = "release"' failure "no trusted review request"
 run_case "an edited request counts from its edit, not its creation" '.issueComments[0].updated_at = "2026-08-20T10:30:00Z"' failure "no trusted exact-head"
+run_case "bare request before the SHA was restored by force-push does not bind" '.issueComments[0].body = "@codex review" | .pr.headCurrentSince = "2026-08-20T10:10:00Z"' failure "no trusted review request"
+run_case "a malformed sequencer marker is not a bare request" '.issueComments[0].body = "@codex review\n\n<!-- touchstone:pr-open head=1111 base=main -->"' failure "no trusted review request"
 run_case "a non-collaborator cannot request" '.issueComments[0].author_association = "NONE"' failure "no trusted review request"
 run_case "the result must postdate the request" '.issueComments[1].created_at = "2026-08-20T10:01:00Z"' failure "no trusted exact-head"
 run_case "moved head invalidates evidence" '.pr.headSha = "3333333333333333333333333333333333333333"' failure "no trusted exact-head"

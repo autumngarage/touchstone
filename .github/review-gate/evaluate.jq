@@ -53,13 +53,16 @@ def answers_body_finding($id):
 # any request base that is its ancestor); absent that list, only the exact
 # tip qualifies. A retargeted ref is still refused through the ref hash.
 | (($root.pr.acceptableBaseShas // [$base]) | map(ascii_downcase)) as $acceptable_bases
-| ($root.pr.headCommittedAt // "") as $head_committed_at
+| ($root.pr.headCurrentSince // "") as $head_current_since
 | ($root.pr.baseRetargetedAt // "") as $base_retargeted_at
 | [
     $root.issueComments[]?
     | select(driver_answer and review_request)
     | . as $comment
     | ((.body // "") | capture("<!-- touchstone:pr-open head=(?<head>[0-9a-fA-F]{40}) base=(?<ref>[^ ]+) base_sha=(?<base>[0-9a-fA-F]{40}) -->")? // null) as $marker
+    # A comment that names the sequencer but carries no well-formed marker is
+    # a corrupted explicit binding, never a bare request.
+    | select($marker != null or (((.body // "") | contains("touchstone:pr-open")) | not))
     | select(
         if $marker != null then
           ($marker.head | ascii_downcase) == ($head | ascii_downcase)
@@ -67,9 +70,10 @@ def answers_body_finding($id):
           and (($marker.base | ascii_downcase) as $request_base | $acceptable_bases | any(. == $request_base))
         else
           # A bare request binds the head and base that were current when it
-          # was posted: only one posted after this head was pushed, and after
-          # the last base retarget, can be about this head on this base.
-          $head_committed_at != "" and ((.updated_at // .created_at // "") > $head_committed_at)
+          # was posted: only one posted after this SHA last became the head
+          # (its commit, or the force-push that restored it), and after the
+          # last base retarget, can be about this head on this base.
+          $head_current_since != "" and ((.updated_at // .created_at // "") > $head_current_since)
           and ((.updated_at // .created_at // "") > $base_retargeted_at)
         end)
     # An edited request counts from its edit: comments are mutable, and a
