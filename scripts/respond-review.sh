@@ -237,7 +237,20 @@ VERIFY="$(graphql_with_retry \
 PR_ROW="$(gh_read pr view "$PR_NUMBER" --json headRefOid,baseRefName --jq '[.headRefOid,.baseRefName] | @tsv')" \
   || fail "could not read the PR coordinates to refresh the review gate: $PR_ROW"
 IFS="$(printf '\t')" read -r HEAD_SHA BASE_REF <<<"$PR_ROW"
-BASE_REF_ENCODED="$(jq -rn --arg ref "$BASE_REF" '$ref | @uri')"
+# Percent-encode one path segment with the base tool surface only: a branch
+# name may carry "/" or other bytes the rules endpoint cannot take raw.
+uri_encode() {
+  local input="$1" i char out="" LC_ALL=C
+  for ((i = 0; i < ${#input}; i++)); do
+    char="${input:i:1}"
+    case "$char" in
+      [A-Za-z0-9._~-]) out+="$char" ;;
+      *) out+="$(printf '%%%02X' "'$char")" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+BASE_REF_ENCODED="$(uri_encode "$BASE_REF")"
 GATE_REQUIRED="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/rules/branches/$BASE_REF_ENCODED" \
   --jq '[.[] | select(.type == "workflows") | .parameters.workflows[]?.path] | any(. == ".github/workflows/review-gate.yml")')" \
   || fail "could not read the effective rules for $BASE_REF: $GATE_REQUIRED"

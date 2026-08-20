@@ -362,10 +362,23 @@ emit_open_result() {
 # absence of the gate. A run still in progress is waited for, then re-run:
 # it may have read the evidence before the request landed.
 REVIEW_GATE_RUN_ID=""
+# Percent-encode one path segment with the base tool surface only: a branch
+# name may carry "/" or other bytes the rules endpoint cannot take raw.
+uri_encode() {
+  local input="$1" i char out="" LC_ALL=C
+  for ((i = 0; i < ${#input}; i++)); do
+    char="${input:i:1}"
+    case "$char" in
+      [A-Za-z0-9._~-]) out+="$char" ;;
+      *) out+="$(printf '%%%02X' "'$char")" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
 review_gate_required() {
   local base_ref="$1" encoded
-  # Branch names may carry "/"; the rules endpoint takes one path segment.
-  encoded="$(jq -rn --arg ref "$base_ref" '$ref | @uri')"
+  encoded="$(uri_encode "$base_ref")"
   read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/rules/branches/$encoded" \
     --jq '[.[] | select(.type == "workflows") | .parameters.workflows[]?.path] | any(. == ".github/workflows/review-gate.yml")' \
     || fail_operation "could not read the effective rules for $base_ref: $READ_OUTPUT" "Retry after GitHub recovers."
