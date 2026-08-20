@@ -28,7 +28,12 @@
 set -euo pipefail
 
 GRAPHQL_ATTEMPTS=3
-GRAPHQL_RETRY_DELAY=2
+GRAPHQL_RETRY_DELAY="${TOUCHSTONE_GRAPHQL_RETRY_DELAY:-2}"
+# A review-gate run takes a minute or two; waiting for one to finish so the
+# next evaluation includes this answer needs its own budget, not the short
+# GraphQL transport retry.
+GATE_ATTEMPTS="${TOUCHSTONE_GATE_ATTEMPTS:-60}"
+GATE_RETRY_DELAY="${TOUCHSTONE_GATE_RETRY_DELAY:-5}"
 
 usage() {
   sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'
@@ -224,6 +229,52 @@ VERIFY="$(graphql_with_retry \
 # Answered findings satisfy the gate on an unchanged head (issue #751) — the
 # next step after resolving every thread is the MERGE GATE, never another
 # review request of the same head (PR #755 review, round 8).
+# An answer is evidence the pinned review-gate has not seen. Where the base
+# branch requires that workflow, ask GitHub to re-run its run for this head;
+# a run still in progress is waited for first, because it may have read the
+# evidence before this answer. Where the repository still runs the
+# status-publishing review-binding, its own event handlers pick the answer up.
+PR_ROW="$(gh_read pr view "$PR_NUMBER" --json headRefOid,baseRefName --jq '[.headRefOid,.baseRefName] | @tsv')" \
+  || fail "could not read the PR coordinates to refresh the review gate: $PR_ROW"
+IFS="$(printf '\t')" read -r HEAD_SHA BASE_REF <<<"$PR_ROW"
+# Percent-encode one path segment with the base tool surface only: a branch
+# name may carry "/" or other bytes the rules endpoint cannot take raw.
+uri_encode() {
+  local input="$1" i char out="" LC_ALL=C
+  for ((i = 0; i < ${#input}; i++)); do
+    char="${input:i:1}"
+    case "$char" in
+      [A-Za-z0-9._~-]) out+="$char" ;;
+      *) out+="$(printf '%%%02X' "'$char")" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+BASE_REF_ENCODED="$(uri_encode "$BASE_REF")"
+GATE_REQUIRED="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/rules/branches/$BASE_REF_ENCODED" \
+  --jq '[.[] | select(.type == "workflows") | .parameters.workflows[]?.path] | any(. == ".github/workflows/review-gate.yml")')" \
+  || fail "could not read the effective rules for $BASE_REF: $GATE_REQUIRED"
+if [ "$GATE_REQUIRED" = true ]; then
+  attempt=1
+  while :; do
+    GATE_ROW="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/actions/runs?head_sha=$HEAD_SHA&per_page=100" \
+      --jq "[.workflow_runs[] | select(.name == \"review-gate\" and any(.pull_requests[]?; .number == $PR_NUMBER))] | sort_by(.id) | last | \"\(.id // \"\") \(.status // \"\")\"")" \
+      || fail "could not inspect review-gate runs: $GATE_ROW"
+    read -r GATE_RUN GATE_STATUS <<<"$GATE_ROW"
+    if [ -n "$GATE_RUN" ] && [ "$GATE_STATUS" = completed ]; then
+      gh api -X POST "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$GATE_RUN/rerun" >/dev/null \
+        || fail "could not re-run review-gate run $GATE_RUN; re-run it from the Actions tab."
+      echo "==> Review gate re-run requested (run $GATE_RUN)."
+      break
+    fi
+    [ "$attempt" -lt "$GATE_ATTEMPTS" ] \
+      || fail "review-gate run for $HEAD_SHA did not reach a re-runnable state within $((GATE_ATTEMPTS * GATE_RETRY_DELAY))s (last: ${GATE_RUN:-none} ${GATE_STATUS:-absent}); wait for it, then re-run this command."
+    echo "==> Review gate run ${GATE_STATUS:-not yet present}; retrying in ${GATE_RETRY_DELAY}s ..." >&2
+    attempt=$((attempt + 1))
+    sleep "$GATE_RETRY_DELAY"
+  done
+fi
+
 echo "==> Replied and resolved. When every thread is answered, prove it and merge:"
 echo "    bash scripts/respond-review.sh $PR_NUMBER --all-resolved-check"
 echo "    gh pr merge $PR_NUMBER --squash --match-head-commit \"\$(gh pr view $PR_NUMBER --json headRefOid --jq .headRefOid)\""
