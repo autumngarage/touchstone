@@ -353,6 +353,25 @@ else
   [ -z "$parsed" ] && ok "a queue-shaped branch without a base sha yields no pull request number" \
     || fail "malformed queue branch parsed to '$parsed'"
 fi
+# The release workflow is the only distribution path. Deleting it or
+# loosening its trigger, prerelease guard, or pinned reusable-workflow ref
+# would silently stop or misdirect releases while every other test stays
+# green.
+RELEASE_WORKFLOW="$TOUCHSTONE_ROOT/.github/workflows/release.yml"
+for required in \
+  'types: [published]' \
+  "github.event_name == 'workflow_dispatch' || !github.event.release.prerelease" \
+  'uses: autumngarage/autumn-garage/.github/workflows/homebrew-bump.yml@a167e010ed38b5dc88b70e2f36887468f42133c1' \
+  'tap-repo: autumngarage/homebrew-touchstone' \
+  'formula-name: touchstone' \
+  'contents: read'; do
+  grep -Fq "$required" "$RELEASE_WORKFLOW" && ok "release workflow contains: $required" \
+    || fail "release workflow missing: $required"
+done
+if grep -Eq 'homebrew-bump\.yml@v[0-9]' "$RELEASE_WORKFLOW"; then
+  fail "release workflow references the reusable workflow by a movable tag"
+fi
+
 if grep -Fq 'BOOTSTRAP_BASE_SHA' "$WORKFLOW"; then
   fail "required review-binding workflow still carries its one-head bootstrap bypass"
 else
