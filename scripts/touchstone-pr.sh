@@ -6,6 +6,10 @@ set -euo pipefail
 OUTPUT_SCHEMA="touchstone.pr/v1"
 READ_ATTEMPTS="${TOUCHSTONE_READ_ATTEMPTS:-3}"
 RETRY_DELAY="${TOUCHSTONE_RETRY_DELAY:-2}"
+# A review-gate run takes a minute or two; waiting for one before re-running
+# it has its own budget, separate from transport retries.
+GATE_ATTEMPTS="${TOUCHSTONE_GATE_ATTEMPTS:-60}"
+GATE_RETRY_DELAY="${TOUCHSTONE_GATE_RETRY_DELAY:-5}"
 REQUEST_ATTEMPTS="${TOUCHSTONE_REQUEST_ATTEMPTS:-15}"
 JSON_MODE=false
 PROJECT_ARG=""
@@ -384,11 +388,11 @@ rerun_review_gate() {
       REVIEW_GATE_RUN_ID="$run_id"
       return 0
     fi
-    [ "$attempt" -lt "$REQUEST_ATTEMPTS" ] \
-      || fail_operation "review-gate run for $head did not reach a re-runnable state (last: ${run_id:-none} ${status:-absent})" "Wait for the gate run to finish, then re-run this command."
-    [ "$JSON_MODE" = true ] || printf 'Review gate run %s; retrying in %ss.\n' "${status:-not yet present}" "$RETRY_DELAY" >&2
+    [ "$attempt" -lt "$GATE_ATTEMPTS" ] \
+      || fail_operation "review-gate run for $head did not reach a re-runnable state within $((GATE_ATTEMPTS * GATE_RETRY_DELAY))s (last: ${run_id:-none} ${status:-absent})" "Wait for the gate run to finish, then re-run this command."
+    [ "$JSON_MODE" = true ] || printf 'Review gate run %s; retrying in %ss.\n' "${status:-not yet present}" "$GATE_RETRY_DELAY" >&2
     attempt=$((attempt + 1))
-    sleep "$RETRY_DELAY"
+    sleep "$GATE_RETRY_DELAY"
   done
 }
 

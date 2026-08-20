@@ -29,6 +29,11 @@ set -euo pipefail
 
 GRAPHQL_ATTEMPTS=3
 GRAPHQL_RETRY_DELAY="${TOUCHSTONE_GRAPHQL_RETRY_DELAY:-2}"
+# A review-gate run takes a minute or two; waiting for one to finish so the
+# next evaluation includes this answer needs its own budget, not the short
+# GraphQL transport retry.
+GATE_ATTEMPTS="${TOUCHSTONE_GATE_ATTEMPTS:-60}"
+GATE_RETRY_DELAY="${TOUCHSTONE_GATE_RETRY_DELAY:-5}"
 
 usage() {
   sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'
@@ -249,11 +254,11 @@ if [ "$GATE_REQUIRED" = true ]; then
       echo "==> Review gate re-run requested (run $GATE_RUN)."
       break
     fi
-    [ "$attempt" -lt "$GRAPHQL_ATTEMPTS" ] \
-      || fail "review-gate run for $HEAD_SHA did not reach a re-runnable state (last: ${GATE_RUN:-none} ${GATE_STATUS:-absent}); wait for it, then re-run this command."
-    echo "==> Review gate run ${GATE_STATUS:-not yet present}; retrying in ${GRAPHQL_RETRY_DELAY}s ..." >&2
+    [ "$attempt" -lt "$GATE_ATTEMPTS" ] \
+      || fail "review-gate run for $HEAD_SHA did not reach a re-runnable state within $((GATE_ATTEMPTS * GATE_RETRY_DELAY))s (last: ${GATE_RUN:-none} ${GATE_STATUS:-absent}); wait for it, then re-run this command."
+    echo "==> Review gate run ${GATE_STATUS:-not yet present}; retrying in ${GATE_RETRY_DELAY}s ..." >&2
     attempt=$((attempt + 1))
-    sleep "$GRAPHQL_RETRY_DELAY"
+    sleep "$GATE_RETRY_DELAY"
   done
 fi
 

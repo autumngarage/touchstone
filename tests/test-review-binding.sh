@@ -735,7 +735,8 @@ case "$1 ${2:-}" in
     elif has 'actions/runs?head_sha=' "$@"; then
       if [ -f "$GH_STATE/review-gate" ]; then
         if [ -f "$GH_STATE/gate-in-progress" ]; then
-          rm -f "$GH_STATE/gate-in-progress"
+          left="$(cat "$GH_STATE/gate-in-progress")"
+          if [ "$left" -le 1 ]; then rm -f "$GH_STATE/gate-in-progress"; else echo $((left - 1)) >"$GH_STATE/gate-in-progress"; fi
           printf '77 in_progress\n'
         else
           printf '77 completed\n'
@@ -759,7 +760,7 @@ EOF
   chmod +x "$TMP/bin/gh"
   export PATH="$TMP/bin:$PATH" GH_CALLS="$TMP/calls" GH_STATE="$TMP/state" GH_HEAD="$HEAD_SHA"
   export GH_BASE_REF=main GH_BASE_SHA=base-sha
-  export TOUCHSTONE_READ_ATTEMPTS=2 TOUCHSTONE_REQUEST_ATTEMPTS=2 TOUCHSTONE_RETRY_DELAY=0
+  export TOUCHSTONE_READ_ATTEMPTS=2 TOUCHSTONE_REQUEST_ATTEMPTS=2 TOUCHSTONE_RETRY_DELAY=0 TOUCHSTONE_GATE_RETRY_DELAY=0
 
   run_pr() {
     local output="$1"
@@ -811,7 +812,7 @@ EOF
   [ -f "$TMP/state/gate-reruns" ] && grep -q 'rerun 77' "$TMP/state/gate-reruns" \
     || fail "open did not re-run the review-gate run for the head"
   rm -f "$TMP/state/gate-reruns"
-  touch "$TMP/state/gate-in-progress"
+  echo 3 >"$TMP/state/gate-in-progress"
   run_pr "$TMP/out" open --title 'Gate' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
@@ -1069,7 +1070,13 @@ case "$1 $2" in
     ;;
   "api repos/autumngarage/current/actions/runs?head_sha=abcdef0123456789abcdef0123456789abcdef01&per_page=100")
     if [ -f "$GH_STATE/review-gate" ]; then
-      if [ -f "$GH_STATE/gate-in-progress" ]; then rm -f "$GH_STATE/gate-in-progress"; echo "77 in_progress"; else echo "77 completed"; fi
+      if [ -f "$GH_STATE/gate-in-progress" ]; then
+        left="$(cat "$GH_STATE/gate-in-progress")"
+        if [ "$left" -le 1 ]; then rm -f "$GH_STATE/gate-in-progress"; else echo $((left - 1)) >"$GH_STATE/gate-in-progress"; fi
+        echo "77 in_progress"
+      else
+        echo "77 completed"
+      fi
     else
       echo " "
     fi
@@ -1120,8 +1127,11 @@ STUB
   grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null && ok "answer re-ran the review gate" \
     || fail "answer did not re-run the review gate"
   rm -f "$GH_STATE/gate-reruns"
-  touch "$GH_STATE/gate-in-progress"
-  TOUCHSTONE_GRAPHQL_RETRY_DELAY=0 run 7 --comment-id 51 --body-file "$RR/body"
+  # The run stays in progress for longer than the GraphQL transport retry
+  # would tolerate; the gate wait has its own budget.
+  echo 6 >"$GH_STATE/gate-in-progress"
+  TOUCHSTONE_GATE_RETRY_DELAY=0 run 7 --comment-id 51 --body-file "$RR/body"
+  [ "$RUN_RC" -eq 0 ] || fail "answer gave up on a gate run that was still in progress (rc=$RUN_RC)"
   grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null && ok "answer waited for an in-progress gate run" \
     || fail "answer skipped the refresh while the gate run was in progress"
   rm -f "$GH_STATE/review-gate"
