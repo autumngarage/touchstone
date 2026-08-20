@@ -1487,6 +1487,25 @@ else
   fail "the first-line guard refused a body whose opening sentence mentions the token"
 fi
 
+echo "==> a higher-level heading ends a section"
+body '## Intent
+
+# Notes
+Unrelated prose under an H1 is not Intent.
+
+## Validation
+- Tests: pass.
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "prose under a following H1 satisfied an empty section"
+fi
+ok "an H1 closes the section before it"
+
 echo "==> a heading may carry up to three leading spaces"
 body '   ## Intent
 Real intent.
