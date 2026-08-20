@@ -1510,6 +1510,23 @@ Real intent.
 
 ## Validation
 - Build: n/a — shell
+- Automated tests: TBD
+- Manual validation: none
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "a bare placeholder word on a Validation row satisfied it"
+fi
+ok "placeholder rules apply to each Validation row"
+body '## Intent
+Real intent.
+
+## Validation
+- Build: n/a — shell
 - Automated tests: suite passed
 - Manual validation: n/a — no UI
 

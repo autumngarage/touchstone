@@ -143,19 +143,20 @@ filled() {
 
 # Every labelled row the template puts under Validation must be filled: one
 # filled row does not satisfy the section, because the rows are the promise.
-# A row that does not apply is `n/a — <reason>`, which is content.
-unfilled_rows() {
+# Each row is judged by the same rules as a section, so a bare `n/a`, `TBD`,
+# or an unedited placeholder on one row is absence on that row.
+validation_rows() {
   printf '%s\n' "$1" | awk '
-    /^[[:space:]]*[-*+][[:space:]]+[A-Za-z][A-Za-z ]*:[[:space:]]*$/ {
+    /^[[:space:]]*[-*+][[:space:]]+[A-Za-z][A-Za-z ]*:/ {
       row = $0
-      sub(/^[[:space:]]*[-*+][[:space:]]+/, "", row); sub(/:[[:space:]]*$/, "", row)
-      print row
-    }
-    /^[[:space:]]*[-*+][[:space:]]+[A-Za-z][A-Za-z ]*:[[:space:]]*<.*>[[:space:]]*$/ {
-      row = $0
-      sub(/^[[:space:]]*[-*+][[:space:]]+/, "", row); sub(/:.*$/, "", row)
-      print row
+      sub(/^[[:space:]]*[-*+][[:space:]]+/, "", row)
+      label = row; sub(/:.*$/, "", label)
+      print label
     }'
+}
+row_text() {
+  printf '%s\n' "$1" | awk -v label="$2" '
+    index($0, label ":") { row = $0; sub(/^[^:]*:[[:space:]]*/, "", row); print row; exit }'
 }
 
 FAILURES=0
@@ -182,8 +183,9 @@ VALIDATION_SECTION="$(section "Validation")"
 filled "$VALIDATION_SECTION" || report "a '## Validation' section recording what actually ran"
 while IFS= read -r row; do
   [ -n "$row" ] || continue
-  report "the Validation row '$row:' filled in (what ran and its result, or n/a with a reason)"
-done < <(unfilled_rows "$VALIDATION_SECTION")
+  filled "$(row_text "$VALIDATION_SECTION" "$row")" \
+    || report "the Validation row '$row:' filled in (what ran and its result, or n/a with a reason)"
+done < <(validation_rows "$VALIDATION_SECTION")
 [ -z "$TIER" ] || filled "$(section "Why this tier")" \
   || report "a '## Why this tier' section justifying the '$TIER' classification"
 
