@@ -314,30 +314,42 @@ for required in \
   'newest_run' \
   'GITHUB_EVENT_PATH' \
   'known_head' \
-  'merge_group:' \
-  'types: [checks_requested]' \
   'head_sha="${CHECK_SHA:-$head}"' \
-  "CHECK_SHA=\"\$(jq -r '.merge_group.head_sha'" \
   'gh-readonly-queue' \
-  'the pull request behind merge group ref'; do
+  'mirror_to_queue_commit' \
+  'mergeQueueEntry{headCommit{oid}}' \
+  'the pull request behind merge-queue branch'; do
   if grep -Fq "$required" "$WORKFLOW"; then
     ok "workflow contains: $required"
   else
     fail "workflow missing required guardrail: $required"
   fi
 done
-# The queue ref is the only PR coordinate a merge_group event carries; the
+# The trusted publisher must never run from a merge-queue commit: that commit
+# carries PR code and this job holds checks: write. The inert signal workflow
+# owns the merge_group trigger and hands off through workflow_run.
+if grep -Fq 'merge_group:' "$WORKFLOW"; then
+  fail "review-binding must not trigger on merge_group; the queue commit carries PR code"
+elif grep -Fq 'merge_group:' "$SIGNAL_WORKFLOW" && grep -Fq 'types: [checks_requested]' "$SIGNAL_WORKFLOW"; then
+  ok "merge_group reaches the publisher only through the permission-less signal workflow"
+else
+  fail "signal workflow does not carry merge_group to the trusted publisher"
+fi
+# The queue branch is the only PR coordinate a queue signal carries; the
 # same expression the workflow uses must extract it and reject anything else.
 QUEUE_REF_EXPR="$(grep -oE "sed -nE 's#[^']*#\\\\1#p'" "$WORKFLOW" | head -1 | sed -E "s/^sed -nE '//; s/'$//")"
 if [ -z "$QUEUE_REF_EXPR" ]; then
   fail "merge-group ref expression not found in workflow"
 else
-  parsed="$(printf '%s' 'refs/heads/gh-readonly-queue/main/pr-931-2222222222222222222222222222222222222222' | sed -nE "$QUEUE_REF_EXPR")"
+  parsed="$(printf '%s' 'gh-readonly-queue/main/pr-931-2222222222222222222222222222222222222222' | sed -nE "$QUEUE_REF_EXPR")"
   [ "$parsed" = 931 ] && ok "merge-group ref yields its pull request number" \
     || fail "merge-group ref parsed to '$parsed', expected 931"
-  parsed="$(printf '%s' 'refs/heads/feature/pr-12-not-a-queue' | sed -nE "$QUEUE_REF_EXPR")"
+  parsed="$(printf '%s' 'feature/pr-12-not-a-queue' | sed -nE "$QUEUE_REF_EXPR")"
   [ -z "$parsed" ] && ok "a non-queue ref yields no pull request number" \
     || fail "non-queue ref parsed to '$parsed'"
+  parsed="$(printf '%s' 'gh-readonly-queue/main/pr-931-not-a-queue-sha' | sed -nE "$QUEUE_REF_EXPR")"
+  [ -z "$parsed" ] && ok "a queue-shaped branch without a base sha yields no pull request number" \
+    || fail "malformed queue branch parsed to '$parsed'"
 fi
 if grep -Fq 'BOOTSTRAP_BASE_SHA' "$WORKFLOW"; then
   fail "required review-binding workflow still carries its one-head bootstrap bypass"

@@ -1,14 +1,19 @@
 name: review evidence signal
 
-# Fork review events have read-only tokens. This inert workflow lets the
-# review-binding publisher rebuild from the default branch through its
-# workflow_run event, which has write access but never executes PR code.
+# Fork review events have read-only tokens, and merge-queue runs execute the
+# workflow from the temporary merge commit, which includes PR code. This inert
+# workflow lets the review-binding publisher rebuild from the default branch
+# through its workflow_run event, which has write access but never executes
+# PR code. A PR that edits this file out of existence only silences its own
+# signal: the queue commit then receives no verdict and is ejected.
 
 on:
   pull_request_review:
     types: [submitted, edited, dismissed]
   pull_request_review_comment:
     types: [created, edited, deleted]
+  merge_group:
+    types: [checks_requested]
 
 permissions: {}
 

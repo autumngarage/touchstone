@@ -21,13 +21,10 @@ on:
     types: [completed]
   status:
   push:
-  # The merge queue tests a temporary merge commit, not the PR head. The
-  # verdict is still about the PR's head -- was *it* reviewed, with every
-  # finding answered -- and is published on the queue commit so the queue can
-  # read it. A PR only enters the queue after its own review-binding check
-  # passed from the base's workflow, so this evaluation cannot weaken that one.
-  merge_group:
-    types: [checks_requested]
+  # Deliberately no merge_group trigger: that event runs the workflow from the
+  # queue's temporary merge commit, which includes PR code, and this job holds
+  # checks: write. The inert signal workflow carries merge_group here through
+  # workflow_run, so the queue verdict is always published from this branch.
 
 permissions:
   checks: write
@@ -344,6 +341,33 @@ jobs:
               return 0
             fi
             publish_check "$run_id" "$conclusion" "$title" "$summary"
+            mirror_to_queue_commit "$number" "$head" "$conclusion" "$title" "$summary"
+          }
+
+          # The queue consumes the check on its own merge commit. Evidence keeps
+          # changing after a PR is enqueued -- a new finding, an edited answer --
+          # and every rebuild must reach that commit too, or the queue merges on
+          # a verdict that is no longer true. Without an active entry there is
+          # nothing to mirror; a queue-origin run already published there.
+          mirror_to_queue_commit() {
+            local number="$1" head="$2" conclusion="$3" title="$4" summary="$5" queue_head
+            [ -z "$CHECK_SHA" ] || return 0
+            # shellcheck disable=SC2016
+            queue_head="$(gh api graphql -F owner="${REPO%%/*}" -F name="${REPO##*/}" -F pr="$number" \
+              -f query='query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){mergeQueueEntry{headCommit{oid}}}}}' \
+              --jq '.data.repository.pullRequest.mergeQueueEntry.headCommit.oid // empty')" || {
+              echo "WARNING: could not read the merge-queue entry for PR #$number; the queue commit keeps its last verdict." >&2
+              return 0
+            }
+            [ -n "$queue_head" ] && [ "$queue_head" != "$head" ] || return 0
+            gh api -X POST "repos/$REPO/check-runs" \
+              -f name=review-binding \
+              -f head_sha="$queue_head" \
+              -f status=completed \
+              -f conclusion="$conclusion" \
+              -f "output[title]=$title" \
+              -f "output[summary]=$summary" >/dev/null \
+              || echo "WARNING: could not mirror the review-binding verdict to queue commit $queue_head." >&2
           }
 
           EVENT_PENDING_PR=""
@@ -375,7 +399,22 @@ jobs:
             workflow_run)
               [ "$(jq -r '.workflow_run.conclusion // ""' "$GITHUB_EVENT_PATH")" = success ] || exit 0
               event_head="$(jq -r '.workflow_run.head_sha' "$GITHUB_EVENT_PATH")"
-              work_items="$(jq -r '.workflow_run.pull_requests[]? | [.number, .head.sha] | @tsv' "$GITHUB_EVENT_PATH")"
+              event_branch="$(jq -r '.workflow_run.head_branch // ""' "$GITHUB_EVENT_PATH")"
+              # A merge-queue signal: head_branch is gh-readonly-queue/<base>/pr-<N>-<sha>
+              # and head_sha is the queue's merge commit. The verdict is about
+              # the PR's head; it is published on the queue commit.
+              queue_number="$(printf '%s' "$event_branch" | sed -nE 's#^gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-fA-F]{40}$#\1#p')"
+              if [ -n "$queue_number" ]; then
+                CHECK_SHA="$event_head"
+                if ! known_head="$(gh api "repos/$REPO/pulls/$queue_number" --jq '.head.sha')"; then
+                  run_id="$(create_pending "$queue_number" "$CHECK_SHA" "queue commit \`$CHECK_SHA\`")" || exit 1
+                  publish_api_failure "$run_id" "the pull request behind merge-queue branch $event_branch could not be read"
+                  exit 1
+                fi
+                work_items="$queue_number"$'\t'"$known_head"
+              else
+                work_items="$(jq -r '.workflow_run.pull_requests[]? | [.number, .head.sha] | @tsv' "$GITHUB_EVENT_PATH")"
+              fi
               if [ -z "$work_items" ]; then
                 work_items="$(gh api --paginate "repos/$REPO/commits/$event_head/pulls?per_page=100" \
                   --jq '.[] | select(.state == "open") | [.number, .head.sha] | @tsv')"
@@ -394,25 +433,6 @@ jobs:
               status_sha="$(jq -r '.sha' "$GITHUB_EVENT_PATH")"
               work_items="$(gh api --paginate "repos/$REPO/commits/$status_sha/pulls?per_page=100" \
                 --jq '.[] | select(.state == "open") | [.number, .head.sha] | @tsv')"
-              ;;
-            merge_group)
-              # head_ref is refs/heads/gh-readonly-queue/<base>/pr-<N>-<base sha>;
-              # the PR number is the only coordinate the event carries.
-              CHECK_SHA="$(jq -r '.merge_group.head_sha' "$GITHUB_EVENT_PATH")"
-              queue_ref="$(jq -r '.merge_group.head_ref' "$GITHUB_EVENT_PATH")"
-              number="$(printf '%s' "$queue_ref" | sed -nE 's#^refs/heads/gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-fA-F]{40}$#\1#p')"
-              if [ -z "$number" ]; then
-                echo "ERROR: merge group ref '$queue_ref' names no pull request." >&2
-                exit 1
-              fi
-              # Fail closed on the queue commit itself if the PR cannot be read:
-              # a queue entry with no verdict is ejected, never merged.
-              if ! known_head="$(gh api "repos/$REPO/pulls/$number" --jq '.head.sha')"; then
-                run_id="$(create_pending "$number" "$CHECK_SHA" "queue commit \`$CHECK_SHA\`")" || exit 1
-                publish_api_failure "$run_id" "the pull request behind merge group ref $queue_ref could not be read"
-                exit 1
-              fi
-              work_items="$number"$'\t'"$known_head"
               ;;
             push)
               pushed_ref="${GITHUB_REF#refs/heads/}"
