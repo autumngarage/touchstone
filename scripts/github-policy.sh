@@ -611,6 +611,7 @@ case "$COMMAND" in
     source_ruleset="$(managed_ruleset_json)"
     source_protection="$(branch_protection_json)"
     source_repo_ruleset="$(managed_repo_ruleset_json)"
+    source_auto_merge="$(auto_merge_setting)" || die "could not read the repository's auto-merge setting"
     if [ "$source_ruleset" = null ] && [ "$source_protection" = null ]; then
       die "current policy state has no protection to preserve"
     fi
@@ -647,7 +648,7 @@ case "$COMMAND" in
       fi
       verify_policy_state "$before" "$protection" "$before_repo" || exit $?
     ); then
-      (restore_policy_state "$source_ruleset" "$source_protection" "$source_repo_ruleset") \
+      (restore_policy_state "$source_ruleset" "$source_protection" "$source_repo_ruleset" "$source_auto_merge") \
         || die "rollback failed and the complete prior policy state could not be restored"
       die "rollback failed verification; the complete prior policy state was restored"
     fi
