@@ -86,10 +86,16 @@
           "do_not_enforce_on_create": false,
           "workflows": [
             {
+              "path": ".github/workflows/review-gate.yml",
+              "ref": "refs/heads/main",
+              "repository_id": 1333343261,
+              "sha": "00a0b299b76f3405641aae4b6d0bd92591a5d1f1"
+            },
+            {
               "path": ".github/workflows/validate.yml",
               "ref": "refs/heads/main",
               "repository_id": 1333343261,
-              "sha": "5719b59619add320b39c994cff696444b4b98c25"
+              "sha": "00a0b299b76f3405641aae4b6d0bd92591a5d1f1"
             }
           ]
         }
