@@ -54,7 +54,7 @@ stage, this row is re-opened.
 | Environment hygiene (`clear_git_hook_env`, `env -u GIT_*`) | **Keep** | #209, #216: real nested-hook breakage; #920 extended it. | — |
 | Legacy `.touchstone-config` refusal + `touchstone-legacy-config.sh` | **Keep** | Six sister repositories still run on it; #869 encodes the alias-precedence invariant (`validate_full_command` over `validate_command`) vesper depends on. Load-bearing for AUT-303. | — |
 | `check-legacy-ci.sh` | **Keep** | AUT-289: default-branch push workflow running `no-commit-to-branch` blocked every deploy. | — |
-| Detectors / presets (npm, python, swift, legacy, manual, declared) | **Keep** | Evidence-first corpus (#875, #896, #897); every preset matches at least one fleet repository (anima; arpeggio, cortex, conductor; vesper; convoy, cortex, outrider). | — |
+| Detectors / presets (npm, python, swift, legacy, manual, declared) | **Keep** | Evidence-first corpus (#875, #896, #897): `tests/fixtures/adoption-v1/portfolio.tsv` snapshots a real repository per preset — declared: touchstone; npm: anima; python: arpeggio, conductor, cortex (sentinel is the no-lockfile refusal); swift: autumn-mail; legacy: every snapshot carrying `.touchstone-config` — and `cases.tsv` supplies the manual controls. The detector may not infer support from shapes absent there. | — |
 | Plan / apply, clean-branch refusal, HEAD-clean inputs, worktree lock | **Keep** | #903 and #901 review corpora: SIGTERM mid-apply restores original bytes; PID liveness is not ownership. | — |
 | `--json` (adopt) | **Keep** | Same rationale as validate `--json`; ~55 lines, versioned envelope `touchstone.adoption/v1`. | — |
 
