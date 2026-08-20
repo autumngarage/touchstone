@@ -1487,6 +1487,43 @@ else
   fail "the first-line guard refused a body whose opening sentence mentions the token"
 fi
 
+echo "==> every Validation row is filled, not only one"
+body '## Intent
+Real intent.
+
+## Validation
+- Build: n/a — shell
+- Automated tests:
+- Manual validation: <specific scenario and result>
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "one filled Validation row satisfied the section while two stayed empty"
+fi
+ok "an empty or placeholder Validation row is reported by name"
+body '## Intent
+Real intent.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: suite passed
+- Manual validation: n/a — no UI
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  ok "every row filled passes"
+else
+  fail "fully filled Validation rows were refused"
+fi
+
 echo "==> a higher-level heading ends a section"
 body '## Intent
 

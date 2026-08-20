@@ -141,6 +141,23 @@ filled() {
   '
 }
 
+# Every labelled row the template puts under Validation must be filled: one
+# filled row does not satisfy the section, because the rows are the promise.
+# A row that does not apply is `n/a — <reason>`, which is content.
+unfilled_rows() {
+  printf '%s\n' "$1" | awk '
+    /^[[:space:]]*[-*+][[:space:]]+[A-Za-z][A-Za-z ]*:[[:space:]]*$/ {
+      row = $0
+      sub(/^[[:space:]]*[-*+][[:space:]]+/, "", row); sub(/:[[:space:]]*$/, "", row)
+      print row
+    }
+    /^[[:space:]]*[-*+][[:space:]]+[A-Za-z][A-Za-z ]*:[[:space:]]*<.*>[[:space:]]*$/ {
+      row = $0
+      sub(/^[[:space:]]*[-*+][[:space:]]+/, "", row); sub(/:.*$/, "", row)
+      print row
+    }'
+}
+
 FAILURES=0
 report() {
   printf '  missing: %s\n' "$*" >&2
@@ -161,7 +178,12 @@ case " $REQUIRED_TIERS " in
 esac
 
 filled "$(section "Intent")" || report "a '## Intent' section stating what behavior this change creates or fixes"
-filled "$(section "Validation")" || report "a '## Validation' section recording what actually ran"
+VALIDATION_SECTION="$(section "Validation")"
+filled "$VALIDATION_SECTION" || report "a '## Validation' section recording what actually ran"
+while IFS= read -r row; do
+  [ -n "$row" ] || continue
+  report "the Validation row '$row:' filled in (what ran and its result, or n/a with a reason)"
+done < <(unfilled_rows "$VALIDATION_SECTION")
 [ -z "$TIER" ] || filled "$(section "Why this tier")" \
   || report "a '## Why this tier' section justifying the '$TIER' classification"
 
