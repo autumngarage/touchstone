@@ -174,6 +174,19 @@ for bad_version in 'not a version' '3' '3.0' '3.0.0.1' '3 . 0 . 0' ''; do
 done
 pass "malformed VERSION shapes all refuse loudly"
 
+# The read-failure path is distinct from the malformed path. Injected without
+# permission bits (which do not stop the required workflow's root user): an
+# absent file and a directory at the path fail reads for any UID.
+rm -f "$BROKEN_ROOT/VERSION"
+if bash "$BROKEN_ROOT/bin/touchstone" version >/dev/null 2>&1; then
+  fail "a missing VERSION file still reported a version"
+fi
+mkdir "$BROKEN_ROOT/VERSION"
+if bash "$BROKEN_ROOT/bin/touchstone" version >/dev/null 2>&1; then
+  fail "a directory at the VERSION path still reported a version"
+fi
+pass "VERSION read failures refuse with a non-zero exit"
+
 echo "==> pr open binds the branch it will act on"
 # Two pull requests were opened for the wrong branch because open acts on
 # whatever branch the invoking directory has checked out, and a worktree has a
