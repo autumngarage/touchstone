@@ -196,9 +196,11 @@ mkdir -p "$SHIM_PROJECT"
 printf 'untouched\n' >"$SHIM_PROJECT/file.txt"
 for args in "--check" "--ship" "--in-place" ""; do
   # shellcheck disable=SC2086
-  if ! (cd "$SHIM_PROJECT" && bash "$REPO_ROOT/bin/touchstone" update $args >/dev/null 2>"$TMP_DIR/update.err"); then
+  if ! (cd "$SHIM_PROJECT" && bash "$REPO_ROOT/bin/touchstone" update $args >"$TMP_DIR/update.out" 2>"$TMP_DIR/update.err"); then
     fail "touchstone update $args exited non-zero"
   fi
+  # The 2.x setup.sh pipes this through grep -E "Already|Needs update|Run: touchstone update".
+  grep -qx "Already up to date." "$TMP_DIR/update.out" || fail "touchstone update $args did not emit the 2.x sentinel"
   grep -q "nothing to do" "$TMP_DIR/update.err" || fail "touchstone update $args did not explain itself"
 done
 [ "$(ls -A "$SHIM_PROJECT")" = "file.txt" ] && [ "$(cat "$SHIM_PROJECT/file.txt")" = untouched ] \
