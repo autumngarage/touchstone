@@ -20,7 +20,6 @@ usage() {
 Usage:
   touchstone validate [--stage enforce|commit] [--json] [--project DIR] [--config FILE]
   touchstone adopt [--check|--dry-run] [arguments]
-  touchstone upgrade [--check|--dry-run] [arguments]
   touchstone tracker claim [arguments]
   touchstone pr open|status|merge [arguments]
   touchstone steering install|check|uninstall [--home DIR] [--dry-run]
@@ -34,7 +33,7 @@ case "$COMMAND" in
   validate)
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" validate "$@"
     ;;
-  adopt | upgrade)
+  adopt)
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-adopt.sh" "$COMMAND" "$@"
     ;;
   tracker)

@@ -19,19 +19,17 @@ The current matrix covers the portfolio-backed npm, Python, and Swift shapes,
 plus explicit manual tasks and ambiguous mixed roots. For every successful
 fixture it proves check and dry-run are read-only, dry-run is deterministic,
 apply uses the reviewed plan, the second adoption is current, the schema
-parses, all targets and routed steering paths exist, surrounding project prose
-survives, and no CLI, runner, registry, sync service, or deletion mechanism is
-copied into the consumer. An offline toolchain boundary executes every generated
+parses, all targets exist, instruction files and prose survive untouched, no
+steering is written into the repository, and no CLI, runner, registry, sync
+service, or deletion mechanism is copied into the consumer. An offline toolchain boundary executes every generated
 command, using fakes for the locked npm and Python setup declarations.
 
 ## Compatibility and policy lanes
 
 The compatibility lane starts from schema 1, the oldest supported shape. A
 newer runtime validates it without migration; adoption adds the missing tracker
-declaration and current marked steering through check/dry-run/apply while
-preserving the project-owned validation command. The separate upgrade check
-then detects stale managed steering; dry-run remains read-only, apply preserves
-the validation contract, and the repeated check is current.
+declaration through check/dry-run/apply while preserving the project-owned
+validation command, and the deleted upgrade subcommand is asserted absent.
 
 The policy lane runs the local CLI and the required-workflow engine against the
 same contract and compares their machine results. Deleting a consumer-local

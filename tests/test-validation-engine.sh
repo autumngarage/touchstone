@@ -1373,9 +1373,10 @@ run_adoption "$ADOPTION/conflicting-modes.json" adopt --json --check --dry-run \
   --project "$MANUAL" --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 2 ] || fail "planner accepted conflicting read-only modes"
 assert_contains "$ADOPTION/conflicting-modes.json" 'choose only one planning mode'
-assert_contains "$ADOPTION/manual-one.json" 'A security-review quota notice is never a blocker'
-assert_not_contains "$ADOPTION/manual-one.json" 'scripts/respond-review.sh'
-assert_contains "$ADOPTION/manual-one.json" "Inspect GitHub's complete review surface"
+# The plan carries declarations only; steering content in the plan JSON
+# would mean adoption is writing repository copies again (AUT-317).
+assert_not_contains "$ADOPTION/manual-one.json" 'touchstone:steering'
+assert_not_contains "$ADOPTION/manual-one.json" 'Shared Agent Steering'
 
 OLDER_V1="$ADOPTION/older-v1"
 new_adoption_repo "$OLDER_V1"
@@ -1501,8 +1502,8 @@ cp "$OLDER_V1/.touchstone.toml" "$DANGLING_TRACKER/.touchstone.toml"
 ln -s missing-tracker "$DANGLING_TRACKER/.touchstone-tracker.toml"
 git -C "$DANGLING_TRACKER" add .touchstone.toml .touchstone-tracker.toml
 git -C "$DANGLING_TRACKER" commit -qm dangling-tracker
-run_adoption "$ADOPTION/dangling-tracker.out" upgrade --dry-run --project "$DANGLING_TRACKER"
-[ "$ADOPTION_STATUS" -eq 4 ] || fail "upgrade accepted a dangling tracker declaration symlink"
+run_adoption "$ADOPTION/dangling-tracker.out" adopt --dry-run --project "$DANGLING_TRACKER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "adopt accepted a dangling tracker declaration symlink"
 assert_contains "$ADOPTION/dangling-tracker.out.err" 'compiler input is a symlink: .touchstone-tracker.toml'
 
 DANGLING_LEGACY="$ADOPTION/dangling-legacy"
@@ -1521,8 +1522,13 @@ mkdir -p "$OUTSIDE"
 ln -s "$OUTSIDE" "$SYMLINKED/.touchstone"
 git -C "$SYMLINKED" add .touchstone
 git -C "$SYMLINKED" commit -qm symlink
-run_adoption "$ADOPTION/symlinked.out" adopt --dry-run --project "$SYMLINKED" --task 'verify=true'
-[ "$ADOPTION_STATUS" -eq 4 ] || fail "symlinked managed ancestor did not fail closed"
+# Adoption writes nothing under .touchstone/ anymore, so a symlink there is
+# the operator's arrangement, not a hazard. Exercised through APPLY, not a
+# read-only mode: a dry run cannot catch an apply-only write through the link.
+git -C "$SYMLINKED" switch -qc feat/adopt
+run_adoption "$ADOPTION/symlinked.out" adopt --project "$SYMLINKED" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "a symlinked .touchstone blocked adoption that no longer writes there"
+[ -z "$(ls -A "$OUTSIDE" 2>/dev/null)" ] || fail "adoption wrote through the operator's .touchstone symlink"
 [ -z "$(find "$OUTSIDE" -mindepth 1 -print -quit)" ] || fail "adoption wrote through a symlinked ancestor"
 
 DRIFTED="$ADOPTION/drifted"
@@ -1546,9 +1552,10 @@ second
 EOF
 git -C "$MALFORMED" add AGENTS.md
 git -C "$MALFORMED" commit -qm malformed
+# Adoption no longer writes or parses steering, so an instruction file's
+# contents -- malformed markers included -- are none of its business.
 run_adoption "$ADOPTION/malformed.out" adopt --dry-run --project "$MALFORMED" --task 'verify=true'
-[ "$ADOPTION_STATUS" -eq 4 ] || fail "repeated steering markers did not fail closed"
-[ ! -e "$MALFORMED/.touchstone.toml" ] || fail "marker refusal left a partial write"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "adoption inspected instruction files it no longer owns"
 
 IGNORED="$ADOPTION/ignored-output"
 new_adoption_repo "$IGNORED"
@@ -1558,12 +1565,22 @@ git -C "$IGNORED" commit -qm ignored
 run_adoption "$ADOPTION/ignored.out" adopt --dry-run --project "$IGNORED" --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "ignored managed output did not fail closed"
 
+# CLAUDE.md is not a managed output anymore: adoption neither reads nor
+# writes instruction files. An untracked one still trips the clean-worktree
+# gate -- apply's own safety, unrelated to steering -- so the apply-path
+# fixture commits the operator's file and proves it comes through untouched.
 UNTRACKED="$ADOPTION/untracked-output"
 new_adoption_repo "$UNTRACKED"
 printf '# local untracked instructions\n' >"$UNTRACKED/CLAUDE.md"
 run_adoption "$ADOPTION/untracked.out" adopt --dry-run --project "$UNTRACKED" --task 'verify=true'
-[ "$ADOPTION_STATUS" -eq 4 ] || fail "untracked managed output did not fail closed"
-assert_contains "$ADOPTION/untracked.out.err" 'existing managed output is not tracked: CLAUDE.md'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "an untracked instruction file blocked a read-only plan"
+git -C "$UNTRACKED" add CLAUDE.md
+git -C "$UNTRACKED" commit -qm "operator instructions"
+git -C "$UNTRACKED" switch -qc feat/adopt
+run_adoption "$ADOPTION/untracked-apply.out" adopt --project "$UNTRACKED" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "an operator instruction file blocked apply"
+[ "$(cat "$UNTRACKED/CLAUDE.md")" = "# local untracked instructions" ] \
+  || fail "apply modified an operator instruction file"
 
 echo "==> adoption applies atomically only from a clean non-default branch"
 APPLY_REPO="$ADOPTION/apply"
@@ -1580,23 +1597,30 @@ assert_contains "$APPLY_REPO/AGENTS.md" 'Project-owned guidance.'
 [ -x "$APPLY_REPO/AGENTS.md" ] || fail "apply changed project-owned file mode"
 [ -f "$APPLY_REPO/.touchstone.toml" ] || fail "apply omitted project contract"
 [ -f "$APPLY_REPO/.touchstone-tracker.toml" ] || fail "apply omitted tracker contract"
-git -C "$APPLY_REPO" add AGENTS.md CLAUDE.md GEMINI.md .touchstone .touchstone.toml .touchstone-tracker.toml
+git -C "$APPLY_REPO" add .touchstone.toml .touchstone-tracker.toml
 git -C "$APPLY_REPO" commit -qm adopted
 run_adoption "$ADOPTION/apply-twice.json" adopt --json --project "$APPLY_REPO"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "second adoption did not converge"
 assert_contains "$ADOPTION/apply-twice.json" '"status":"current"'
 assert_contains "$ADOPTION/apply-twice.json" '"changes":[]'
 
+# A leftover pre-AUT-317 repository copy is the operator's to remove; a
+# re-run of adopt must neither refresh nor delete it, and must not touch the
+# project-owned declaration.
 contract_hash="$(git -C "$APPLY_REPO" hash-object .touchstone.toml)"
+tracker_hash="$(git -C "$APPLY_REPO" hash-object .touchstone-tracker.toml)"
+mkdir -p "$APPLY_REPO/.touchstone"
 printf 'stale managed steering\n' >"$APPLY_REPO/.touchstone/TOUCHSTONE.md"
 git -C "$APPLY_REPO" add .touchstone/TOUCHSTONE.md
 git -C "$APPLY_REPO" commit -qm stale-steering
-run_adoption "$ADOPTION/upgrade.json" upgrade --json --project "$APPLY_REPO"
-[ "$ADOPTION_STATUS" -eq 0 ] || fail "explicit upgrade did not apply"
-assert_contains "$ADOPTION/upgrade.json" '"status":"applied"'
-assert_contains "$APPLY_REPO/.touchstone/TOUCHSTONE.md" 'A security-review quota notice is never a blocker'
+run_adoption "$ADOPTION/readopt.json" adopt --json --project "$APPLY_REPO"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "re-running adopt on an adopted repository failed"
+assert_contains "$ADOPTION/readopt.json" '"status":"current"'
+assert_contains "$APPLY_REPO/.touchstone/TOUCHSTONE.md" 'stale managed steering'
 [ "$contract_hash" = "$(git -C "$APPLY_REPO" hash-object .touchstone.toml)" ] \
-  || fail "upgrade rewrote the project-owned validation declaration"
+  || fail "re-running adopt touched the project-owned validation declaration"
+[ "$tracker_hash" = "$(git -C "$APPLY_REPO" hash-object .touchstone-tracker.toml)" ] \
+  || fail "re-running adopt touched the project-owned tracker declaration"
 
 DEFAULT_REPO="$ADOPTION/default-branch"
 new_adoption_repo "$DEFAULT_REPO"
@@ -1767,16 +1791,12 @@ if [ "${1:-}" = apply ] && [ "${2:-}" != --check ]; then
     exit 143
   fi
   if [ "${TOUCHSTONE_CONCURRENT_WRITE:-false}" = true ]; then
-    printf 'concurrent content\n' >"$project/AGENTS.md"
+    printf 'concurrent content\n' >"$project/.touchstone.toml"
   fi
   if [ -n "${TOUCHSTONE_SYMLINK_TARGET:-}" ]; then
-    cp "$project/AGENTS.md" "$TOUCHSTONE_SYMLINK_TARGET"
-    rm "$project/AGENTS.md"
-    ln -s "$TOUCHSTONE_SYMLINK_TARGET" "$project/AGENTS.md"
-  fi
-  if [ -n "${TOUCHSTONE_PARENT_SYMLINK_TARGET:-}" ]; then
-    mv "$project/.touchstone" "$TOUCHSTONE_PARENT_SYMLINK_TARGET"
-    ln -s "$TOUCHSTONE_PARENT_SYMLINK_TARGET" "$project/.touchstone"
+    cp "$project/.touchstone.toml" "$TOUCHSTONE_SYMLINK_TARGET"
+    rm "$project/.touchstone.toml"
+    ln -s "$TOUCHSTONE_SYMLINK_TARGET" "$project/.touchstone.toml"
   fi
   exit 91
 fi
@@ -1852,7 +1872,7 @@ git -C "$CONCURRENT_REPO" switch -qc feat/adopt
 PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" TOUCHSTONE_CONCURRENT_WRITE=true \
   run_adoption "$ADOPTION/concurrent.out" adopt --project "$CONCURRENT_REPO" --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 6 ] || fail "concurrent apply did not report an operational failure"
-[ "$(cat "$CONCURRENT_REPO/AGENTS.md")" = 'concurrent content' ] \
+[ "$(cat "$CONCURRENT_REPO/.touchstone.toml")" = 'concurrent content' ] \
   || fail "apply rollback overwrote unexpected concurrent content"
 assert_contains "$ADOPTION/concurrent.out.err" 'unexpected concurrent content was preserved'
 
@@ -1864,21 +1884,9 @@ PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" \
   TOUCHSTONE_SYMLINK_TARGET="$SYMLINK_ROLLBACK_TARGET" \
   run_adoption "$ADOPTION/symlink-rollback.out" adopt --project "$SYMLINK_ROLLBACK_REPO" --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 6 ] || fail "symlink-swapped rollback did not report an operational failure"
-[ -L "$SYMLINK_ROLLBACK_REPO/AGENTS.md" ] || fail "rollback replaced unexpected concurrent symlink content"
+[ -L "$SYMLINK_ROLLBACK_REPO/.touchstone.toml" ] || fail "rollback replaced unexpected concurrent symlink content"
 assert_contains "$ADOPTION/symlink-rollback.out.err" 'unexpected concurrent content was preserved'
-assert_contains "$SYMLINK_ROLLBACK_TARGET" 'Touchstone — Shared Agent Steering'
-
-PARENT_SYMLINK_REPO="$ADOPTION/parent-symlink-rollback"
-PARENT_SYMLINK_TARGET="$ADOPTION/parent-symlink-target"
-new_adoption_repo "$PARENT_SYMLINK_REPO"
-git -C "$PARENT_SYMLINK_REPO" switch -qc feat/adopt
-PATH="$FAIL_GIT_BIN:$PATH" TOUCHSTONE_REAL_GIT="$REAL_GIT" \
-  TOUCHSTONE_PARENT_SYMLINK_TARGET="$PARENT_SYMLINK_TARGET" \
-  run_adoption "$ADOPTION/parent-symlink-rollback.out" adopt --project "$PARENT_SYMLINK_REPO" --task 'verify=true'
-[ "$ADOPTION_STATUS" -eq 6 ] || fail "parent-symlink rollback did not report an operational failure"
-[ -L "$PARENT_SYMLINK_REPO/.touchstone" ] || fail "rollback replaced an unexpected parent symlink"
-assert_contains "$ADOPTION/parent-symlink-rollback.out.err" 'unexpected concurrent content was preserved'
-assert_contains "$PARENT_SYMLINK_TARGET/TOUCHSTONE.md" 'Touchstone — Shared Agent Steering'
+assert_contains "$SYMLINK_ROLLBACK_TARGET" 'schema = 1'
 
 echo "validation engine tests passed"
 
@@ -1992,16 +2000,12 @@ project' ] || fail "$2 wrote an unexpected sibling outside the consumer"
 
     run_cli "$TMP/$id-apply" "${args[@]}"
     [ "$RUN_STATUS" -eq 0 ] || fail "$id apply failed"
-    expected_adoption_status=' M AGENTS.md
- M CLAUDE.md
- M GEMINI.md
-?? .touchstone-tracker.toml
-?? .touchstone.toml
-?? .touchstone/'
+    # Declarations only: instruction files untouched, no routed directory.
+    expected_adoption_status='?? .touchstone-tracker.toml
+?? .touchstone.toml'
     [ "$(git -C "$repo" status --porcelain=v1 | LC_ALL=C sort)" = "$expected_adoption_status" ] \
       || fail "$id adoption changed files outside the declared consumer boundary"
-    git -C "$repo" add .touchstone.toml .touchstone-tracker.toml .touchstone \
-      AGENTS.md CLAUDE.md GEMINI.md
+    git -C "$repo" add .touchstone.toml .touchstone-tracker.toml
     git -C "$repo" commit -qm "adopt Touchstone"
     assert_clean "$repo" "$id committed adoption"
     run_cli "$TMP/$id-repeat" adopt --project "$repo" --check --json
@@ -2040,17 +2044,18 @@ project' ] || fail "$2 wrote an unexpected sibling outside the consumer"
     done < <(awk -F '"' '/^path = / { print $2 }' "$repo/.touchstone.toml")
     awk -F '"' '/^command = / { if ($2 == "") exit 1; found=1 } END { exit !found }' \
       "$repo/.touchstone.toml" || fail "$id generated an empty or missing command"
+    # Steering reaches agents through the installed tool, never through the
+    # repository: adoption must leave instruction files untouched and write
+    # no routed copies (AUT-317).
     for steering in AGENTS.md CLAUDE.md GEMINI.md; do
       case "$steering" in AGENTS.md) project_prose='PROJECT AGENT PROSE' ;; *) project_prose="PROJECT ${steering%%.*} PROSE" ;; esac
       assert_contains "$repo/$steering" "$project_prose"
-      [ "$(grep -cF '<!-- touchstone:steering:start -->' "$repo/$steering")" -eq 1 ] \
-        || fail "$id did not install exactly one managed block in $steering"
+      if grep -qF 'touchstone:steering' "$repo/$steering"; then
+        fail "$id installed a repository steering block in $steering"
+      fi
     done
+    [ -d "$repo/.touchstone" ] && fail "$id wrote routed steering copies into the repository"
     [ -f "$repo/legacy.keep" ] || fail "$id adoption deleted project-owned legacy content"
-    while IFS= read -r routed_path; do
-      [ -e "$repo/$routed_path" ] || fail "$id generated a stale steering route: $routed_path"
-    done < <(grep -rhoE '`\.touchstone/[^` ]+`' "$repo/.touchstone" "$repo"/*.md \
-      | tr -d '`' | sort -u)
     if find "$repo" -type f \( -name 'touchstone-run.sh' -o -name 'touchstone-pr.sh' \
       -o -name 'update-project.sh' -o -name '*registry*' -o -name '*sync*' \) -print -quit | grep -q .; then
       fail "$id adoption vendored implementation or background machinery"
@@ -2102,33 +2107,17 @@ EOF
     || fail "adoption rewrote a project-owned validation command"
   assert_contains "$upgrade_repo/.touchstone-tracker.toml" 'type = "linear"'
   assert_contains "$upgrade_repo/.touchstone-tracker.toml" 'key_prefix = "AUT"'
-  git -C "$upgrade_repo" add .touchstone-tracker.toml .touchstone AGENTS.md CLAUDE.md GEMINI.md
+  git -C "$upgrade_repo" add .touchstone-tracker.toml
   git -C "$upgrade_repo" commit -qm "declare tracker"
   run_cli "$TMP/upgrade-repeat" adopt --check --json --project "$upgrade_repo"
   if [ "$RUN_STATUS" -ne 0 ]; then
     cat "$TMP/upgrade-repeat" "$TMP/upgrade-repeat.err" >&2
     fail "repeated adoption was not current"
   fi
-  contract_hash="$(git -C "$upgrade_repo" hash-object .touchstone.toml)"
-  printf '%s\n' 'stale managed steering' >"$upgrade_repo/.touchstone/TOUCHSTONE.md"
-  git -C "$upgrade_repo" add .touchstone/TOUCHSTONE.md
-  git -C "$upgrade_repo" commit -qm "stale managed steering"
-  run_cli "$TMP/upgrade-check" upgrade --check --json --project "$upgrade_repo"
-  [ "$RUN_STATUS" -eq 3 ] || fail "upgrade check did not report stale managed steering"
-  assert_clean "$upgrade_repo" "upgrade check"
-  run_cli "$TMP/upgrade-dry" upgrade --dry-run --json --project "$upgrade_repo"
-  [ "$RUN_STATUS" -eq 0 ] || fail "upgrade dry-run failed"
-  assert_contains "$TMP/upgrade-dry" '.touchstone/TOUCHSTONE.md'
-  assert_clean "$upgrade_repo" "upgrade dry-run"
-  run_cli "$TMP/upgrade-apply" upgrade --json --project "$upgrade_repo"
-  [ "$RUN_STATUS" -eq 0 ] || fail "upgrade apply failed"
-  [ "$contract_hash" = "$(git -C "$upgrade_repo" hash-object .touchstone.toml)" ] \
-    || fail "upgrade rewrote the project-owned validation contract"
-  assert_contains "$upgrade_repo/.touchstone/TOUCHSTONE.md" 'Touchstone — Shared Agent Steering'
-  git -C "$upgrade_repo" add .touchstone/TOUCHSTONE.md
-  git -C "$upgrade_repo" commit -qm "upgrade managed steering"
-  run_cli "$TMP/upgrade-current" upgrade --check --json --project "$upgrade_repo"
-  [ "$RUN_STATUS" -eq 0 ] || fail "repeated upgrade was not current"
+  # Steering ships with the tool now; the upgrade subcommand that refreshed
+  # repository copies is deleted, and its absence is part of the contract.
+  run_cli "$TMP/upgrade-gone" upgrade --check --json --project "$upgrade_repo" || true
+  [ "$RUN_STATUS" -eq 2 ] || fail "the deleted upgrade subcommand must be an invalid invocation (exit 2), got $RUN_STATUS"
 
   echo "==> local and pinned-workflow adapters share validation semantics"
   policy_repo="$TMP/policy-consumer"
