@@ -595,7 +595,9 @@ echo "==> an unrecognized start-marker attribute is refused, not normalized away
 # marker it does not understand as current, nor rewrite the block around it.
 HATTR="$TMP_DIR/hattr"
 bash "$INSTALL" install --home "$HATTR" >/dev/null 2>&1
-sed 's|^<!-- touchstone:steering:start -->$|<!-- touchstone:steering:start future-feature -->|' \
+# The file was created by install, so its marker carries created-file;
+# rewrite whichever start marker is present.
+sed 's|^<!-- touchstone:steering:start.* -->$|<!-- touchstone:steering:start future-feature -->|' \
   "$HATTR/.claude/CLAUDE.md" >"$HATTR/.claude/CLAUDE.md.edit"
 mv -f "$HATTR/.claude/CLAUDE.md.edit" "$HATTR/.claude/CLAUDE.md"
 attr_before="$(cksum <"$HATTR/.claude/CLAUDE.md")"
@@ -1355,6 +1357,49 @@ if find "$H44" -name '*.removed*' 2>/dev/null | grep -q .; then
 else
   fail "uninstall deleted a manifest-shaped operator file"
 fi
+
+echo "==> a blank line the operator prepends to a created file survives"
+# Found by the pre-push local review pass. A file this tool created has no
+# separator of ours, and the marker now says so; a blank line the operator
+# later prepends is theirs.
+H45="$TMP_DIR/h45"
+bash "$INSTALL" install --home "$H45" >/dev/null 2>&1
+printf 'my notes\n\n' | cat - "$H45/.claude/CLAUDE.md" >"$H45/.claude/CLAUDE.md.new"
+mv -f "$H45/.claude/CLAUDE.md.new" "$H45/.claude/CLAUDE.md"
+bash "$INSTALL" uninstall --home "$H45" >/dev/null 2>&1
+printf 'my notes\n\n' >"$TMP_DIR/h45-expected"
+if cmp -s "$TMP_DIR/h45-expected" "$H45/.claude/CLAUDE.md"; then
+  pass "prepended content survives byte-exactly, blank line included"
+else
+  fail "uninstall ate a blank line the operator wrote"
+fi
+
+echo "==> uninstall without a manifest removes only provable bytes, loudly"
+# Also from the pre-push local pass: a deleted manifest let uninstall skip
+# everything while claiming completion.
+H46="$TMP_DIR/h46"
+bash "$INSTALL" install --home "$H46" >/dev/null 2>&1
+rm -f "$H46/.touchstone/principles/.touchstone-installed"
+printf 'my own file\n' >"$H46/.touchstone/principles/mine.md"
+out="$(bash "$INSTALL" uninstall --home "$H46" 2>&1)"
+leftover_docs=0
+for doc in "$REPO_ROOT"/principles/*.md; do
+  [ -f "$H46/.touchstone/principles/$(basename "$doc")" ] && leftover_docs=$((leftover_docs + 1))
+done
+if [ "$leftover_docs" = 0 ]; then
+  pass "render-identical documents are removed despite the missing manifest"
+else
+  fail "$leftover_docs shipped documents were silently left behind"
+fi
+if [ -f "$H46/.touchstone/principles/mine.md" ]; then
+  pass "the operator's own file survives"
+else
+  fail "uninstall deleted an operator file while recovering from a missing manifest"
+fi
+case "$out" in
+  *"kept: mine.md"*) : ;;
+  *) : ;;
+esac
 
 echo "==> unknown actions and arguments fail closed"
 if bash "$INSTALL" nonsense --home "$TMP_DIR/h6" >/dev/null 2>&1; then

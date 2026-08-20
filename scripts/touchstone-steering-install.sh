@@ -38,7 +38,7 @@ PRINCIPLES_RELATIVE=".touchstone/principles"
 PRINCIPLES_MANIFEST=".touchstone-installed"
 BEGIN_MARKER='<!-- touchstone:steering:start -->'
 # The start marker may carry attributes (see restore-newline below).
-BEGIN_MARKER_RE='^<!-- touchstone:steering:start( restore-newline)? -->$'
+BEGIN_MARKER_RE='^<!-- touchstone:steering:start( restore-newline| created-file)? -->$'
 # Any start-marker-shaped line, so an unrecognized attribute is detected as a
 # marker this version does not understand rather than ignored as prose.
 BEGIN_MARKER_ANY='^<!-- touchstone:steering:start( .*)? -->$'
@@ -164,9 +164,13 @@ compose() {
   # Per-target state: a previous driver's newline-less file must not mark this
   # one for restoration.
   NEEDS_NEWLINE_RESTORE=false
+  CREATED_FILE=false
 
   if [ ! -f "$path" ]; then
-    cat "$block" >"$out"
+    # A file this tool creates has no separator, and the marker says so:
+    # uninstall must not treat a blank line the operator later prepends as
+    # ours to remove.
+    sed "1s|.*|<!-- touchstone:steering:start created-file -->|" "$block" >"$out"
     return 0
   fi
 
@@ -208,6 +212,7 @@ compose() {
   # own content still lacks the trailing newline the block replaced.
   case "$(sed -n "${begin_line}p" "$path")" in
     *restore-newline*) NEEDS_NEWLINE_RESTORE=true ;;
+    *created-file*) CREATED_FILE=true ;;
   esac
   if [ "$((begin_line - 1))" -gt 0 ]; then
     head -n "$((begin_line - 1))" "$path" >"$out"
@@ -216,6 +221,8 @@ compose() {
   fi
   if [ "$NEEDS_NEWLINE_RESTORE" = true ]; then
     sed "1s|.*|<!-- touchstone:steering:start restore-newline -->|" "$block" >>"$out"
+  elif [ "$CREATED_FILE" = true ]; then
+    sed "1s|.*|<!-- touchstone:steering:start created-file -->|" "$block" >>"$out"
   else
     cat "$block" >>"$out"
   fi
@@ -237,8 +244,13 @@ compose_removal() {
   end_line="$(awk -v m="$END_MARKER" '$0 == m { print NR; exit }' "$path")"
   [ -n "$begin_line" ] && [ -n "$end_line" ] || return 2
   [ "$begin_line" -lt "$end_line" ] || return 2
-  local keep=$((begin_line - 1)) strip_trailing_newline=false separator_found=false
-  if [ "$keep" -gt 0 ] && [ -z "$(sed -n "${keep}p" "$path")" ]; then
+  local keep=$((begin_line - 1)) strip_trailing_newline=false separator_found=false created_file=false
+  case "$(sed -n "${begin_line}p" "$path")" in
+    *created-file*) created_file=true ;;
+  esac
+  # A file this tool created carries no separator of ours, so a blank line
+  # before the block belongs to whoever prepended it.
+  if [ "$created_file" != true ] && [ "$keep" -gt 0 ] && [ -z "$(sed -n "${keep}p" "$path")" ]; then
     keep=$((keep - 1))
     separator_found=true
   fi
@@ -763,6 +775,23 @@ case "$ACTION" in
       # Remove exactly what the manifest records, so a bundled name the
       # operator owns is left alone even across releases that change which
       # documents ship.
+      if [ ! -f "$principles_home/$PRINCIPLES_MANIFEST" ]; then
+        # No ownership record. Bytes identical to what this release renders
+        # are still provably ours -- the same rule the manifest path applies
+        # -- and anything else is reported, never guessed at. Silence here
+        # claimed a complete removal that left every document behind.
+        for doc in "$PRINCIPLES_SOURCE"/*.md; do
+          [ -f "$doc" ] || continue
+          name="$(basename "$doc")"
+          [ -f "$principles_home/$name" ] || continue
+          if render_principle "$doc" "$TMP_DIR/.verify" \
+            && cmp -s "$TMP_DIR/.verify" "$principles_home/$name"; then
+            rm -f -- "$principles_home/$name"
+          else
+            printf '  kept: %s (no ownership manifest and bytes differ from this release)\n' "$name" >&2
+          fi
+        done
+      fi
       if [ -f "$principles_home/$PRINCIPLES_MANIFEST" ]; then
         # Judge the manifest's self-description NOW, against the directory as
         # it stands before this run deletes the documents it lists --
