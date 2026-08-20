@@ -84,8 +84,12 @@ awk '
 ' "$BODY_FILE" >"$STRIPPED_BODY" || die "could not read pull request body: $BODY_FILE"
 
 # Section text is everything between one `## Heading` and the next heading.
+# Headings inside a fenced block are sample text, not sections -- a fenced
+# copy of the whole template must not read as the template filled in.
 section() {
   awk -v want="## $1" '
+    /^[[:space:]]*(```|~~~)/ { in_fence = !in_fence; if (grabbing) print; next }
+    in_fence { if (grabbing) print; next }
     $0 == want { grabbing = 1; next }
     grabbing && /^## / { exit }
     grabbing { print }

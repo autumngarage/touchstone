@@ -1226,6 +1226,24 @@ if accepts; then
 fi
 ok "blockquote markers strip like list markers"
 
+echo "==> a fenced copy of the template is sample text, not sections"
+body '```
+## Intent
+real
+## Invariants
+- x
+## Validation
+- Tests: pass
+## Review tier
+normal
+## Why this tier
+x
+```'
+if accepts; then
+  fail "a fenced copy of the whole template satisfied the gate"
+fi
+ok "fenced headings are not sections"
+
 echo "==> a bare list marker satisfies nothing"
 body '## Intent
 -
