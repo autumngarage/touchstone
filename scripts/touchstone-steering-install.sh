@@ -786,7 +786,10 @@ case "$ACTION" in
           [ -f "$principles_home/$name" ] || continue
           if render_principle "$doc" "$TMP_DIR/.verify" \
             && cmp -s "$TMP_DIR/.verify" "$principles_home/$name"; then
-            rm -f -- "$principles_home/$name"
+            # Same write-through rule as everywhere else: remove the referent
+            # our bytes live at, then clear the pointer left dangling.
+            rm -f -- "$(resolve_link "$principles_home/$name")"
+            [ ! -L "$principles_home/$name" ] || rm -f -- "$principles_home/$name"
           else
             printf '  kept: %s (no ownership manifest and bytes differ from this release)\n' "$name" >&2
           fi

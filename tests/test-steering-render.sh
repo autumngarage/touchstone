@@ -1380,14 +1380,17 @@ echo "==> uninstall without a manifest removes only provable bytes, loudly"
 H46="$TMP_DIR/h46"
 bash "$INSTALL" install --home "$H46" >/dev/null 2>&1
 rm -f "$H46/.touchstone/principles/.touchstone-installed"
+mkdir -p "$H46/dotfiles"
+mv "$H46/.touchstone/principles/agent-swarms.md" "$H46/dotfiles/as.md"
+ln -s "$H46/dotfiles/as.md" "$H46/.touchstone/principles/agent-swarms.md"
 printf 'my own file\n' >"$H46/.touchstone/principles/mine.md"
 out="$(bash "$INSTALL" uninstall --home "$H46" 2>&1)"
 leftover_docs=0
 for doc in "$REPO_ROOT"/principles/*.md; do
   [ -f "$H46/.touchstone/principles/$(basename "$doc")" ] && leftover_docs=$((leftover_docs + 1))
 done
-if [ "$leftover_docs" = 0 ]; then
-  pass "render-identical documents are removed despite the missing manifest"
+if [ "$leftover_docs" = 0 ] && [ ! -e "$H46/dotfiles/as.md" ]; then
+  pass "render-identical documents are removed despite the missing manifest, through links too"
 else
   fail "$leftover_docs shipped documents were silently left behind"
 fi
