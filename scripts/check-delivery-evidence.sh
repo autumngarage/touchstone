@@ -87,6 +87,7 @@ filled() {
       # nested empty list cannot smuggle a marker through as evidence.
       # Comments were removed from the body before any parsing.
       while (sub(/^[-*][[:space:]]+/, "", line) || sub(/^[-*]$/, "", line) \
+             || sub(/^[0-9]+[.)][[:space:]]+/, "", line) \
              || sub(/^\[[xX]\][[:space:]]*/, "", line)) { }
       if (line == "") next                    # bare scaffolding is nothing
       if (line ~ /^\[[ ]\]/) next            # an unchecked box records nothing

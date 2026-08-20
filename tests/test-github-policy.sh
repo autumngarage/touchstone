@@ -1120,6 +1120,26 @@ if accepts; then
 fi
 ok "repeated scaffolding stripping holds"
 
+echo "==> ordered unchecked task items are still promises"
+body '## Intent
+1. [ ] run tests
+
+## Invariants
+2. [ ] something
+
+## Validation
+1. [ ] Tests
+
+## Review tier
+normal
+
+## Why this tier
+3. [ ] contained'
+if accepts; then
+  fail "ordered unchecked task items satisfied the gate"
+fi
+ok "numbered scaffolding strips like bulleted scaffolding"
+
 echo "==> a bare list marker satisfies nothing"
 body '## Intent
 -
