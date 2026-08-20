@@ -1059,6 +1059,67 @@ if accepts; then
 fi
 ok "scaffolding cannot hide a multiline comment"
 
+echo "==> the template's guidance comment does not corrupt the tier"
+# An author who follows the shipped template leaves its <!-- trivial | normal
+# | serious --> hint in place and writes the value beneath it. That must
+# parse, or the gate blocks exactly the authors who did it right.
+body '## Intent
+real
+
+## Invariants
+- x holds
+
+## Validation
+- Tests: pass
+
+## Review tier
+<!-- trivial | normal | serious -->
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "a tier beneath the template guidance comment parses"
+else
+  fail "the gate blocked a correctly filled template"
+fi
+
+echo "==> headings inside a comment are not sections"
+body '<!--
+## Intent
+real
+## Invariants
+- x
+## Validation
+- Tests: pass
+## Review tier
+normal
+## Why this tier
+x
+-->'
+if accepts; then
+  fail "a body hidden entirely inside a comment satisfied the gate"
+fi
+ok "a fully commented-out body is absence"
+
+echo "==> nested empty list markers are still nothing"
+body '## Intent
+- -
+* *
+
+## Validation
+- Tests: pass.
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "nested bare list markers satisfied a required section"
+fi
+ok "repeated scaffolding stripping holds"
+
 echo "==> a bare list marker satisfies nothing"
 body '## Intent
 -

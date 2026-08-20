@@ -36,13 +36,42 @@ BODY_FILE="${1:-}"
 [ -n "$BODY_FILE" ] || usage
 [ -f "$BODY_FILE" ] || die "cannot read pull request body: $BODY_FILE"
 
+# HTML comments are invisible in the rendered body, so they are removed
+# before any parsing at all: a heading inside a comment is not a heading, and
+# the template's guidance comment above the tier value is not part of the
+# tier. Removing them here, once, is what keeps every later rule honest.
+STRIPPED_BODY="$(mktemp "${TMPDIR:-/tmp}/delivery-evidence.XXXXXXXX")" \
+  || die "could not create a working file"
+trap 'rm -f "$STRIPPED_BODY"' EXIT
+awk '
+  {
+    line = $0
+    out = ""
+    while (length(line) > 0) {
+      if (in_comment) {
+        close_at = index(line, "-->")
+        if (close_at == 0) { line = ""; continue }
+        line = substr(line, close_at + 3)
+        in_comment = 0
+        continue
+      }
+      open_at = index(line, "<!--")
+      if (open_at == 0) { out = out line; line = ""; continue }
+      out = out substr(line, 1, open_at - 1)
+      line = substr(line, open_at + 4)
+      in_comment = 1
+    }
+    print out
+  }
+' "$BODY_FILE" >"$STRIPPED_BODY" || die "could not read pull request body: $BODY_FILE"
+
 # Section text is everything between one `## Heading` and the next heading.
 section() {
   awk -v want="## $1" '
     $0 == want { grabbing = 1; next }
     grabbing && /^## / { exit }
     grabbing { print }
-  ' "$BODY_FILE"
+  ' "$STRIPPED_BODY"
 }
 
 # A section counts as filled only if it carries content the author wrote.
@@ -53,22 +82,18 @@ filled() {
     { line = $0
       sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
       if (line == "") next
-      # A bullet, task box, or "Label:" prefix is scaffolding, not content:
-      # judge what follows it, or "- Build: <exact command and result>" reads
-      # as filled. Scaffolding is stripped BEFORE the comment-state checks so
-      # "- <!--" cannot hide a comment behind a bullet.
-      sub(/^[-*][[:space:]]*/, "", line)
-      if (line == "") next                    # a bare list marker is nothing
+      # Bullets, task boxes, and "Label:" prefixes are scaffolding, not
+      # content: judge what follows. Stripped repeatedly, so "- -" or a
+      # nested empty list cannot smuggle a marker through as evidence.
+      # Comments were removed from the body before any parsing.
+      while (sub(/^[-*][[:space:]]+/, "", line) || sub(/^[-*]$/, "", line) \
+             || sub(/^\[[xX]\][[:space:]]*/, "", line)) { }
+      if (line == "") next                    # bare scaffolding is nothing
       if (line ~ /^\[[ ]\]/) next            # an unchecked box records nothing
-      sub(/^\[[xX]\][[:space:]]*/, "", line)
       if (line ~ /^[A-Za-z][A-Za-z0-9 \/-]*:[[:space:]]*/)
         sub(/^[A-Za-z][A-Za-z0-9 \/-]*:[[:space:]]*/, "", line)
       sub(/^[[:space:]]+/, "", line)
-      # Comments are invisible in the rendered body, so nothing inside one is
-      # evidence -- including a comment opened on one line and closed later.
-      if (in_comment) { if (line ~ /-->/) in_comment = 0; next }
-      if (line ~ /^<!--/ && line !~ /-->/) { in_comment = 1; next }
-      if (line ~ /^<!--.*-->$/) next          # single-line comment
+      if (line == "") next
       sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
       if (line == "") next
       if (line ~ /^<.*>$/) next               # unedited <placeholder>
