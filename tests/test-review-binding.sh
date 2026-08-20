@@ -762,7 +762,12 @@ case "$1 ${2:-}" in
       # re-run GitHub may still report attempt 1 completed (stale), then the
       # new attempt in progress, then attempt 2 completed.
       if has '.run_attempt' "$@" && ! has 'status' "$@"; then
-        printf '1\n'
+        if [ -f "$GH_STATE/gate-after-rerun" ]; then
+          left="$(cat "$GH_STATE/gate-after-rerun")"
+          if [ "$left" -ge 2 ]; then echo 1 >"$GH_STATE/gate-after-rerun"; printf '1\n'; else rm -f "$GH_STATE/gate-after-rerun"; printf '2\n'; fi
+        else
+          printf '1\n'
+        fi
       elif [ -f "$GH_STATE/gate-after-rerun" ]; then
         left="$(cat "$GH_STATE/gate-after-rerun")"
         if [ "$left" -ge 2 ]; then
@@ -1013,6 +1018,10 @@ EOF
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
     || fail "merge did not ask the review gate to re-evaluate before requesting the merge"
   assert_has "$GH_CALLS" 'pr merge'
+  # The stale superseded attempt was visible once after the POST; merge waited
+  # for attempt 2 to appear before asking GitHub to merge.
+  [ "$(grep -c "actions/runs/77 --jq .run_attempt" "$GH_CALLS")" -ge 3 ] \
+    || fail "merge did not wait for the new gate attempt to be visible: $(grep -c 'actions/runs/77 ' "$GH_CALLS") run reads"
   rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
   GH_MODE=moved_during_gate run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 2

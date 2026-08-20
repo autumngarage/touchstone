@@ -385,8 +385,22 @@ review_gate_required() {
   [ "$READ_OUTPUT" = true ]
 }
 
+wait_for_new_attempt() {
+  local run_id="$1" prior="$2" attempt=1 seen
+  while :; do
+    read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$run_id" --jq '.run_attempt' \
+      || fail_operation "could not read review-gate run $run_id: $READ_OUTPUT" "Retry after GitHub recovers."
+    seen="$READ_OUTPUT"
+    [ "${seen:-0}" -le "${prior:-0}" ] || return 0
+    [ "$attempt" -lt "$GATE_ATTEMPTS" ] \
+      || fail_operation "review-gate run $run_id did not start its new attempt within $((GATE_ATTEMPTS * GATE_RETRY_DELAY))s" "Check the Actions tab, then retry."
+    attempt=$((attempt + 1))
+    sleep "$GATE_RETRY_DELAY"
+  done
+}
+
 rerun_review_gate() {
-  local number="$1" head="$2" attempt=1 run_id status
+  local number="$1" head="$2" attempt=1 run_id status prior_attempt
   while :; do
     # Scoped to this pull request: two open PRs can share a head SHA, and
     # re-running the other one's gate would prove nothing about this request.
@@ -396,9 +410,17 @@ rerun_review_gate() {
       || fail_operation "could not inspect review-gate runs for $head: $READ_OUTPUT" "Retry after GitHub recovers."
     read -r run_id status <<<"$READ_OUTPUT"
     if [ -n "$run_id" ] && [ "$status" = completed ]; then
+      # A re-run keeps the run id and increments run_attempt. GitHub can keep
+      # exposing the superseded attempt's verdict for a moment after the POST;
+      # wait until the new attempt is visible so nothing downstream reads the
+      # old one as current. This waits for visibility, never for a verdict.
+      read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$run_id" --jq '.run_attempt' \
+        || fail_operation "could not read review-gate run $run_id: $READ_OUTPUT" "Retry after GitHub recovers."
+      prior_attempt="$READ_OUTPUT"
       gh api --hostname "$REPO_HOST" -X POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>&1 \
         || fail_operation "could not re-run review-gate run $run_id" "Re-run it from the Actions tab, then retry."
       REVIEW_GATE_RUN_ID="$run_id"
+      wait_for_new_attempt "$run_id" "$prior_attempt"
       return 0
     fi
     [ "$attempt" -lt "$GATE_ATTEMPTS" ] \
