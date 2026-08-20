@@ -8,8 +8,7 @@
 <!-- Only real risks introduced by this change, and the blast radius. -->
 
 ## Validation
-<!-- Record what actually ran. A check that does not apply is `n/a — <reason>`.
-     Never claim a build, test, or manual validation happened unless it did. -->
+<!-- Record what actually ran; a check that does not apply is `n/a — <reason>`. Never claim a build, test, or manual validation happened unless it did. -->
 - Build:
 - Automated tests:
 - Manual validation:

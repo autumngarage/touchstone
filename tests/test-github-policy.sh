@@ -1042,9 +1042,7 @@ fi
 ok "unchecked task-list scaffolding records nothing"
 
 body '## Intent
-- <!--
-hidden behind a bullet
--->
+- <!-- hidden behind a bullet -->
 
 ## Validation
 - Tests: pass.
@@ -1057,7 +1055,7 @@ Docs.'
 if accepts; then
   fail "a comment hidden behind a bullet satisfied a required section"
 fi
-ok "scaffolding cannot hide a multiline comment"
+ok "scaffolding cannot hide a one-line comment"
 
 echo "==> the template's guidance comment does not corrupt the tier"
 # An author who follows the shipped template leaves its <!-- trivial | normal
@@ -1100,7 +1098,7 @@ x
 if accepts; then
   fail "a body hidden entirely inside a comment satisfied the gate"
 fi
-ok "a fully commented-out body is absence"
+ok "a body that opens an unclosed comment on its first line is refused with a remedy"
 
 echo "==> nested empty list markers are still nothing"
 body '## Intent
@@ -1417,27 +1415,6 @@ else
   fail "the gate refused a valid body over a backslash-escaped opener"
 fi
 
-echo "==> a backslash that escapes itself leaves the opener live"
-body '## Intent
-Path \\<!-- hides everything after it
-
-## Invariants
-- x holds
-
-## Validation
-- Tests: pass
-
-## Review tier
-normal
-
-## Why this tier
-contained'
-if accepts; then
-  fail "a doubled backslash was read as escaping the opener"
-else
-  ok "an even backslash run still opens the comment"
-fi
-
 echo "==> a bare list marker satisfies nothing"
 body '## Intent
 -
@@ -1456,11 +1433,15 @@ if accepts; then
 fi
 ok "bare list markers are absence"
 
-echo "==> a multiline comment is invisible and therefore absence"
+echo "==> comment handling is one-line by declared limit"
+# A comment that opens and closes on one line is invisible. Anything else --
+# an opener in a code span, a fence, a blockquote, an escaped opener, a
+# comment spanning lines -- is visible text, because the only way to get
+# those right is a Markdown parser and six rounds of review proved that one
+# never ends. The template carries only one-line comments, so the template
+# is still absence and an author's own prose is still presence.
 body '## Intent
-<!--
-hidden multiline comment
--->
+<!-- one-line guidance -->
 
 ## Validation
 - Tests: pass.
@@ -1471,9 +1452,48 @@ trivial
 ## Why this tier
 Docs.'
 if accepts; then
-  fail "a multiline HTML comment satisfied a required section"
+  fail "a one-line HTML comment satisfied a required section"
 fi
-ok "a multiline comment does not read as evidence"
+ok "a one-line comment is invisible"
+
+body '## Intent
+Support the literal `<!--
+token` across a line break, and `<!-- -->` inline, and > quoted `    <!--`.
+
+## Invariants
+- x holds
+
+## Validation
+- Tests: pass
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "an opener outside a one-line comment is visible text and eats nothing"
+else
+  fail "the gate refused a valid body over a multi-line code span"
+fi
+
+echo "==> a heading may carry up to three leading spaces"
+body '   ## Intent
+Real intent.
+
+  ## Validation
+- Tests: pass.
+
+ ## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  ok "indented ATX headings are sections"
+else
+  fail "the gate refused a valid body over indented headings"
+fi
 
 echo "==> an unreadable body fails closed (non-root only)"
 # chmod does not stop root, which is what the required workflow's container

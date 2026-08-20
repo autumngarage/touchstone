@@ -43,93 +43,39 @@ BODY_FILE="${1:-}"
 [ -f "$BODY_FILE" ] || die "cannot read pull request body: $BODY_FILE"
 
 # HTML comments are invisible in the rendered body, so they are removed
-# before any parsing at all: a heading inside a comment is not a heading, and
-# the template's guidance comment above the tier value is not part of the
-# tier. Removing them here, once, is what keeps every later rule honest.
+# before any parsing: the template's guidance comment above the tier value is
+# not part of the tier. Only a comment that opens and closes on one line is
+# removed. That is the declared limit, and it is deliberate: a comment state
+# carried across lines must know about fences, code spans, info strings,
+# backslash escapes, and blockquotes to avoid swallowing the rest of an honest
+# body -- six rounds of review found six such cases -- while a one-line strip
+# can lose at most one comment's bytes. The template carries only one-line
+# comments; anything else an author writes is visible text.
 STRIPPED_BODY="$(mktemp "${TMPDIR:-/tmp}/delivery-evidence.XXXXXXXX")" \
   || die "could not create a working file"
 trap 'rm -f "$STRIPPED_BODY"' EXIT
 awk '
   {
     line = $0
-    # A fenced code block renders its bytes literally, so a <!-- inside one
-    # is visible text, not a comment opener -- treating it as one swallowed
-    # the rest of the body of any PR that mentions the token.
-    if (in_fence) {
-      if (match(line, /^ {0,3}(`{3,}|~{3,})[[:space:]]*$/)) {
-        seg = line
-        gsub(/[[:space:]]/, "", seg)
-        if (substr(seg, 1, 1) == fence_char && length(seg) >= fence_len) in_fence = 0
-      }
-      print; next
-    }
-    if (!in_comment && match(line, /^ {0,3}(`{3,}|~{3,})/)) {
-      seg = substr(line, RSTART, RLENGTH)
-      gsub(/[[:space:]]/, "", seg)
-      info = substr(line, RSTART + RLENGTH)
-      # CommonMark: the info string of a backtick fence may not contain a
-      # backtick -- such a line is ordinary text, and opening a fence on it
-      # hid every heading after it.
-      if (!(substr(seg, 1, 1) == "`" && index(info, "`") > 0)) {
-        fence_char = substr(seg, 1, 1); fence_len = length(seg); in_fence = 1
-        print; next
-      }
-    }
-    # A 4-space (or tab) indented line is code per Markdown: its bytes render
-    # literally, so a comment opener inside one is visible text and must not
-    # open comment state. An already-open comment still swallows it.
-    if (!in_comment && line ~ /^(\t|    )/) { print; next }
     out = ""
-    while (length(line) > 0) {
-      if (in_comment) {
-        close_at = index(line, "-->")
-        if (close_at == 0) { line = ""; continue }
-        line = substr(line, close_at + 3)
-        in_comment = 0
-        continue
-      }
-      open_at = index(line, "<!--")
-      if (open_at == 0) { out = out line; line = ""; continue }
-      # An opener inside an inline code span is visible text. Spans open and
-      # close with equal-length backtick runs (CommonMark), so runs are
-      # tracked, not single characters -- parity counting broke on
-      # double-backtick spans. Line-local, per the declared limit above.
-      prefix = substr(line, 1, open_at - 1)
-      span_len = 0
-      scan = prefix
-      while (match(scan, /`+/)) {
-        run = RLENGTH
-        if (span_len == 0) span_len = run
-        else if (run == span_len) span_len = 0
-        scan = substr(scan, RSTART + RLENGTH)
-      }
-      if (span_len > 0) {
-        rest = substr(line, open_at)
-        closer = sprintf("%0*d", span_len, 0); gsub(/0/, "`", closer)
-        close_at = index(rest, closer)
-        if (close_at > 0) {
-          out = out prefix substr(rest, 1, close_at + span_len - 1)
-          line = substr(rest, close_at + span_len)
-          continue
-        }
-      }
-      # A backslash escapes the "<" (CommonMark), so "\<!--" is visible
-      # text. Backslashes escape each other, so only an odd-length run
-      # immediately before the opener escapes it.
-      escapes = 0
-      while (escapes < length(prefix) && substr(prefix, length(prefix) - escapes, 1) == "\\") escapes++
-      if (escapes % 2 == 1) {
-        out = out prefix "<!--"
-        line = substr(line, open_at + 4)
-        continue
-      }
-      out = out prefix
-      line = substr(line, open_at + 4)
-      in_comment = 1
+    while ((open_at = index(line, "<!--")) > 0) {
+      rest = substr(line, open_at + 4)
+      close_at = index(rest, "-->")
+      if (close_at == 0) break
+      out = out substr(line, 1, open_at - 1)
+      line = substr(rest, close_at + 3)
     }
-    print out
+    print out line
   }
 ' "$BODY_FILE" >"$STRIPPED_BODY" || die "could not read pull request body: $BODY_FILE"
+
+# One exception to "everything else is visible": a body whose first line
+# opens a comment it does not close renders as nothing at all on GitHub while
+# its text would read as evidence here. That is refused, with the remedy,
+# rather than parsed.
+if awk 'NF { exit !(index($0, "<!--") > 0) } END { if (NR == 0) exit 1 }' "$STRIPPED_BODY"; then
+  die "the body opens an HTML comment on its first line and does not close it there; close it on the same line or remove it (HTML comments are recognised one line at a time)"
+fi
 
 # Section text is everything between one `## Heading` and the next heading.
 # Headings inside a fenced block are sample text, not sections -- a fenced
@@ -156,8 +102,9 @@ section() {
         if (grabbing) print; next
       }
     }
-    $0 == want { grabbing = 1; next }
-    grabbing && /^## / { exit }
+    { line = $0; sub(/^ {0,3}/, "", line) }
+    line == want { grabbing = 1; next }
+    grabbing && line ~ /^## / { exit }
     grabbing { print }
   ' "$STRIPPED_BODY"
 }
