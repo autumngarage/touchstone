@@ -66,8 +66,14 @@ awk '
     if (!in_comment && match(line, /^ {0,3}(`{3,}|~{3,})/)) {
       seg = substr(line, RSTART, RLENGTH)
       gsub(/[[:space:]]/, "", seg)
-      fence_char = substr(seg, 1, 1); fence_len = length(seg); in_fence = 1
-      print; next
+      info = substr(line, RSTART + RLENGTH)
+      # CommonMark: the info string of a backtick fence may not contain a
+      # backtick -- such a line is ordinary text, and opening a fence on it
+      # hid every heading after it.
+      if (!(substr(seg, 1, 1) == "`" && index(info, "`") > 0)) {
+        fence_char = substr(seg, 1, 1); fence_len = length(seg); in_fence = 1
+        print; next
+      }
     }
     # A 4-space (or tab) indented line is code per Markdown: its bytes render
     # literally, so a comment opener inside one is visible text and must not
@@ -131,8 +137,14 @@ section() {
     match($0, /^ {0,3}(`{3,}|~{3,})/) {
       seg = substr($0, RSTART, RLENGTH)
       gsub(/[[:space:]]/, "", seg)
-      fence_char = substr(seg, 1, 1); fence_len = length(seg); in_fence = 1
-      if (grabbing) print; next
+      info = substr($0, RSTART + RLENGTH)
+      if (substr(seg, 1, 1) == "`" && index(info, "`") > 0) {
+        # Not a fence per CommonMark: backtick info strings may not contain
+        # a backtick. Fall through to ordinary line handling.
+      } else {
+        fence_char = substr(seg, 1, 1); fence_len = length(seg); in_fence = 1
+        if (grabbing) print; next
+      }
     }
     $0 == want { grabbing = 1; next }
     grabbing && /^## / { exit }

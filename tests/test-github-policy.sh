@@ -1375,6 +1375,27 @@ else
   fail "the gate refused a valid body with an indented code sample"
 fi
 
+echo "==> a backtick in a fence info string means no fence at all"
+body '## Intent
+See ```inline`code``` here.
+
+## Invariants
+- x holds
+
+## Validation
+- Tests: pass
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "an info string containing a backtick does not open a fence"
+else
+  fail "the gate refused a valid body over a non-fence backtick line"
+fi
+
 echo "==> a bare list marker satisfies nothing"
 body '## Intent
 -
