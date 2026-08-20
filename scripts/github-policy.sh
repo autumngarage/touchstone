@@ -106,6 +106,71 @@ managed_ruleset_json() {
   fi
 }
 
+# GitHub accepts the merge_queue rule only in repository rulesets, never in an
+# organization ruleset (verified 2026-08-20: identical payload, 422 at the
+# organization endpoint). The queue therefore lives in a companion repository
+# ruleset managed alongside the organization one: same backup, apply, verify,
+# and rollback transaction.
+managed_repo_ruleset_json() {
+  local list ids count id
+  list="$(api --paginate "repos/$ORG/$REPOSITORY/rulesets?includes_parents=false" | jq -s 'add // []')" || return $?
+  ids="$(jq -c --arg name "$REPO_RULESET_NAME" '[.[] | select(.name == $name) | .id]' <<<"$list")" \
+    || return $?
+  count="$(jq -r length <<<"$ids")" || return $?
+  if [ "$count" -eq 0 ]; then
+    printf 'null\n'
+  elif [ "$count" -eq 1 ]; then
+    id="$(jq -r '.[0]' <<<"$ids")" || return $?
+    api "repos/$ORG/$REPOSITORY/rulesets/$id"
+  else
+    die "more than one repository ruleset is named $REPO_RULESET_NAME"
+  fi
+}
+
+repo_ruleset_payload() {
+  jq '{name,target,enforcement,bypass_actors:(.bypass_actors // []),conditions,rules}'
+}
+
+verify_repo_ruleset_against() {
+  local expected="$1" current effective required
+  current="$(managed_repo_ruleset_json)" || return $?
+  if [ "$expected" = null ]; then
+    [ "$current" = null ] || die "companion repository ruleset exists when none was expected"
+    return 0
+  fi
+  [ "$current" != null ] || die "companion repository ruleset is missing"
+  diff -u <(normalize_ruleset <<<"$expected") <(normalize_ruleset <<<"$current") >/dev/null \
+    || die "companion repository ruleset differs from expected policy"
+  effective="$(api "repos/$ORG/$REPOSITORY/rules/branches/$BRANCH")" || return $?
+  while IFS= read -r required; do
+    jq -e --arg type "$required" 'any(.[]; .type == $type)' <<<"$effective" >/dev/null \
+      || die "effective policy is missing $required"
+  done < <(jq -r '.rules[].type' <<<"$expected")
+}
+
+# Create or replace the companion ruleset so it matches $1; delete it when $1
+# is null. Verified afterwards in every case.
+restore_repo_ruleset() {
+  local expected="$1" current payload
+  current="$(managed_repo_ruleset_json)" || return $?
+  if [ "$expected" = null ]; then
+    if [ "$current" != null ]; then
+      api --method DELETE "repos/$ORG/$REPOSITORY/rulesets/$(jq -r .id <<<"$current")" || return $?
+    fi
+  else
+    payload="$(repo_ruleset_payload <<<"$expected")" || return $?
+    if [ "$current" = null ]; then
+      printf '%s\n' "$payload" \
+        | api --method POST "repos/$ORG/$REPOSITORY/rulesets" --input - >/dev/null || return $?
+    elif ! diff -q <(normalize_ruleset <<<"$expected") <(normalize_ruleset <<<"$current") >/dev/null; then
+      printf '%s\n' "$payload" \
+        | api --method PUT "repos/$ORG/$REPOSITORY/rulesets/$(jq -r .id <<<"$current")" --input - >/dev/null \
+        || return $?
+    fi
+  fi
+  verify_repo_ruleset_against "$expected"
+}
+
 branch_protection_json() {
   local raw error
   error="$(mktemp)" || return $?
@@ -265,13 +330,14 @@ verify_rollback_files_absent() {
 }
 
 verify_policy_state() {
-  local expected_ruleset="$1" expected_protection="$2" actual_ruleset actual_protection
+  local expected_ruleset="$1" expected_protection="$2" expected_repo_ruleset="${3:-null}" actual_ruleset actual_protection
   actual_ruleset="$(managed_ruleset_json)" || return $?
   if [ "$expected_ruleset" = null ]; then
     [ "$actual_ruleset" = null ] || die "managed ruleset exists when none was expected"
   else
     verify_ruleset_against "$expected_ruleset" || return $?
   fi
+  verify_repo_ruleset_against "$expected_repo_ruleset" || return $?
   actual_protection="$(branch_protection_json)" || return $?
   diff -u \
     <(normalize_branch_protection <<<"$expected_protection") \
@@ -308,7 +374,7 @@ restore_branch_protection() {
 }
 
 restore_policy_state() {
-  local expected_ruleset="$1" expected_protection="$2" current current_protection payload id
+  local expected_ruleset="$1" expected_protection="$2" expected_repo_ruleset="${3:-null}" current current_protection payload id
   if [ "$expected_protection" != null ]; then
     restore_branch_protection "$expected_protection" || return $?
   fi
@@ -330,13 +396,14 @@ restore_policy_state() {
     fi
     verify_ruleset_against "$expected_ruleset" || return $?
   fi
+  restore_repo_ruleset "$expected_repo_ruleset" || return $?
   if [ "$expected_protection" = null ]; then
     current_protection="$(branch_protection_json)" || return $?
     if [ "$current_protection" != null ]; then
       api --method DELETE "repos/$ORG/$REPOSITORY/branches/$BRANCH/protection" || return $?
     fi
   fi
-  verify_policy_state "$expected_ruleset" "$expected_protection" || return $?
+  verify_policy_state "$expected_ruleset" "$expected_protection" "$expected_repo_ruleset" || return $?
 }
 
 COMMAND="${1:-}"
@@ -371,6 +438,17 @@ RULESET_NAME="$(policy_value .managedRuleset.name)"
 EXPECTED_RULESET_NAME="Touchstone policy v$CONTRACT_VERSION: $ORG/$REPOSITORY@$BRANCH"
 [ "$RULESET_NAME" = "$EXPECTED_RULESET_NAME" ] \
   || die "managed ruleset name must be the ownership marker: $EXPECTED_RULESET_NAME"
+jq -e '.managedRuleset.rules | all(.type != "merge_queue")' "$POLICY" >/dev/null \
+  || die "merge_queue belongs in managedRepositoryRuleset: GitHub rejects it in an organization ruleset"
+# The companion's name is the ownership marker, derived from the policy
+# coordinates rather than read from the desired block: a policy that removes
+# the companion must still find and delete the one it installed.
+REPO_RULESET_NAME="Touchstone merge queue v$CONTRACT_VERSION: $ORG/$REPOSITORY@$BRANCH"
+if jq -e '.managedRepositoryRuleset != null' "$POLICY" >/dev/null; then
+  [ "$(jq -r '.managedRepositoryRuleset.name // empty' "$POLICY")" = "$REPO_RULESET_NAME" ] \
+    || die "companion repository ruleset name must be the ownership marker: $REPO_RULESET_NAME"
+fi
+DESIRED_REPO_RULESET="$(jq -c '.managedRepositoryRuleset // null' "$POLICY")"
 
 case "$COMMAND" in
   diff)
@@ -383,12 +461,23 @@ case "$COMMAND" in
     fi
     diff -u -L current -L desired \
       <(printf '%s\n' "$current") <(printf '%s\n' "$desired") || [ "$?" -eq 1 ]
+    current_repo="$(managed_repo_ruleset_json)"
+    [ "$current_repo" = null ] || current_repo="$(normalize_ruleset <<<"$current_repo")"
+    desired_repo=null
+    [ "$DESIRED_REPO_RULESET" = null ] || desired_repo="$(normalize_ruleset <<<"$DESIRED_REPO_RULESET")"
+    diff -u -L current-repository -L desired-repository \
+      <(printf '%s\n' "$current_repo") <(printf '%s\n' "$desired_repo") || [ "$?" -eq 1 ]
     ;;
   dry-run)
     verify_rollback_removal_planned
     verify_source
     "$0" diff "$POLICY"
     echo "Would install/replace organization ruleset: $RULESET_NAME"
+    if [ "$DESIRED_REPO_RULESET" != null ]; then
+      echo "Would install/replace repository ruleset: $REPO_RULESET_NAME"
+    elif [ "$(managed_repo_ruleset_json)" != null ]; then
+      echo "Would DELETE repository ruleset: $REPO_RULESET_NAME (policy no longer declares it)"
+    fi
     echo "Would verify the active effective rules before removing legacy branch protection."
     ;;
   backup)
@@ -396,6 +485,7 @@ case "$COMMAND" in
     mkdir -p "$(dirname "$ARTIFACT")"
     branch="$(branch_protection_json)"
     managed="$(managed_ruleset_json)"
+    managed_repo="$(managed_repo_ruleset_json)"
     if [ "$branch" = null ]; then
       rollback_prerequisites='{}'
     else
@@ -403,14 +493,14 @@ case "$COMMAND" in
     fi
     repository_rulesets="$(api "repos/$ORG/$REPOSITORY/rulesets?includes_parents=false")"
     effective_rulesets="$(api "repos/$ORG/$REPOSITORY/rulesets?includes_parents=true")"
-    jq -n --argjson branch "$branch" --argjson managed "$managed" \
+    jq -n --argjson branch "$branch" --argjson managed "$managed" --argjson managedRepo "$managed_repo" \
       --argjson rollbackPrerequisites "$rollback_prerequisites" \
       --argjson repositoryRulesets "$repository_rulesets" --argjson effectiveRulesets "$effective_rulesets" \
       --arg org "$ORG" --arg repository "$REPOSITORY" --arg branchName "$BRANCH" \
       '{contractVersion:1,capturedAt:(now|todate),organization:$org,repository:$repository,branch:$branchName,
         rollbackPrerequisites:$rollbackPrerequisites,
         branchProtection:$branch,repositoryRulesets:$repositoryRulesets,effectiveRulesets:$effectiveRulesets,
-        managedOrganizationRuleset:$managed}' >"$ARTIFACT"
+        managedOrganizationRuleset:$managed,managedRepositoryRuleset:$managedRepo}' >"$ARTIFACT"
     echo "Wrote backup: $ARTIFACT"
     ;;
   apply)
@@ -420,6 +510,7 @@ case "$COMMAND" in
     desired="$(jq -c '.managedRuleset' "$POLICY")"
     source_ruleset="$(managed_ruleset_json)"
     source_protection="$(branch_protection_json)"
+    source_repo_ruleset="$(managed_repo_ruleset_json)"
     if [ "$source_ruleset" = null ] && [ "$source_protection" = null ]; then
       die "no existing protection is present to guard policy replacement"
     fi
@@ -435,12 +526,13 @@ case "$COMMAND" in
           || exit $?
       fi
       verify_ruleset || exit $?
+      restore_repo_ruleset "$DESIRED_REPO_RULESET" || exit $?
       if [ "$source_protection" != null ]; then
         api --method DELETE "repos/$ORG/$REPOSITORY/branches/$BRANCH/protection" || exit $?
       fi
-      verify_policy_state "$desired" null || exit $?
+      verify_policy_state "$desired" null "$DESIRED_REPO_RULESET" || exit $?
     ); then
-      (restore_policy_state "$source_ruleset" "$source_protection") \
+      (restore_policy_state "$source_ruleset" "$source_protection" "$source_repo_ruleset") \
         || die "policy replacement failed and the complete prior state could not be restored"
       die "policy replacement failed; the complete prior policy state was restored"
     fi
@@ -450,6 +542,7 @@ case "$COMMAND" in
   verify)
     verify_source
     verify_ruleset
+    verify_repo_ruleset_against "$DESIRED_REPO_RULESET"
     [ "$(branch_protection_json)" = null ] || die "legacy branch protection still duplicates the ruleset"
     verify_rollback_files_absent
     echo "Verified legacy branch protection is absent."
@@ -461,6 +554,7 @@ case "$COMMAND" in
     [ "$(jq -r .repository "$ARTIFACT")" = "$REPOSITORY" ] || die "backup repository does not match policy"
     [ "$(jq -r .branch "$ARTIFACT")" = "$BRANCH" ] || die "backup branch does not match policy"
     before="$(jq -c .managedOrganizationRuleset "$ARTIFACT")"
+    before_repo="$(jq -c '.managedRepositoryRuleset // null' "$ARTIFACT")"
     protection="$(jq -c .branchProtection "$ARTIFACT")"
     if [ "$protection" = null ] && [ "$before" = null ]; then
       die "backup contains no branch protection or managed ruleset to restore"
@@ -468,13 +562,14 @@ case "$COMMAND" in
     verify_rollback_prerequisites "$ARTIFACT"
     source_ruleset="$(managed_ruleset_json)"
     source_protection="$(branch_protection_json)"
+    source_repo_ruleset="$(managed_repo_ruleset_json)"
     if [ "$source_ruleset" = null ] && [ "$source_protection" = null ]; then
       die "current policy state has no protection to preserve"
     fi
     if ! (
       if [ "$protection" != null ]; then
         restore_branch_protection "$protection" || exit $?
-        verify_policy_state "$source_ruleset" "$protection" || exit $?
+        verify_policy_state "$source_ruleset" "$protection" "$source_repo_ruleset" || exit $?
       fi
       current="$(managed_ruleset_json)" || exit $?
       if [ "$before" = null ]; then
@@ -494,15 +589,16 @@ case "$COMMAND" in
         fi
         verify_ruleset_against "$before" || exit $?
       fi
+      restore_repo_ruleset "$before_repo" || exit $?
       if [ "$protection" = null ]; then
         current_protection="$(branch_protection_json)" || exit $?
         if [ "$current_protection" != null ]; then
           api --method DELETE "repos/$ORG/$REPOSITORY/branches/$BRANCH/protection" || exit $?
         fi
       fi
-      verify_policy_state "$before" "$protection" || exit $?
+      verify_policy_state "$before" "$protection" "$before_repo" || exit $?
     ); then
-      (restore_policy_state "$source_ruleset" "$source_protection") \
+      (restore_policy_state "$source_ruleset" "$source_protection" "$source_repo_ruleset") \
         || die "rollback failed and the complete prior policy state could not be restored"
       die "rollback failed verification; the complete prior policy state was restored"
     fi

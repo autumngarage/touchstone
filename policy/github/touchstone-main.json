@@ -93,7 +93,23 @@
             }
           ]
         }
-      },
+      }
+    ]
+  },
+  "managedRepositoryRuleset": {
+    "name": "Touchstone merge queue v1: autumngarage/touchstone@main",
+    "target": "branch",
+    "enforcement": "active",
+    "bypass_actors": [],
+    "conditions": {
+      "ref_name": {
+        "include": [
+          "~DEFAULT_BRANCH"
+        ],
+        "exclude": []
+      }
+    },
+    "rules": [
       {
         "type": "merge_queue",
         "parameters": {

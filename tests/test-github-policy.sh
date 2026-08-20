@@ -243,7 +243,33 @@ case "$method $endpoint" in
     ;;
   "GET repos/autumngarage/touchstone/rulesets?includes_parents=false" | \
   "GET repos/autumngarage/touchstone/rulesets?includes_parents=true")
-    emit '[]'
+    if [ -f "$state/repo-ruleset.json" ]; then
+      emit "$(jq '[{id:.id,name:.name}]' "$state/repo-ruleset.json")"
+    else
+      emit '[]'
+    fi
+    ;;
+  "GET repos/autumngarage/touchstone/rulesets/321")
+    cat "$state/repo-ruleset.json"
+    ;;
+  "POST repos/autumngarage/touchstone/rulesets")
+    jq '. + {id:321}' >"$state/repo-ruleset.json"
+    echo "POST repo-ruleset" >>"$state/mutations.log"
+    if [ "${GH_FAKE_FAIL_REPO_MUTATION:-0}" = 1 ]; then
+      rm -f "$state/repo-ruleset.json"
+      echo "gh: Invalid request. Invalid property /rules/0 (HTTP 422)" >&2
+      exit 1
+    fi
+    emit "$(cat "$state/repo-ruleset.json")"
+    ;;
+  "PUT repos/autumngarage/touchstone/rulesets/321")
+    jq '. + {id:321}' >"$state/repo-ruleset.json"
+    echo "PUT repo-ruleset" >>"$state/mutations.log"
+    emit "$(cat "$state/repo-ruleset.json")"
+    ;;
+  "DELETE repos/autumngarage/touchstone/rulesets/321")
+    rm -f "$state/repo-ruleset.json"
+    echo "DELETE repo-ruleset" >>"$state/mutations.log"
     ;;
   "GET repos/autumngarage/touchstone/rules/branches/main")
     if [ ! -f "$state/ruleset.json" ]; then
@@ -254,7 +280,8 @@ case "$method $endpoint" in
     elif [ "${GH_FAKE_BAD_EFFECTIVE:-0}" = 1 ]; then
       jq '[.rules[] | select(.type != "workflows")]' "$state/ruleset.json"
     else
-      jq '[.rules[]]' "$state/ruleset.json"
+      jq -s 'map(.rules) | add' "$state/ruleset.json" "$state/repo-ruleset.json" 2>/dev/null \
+        || jq '[.rules[]]' "$state/ruleset.json"
     fi
     ;;
   *)
@@ -296,7 +323,8 @@ init_branch() {
   : >"$TMP_DIR/state/mutations.log"
   rm -f "$TMP_DIR/state/ruleset.json" "$TMP_DIR/state/bad-effective-used" \
     "$TMP_DIR/state/branch-calls" "$TMP_DIR/state/org-mutation-failed" \
-    "$TMP_DIR/state/branch-put-failed" "$TMP_DIR/state/local-workflow-absent"
+    "$TMP_DIR/state/branch-put-failed" "$TMP_DIR/state/local-workflow-absent" \
+    "$TMP_DIR/state/repo-ruleset.json"
 }
 
 run_policy() {
@@ -337,7 +365,11 @@ jq -e '
 # combinations nothing tested.
 jq -e '
   any(.managedRuleset.rules[]; .type == "required_status_checks" and .parameters.strict_required_status_checks_policy == false)
-  and any(.managedRuleset.rules[]; .type == "merge_queue" and .parameters == {
+  and all(.managedRuleset.rules[]; .type != "merge_queue")
+  and .managedRepositoryRuleset.name == "Touchstone merge queue v1: autumngarage/touchstone@main"
+  and .managedRepositoryRuleset.enforcement == "active"
+  and .managedRepositoryRuleset.conditions.ref_name.include == ["~DEFAULT_BRANCH"]
+  and any(.managedRepositoryRuleset.rules[]; .type == "merge_queue" and .parameters == {
     check_response_timeout_minutes: 60,
     grouping_strategy: "ALLGREEN",
     max_entries_to_build: 1,
@@ -346,7 +378,7 @@ jq -e '
     min_entries_to_merge: 1,
     min_entries_to_merge_wait_minutes: 0
   })
-' "$POLICY" >/dev/null || fail "policy must pair a merge queue with non-strict status checks"
+' "$POLICY" >/dev/null || fail "policy must pair a merge queue (in the repository ruleset: GitHub rejects it in an organization ruleset) with non-strict status checks"
 # One entry per merge commit: the queue branch names a single PR and the
 # publisher evaluates that PR, so a grouped merge commit would carry one PR's
 # verdict for several. Grouping is re-enabled only with a publisher that
@@ -357,7 +389,7 @@ jq -e '
 # before that handoff exists ejects every entry. The order is enforced here,
 # not in a PR description.
 SIGNAL_WORKFLOW="$ROOT/.github/workflows/review-evidence-signal.yml"
-if jq -e 'any(.managedRuleset.rules[]; .type == "merge_queue")' "$POLICY" >/dev/null; then
+if jq -e 'any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")' "$POLICY" >/dev/null; then
   grep -Fq 'merge_group:' "$SIGNAL_WORKFLOW" \
     || fail "policy enables a merge queue but review-evidence-signal.yml does not carry merge_group to the publisher"
 fi
@@ -371,6 +403,8 @@ grep -Fq '.rollbackPrerequisites.repositoryFiles = []' "$POLICY_GUIDE" \
   || fail "canary derivation retained Touchstone-only rollback prerequisites"
 grep -Fq 'rollback restores the fresh' "$POLICY_GUIDE" \
   || fail "canary guide does not name the source of rollback protection"
+grep -Fq '.managedRepositoryRuleset.name = "Touchstone merge queue v1: autumngarage/touchstone-policy-canary@main"' "$POLICY_GUIDE" \
+  || fail "canary derivation does not re-derive the companion ruleset marker"
 ok "ruleset expresses PR-only audited bypass and every native gate"
 
 echo "==> Read-only diff and dry-run"
@@ -468,8 +502,12 @@ run_policy apply "$POLICY"
 [ ! -f "$TMP_DIR/state/branch.json" ] || fail "apply left duplicate branch protection"
 [ "$(sed -n '1p' "$TMP_DIR/state/mutations.log")" = "POST org-ruleset" ] \
   || fail "apply did not install ruleset first"
-[ "$(sed -n '2p' "$TMP_DIR/state/mutations.log")" = "DELETE branch-protection" ] \
+[ "$(sed -n '2p' "$TMP_DIR/state/mutations.log")" = "POST repo-ruleset" ] \
+  || fail "apply did not install the companion repository ruleset after the organization ruleset"
+[ "$(sed -n '3p' "$TMP_DIR/state/mutations.log")" = "DELETE branch-protection" ] \
   || fail "apply removed branch protection before verified ruleset install"
+jq -e 'any(.rules[]; .type == "merge_queue")' "$TMP_DIR/state/repo-ruleset.json" >/dev/null \
+  || fail "companion repository ruleset does not carry the merge queue"
 before_count="$(wc -l <"$TMP_DIR/state/mutations.log" | tr -d ' ')"
 jq '.rules |= reverse' "$TMP_DIR/state/ruleset.json" >"$TMP_DIR/state/reordered.json"
 mv "$TMP_DIR/state/reordered.json" "$TMP_DIR/state/ruleset.json"
@@ -490,13 +528,60 @@ run_policy verify "$POLICY" >/dev/null
 ok "final verification requires rollback-only files to be absent from main"
 rm -f "$TMP_DIR/state/local-workflow-absent"
 
+echo "==> A queue rule in the organization ruleset is refused before any API call"
+jq '(.managedRuleset.rules += .managedRepositoryRuleset.rules) | del(.managedRepositoryRuleset)' "$POLICY" \
+  >"$TMP_DIR/org-queue-policy.json"
+if run_policy diff "$TMP_DIR/org-queue-policy.json" >/dev/null 2>"$TMP_DIR/org-queue.err"; then
+  fail "a merge_queue rule in the organization ruleset was accepted"
+fi
+grep -q "GitHub rejects it in an organization ruleset" "$TMP_DIR/org-queue.err" \
+  || fail "organization-level merge_queue refusal did not name the reason"
+jq '.managedRepositoryRuleset.name = "queue"' "$POLICY" >"$TMP_DIR/misnamed-companion.json"
+if run_policy diff "$TMP_DIR/misnamed-companion.json" >/dev/null 2>&1; then
+  fail "a companion ruleset without the ownership marker was accepted"
+fi
+ok "queue placement and companion ownership are validated locally"
+
+echo "==> A failed companion ruleset install restores the complete prior state"
+# GitHub rejected the queue rule at the organization endpoint on 2026-08-20;
+# the same failure at the repository endpoint must leave the prior policy
+# intact, not an organization ruleset that was replaced without its queue.
+init_branch
+if GH_FAKE_FAIL_REPO_MUTATION=1 run_policy apply "$POLICY" >/dev/null 2>&1; then
+  fail "apply succeeded although the companion repository ruleset was rejected"
+fi
+[ ! -f "$TMP_DIR/state/repo-ruleset.json" ] || fail "a rejected companion ruleset was left behind"
+[ ! -f "$TMP_DIR/state/ruleset.json" ] || fail "the organization ruleset was left installed after the companion failed"
+ok "a rejected companion ruleset restores the prior policy"
+
+# Re-establish the applied state for the rollback case.
+init_branch
+run_policy apply "$POLICY" >/dev/null
+
+echo "==> A policy that drops the companion removes the installed queue"
+jq 'del(.managedRepositoryRuleset)' "$POLICY" >"$TMP_DIR/no-companion-policy.json"
+run_policy dry-run "$TMP_DIR/no-companion-policy.json" >"$TMP_DIR/no-companion-dry-run.txt" 2>&1 || true
+grep -q "Would DELETE repository ruleset" "$TMP_DIR/no-companion-dry-run.txt" \
+  || fail "dry-run did not disclose the planned companion deletion"
+run_policy apply "$TMP_DIR/no-companion-policy.json" >/dev/null
+[ ! -f "$TMP_DIR/state/repo-ruleset.json" ] \
+  || fail "the companion ruleset survived a policy that no longer declares it"
+touch "$TMP_DIR/state/local-workflow-absent"
+run_policy verify "$TMP_DIR/no-companion-policy.json" >/dev/null \
+  || fail "verify did not accept the companion-free state"
+rm -f "$TMP_DIR/state/local-workflow-absent"
+ok "removing the companion from policy removes it from GitHub"
+run_policy apply "$POLICY" >/dev/null
+[ -f "$TMP_DIR/state/repo-ruleset.json" ] || fail "re-applying the policy did not reinstall the companion"
+
 echo "==> Rollback restores before removing replacement"
 run_policy rollback "$TMP_DIR/backup.json" "$POLICY"
 [ -f "$TMP_DIR/state/branch.json" ] || fail "rollback did not restore branch protection"
 [ ! -f "$TMP_DIR/state/ruleset.json" ] || fail "rollback did not remove the replacement ruleset"
-tail -2 "$TMP_DIR/state/mutations.log" >"$TMP_DIR/rollback-order.txt"
-diff -u <(printf 'PUT branch-protection\nDELETE org-ruleset\n') "$TMP_DIR/rollback-order.txt" >/dev/null \
-  || fail "rollback created a protection gap"
+[ ! -f "$TMP_DIR/state/repo-ruleset.json" ] || fail "rollback did not remove the companion repository ruleset"
+tail -3 "$TMP_DIR/state/mutations.log" >"$TMP_DIR/rollback-order.txt"
+diff -u <(printf 'PUT branch-protection\nDELETE org-ruleset\nDELETE repo-ruleset\n') "$TMP_DIR/rollback-order.txt" >/dev/null \
+  || fail "rollback created a protection gap: $(tr '\n' ' ' <"$TMP_DIR/rollback-order.txt")"
 ok "rollback restores the captured gate before removing its replacement"
 
 echo "==> Restricted rollback uses the writable API shape"
@@ -682,7 +767,7 @@ touch "$TMP_DIR/state/local-workflow-absent"
 run_policy verify "$TMP_DIR/updated-policy.json" >/dev/null \
   || fail "failed rollback update did not restore the prior ruleset"
 diff -u <(printf 'PUT org-ruleset\nPUT org-ruleset\n') "$TMP_DIR/state/mutations.log" >/dev/null \
-  || fail "failed rollback update did not restore the previous ruleset immediately"
+  || fail "failed rollback update did not restore the previous ruleset immediately: $(tr '\n' ' ' <"$TMP_DIR/state/mutations.log")"
 ok "failed rollback update restores and verifies the prior active gate"
 
 echo "==> Failed rollback deletion restores the prior ruleset"
@@ -695,9 +780,11 @@ if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_BRANCH_ERROR
 fi
 [ -f "$TMP_DIR/state/ruleset.json" ] \
   || fail "failed rollback deletion did not recreate the prior ruleset"
-diff -u <(printf 'PUT branch-protection\nDELETE org-ruleset\nPOST org-ruleset\n') \
-  <(head -3 "$TMP_DIR/state/mutations.log") >/dev/null \
-  || fail "failed rollback deletion did not restore the previous ruleset immediately"
+[ -f "$TMP_DIR/state/repo-ruleset.json" ] \
+  || fail "failed rollback deletion did not recreate the prior companion ruleset"
+diff -u <(printf 'PUT branch-protection\nDELETE org-ruleset\nDELETE repo-ruleset\nPOST org-ruleset\nPOST repo-ruleset\n') \
+  <(head -5 "$TMP_DIR/state/mutations.log") >/dev/null \
+  || fail "failed rollback deletion did not restore the previous rulesets immediately: $(tr '\n' ' ' <"$TMP_DIR/state/mutations.log")"
 tail -1 "$TMP_DIR/state/mutations.log" | grep -qx 'DELETE branch-protection' \
   || fail "failed rollback deletion did not restore the previous branch state"
 touch "$TMP_DIR/state/local-workflow-absent"
