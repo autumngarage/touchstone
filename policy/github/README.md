@@ -68,9 +68,12 @@ Every adopted repository's policy is an exact derivation of the canonical
 one — `scripts/derive-consumer-policy.sh REPOSITORY` — checked in under
 `policy/github/consumers/` and refused by the test suite if it drifts. Apply
 one with `scripts/github-policy.sh apply policy/github/consumers/REPOSITORY.json`
-after the repository has adopted (`touchstone adopt`) and its `validate`
-workflow runs on `merge_group`; enabling a required workflow before the
-declaration exists blocks every merge there.
+only once all three hold: the repository has adopted (`touchstone adopt`);
+the canonical policy no longer lists the `review-binding` status context
+(the consumer has no publisher for it — the pinned `review-gate` workflow is
+its replacement); and its `validate` runs on `merge_group`. Applying earlier
+requires a check nothing there can produce and blocks every merge and queue
+entry.
 
 ## Live canary testing
 

@@ -127,6 +127,17 @@ Ordered so each PR leaves vesper working.
   `scripts/worker.sh` in whatever repository the user opens; that file stays,
   vesper-owned, and keeps working because it now calls the installed CLI.
 
+**Recoverability of PR A.** The deletion is one reviewed commit on a branch:
+`touchstone adopt --dry-run` shows the declarations before they are written;
+the managed-path set is `.touchstone-manifest` itself (verify it against the
+tree before deleting, as §1 did); the rollback point is `git revert` of that
+commit, which restores the 2.x scripts and the `touchstone update` shim keeps
+them runnable. Before the old Swift coverage goes, the replacements are:
+`worker.sh`/`deploy.sh` invoking the CLI exercised against a throwaway
+branch through `touchstone pr open` → `status` → `merge` into a test PR; the
+hooks by one refused commit on `main` and one commit-stage run; the Agent tab
+by the rewritten worker-tab tests.
+
 **PR B — owner references.** `site/lib/bugReportPolicy.js:343-344` falls back
 to `henrymodisett/vesper` (set the Vercel env or change the default);
 `README.md:28` + `Tests/ReadmeTests.swift:10` together; fixture URLs in two
