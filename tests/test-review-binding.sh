@@ -646,6 +646,12 @@ case "$1 ${2:-}" in
       else
         printf '%s\t%s\t%s\n' "$GH_HEAD" "$GH_BASE_REF" "$GH_BASE_SHA"
       fi
+    elif has '--json headRefOid,baseRefName' "$@"; then
+      if [ "${GH_MODE:-ok}" = moved_during_gate ]; then
+        printf 'moved-head\t%s\n' "$GH_BASE_REF"
+      else
+        printf '%s\t%s\n' "$GH_HEAD" "$GH_BASE_REF"
+      fi
     elif has '--json body' "$@"; then
       if [ -f "$GH_STATE/pr-body" ]; then
         cat "$GH_STATE/pr-body"
@@ -1008,6 +1014,11 @@ EOF
     || fail "merge did not re-run the review gate before enqueueing"
   [ "$(grep -c 'actions/runs/77 ' "$GH_CALLS")" -ge 3 ] \
     || fail "merge accepted a stale completed attempt instead of waiting for the re-run's attempt"
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
+  GH_MODE=moved_during_gate run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'moved (head moved-head'
+  assert_not_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
   GH_GATE_CONCLUSION=failure run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 1
