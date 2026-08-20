@@ -863,4 +863,1045 @@ run_policy verify "$POLICY" >/dev/null \
   || fail "failed rollback deletion did not verify the complete prior policy state"
 ok "failed rollback deletion restores the prior active gate"
 
+# =============================================================================
+# Delivery evidence — the merge gate refuses a pull request that has not
+# recorded its review tier and validation. Assertions live here rather than in
+# a new file per the self-test rule: policy and merge-gate behavior is this
+# file's surface.
+EVIDENCE_CHECK="$ROOT/scripts/check-delivery-evidence.sh"
+EVIDENCE_TMP="$TMP_DIR/evidence"
+mkdir -p "$EVIDENCE_TMP"
+body() { printf '%s\n' "$1" >"$EVIDENCE_TMP/body.md"; }
+accepts() { bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/body.md" >/dev/null 2>&1; }
+
+echo "==> a fully recorded pull request is accepted"
+body '## Intent
+Bind the branch a PR is opened for.
+
+## Invariants
+- The reviewed head is the merged head.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: full suite, pass.
+- Manual validation: opened a PR from a worktree; the request bound the expected branch.
+
+## Review tier
+serious
+
+## Why this tier
+Touches the merge boundary used by every project.'
+if accepts; then
+  ok "a recorded serious pull request passes"
+else
+  fail "the gate refused a fully recorded pull request"
+fi
+
+echo "==> an unedited template is absence, not evidence"
+body '## Intent
+<State exactly what behavior this change creates.>
+
+## Invariants
+<List the conditions that must remain true.>
+
+## Validation
+- Build: <exact command and result>
+
+## Review tier
+normal
+
+## Why this tier
+<One or two concrete sentences.>'
+if accepts; then
+  fail "the gate accepted an unedited template"
+else
+  ok "placeholder text does not satisfy the gate"
+fi
+
+echo "==> a missing or invalid tier is refused"
+for tier in "" "quick" "SERIOUSLY"; do
+  body "## Intent
+Real intent.
+
+## Invariants
+- Something true.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+$tier
+
+## Why this tier
+Because."
+  if accepts; then
+    fail "the gate accepted tier '$tier'"
+  else
+    ok "tier '$tier' is refused"
+  fi
+done
+
+echo "==> trivial needs less, but still needs its reasoning"
+body '## Intent
+Fix a typo in a comment.
+
+## Validation
+- Build: n/a — comment only
+- Automated tests: lint, pass.
+- Manual validation: n/a — none
+
+## Review tier
+trivial
+
+## Why this tier
+Comment-only, no behavior change.'
+if accepts; then
+  ok "a trivial pull request needs no invariants section"
+else
+  fail "the gate demanded invariants from a trivial change"
+fi
+
+body '## Intent
+Fix a typo.
+
+## Validation
+- Build: n/a — comment only
+- Automated tests: lint, pass.
+- Manual validation: n/a — none
+
+## Review tier
+trivial
+
+## Why this tier
+'
+if accepts; then
+  fail "the gate accepted a tier with no justification"
+else
+  ok "an unjustified tier is refused at every level"
+fi
+
+echo "==> a normal or serious change must state its invariants"
+body '## Intent
+Change how merges bind.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+normal
+
+## Why this tier
+Contained logic change.'
+if accepts; then
+  fail "the gate accepted a normal change with no invariants"
+else
+  ok "normal requires invariants"
+fi
+
+echo "==> evasions that look like content are still absence"
+for evasion in "n/a" "TBD" "todo" "-"; do
+  body "## Intent
+$evasion
+
+## Invariants
+- Real invariant.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+normal
+
+## Why this tier
+Contained."
+  if accepts; then
+    fail "the gate accepted '$evasion' as intent"
+  else
+    ok "'$evasion' does not satisfy a required section"
+  fi
+done
+
+echo "==> placeholders inside labeled bullets are still placeholders"
+# "- Build: <exact command and result>" is the template, not a record of
+# anything that ran.
+body '## Intent
+Real intent.
+
+## Invariants
+- Real invariant.
+
+## Validation
+- Build: <exact command and result>
+- Automated tests: <exact command and result>
+
+## Review tier
+normal
+
+## Why this tier
+Contained.'
+if accepts; then
+  fail "the gate accepted labeled placeholder bullets as validation"
+else
+  ok "a labeled placeholder bullet does not satisfy validation"
+fi
+
+echo "==> n/a with a reason is honest and accepted"
+body '## Intent
+Fix prose.
+
+## Invariants
+- The rendered blocks match canon.
+
+## Validation
+- Build: n/a — documentation only, no build step
+- Automated tests: full suite, pass
+- Manual validation: n/a — rendered blocks are asserted by the suite
+
+## Review tier
+normal
+
+## Why this tier
+Contained doc change with deterministic coverage.'
+if accepts; then
+  ok "n/a with a recorded reason satisfies the section"
+else
+  fail "the gate refused an honest n/a-with-reason"
+fi
+
+echo "==> the shipped template refuses itself"
+body "$(cat "$ROOT/.github/pull_request_template.md")"
+if accepts; then
+  fail "the unedited PR template satisfies the gate it feeds"
+else
+  ok "the unedited template is absence"
+fi
+
+echo "==> the gate refuses a body it cannot read"
+if bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/absent.md" >/dev/null 2>&1; then
+  fail "the gate passed on an unreadable body"
+else
+  ok "an unreadable body fails closed"
+fi
+
+# Installation of this check as a required gate is deliberately absent here:
+# a repository workflow on pull_request_target never reports on a merge-queue
+# commit, so requiring its context would eject every queue entry. The gate
+# ships as a required workflow from touchstone-workflows (AUT-332 / 3.1),
+# which runs from the pinned source on pull_request and merge_group alike.
+
+echo "==> unchecked task boxes and bullet-hidden comments are absence"
+body '## Intent
+- [ ] Build
+- [ ] Test
+
+## Invariants
+- [ ] something
+
+## Validation
+- [ ] Tests pass locally
+
+## Review tier
+normal
+
+## Why this tier
+- [ ] contained'
+if accepts; then
+  fail "a body of unchecked task boxes satisfied the gate"
+fi
+ok "unchecked task-list scaffolding records nothing"
+
+body '## Intent
+- <!-- hidden behind a bullet -->
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "a comment hidden behind a bullet satisfied a required section"
+fi
+ok "scaffolding cannot hide a one-line comment"
+
+echo "==> the template's guidance comment does not corrupt the tier"
+# An author who follows the shipped template leaves its <!-- trivial | normal
+# | serious --> hint in place and writes the value beneath it. That must
+# parse, or the gate blocks exactly the authors who did it right.
+body '## Intent
+real
+
+## Invariants
+- x holds
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+<!-- trivial | normal | serious -->
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "a tier beneath the template guidance comment parses"
+else
+  fail "the gate blocked a correctly filled template"
+fi
+
+echo "==> headings inside a comment are not sections"
+body '<!--
+## Intent
+real
+## Invariants
+- x
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+## Review tier
+normal
+## Why this tier
+x
+-->'
+if accepts; then
+  fail "a body hidden entirely inside a comment satisfied the gate"
+fi
+ok "a body that opens an unclosed comment on its first line is refused with a remedy"
+
+echo "==> nested empty list markers are still nothing"
+body '## Intent
+- -
+* *
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "nested bare list markers satisfied a required section"
+fi
+ok "repeated scaffolding stripping holds"
+
+echo "==> ordered unchecked task items are still promises"
+body '## Intent
++ [ ] plus-marker task
+
+## Validation
++ [ ] Tests
+
+## Invariants
++ [ ] x
+
+## Review tier
+normal
+
+## Why this tier
++ [ ] contained'
+if accepts; then
+  fail "plus-prefixed unchecked task items satisfied the gate"
+fi
+ok "the third Markdown bullet marker strips like the other two"
+
+body '## Intent
+1. [ ] run tests
+
+## Invariants
+2. [ ] something
+
+## Validation
+1. [ ] Tests
+
+## Review tier
+normal
+
+## Why this tier
+3. [ ] contained'
+if accepts; then
+  fail "ordered unchecked task items satisfied the gate"
+fi
+ok "numbered scaffolding strips like bulleted scaffolding"
+
+echo "==> literal comment openers in code are visible text"
+# The gate must not swallow the body of a PR that mentions the token its own
+# template uses.
+body '## Intent
+Support the literal `<!--` token in templates.
+
+## Invariants
+- x holds
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "an inline-code comment opener does not eat the body"
+else
+  fail "the gate refused a valid body mentioning <!-- in code"
+fi
+
+body '## Intent
+real
+
+```
+<!--
+```
+
+## Invariants
+- x
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "a fenced comment opener does not eat the body"
+else
+  fail "the gate refused a valid body with <!-- in a fence"
+fi
+
+echo "==> blockquoted unchecked tasks are still promises"
+body '## Intent
+> - [ ] run tests
+
+## Invariants
+> - [ ] x
+
+## Validation
+> - [ ] Tests
+
+## Review tier
+normal
+
+## Why this tier
+> - [ ] contained'
+if accepts; then
+  fail "blockquoted unchecked task items satisfied the gate"
+fi
+ok "blockquote markers strip like list markers"
+
+echo "==> a fenced copy of the template is sample text, not sections"
+body '```
+## Intent
+real
+## Invariants
+- x
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+## Review tier
+normal
+## Why this tier
+x
+```'
+if accepts; then
+  fail "a fenced copy of the whole template satisfied the gate"
+fi
+ok "fenced headings are not sections"
+
+echo "==> a longer fence is not closed by a shorter line"
+# Markdown closes a fence only with the same character repeated at least as
+# many times as the opener; the parser must agree or fenced samples re-enter
+# section parsing while the rendered body keeps them hidden.
+body '````
+```
+## Intent
+real
+## Invariants
+- x
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+## Review tier
+normal
+## Why this tier
+x
+````'
+if accepts; then
+  fail "a four-backtick fence was closed by a three-backtick line"
+fi
+ok "fence closing honors delimiter length"
+
+echo "==> Markdown edge fidelity: strict closers, run-length spans"
+# A closing fence is delimiter plus trailing spaces only; an info-string line
+# inside a fence closes nothing.
+body '````
+```not-a-closing-fence
+## Intent
+real
+## Invariants
+- x
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+## Review tier
+normal
+## Why this tier
+x
+````'
+if accepts; then
+  fail "an info-string line inside a fence was treated as its closer"
+fi
+ok "a closer is the delimiter alone"
+
+# Inline spans open and close with equal-length runs; a double-backtick span
+# holding a comment opener is visible text, and refusing it blocks exactly
+# the authors discussing this template.
+body '## Intent
+Support the ``<!--`` token in templates.
+
+## Invariants
+- x holds
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "a double-backtick span keeps its comment opener visible"
+else
+  fail "the gate refused a valid body using a double-backtick span"
+fi
+
+echo "==> the tier is one word; whitespace does not assemble one"
+for bad_tier in 'nor mal' 'nor
+mal'; do
+  body "## Intent
+real
+
+## Invariants
+- x
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+$bad_tier
+
+## Why this tier
+x"
+  if accepts; then
+    fail "a tier containing whitespace was normalized into a valid one"
+  fi
+done
+ok "internal whitespace never assembles a valid tier"
+
+echo "==> a 4-space-indented delimiter inside a fence closes nothing"
+body '```
+    ```
+## Intent
+real
+## Invariants
+- x
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+## Review tier
+normal
+## Why this tier
+x
+```'
+if accepts; then
+  fail "an indented delimiter line was treated as a fence closer"
+fi
+ok "fence delimiters honor the three-space indentation bound"
+
+echo "==> an indented code sample keeps its comment opener visible"
+body '## Intent
+Example:
+
+    <!--
+
+## Invariants
+- x
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "a 4-space-indented opener does not eat the body"
+else
+  fail "the gate refused a valid body with an indented code sample"
+fi
+
+echo "==> a backtick in a fence info string means no fence at all"
+body '## Intent
+See ```inline`code``` here.
+
+## Invariants
+- x holds
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "an info string containing a backtick does not open a fence"
+else
+  fail "the gate refused a valid body over a non-fence backtick line"
+fi
+
+echo "==> a backslash-escaped comment opener stays visible text"
+body '## Intent
+The literal token is \<!-- in the rendered body.
+
+## Invariants
+- x holds
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "an escaped opener does not eat the body"
+else
+  fail "the gate refused a valid body over a backslash-escaped opener"
+fi
+
+echo "==> a bare list marker satisfies nothing"
+body '## Intent
+-
+*
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "a section of bare list markers satisfied the gate"
+fi
+ok "bare list markers are absence"
+
+echo "==> comment handling is one-line by declared limit"
+# A comment that opens and closes on one line is invisible. Anything else --
+# an opener in a code span, a fence, a blockquote, an escaped opener, a
+# comment spanning lines -- is visible text, because the only way to get
+# those right is a Markdown parser and six rounds of review proved that one
+# never ends. The template carries only one-line comments, so the template
+# is still absence and an author's own prose is still presence.
+body '## Intent
+<!-- one-line guidance -->
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "a one-line HTML comment satisfied a required section"
+fi
+ok "a one-line comment is invisible"
+
+body '## Intent
+Support the literal `<!--
+token` across a line break, and `<!-- -->` inline, and > quoted `    <!--`.
+
+## Invariants
+- x holds
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "an opener outside a one-line comment is visible text and eats nothing"
+else
+  fail "the gate refused a valid body over a multi-line code span"
+fi
+
+body 'Support the literal `<!--` token in an opening sentence.
+
+## Intent
+Real intent.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  ok "a first line that merely mentions the opener is visible text"
+else
+  fail "the first-line guard refused a body whose opening sentence mentions the token"
+fi
+
+echo "==> every Validation row is filled, not only one"
+body '## Intent
+Real intent.
+
+## Validation
+- Build: n/a — shell
+- Automated tests:
+- Manual validation: <specific scenario and result>
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "one filled Validation row satisfied the section while two stayed empty"
+fi
+ok "an empty or placeholder Validation row is reported by name"
+body '## Intent
+Real intent.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: TBD
+- Manual validation: none
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "a bare placeholder word on a Validation row satisfied it"
+fi
+ok "placeholder rules apply to each Validation row"
+body '## Intent
+Real intent.
+
+## Validation
+- Build: pass
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "deleting two of the three shipped Validation rows satisfied the section"
+fi
+ok "all three shipped Validation rows are required"
+body '## Intent
+Real intent.
+
+## Validation
+The Build: passed in CI, honestly.
+- Build:
+- Automated tests: suite passed
+- Manual validation: n/a — no UI
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "prose mentioning a row label was read as the row value"
+fi
+ok "a row value comes from its own bullet, not from prose"
+body '## Intent
+Real intent.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: suite passed
+- Manual validation: n/a — no UI
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  ok "every row filled passes"
+else
+  fail "fully filled Validation rows were refused"
+fi
+
+echo "==> an empty fenced block is not content"
+body '## Intent
+```
+```
+
+## Invariants
+```bash
+```
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  fail "empty fence delimiters satisfied a required section"
+fi
+ok "fence delimiters alone are scaffolding"
+body '## Intent
+```c++
+```
+
+## Invariants
+~~~text/plain
+~~~
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+normal
+
+## Why this tier
+```foo bar
+```'
+if accepts; then
+  fail "empty fences with punctuated info strings satisfied required sections"
+fi
+ok "any fence delimiter line is scaffolding, whatever its info string"
+body '## Intent
+Real intent.
+
+## Validation
+- Build: n/a —
+- Automated tests: n/a -
+- Manual validation: n/a —
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "n/a followed only by a separator counted as a reason"
+fi
+ok "n/a needs a reason, not a dash"
+if LC_ALL=C accepts; then
+  fail "under LC_ALL=C an em dash after n/a counted as a reason"
+fi
+ok "the em dash is recognised byte-wise under the C locale"
+body '## Intent
+```inline`code``` is visible text, not a fence.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  ok "a backtick line with a backtick in its info string is content"
+else
+  fail "a non-fence backtick line was dropped as a delimiter"
+fi
+body '## Intent
+```
+real intent inside a fence
+```
+
+## Invariants
+- x holds
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "content inside a fence still counts"
+else
+  fail "fenced content was refused"
+fi
+
+echo "==> a higher-level heading ends a section"
+body '## Intent
+
+# Notes
+Unrelated prose under an H1 is not Intent.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "prose under a following H1 satisfied an empty section"
+fi
+ok "an H1 closes the section before it"
+body "$(printf '## Intent\n\n##\tNotes\nUnrelated prose under a tab-delimited heading.\n\n## Validation\n- Build: n/a — shell\n- Automated tests: pass\n- Manual validation: n/a — none\n\n## Review tier\ntrivial\n\n## Why this tier\nDocs.')"
+if accepts; then
+  fail "prose under a tab-delimited heading satisfied an empty section"
+fi
+ok "a tab after the hashes is a heading boundary too"
+body '## Intent
+
+Notes
+=====
+Unrelated prose under a Setext heading.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "prose under a Setext heading satisfied an empty section"
+fi
+ok "a Setext heading ends the section before it"
+body '## Intent
+Real intent
+---
+still part of intent? no: a dash underline makes the line above an H2, so the section is just the heading line
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "a dash-underlined line counted as section content"
+fi
+ok "a dash underline is a Setext H2 boundary, not content"
+
+echo "==> a heading may carry up to three leading spaces"
+body '   ## Intent
+Real intent.
+
+  ## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+ ## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  ok "indented ATX headings are sections"
+else
+  fail "the gate refused a valid body over indented headings"
+fi
+
+echo "==> an unreadable body fails closed (non-root only)"
+# chmod does not stop root, which is what the required workflow's container
+# runs as -- the same UID trap recorded in the staging-failure fixture.
+if [ "$(id -u)" -ne 0 ]; then
+  printf '## Intent\nreal\n' >"$EVIDENCE_TMP/unreadable.md"
+  chmod 000 "$EVIDENCE_TMP/unreadable.md"
+  if bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/unreadable.md" >/dev/null 2>&1; then
+    chmod 644 "$EVIDENCE_TMP/unreadable.md"
+    fail "the gate passed on a body it could not read"
+  fi
+  chmod 644 "$EVIDENCE_TMP/unreadable.md"
+  ok "an existing but unreadable body fails closed"
+fi
+
 echo "==> PASS: audited GitHub policy lifecycle is safe and deterministic"
