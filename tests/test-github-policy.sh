@@ -1649,6 +1649,46 @@ if accepts; then
 fi
 ok "fence delimiters alone are scaffolding"
 body '## Intent
+```c++
+```
+
+## Invariants
+~~~text/plain
+~~~
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+normal
+
+## Why this tier
+```foo bar
+```'
+if accepts; then
+  fail "empty fences with punctuated info strings satisfied required sections"
+fi
+ok "any fence delimiter line is scaffolding, whatever its info string"
+body '## Intent
+Real intent.
+
+## Validation
+- Build: n/a —
+- Automated tests: n/a -
+- Manual validation: n/a —
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "n/a followed only by a separator counted as a reason"
+fi
+ok "n/a needs a reason, not a dash"
+body '## Intent
 ```
 real intent inside a fence
 ```
