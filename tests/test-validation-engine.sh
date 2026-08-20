@@ -1523,9 +1523,10 @@ ln -s "$OUTSIDE" "$SYMLINKED/.touchstone"
 git -C "$SYMLINKED" add .touchstone
 git -C "$SYMLINKED" commit -qm symlink
 # Adoption writes nothing under .touchstone/ anymore, so a symlink there is
-# the operator's arrangement, not a hazard: the plan proceeds and the link's
-# target stays untouched.
-run_adoption "$ADOPTION/symlinked.out" adopt --dry-run --project "$SYMLINKED" --task 'verify=true'
+# the operator's arrangement, not a hazard. Exercised through APPLY, not a
+# read-only mode: a dry run cannot catch an apply-only write through the link.
+git -C "$SYMLINKED" switch -qc feat/adopt
+run_adoption "$ADOPTION/symlinked.out" adopt --project "$SYMLINKED" --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "a symlinked .touchstone blocked adoption that no longer writes there"
 [ -z "$(ls -A "$OUTSIDE" 2>/dev/null)" ] || fail "adoption wrote through the operator's .touchstone symlink"
 [ -z "$(find "$OUTSIDE" -mindepth 1 -print -quit)" ] || fail "adoption wrote through a symlinked ancestor"
@@ -1565,14 +1566,21 @@ run_adoption "$ADOPTION/ignored.out" adopt --dry-run --project "$IGNORED" --task
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "ignored managed output did not fail closed"
 
 # CLAUDE.md is not a managed output anymore: adoption neither reads nor
-# writes instruction files, so an untracked one is the operator's business.
+# writes instruction files. An untracked one still trips the clean-worktree
+# gate -- apply's own safety, unrelated to steering -- so the apply-path
+# fixture commits the operator's file and proves it comes through untouched.
 UNTRACKED="$ADOPTION/untracked-output"
 new_adoption_repo "$UNTRACKED"
 printf '# local untracked instructions\n' >"$UNTRACKED/CLAUDE.md"
 run_adoption "$ADOPTION/untracked.out" adopt --dry-run --project "$UNTRACKED" --task 'verify=true'
-[ "$ADOPTION_STATUS" -eq 0 ] || fail "an untracked instruction file blocked adoption that never touches it"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "an untracked instruction file blocked a read-only plan"
+git -C "$UNTRACKED" add CLAUDE.md
+git -C "$UNTRACKED" commit -qm "operator instructions"
+git -C "$UNTRACKED" switch -qc feat/adopt
+run_adoption "$ADOPTION/untracked-apply.out" adopt --project "$UNTRACKED" --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "an operator instruction file blocked apply"
 [ "$(cat "$UNTRACKED/CLAUDE.md")" = "# local untracked instructions" ] \
-  || fail "adoption modified an operator instruction file"
+  || fail "apply modified an operator instruction file"
 
 echo "==> adoption applies atomically only from a clean non-default branch"
 APPLY_REPO="$ADOPTION/apply"
@@ -1604,11 +1612,12 @@ mkdir -p "$APPLY_REPO/.touchstone"
 printf 'stale managed steering\n' >"$APPLY_REPO/.touchstone/TOUCHSTONE.md"
 git -C "$APPLY_REPO" add .touchstone/TOUCHSTONE.md
 git -C "$APPLY_REPO" commit -qm stale-steering
-run_adoption "$ADOPTION/readopt.json" adopt --check --json --project "$APPLY_REPO"
-[ "$ADOPTION_STATUS" -eq 0 ] || fail "re-check of an adopted repository failed"
+run_adoption "$ADOPTION/readopt.json" adopt --json --project "$APPLY_REPO"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "re-running adopt on an adopted repository failed"
+assert_contains "$ADOPTION/readopt.json" '"status":"current"'
 assert_contains "$APPLY_REPO/.touchstone/TOUCHSTONE.md" 'stale managed steering'
 [ "$contract_hash" = "$(git -C "$APPLY_REPO" hash-object .touchstone.toml)" ] \
-  || fail "adopt --check touched the project-owned validation declaration"
+  || fail "re-running adopt touched the project-owned validation declaration"
 
 DEFAULT_REPO="$ADOPTION/default-branch"
 new_adoption_repo "$DEFAULT_REPO"
