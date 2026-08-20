@@ -69,6 +69,10 @@ awk '
       fence_char = substr(seg, 1, 1); fence_len = length(seg); in_fence = 1
       print; next
     }
+    # A 4-space (or tab) indented line is code per Markdown: its bytes render
+    # literally, so a comment opener inside one is visible text and must not
+    # open comment state. An already-open comment still swallows it.
+    if (!in_comment && line ~ /^(\t|    )/) { print; next }
     out = ""
     while (length(line) > 0) {
       if (in_comment) {

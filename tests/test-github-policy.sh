@@ -1352,6 +1352,29 @@ if accepts; then
 fi
 ok "fence delimiters honor the three-space indentation bound"
 
+echo "==> an indented code sample keeps its comment opener visible"
+body '## Intent
+Example:
+
+    <!--
+
+## Invariants
+- x
+
+## Validation
+- Tests: pass
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "a 4-space-indented opener does not eat the body"
+else
+  fail "the gate refused a valid body with an indented code sample"
+fi
+
 echo "==> a bare list marker satisfies nothing"
 body '## Intent
 -
