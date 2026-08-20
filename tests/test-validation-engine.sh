@@ -2105,7 +2105,7 @@ EOF
   # Steering ships with the tool now; the upgrade subcommand that refreshed
   # repository copies is deleted, and its absence is part of the contract.
   run_cli "$TMP/upgrade-gone" upgrade --check --json --project "$upgrade_repo" || true
-  [ "$RUN_STATUS" -ne 0 ] || fail "the deleted upgrade subcommand still succeeds"
+  [ "$RUN_STATUS" -eq 2 ] || fail "the deleted upgrade subcommand must be an invalid invocation (exit 2), got $RUN_STATUS"
 
   echo "==> local and pinned-workflow adapters share validation semantics"
   policy_repo="$TMP/policy-consumer"

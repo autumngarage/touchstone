@@ -84,7 +84,7 @@ explain that owner's decision; they may not recompute it.
 | Require inline review threads to be resolved | GitHub conversation resolution | GitHub review thread state | An unresolved thread blocks even after a reply; resolution alone cannot satisfy the separate answer check |
 | Bind merge to the reviewed head | GitHub merge API | Expected head passed to the merge mutation | Moving the head before merge is rejected |
 | Claim work | Configured tracker adapter | Tracker-neutral claim contract | GitHub- and Linear-backed fixtures distinguish verified from unavailable transport |
-| Carry agent steering | The installed tool, machine-wide | One delimited block in each driver's user-level instruction file; repositories carry none | `touchstone steering check` compares the installed block against the tool's contract; deterministic size-cap, path-integrity, and steering-contract assertions run in the required suite |
+| Carry agent steering | The installed tool, machine-wide | One delimited block in each driver's user-level instruction file; Touchstone installs and manages no repository copy | `touchstone steering check` compares the installed block against the tool's contract; deterministic size-cap, path-integrity, and steering-contract assertions run in the required suite |
 | Adopt and evolve a repository | Touchstone CLI adoption module | Versioned project declarations and reviewable plan/apply output | Fresh, current, repeat, old-compatible, and unsupported-schema fixtures |
 | Install and upgrade the local tool | Homebrew | Versioned formula and checksummed release | Install, upgrade, rollback, and no-project-mutation tests pass |
 
@@ -106,8 +106,10 @@ a copy of Touchstone's implementation:
   Touchstone source repository, path, and full commit SHA. A consumer PR cannot
   replace that invocation. The required workflow and Homebrew CLI execute the
   same validation semantics.
-- Root agent files remain project-owned. Touchstone owns only its marked block
-  or import adapter; it never replaces the surrounding project guidance.
+- Root agent files are entirely project-owned. Touchstone writes nothing into
+  them: steering lives in each driver's user-level instruction file, and a
+  marked block left by a pre-retirement adoption is the project's to keep or
+  remove.
 - GitHub ruleset state is managed and verified through a separate policy
   boundary. Repository-file adoption and remote-policy mutation are never one
   transaction.
