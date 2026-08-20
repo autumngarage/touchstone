@@ -75,6 +75,20 @@ its replacement); and its `validate` runs on `merge_group`. Applying earlier
 requires a check nothing there can produce and blocks every merge and queue
 entry.
 
+## After an apply that adds a required workflow
+
+GitHub runs a required workflow only on `pull_request` opened / synchronize /
+reopened (the workflow file's own `types:` are ignored for required runs), so
+a pull request whose head predates the apply shows the new check as expected
+forever and neither auto-merge nor the queue will take it. Editing the PR
+does nothing. For every open pull request in the repository:
+
+```bash
+gh pr close N && gh pr reopen N   # fires `reopened`; the head and its review stay valid
+```
+
+then re-run `touchstone pr merge`. Observed on touchstone #949, 2026-08-20.
+
 ## Live canary testing
 
 [`autumngarage/touchstone-policy-canary`](https://github.com/autumngarage/touchstone-policy-canary)
