@@ -100,7 +100,10 @@ case "$method $endpoint" in
     emit '{"id":777,"name":"Touchstone main delivery","target":"branch","enforcement":"active","bypass_actors":[],"conditions":{"repository_name":{"include":["other-repository"],"exclude":[],"protected":false},"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[{"type":"deletion"}]}'
     ;;
   "POST orgs/autumngarage/rulesets")
-    jq '(.rules[] | select(.type == "pull_request") | .parameters.required_reviewers) = [] | . + {id:123}' >"$state/ruleset.json"
+    # GitHub fills in defaults the caller omitted: required_reviewers, and
+    # since 2026-08 require_extra_approval_for_unattributed_changes. The
+    # policy must carry what GitHub will echo back, or apply never verifies.
+    jq '(.rules[] | select(.type == "pull_request") | .parameters) |= (. + {required_reviewers: [], require_extra_approval_for_unattributed_changes: (.require_extra_approval_for_unattributed_changes // true)}) | . + {id:123}' >"$state/ruleset.json"
     echo "POST org-ruleset" >>"$state/mutations.log"
     if [ "${GH_FAKE_FAIL_ORG_MUTATION_ONCE:-0}" = 1 ] && [ ! -f "$state/org-mutation-failed" ]; then
       touch "$state/org-mutation-failed"
@@ -110,7 +113,7 @@ case "$method $endpoint" in
     emit "$(cat "$state/ruleset.json")"
     ;;
   "PUT orgs/autumngarage/rulesets/123")
-    jq '(.rules[] | select(.type == "pull_request") | .parameters.required_reviewers) = [] | . + {id:123}' >"$state/ruleset.json"
+    jq '(.rules[] | select(.type == "pull_request") | .parameters) |= (. + {required_reviewers: [], require_extra_approval_for_unattributed_changes: (.require_extra_approval_for_unattributed_changes // true)}) | . + {id:123}' >"$state/ruleset.json"
     echo "PUT org-ruleset" >>"$state/mutations.log"
     if [ "${GH_FAKE_FAIL_ORG_MUTATION_ONCE:-0}" = 1 ] && [ ! -f "$state/org-mutation-failed" ]; then
       touch "$state/org-mutation-failed"
@@ -536,6 +539,9 @@ jq -e '.rules[] | select(.type == "pull_request") | .parameters.required_reviewe
   "$TMP_DIR/state/ruleset.json" >/dev/null \
   || fail "fake API did not exercise GitHub's required_reviewers default"
 ok "GitHub's empty required_reviewers default does not create false drift"
+jq -e '.managedRuleset.rules[] | select(.type == "pull_request") | .parameters.require_extra_approval_for_unattributed_changes == true' "$POLICY" >/dev/null \
+  || fail "policy omits require_extra_approval_for_unattributed_changes, which GitHub echoes back as true and apply then reads as drift"
+ok "the policy carries GitHub's injected pull_request default"
 
 if run_policy verify "$POLICY" >/dev/null 2>&1; then
   fail "verify accepted a duplicate local validation workflow on main"
