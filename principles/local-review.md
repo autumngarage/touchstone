@@ -227,9 +227,12 @@ handled, no merge-blocking finding remains, and the tier's review obligation
 is met:
 
 - **trivial** — no initiated review; deterministic checks alone complete it.
-- **normal** — one local pass has run and its findings are triaged.
-- **serious** — the pre-push local pass ran, and the PR-side review evidence
-  covers the head that merges (the gate enforces the latter).
+- **normal** — one local pass has run and its findings are triaged, **or**
+  the recorded waiver applies (no local reviewer configured, or quota
+  exhausted and recorded in the validation block).
+- **serious** — the pre-push local pass ran or the same recorded waiver
+  applies, and the PR-side review evidence covers the head that merges (the
+  gate enforces the latter).
 
 After a bounded pass, fix the valid findings, **re-run every applicable
 deterministic check and the intended validation scenario** — a valid fix can
