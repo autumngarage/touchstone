@@ -316,8 +316,10 @@ for required in \
   'known_head' \
   'head_sha="${CHECK_SHA:-$head}"' \
   'gh-readonly-queue' \
-  'mirror_to_queue_commit' \
+  'QUEUE_RUN_ID' \
+  'active_queue_commit' \
   'mergeQueueEntry{headCommit{oid}}' \
+  'failing closed' \
   'the pull request behind merge-queue branch'; do
   if grep -Fq "$required" "$WORKFLOW"; then
     ok "workflow contains: $required"
@@ -337,7 +339,7 @@ else
 fi
 # The queue branch is the only PR coordinate a queue signal carries; the
 # same expression the workflow uses must extract it and reject anything else.
-QUEUE_REF_EXPR="$(grep -oE "sed -nE 's#[^']*#\\\\1#p'" "$WORKFLOW" | head -1 | sed -E "s/^sed -nE '//; s/'$//")"
+QUEUE_REF_EXPR="$(awk 'match($0, /sed -nE \x27s#[^\x27]*#\\1#p\x27/) { print substr($0, RSTART + 9, RLENGTH - 10); exit }' "$WORKFLOW")"
 if [ -z "$QUEUE_REF_EXPR" ]; then
   fail "merge-group ref expression not found in workflow"
 else
