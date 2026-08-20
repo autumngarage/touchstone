@@ -464,6 +464,17 @@ if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_SOURCE_UNPRO
   fail "policy accepted an unprotected required-workflow source branch"
 fi
 ok "self-hosted or unprotected required-workflow sources fail closed"
+# Every required workflow is verified, not only the first: a second entry
+# whose file is absent at its pin must be refused.
+jq '(.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows) += [{
+  path: ".github/workflows/review-gate.yml", ref: "refs/heads/main", repository_id: 1333343261,
+  sha: "5719b59619add320b39c994cff696444b4b98c25"}]' "$POLICY" >"$TMP_DIR/two-workflows-policy.json"
+if run_policy dry-run "$TMP_DIR/two-workflows-policy.json" >/dev/null 2>"$TMP_DIR/two-workflows.err"; then
+  fail "a second required workflow missing at its pin was accepted"
+fi
+grep -q "review-gate.yml does not exist at pinned SHA" "$TMP_DIR/two-workflows.err" \
+  || fail "the missing second workflow was not the stated refusal: $(tail -1 "$TMP_DIR/two-workflows.err")"
+ok "every required workflow is verified at its pin"
 
 echo "==> Ambiguous and failed reads fail closed"
 if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_DUPLICATE_RULESET=1 \

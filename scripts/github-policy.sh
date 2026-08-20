@@ -229,34 +229,39 @@ branch_protection_json() {
 }
 
 verify_source() {
-  local workflow repository_id path ref sha actual_id actual_sha desired_protection actual_protection
-  workflow="$(jq -cer '.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]' "$POLICY")"
-  repository_id="$(jq -r .repository_id <<<"$workflow")"
-  path="$(jq -r .path <<<"$workflow")"
-  ref="$(jq -r .ref <<<"$workflow")"
-  sha="$(jq -r .sha <<<"$workflow")"
-  [[ "$sha" =~ ^[0-9a-fA-F]{40}$ ]] || die "required workflow SHA is not a full commit ID"
+  local workflow repository_id path ref sha actual_id actual_sha desired_protection actual_protection count
+  count="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]] | length' "$POLICY")"
+  [ "$count" -ge 1 ] || die "policy requires at least one required workflow"
   [ "$WORKFLOW_SOURCE_REPOSITORY" != "$REPOSITORY" ] \
     || die "required workflow source repository must differ from the target repository"
   actual_id="$(api "repos/$ORG/$WORKFLOW_SOURCE_REPOSITORY" --jq .id)"
-  [ "$actual_id" = "$repository_id" ] || die "required workflow repository id is stale"
-  actual_sha="$(api "repos/$ORG/$WORKFLOW_SOURCE_REPOSITORY/commits/${ref#refs/heads/}" --jq .sha)"
-  api "repos/$ORG/$WORKFLOW_SOURCE_REPOSITORY/contents/$path?ref=$sha" --jq '.type == "file"' | grep -qx true \
-    || die "required workflow does not exist at pinned SHA $sha"
-  api "repos/$ORG/$WORKFLOW_SOURCE_REPOSITORY/compare/$sha...$actual_sha" --jq '.status == "ahead" or .status == "identical"' \
-    | grep -qx true \
-    || die "required workflow SHA $sha is not reachable from $ref"
-  desired_protection="$(jq -S '.workflowSource.branchProtection' "$POLICY")"
-  actual_protection="$(api "repos/$ORG/$WORKFLOW_SOURCE_REPOSITORY/branches/${ref#refs/heads/}/protection" \
-    | jq -S '{
-      enforce_admins: (.enforce_admins.enabled // false),
-      required_pull_request_reviews: (.required_pull_request_reviews != null),
-      required_conversation_resolution: (.required_conversation_resolution.enabled // false),
-      allow_force_pushes: (.allow_force_pushes.enabled // false),
-      allow_deletions: (.allow_deletions.enabled // false)
-    }')"
-  diff -u <(printf '%s\n' "$desired_protection") <(printf '%s\n' "$actual_protection") >/dev/null \
-    || die "required workflow source branch is not protected as checked in"
+  # Every required workflow is checked the same way: pinned to a full SHA
+  # that exists, carries the file, and is reachable from the source branch.
+  while IFS= read -r workflow; do
+    repository_id="$(jq -r .repository_id <<<"$workflow")"
+    path="$(jq -r .path <<<"$workflow")"
+    ref="$(jq -r .ref <<<"$workflow")"
+    sha="$(jq -r .sha <<<"$workflow")"
+    [[ "$sha" =~ ^[0-9a-fA-F]{40}$ ]] || die "required workflow SHA for $path is not a full commit ID"
+    [ "$actual_id" = "$repository_id" ] || die "required workflow repository id is stale for $path"
+    actual_sha="$(api "repos/$ORG/$WORKFLOW_SOURCE_REPOSITORY/commits/${ref#refs/heads/}" --jq .sha)"
+    api "repos/$ORG/$WORKFLOW_SOURCE_REPOSITORY/contents/$path?ref=$sha" --jq '.type == "file"' | grep -qx true \
+      || die "required workflow $path does not exist at pinned SHA $sha"
+    api "repos/$ORG/$WORKFLOW_SOURCE_REPOSITORY/compare/$sha...$actual_sha" --jq '.status == "ahead" or .status == "identical"' \
+      | grep -qx true \
+      || die "required workflow SHA $sha for $path is not reachable from $ref"
+    desired_protection="$(jq -S '.workflowSource.branchProtection' "$POLICY")"
+    actual_protection="$(api "repos/$ORG/$WORKFLOW_SOURCE_REPOSITORY/branches/${ref#refs/heads/}/protection" \
+      | jq -S '{
+        enforce_admins: (.enforce_admins.enabled // false),
+        required_pull_request_reviews: (.required_pull_request_reviews != null),
+        required_conversation_resolution: (.required_conversation_resolution.enabled // false),
+        allow_force_pushes: (.allow_force_pushes.enabled // false),
+        allow_deletions: (.allow_deletions.enabled // false)
+      }')"
+    diff -u <(printf '%s\n' "$desired_protection") <(printf '%s\n' "$actual_protection") >/dev/null \
+      || die "required workflow source branch is not protected as checked in"
+  done < <(jq -c '.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]' "$POLICY")
 }
 
 verify_ruleset_against() {
