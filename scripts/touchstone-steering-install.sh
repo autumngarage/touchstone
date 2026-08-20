@@ -854,6 +854,10 @@ case "$ACTION" in
             done
             if [ -n "$retired" ] \
               && mv -f -- "$(resolve_link "$principles_home/$recorded")" "$retired" 2>/dev/null; then
+              # Retiring the referent leaves the pointer dangling; clear it,
+              # as the deletion branch already does.
+              [ ! -L "$principles_home/$recorded" ] \
+                || rm -f -- "$principles_home/$recorded"
               printf '  retired: %s -> %s\n' "$recorded" "$(basename "$retired")"
             else
               printf '  kept: %s could not be retired\n' "$recorded" >&2
