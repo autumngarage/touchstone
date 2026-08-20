@@ -46,6 +46,11 @@ trap 'rm -f "$STRIPPED_BODY"' EXIT
 awk '
   {
     line = $0
+    # A fenced code block renders its bytes literally, so a <!-- inside one
+    # is visible text, not a comment opener -- treating it as one swallowed
+    # the rest of the body of any PR that mentions the token.
+    if (!in_comment && line ~ /^[[:space:]]*(```|~~~)/) { in_fence = !in_fence; print; next }
+    if (in_fence) { print; next }
     out = ""
     while (length(line) > 0) {
       if (in_comment) {
@@ -57,7 +62,20 @@ awk '
       }
       open_at = index(line, "<!--")
       if (open_at == 0) { out = out line; line = ""; continue }
-      out = out substr(line, 1, open_at - 1)
+      # An opener inside an inline code span is likewise visible text: count
+      # backticks before it -- an odd count means we are inside a span.
+      prefix = substr(line, 1, open_at - 1)
+      ticks = gsub(/`/, "`", prefix)
+      if (ticks % 2 == 1) {
+        rest = substr(line, open_at)
+        close_tick = index(rest, "`")
+        if (close_tick > 0) {
+          out = out prefix substr(rest, 1, close_tick)
+          line = substr(rest, close_tick + 1)
+          continue
+        }
+      }
+      out = out prefix
       line = substr(line, open_at + 4)
       in_comment = 1
     }
@@ -86,7 +104,8 @@ filled() {
       # content: judge what follows. Stripped repeatedly, so "- -" or a
       # nested empty list cannot smuggle a marker through as evidence.
       # Comments were removed from the body before any parsing.
-      while (sub(/^[-*+][[:space:]]+/, "", line) || sub(/^[-*+]$/, "", line) \
+      while (sub(/^>[[:space:]]*/, "", line) \
+             || sub(/^[-*+][[:space:]]+/, "", line) || sub(/^[-*+]$/, "", line) \
              || sub(/^[0-9]+[.)][[:space:]]+/, "", line) \
              || sub(/^\[[xX]\][[:space:]]*/, "", line)) { }
       if (line == "") next                    # bare scaffolding is nothing

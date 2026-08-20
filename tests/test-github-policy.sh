@@ -1159,6 +1159,73 @@ if accepts; then
 fi
 ok "numbered scaffolding strips like bulleted scaffolding"
 
+echo "==> literal comment openers in code are visible text"
+# The gate must not swallow the body of a PR that mentions the token its own
+# template uses.
+body '## Intent
+Support the literal `<!--` token in templates.
+
+## Invariants
+- x holds
+
+## Validation
+- Tests: pass
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "an inline-code comment opener does not eat the body"
+else
+  fail "the gate refused a valid body mentioning <!-- in code"
+fi
+
+body '## Intent
+real
+
+```
+<!--
+```
+
+## Invariants
+- x
+
+## Validation
+- Tests: pass
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "a fenced comment opener does not eat the body"
+else
+  fail "the gate refused a valid body with <!-- in a fence"
+fi
+
+echo "==> blockquoted unchecked tasks are still promises"
+body '## Intent
+> - [ ] run tests
+
+## Invariants
+> - [ ] x
+
+## Validation
+> - [ ] Tests
+
+## Review tier
+normal
+
+## Why this tier
+> - [ ] contained'
+if accepts; then
+  fail "blockquoted unchecked task items satisfied the gate"
+fi
+ok "blockquote markers strip like list markers"
+
 echo "==> a bare list marker satisfies nothing"
 body '## Intent
 -
