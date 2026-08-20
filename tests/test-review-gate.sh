@@ -45,6 +45,8 @@ echo "==> Requests come from the driver's comments"
 run_case "marker request + clean exact-head result passes" '.' success
 run_case "bare request after the head was pushed binds it" '.issueComments[0].body = "@codex review"' success
 run_case "bare request before the head was pushed does not" '.issueComments[0].body = "@codex review" | .issueComments[0].created_at = "2026-08-20T09:00:00Z"' failure "no trusted review request"
+run_case "bare request before a base retarget does not bind" '.issueComments[0].body = "@codex review" | .pr.baseRetargetedAt = "2026-08-20T10:10:00Z"' failure "no trusted review request"
+run_case "bare request after a base retarget binds" '.issueComments[0].body = "@codex review" | .pr.baseRetargetedAt = "2026-08-20T10:01:00Z"' success
 run_case "marker for another head does not bind" '.issueComments[0].body |= sub("head=1111111111111111111111111111111111111111"; "head=3333333333333333333333333333333333333333")' failure "no trusted review request"
 run_case "marker base must be the tip or an ancestor" '.pr.acceptableBaseShas = ["3333333333333333333333333333333333333333"]' failure "no trusted review request"
 run_case "an advanced base keeps the request" '.pr.baseSha = "3333333333333333333333333333333333333333" | .pr.acceptableBaseShas = ["3333333333333333333333333333333333333333", "'"$BASE_SHA"'"]' success

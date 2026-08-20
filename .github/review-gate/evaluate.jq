@@ -54,6 +54,7 @@ def answers_body_finding($id):
 # tip qualifies. A retargeted ref is still refused through the ref hash.
 | (($root.pr.acceptableBaseShas // [$base]) | map(ascii_downcase)) as $acceptable_bases
 | ($root.pr.headCommittedAt // "") as $head_committed_at
+| ($root.pr.baseRetargetedAt // "") as $base_retargeted_at
 | [
     $root.issueComments[]?
     | select(driver_answer and review_request)
@@ -65,9 +66,11 @@ def answers_body_finding($id):
           and $marker.ref == ($root.pr.baseRef // "")
           and (($marker.base | ascii_downcase) as $request_base | $acceptable_bases | any(. == $request_base))
         else
-          # A bare request binds the head that was current when it was posted:
-          # only one posted after this head was pushed can be about this head.
+          # A bare request binds the head and base that were current when it
+          # was posted: only one posted after this head was pushed, and after
+          # the last base retarget, can be about this head on this base.
           $head_committed_at != "" and (.created_at // "") > $head_committed_at
+          and (.created_at // "") > $base_retargeted_at
         end)
     | {at: .created_at, id: .id, author: .user.login}
   ] | unique_by(.id) | sort_by(.at) as $requests
