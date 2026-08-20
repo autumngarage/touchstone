@@ -750,15 +750,24 @@ case "$1 ${2:-}" in
     if has 'actions/runs/77/rerun' "$@"; then
       echo "rerun 77" >>"$GH_STATE/gate-reruns"
       # After a re-run the run is in progress until the fake says otherwise.
-      [ -f "$GH_STATE/gate-after-rerun" ] || echo 1 >"$GH_STATE/gate-after-rerun"
+      [ -f "$GH_STATE/gate-after-rerun" ] || echo 2 >"$GH_STATE/gate-after-rerun"
     elif has 'actions/runs/77' "$@"; then
-      # Single-run read after a re-run: in progress once, then completed with
-      # the configured conclusion.
-      if [ -f "$GH_STATE/gate-after-rerun" ]; then
-        rm -f "$GH_STATE/gate-after-rerun"
-        printf 'in_progress \n'
+      # Single-run read. Before a re-run: attempt 1 completed. Right after a
+      # re-run GitHub may still report attempt 1 completed (stale), then the
+      # new attempt in progress, then attempt 2 completed.
+      if has '.run_attempt' "$@" && ! has 'status' "$@"; then
+        printf '1\n'
+      elif [ -f "$GH_STATE/gate-after-rerun" ]; then
+        left="$(cat "$GH_STATE/gate-after-rerun")"
+        if [ "$left" -ge 2 ]; then
+          echo 1 >"$GH_STATE/gate-after-rerun"
+          printf 'completed success 1\n'
+        else
+          rm -f "$GH_STATE/gate-after-rerun"
+          printf 'in_progress  2\n'
+        fi
       else
-        printf 'completed %s\n' "${GH_GATE_CONCLUSION:-success}"
+        printf 'completed %s 2\n' "${GH_GATE_CONCLUSION:-success}"
       fi
     elif has 'rules/branches/' "$@"; then
       if [ -f "$GH_STATE/review-gate" ]; then printf 'true\n'; else printf 'false\n'; fi
@@ -997,6 +1006,8 @@ EOF
   assert_rc "$RUN_RC" 0
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
     || fail "merge did not re-run the review gate before enqueueing"
+  [ "$(grep -c 'actions/runs/77 ' "$GH_CALLS")" -ge 3 ] \
+    || fail "merge accepted a stale completed attempt instead of waiting for the re-run's attempt"
   rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
   GH_GATE_CONCLUSION=failure run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 1

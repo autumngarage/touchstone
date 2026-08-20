@@ -396,6 +396,12 @@ rerun_review_gate() {
       || fail_operation "could not inspect review-gate runs for $head: $READ_OUTPUT" "Retry after GitHub recovers."
     read -r run_id status <<<"$READ_OUTPUT"
     if [ -n "$run_id" ] && [ "$status" = completed ]; then
+      # A re-run keeps the run id and increments run_attempt; record the
+      # attempt being superseded so a stale read cannot pass off the old
+      # verdict as the new one.
+      read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$run_id" --jq '.run_attempt' \
+        || fail_operation "could not read review-gate run $run_id: $READ_OUTPUT" "Retry after GitHub recovers."
+      REVIEW_GATE_PRIOR_ATTEMPT="$READ_OUTPUT"
       gh api --hostname "$REPO_HOST" -X POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>&1 \
         || fail_operation "could not re-run review-gate run $run_id" "Re-run it from the Actions tab, then retry."
       REVIEW_GATE_RUN_ID="$run_id"
@@ -418,10 +424,12 @@ refresh_review_gate_before_merge() {
   run_id="$REVIEW_GATE_RUN_ID"
   while :; do
     read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$run_id" \
-      --jq '"\(.status) \(.conclusion // "")"' \
+      --jq '"\(.status) \(.conclusion // "") \(.run_attempt)"' \
       || fail_operation "could not read review-gate run $run_id: $READ_OUTPUT" "Retry after GitHub recovers."
-    read -r status conclusion <<<"$READ_OUTPUT"
-    if [ "$status" = completed ]; then
+    read -r status conclusion attempt_seen <<<"$READ_OUTPUT"
+    # Only the attempt after the re-run counts; a stale read still shows the
+    # superseded attempt as completed.
+    if [ "$status" = completed ] && [ "${attempt_seen:-0}" -gt "${REVIEW_GATE_PRIOR_ATTEMPT:-0}" ]; then
       [ "$conclusion" = success ] \
         || fail_operation "review-gate run $run_id concluded $conclusion on current evidence" "Answer the open findings or request a fresh review, then retry."
       [ "$JSON_MODE" = true ] || printf 'Review gate run %s passed on current evidence.\n' "$run_id" >&2
@@ -643,6 +651,9 @@ merge_pr() {
     [ "$state" = OPEN ] || fail_input "PR #$PR_NUMBER is $state" "Only an open or merged PR is supported."
     if review_gate_required "$base"; then
       refresh_review_gate_before_merge "$number" "$head"
+      # The wait can be minutes; the evaluation covered this head on this
+      # base, so both must still be live before the merge is requested.
+      verify_live_coordinates "$number" "$head" "$base" "$base_sha"
     fi
     merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash \
       --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
