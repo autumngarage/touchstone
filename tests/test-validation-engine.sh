@@ -1608,6 +1608,7 @@ assert_contains "$ADOPTION/apply-twice.json" '"changes":[]'
 # re-run of adopt must neither refresh nor delete it, and must not touch the
 # project-owned declaration.
 contract_hash="$(git -C "$APPLY_REPO" hash-object .touchstone.toml)"
+tracker_hash="$(git -C "$APPLY_REPO" hash-object .touchstone-tracker.toml)"
 mkdir -p "$APPLY_REPO/.touchstone"
 printf 'stale managed steering\n' >"$APPLY_REPO/.touchstone/TOUCHSTONE.md"
 git -C "$APPLY_REPO" add .touchstone/TOUCHSTONE.md
@@ -1618,6 +1619,8 @@ assert_contains "$ADOPTION/readopt.json" '"status":"current"'
 assert_contains "$APPLY_REPO/.touchstone/TOUCHSTONE.md" 'stale managed steering'
 [ "$contract_hash" = "$(git -C "$APPLY_REPO" hash-object .touchstone.toml)" ] \
   || fail "re-running adopt touched the project-owned validation declaration"
+[ "$tracker_hash" = "$(git -C "$APPLY_REPO" hash-object .touchstone-tracker.toml)" ] \
+  || fail "re-running adopt touched the project-owned tracker declaration"
 
 DEFAULT_REPO="$ADOPTION/default-branch"
 new_adoption_repo "$DEFAULT_REPO"
