@@ -526,6 +526,20 @@ run_policy verify "$POLICY" >/dev/null
 ok "final verification requires rollback-only files to be absent from main"
 rm -f "$TMP_DIR/state/local-workflow-absent"
 
+echo "==> A queue rule in the organization ruleset is refused before any API call"
+jq '(.managedRuleset.rules += .managedRepositoryRuleset.rules) | del(.managedRepositoryRuleset)' "$POLICY" \
+  >"$TMP_DIR/org-queue-policy.json"
+if run_policy diff "$TMP_DIR/org-queue-policy.json" >/dev/null 2>"$TMP_DIR/org-queue.err"; then
+  fail "a merge_queue rule in the organization ruleset was accepted"
+fi
+grep -q "GitHub rejects it in an organization ruleset" "$TMP_DIR/org-queue.err" \
+  || fail "organization-level merge_queue refusal did not name the reason"
+jq '.managedRepositoryRuleset.name = "queue"' "$POLICY" >"$TMP_DIR/misnamed-companion.json"
+if run_policy diff "$TMP_DIR/misnamed-companion.json" >/dev/null 2>&1; then
+  fail "a companion ruleset without the ownership marker was accepted"
+fi
+ok "queue placement and companion ownership are validated locally"
+
 echo "==> A failed companion ruleset install restores the complete prior state"
 # GitHub rejected the queue rule at the organization endpoint on 2026-08-20;
 # the same failure at the repository endpoint must leave the prior policy

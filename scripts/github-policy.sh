@@ -117,7 +117,7 @@ managed_repo_ruleset_json() {
     printf 'null\n'
     return 0
   }
-  list="$(api "repos/$ORG/$REPOSITORY/rulesets?includes_parents=false")" || return $?
+  list="$(api --paginate "repos/$ORG/$REPOSITORY/rulesets?includes_parents=false" | jq -s 'add // []')" || return $?
   ids="$(jq -c --arg name "$REPO_RULESET_NAME" '[.[] | select(.name == $name) | .id]' <<<"$list")" \
     || return $?
   count="$(jq -r length <<<"$ids")" || return $?
@@ -442,13 +442,13 @@ RULESET_NAME="$(policy_value .managedRuleset.name)"
 EXPECTED_RULESET_NAME="Touchstone policy v$CONTRACT_VERSION: $ORG/$REPOSITORY@$BRANCH"
 [ "$RULESET_NAME" = "$EXPECTED_RULESET_NAME" ] \
   || die "managed ruleset name must be the ownership marker: $EXPECTED_RULESET_NAME"
+jq -e '.managedRuleset.rules | all(.type != "merge_queue")' "$POLICY" >/dev/null \
+  || die "merge_queue belongs in managedRepositoryRuleset: GitHub rejects it in an organization ruleset"
 REPO_RULESET_NAME="$(jq -r '.managedRepositoryRuleset.name // empty' "$POLICY")"
-if [ -n "$REPO_RULESET_NAME" ]; then
+if jq -e '.managedRepositoryRuleset != null' "$POLICY" >/dev/null; then
   EXPECTED_REPO_RULESET_NAME="Touchstone merge queue v$CONTRACT_VERSION: $ORG/$REPOSITORY@$BRANCH"
   [ "$REPO_RULESET_NAME" = "$EXPECTED_REPO_RULESET_NAME" ] \
     || die "companion repository ruleset name must be the ownership marker: $EXPECTED_REPO_RULESET_NAME"
-  jq -e '.managedRuleset.rules | all(.type != "merge_queue")' "$POLICY" >/dev/null \
-    || die "merge_queue belongs in managedRepositoryRuleset: GitHub rejects it in an organization ruleset"
 fi
 DESIRED_REPO_RULESET="$(jq -c '.managedRepositoryRuleset // null' "$POLICY")"
 
