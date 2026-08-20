@@ -356,8 +356,12 @@ while IFS= read -r line || [ -n "$line" ]; do
     validation:runner)
       parse_string "$raw_value" || config_error "runner must be a single-line basic string at line $LINE_NUMBER"
       RUNNER="$PARSED_VALUE"
+      # Only GitHub-hosted label families: the central workflow schedules on
+      # this value, and a self-hosted or arbitrary label would route the
+      # required check -- and the declaration's commands -- somewhere else.
       case "$RUNNER" in
-        "" | *[!a-z0-9.-]*) config_error "runner must be a GitHub-hosted runner label such as ubuntu-latest or macos-15 at line $LINE_NUMBER" ;;
+        ubuntu-[a-z0-9.-]* | macos-[a-z0-9.-]* | windows-[a-z0-9.-]*) ;;
+        *) config_error "runner must be a GitHub-hosted runner label (ubuntu-*, macos-*, windows-*), got '$RUNNER' at line $LINE_NUMBER" ;;
       esac
       ;;
     validation:setup)
