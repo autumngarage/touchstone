@@ -556,6 +556,19 @@ ok "a rejected companion ruleset restores the prior policy"
 init_branch
 run_policy apply "$POLICY" >/dev/null
 
+echo "==> A policy that drops the companion removes the installed queue"
+jq 'del(.managedRepositoryRuleset)' "$POLICY" >"$TMP_DIR/no-companion-policy.json"
+run_policy apply "$TMP_DIR/no-companion-policy.json" >/dev/null
+[ ! -f "$TMP_DIR/state/repo-ruleset.json" ] \
+  || fail "the companion ruleset survived a policy that no longer declares it"
+touch "$TMP_DIR/state/local-workflow-absent"
+run_policy verify "$TMP_DIR/no-companion-policy.json" >/dev/null \
+  || fail "verify did not accept the companion-free state"
+rm -f "$TMP_DIR/state/local-workflow-absent"
+ok "removing the companion from policy removes it from GitHub"
+run_policy apply "$POLICY" >/dev/null
+[ -f "$TMP_DIR/state/repo-ruleset.json" ] || fail "re-applying the policy did not reinstall the companion"
+
 echo "==> Rollback restores before removing replacement"
 run_policy rollback "$TMP_DIR/backup.json" "$POLICY"
 [ -f "$TMP_DIR/state/branch.json" ] || fail "rollback did not restore branch protection"

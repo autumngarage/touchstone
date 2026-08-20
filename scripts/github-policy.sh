@@ -113,10 +113,6 @@ managed_ruleset_json() {
 # and rollback transaction.
 managed_repo_ruleset_json() {
   local list ids count id
-  [ -n "$REPO_RULESET_NAME" ] || {
-    printf 'null\n'
-    return 0
-  }
   list="$(api --paginate "repos/$ORG/$REPOSITORY/rulesets?includes_parents=false" | jq -s 'add // []')" || return $?
   ids="$(jq -c --arg name "$REPO_RULESET_NAME" '[.[] | select(.name == $name) | .id]' <<<"$list")" \
     || return $?
@@ -444,11 +440,13 @@ EXPECTED_RULESET_NAME="Touchstone policy v$CONTRACT_VERSION: $ORG/$REPOSITORY@$B
   || die "managed ruleset name must be the ownership marker: $EXPECTED_RULESET_NAME"
 jq -e '.managedRuleset.rules | all(.type != "merge_queue")' "$POLICY" >/dev/null \
   || die "merge_queue belongs in managedRepositoryRuleset: GitHub rejects it in an organization ruleset"
-REPO_RULESET_NAME="$(jq -r '.managedRepositoryRuleset.name // empty' "$POLICY")"
+# The companion's name is the ownership marker, derived from the policy
+# coordinates rather than read from the desired block: a policy that removes
+# the companion must still find and delete the one it installed.
+REPO_RULESET_NAME="Touchstone merge queue v$CONTRACT_VERSION: $ORG/$REPOSITORY@$BRANCH"
 if jq -e '.managedRepositoryRuleset != null' "$POLICY" >/dev/null; then
-  EXPECTED_REPO_RULESET_NAME="Touchstone merge queue v$CONTRACT_VERSION: $ORG/$REPOSITORY@$BRANCH"
-  [ "$REPO_RULESET_NAME" = "$EXPECTED_REPO_RULESET_NAME" ] \
-    || die "companion repository ruleset name must be the ownership marker: $EXPECTED_REPO_RULESET_NAME"
+  [ "$(jq -r '.managedRepositoryRuleset.name // empty' "$POLICY")" = "$REPO_RULESET_NAME" ] \
+    || die "companion repository ruleset name must be the ownership marker: $REPO_RULESET_NAME"
 fi
 DESIRED_REPO_RULESET="$(jq -c '.managedRepositoryRuleset // null' "$POLICY")"
 
