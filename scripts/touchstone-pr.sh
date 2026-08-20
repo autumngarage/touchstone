@@ -359,19 +359,23 @@ emit_open_result() {
 # it may have read the evidence before the request landed.
 REVIEW_GATE_RUN_ID=""
 review_gate_required() {
-  local base_ref="$1"
-  read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/rules/branches/$base_ref" \
+  local base_ref="$1" encoded
+  # Branch names may carry "/"; the rules endpoint takes one path segment.
+  encoded="$(jq -rn --arg ref "$base_ref" '$ref | @uri')"
+  read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/rules/branches/$encoded" \
     --jq '[.[] | select(.type == "workflows") | .parameters.workflows[]?.path] | any(. == ".github/workflows/review-gate.yml")' \
     || fail_operation "could not read the effective rules for $base_ref: $READ_OUTPUT" "Retry after GitHub recovers."
   [ "$READ_OUTPUT" = true ]
 }
 
 rerun_review_gate() {
-  local head="$1" attempt=1 run_id status
+  local number="$1" head="$2" attempt=1 run_id status
   while :; do
+    # Scoped to this pull request: two open PRs can share a head SHA, and
+    # re-running the other one's gate would prove nothing about this request.
     read_with_retry gh api --hostname "$REPO_HOST" \
       "repos/$REPO/actions/runs?head_sha=$head&per_page=100" \
-      --jq '[.workflow_runs[] | select(.name == "review-gate" and (.event == "pull_request" or .event == "merge_group"))] | sort_by(.id) | last | "\(.id // "") \(.status // "")"' \
+      --jq "[.workflow_runs[] | select(.name == \"review-gate\" and (.event == \"pull_request\" or .event == \"merge_group\") and any(.pull_requests[]?; .number == $number))] | sort_by(.id) | last | \"\(.id // \"\") \(.status // \"\")\"" \
       || fail_operation "could not inspect review-gate runs for $head: $READ_OUTPUT" "Retry after GitHub recovers."
     read -r run_id status <<<"$READ_OUTPUT"
     if [ -n "$run_id" ] && [ "$status" = completed ]; then
@@ -404,7 +408,7 @@ wait_for_request_binding() {
   local number="$1" head="$2" base_ref="$3" base_sha="$4" request_url="$5"
   local comment_id base_ref_hash description attempt=1 live_comment live_row live_head live_base live_base_sha marker
   if review_gate_required "$base_ref"; then
-    rerun_review_gate "$head"
+    rerun_review_gate "$number" "$head"
     verify_live_coordinates "$number" "$head" "$base_ref" "$base_sha"
     [ "$JSON_MODE" = true ] || printf 'Review gate re-run requested for run %s.\n' "$REVIEW_GATE_RUN_ID" >&2
     return 0

@@ -232,14 +232,15 @@ VERIFY="$(graphql_with_retry \
 PR_ROW="$(gh_read pr view "$PR_NUMBER" --json headRefOid,baseRefName --jq '[.headRefOid,.baseRefName] | @tsv')" \
   || fail "could not read the PR coordinates to refresh the review gate: $PR_ROW"
 IFS="$(printf '\t')" read -r HEAD_SHA BASE_REF <<<"$PR_ROW"
-GATE_REQUIRED="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/rules/branches/$BASE_REF" \
+BASE_REF_ENCODED="$(jq -rn --arg ref "$BASE_REF" '$ref | @uri')"
+GATE_REQUIRED="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/rules/branches/$BASE_REF_ENCODED" \
   --jq '[.[] | select(.type == "workflows") | .parameters.workflows[]?.path] | any(. == ".github/workflows/review-gate.yml")')" \
   || fail "could not read the effective rules for $BASE_REF: $GATE_REQUIRED"
 if [ "$GATE_REQUIRED" = true ]; then
   attempt=1
   while :; do
     GATE_ROW="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/actions/runs?head_sha=$HEAD_SHA&per_page=100" \
-      --jq '[.workflow_runs[] | select(.name == "review-gate")] | sort_by(.id) | last | "\(.id // "") \(.status // "")"')" \
+      --jq "[.workflow_runs[] | select(.name == \"review-gate\" and any(.pull_requests[]?; .number == $PR_NUMBER))] | sort_by(.id) | last | \"\(.id // \"\") \(.status // \"\")\"")" \
       || fail "could not inspect review-gate runs: $GATE_ROW"
     read -r GATE_RUN GATE_STATUS <<<"$GATE_ROW"
     if [ -n "$GATE_RUN" ] && [ "$GATE_STATUS" = completed ]; then
