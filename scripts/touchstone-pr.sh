@@ -409,6 +409,32 @@ rerun_review_gate() {
   done
 }
 
+# Re-run the pinned gate on current evidence and wait for its verdict. A
+# required workflow cannot see a review that lands after the request, so
+# merge asks for one evaluation of what is on the PR now before enqueueing.
+refresh_review_gate_before_merge() {
+  local number="$1" head="$2" attempt=1 run_id status conclusion
+  rerun_review_gate "$number" "$head"
+  run_id="$REVIEW_GATE_RUN_ID"
+  while :; do
+    read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$run_id" \
+      --jq '"\(.status) \(.conclusion // "")"' \
+      || fail_operation "could not read review-gate run $run_id: $READ_OUTPUT" "Retry after GitHub recovers."
+    read -r status conclusion <<<"$READ_OUTPUT"
+    if [ "$status" = completed ]; then
+      [ "$conclusion" = success ] \
+        || fail_operation "review-gate run $run_id concluded $conclusion on current evidence" "Answer the open findings or request a fresh review, then retry."
+      [ "$JSON_MODE" = true ] || printf 'Review gate run %s passed on current evidence.\n' "$run_id" >&2
+      return 0
+    fi
+    [ "$attempt" -lt "$GATE_ATTEMPTS" ] \
+      || fail_operation "review-gate run $run_id did not complete within $((GATE_ATTEMPTS * GATE_RETRY_DELAY))s" "Wait for it in the Actions tab, then retry."
+    [ "$JSON_MODE" = true ] || printf 'Review gate run %s %s; retrying in %ss.\n' "$run_id" "$status" "$GATE_RETRY_DELAY" >&2
+    attempt=$((attempt + 1))
+    sleep "$GATE_RETRY_DELAY"
+  done
+}
+
 verify_live_coordinates() {
   local number="$1" head="$2" base_ref="$3" base_sha="$4" live_row live_head live_base live_base_sha
   read_with_retry gh pr view "$number" --repo "$REPO_SPEC" \
@@ -615,6 +641,9 @@ merge_pr() {
     final_state=already-merged
   else
     [ "$state" = OPEN ] || fail_input "PR #$PR_NUMBER is $state" "Only an open or merged PR is supported."
+    if review_gate_required "$base"; then
+      refresh_review_gate_before_merge "$number" "$head"
+    fi
     merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash \
       --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
     merge_diagnostic="$(clean_diagnostic "$merge_output")"

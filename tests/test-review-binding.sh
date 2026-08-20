@@ -749,6 +749,17 @@ case "$1 ${2:-}" in
   api*)
     if has 'actions/runs/77/rerun' "$@"; then
       echo "rerun 77" >>"$GH_STATE/gate-reruns"
+      # After a re-run the run is in progress until the fake says otherwise.
+      [ -f "$GH_STATE/gate-after-rerun" ] || echo 1 >"$GH_STATE/gate-after-rerun"
+    elif has 'actions/runs/77' "$@"; then
+      # Single-run read after a re-run: in progress once, then completed with
+      # the configured conclusion.
+      if [ -f "$GH_STATE/gate-after-rerun" ]; then
+        rm -f "$GH_STATE/gate-after-rerun"
+        printf 'in_progress \n'
+      else
+        printf 'completed %s\n' "${GH_GATE_CONCLUSION:-success}"
+      fi
     elif has 'rules/branches/' "$@"; then
       if [ -f "$GH_STATE/review-gate" ]; then printf 'true\n'; else printf 'false\n'; fi
     elif has 'actions/runs?head_sha=' "$@"; then
@@ -978,6 +989,20 @@ EOF
   run_pr "$TMP/out" respond 7 --comment-id 51 --body-file "$TMP/reply" --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'touchstone pr open'
+
+  echo "==> merge re-runs the pinned gate on current evidence before enqueueing"
+  touch "$TMP/state/review-gate" "$TMP/state/pr-exists"
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
+    || fail "merge did not re-run the review gate before enqueueing"
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
+  GH_GATE_CONCLUSION=failure run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'concluded failure on current evidence'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
 
   echo "==> merge binds both mutation and reconciliation to the reviewed head"
   rm -f "$TMP/state/merged"
