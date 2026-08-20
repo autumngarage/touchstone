@@ -337,8 +337,26 @@ jq -e '
 # combinations nothing tested.
 jq -e '
   any(.managedRuleset.rules[]; .type == "required_status_checks" and .parameters.strict_required_status_checks_policy == false)
-  and any(.managedRuleset.rules[]; .type == "merge_queue" and .parameters.merge_method == "SQUASH" and .parameters.grouping_strategy == "ALLGREEN")
+  and any(.managedRuleset.rules[]; .type == "merge_queue" and .parameters == {
+    check_response_timeout_minutes: 60,
+    grouping_strategy: "ALLGREEN",
+    max_entries_to_build: 5,
+    max_entries_to_merge: 5,
+    merge_method: "SQUASH",
+    min_entries_to_merge: 1,
+    min_entries_to_merge_wait_minutes: 0
+  })
 ' "$POLICY" >/dev/null || fail "policy must pair a merge queue with non-strict status checks"
+# A queue rule makes the required review-binding context due on the queue's
+# merge commit. This repository's publisher reaches that commit only through
+# the signal workflow's merge_group handoff; a policy that enables the queue
+# before that handoff exists ejects every entry. The order is enforced here,
+# not in a PR description.
+SIGNAL_WORKFLOW="$ROOT/.github/workflows/review-evidence-signal.yml"
+if jq -e 'any(.managedRuleset.rules[]; .type == "merge_queue")' "$POLICY" >/dev/null; then
+  grep -Fq 'merge_group:' "$SIGNAL_WORKFLOW" \
+    || fail "policy enables a merge queue but review-evidence-signal.yml does not carry merge_group to the publisher"
+fi
 [ "$(git hash-object "$ROLLBACK_VALIDATE")" = "c2dc082e0702090f3fc9de095d78a85ddde902a5" ] \
   || fail "durable rollback workflow differs from its recorded prerequisite blob"
 grep -Fq 'Policy operations require `gh`, `git`, `jq`, and `diff`.' "$POLICY_GUIDE" \
