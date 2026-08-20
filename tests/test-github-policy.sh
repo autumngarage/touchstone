@@ -340,13 +340,17 @@ jq -e '
   and any(.managedRuleset.rules[]; .type == "merge_queue" and .parameters == {
     check_response_timeout_minutes: 60,
     grouping_strategy: "ALLGREEN",
-    max_entries_to_build: 5,
-    max_entries_to_merge: 5,
+    max_entries_to_build: 1,
+    max_entries_to_merge: 1,
     merge_method: "SQUASH",
     min_entries_to_merge: 1,
     min_entries_to_merge_wait_minutes: 0
   })
 ' "$POLICY" >/dev/null || fail "policy must pair a merge queue with non-strict status checks"
+# One entry per merge commit: the queue branch names a single PR and the
+# publisher evaluates that PR, so a grouped merge commit would carry one PR's
+# verdict for several. Grouping is re-enabled only with a publisher that
+# aggregates every PR in the group.
 # A queue rule makes the required review-binding context due on the queue's
 # merge commit. This repository's publisher reaches that commit only through
 # the signal workflow's merge_group handoff; a policy that enables the queue
