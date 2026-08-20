@@ -49,8 +49,20 @@ awk '
     # A fenced code block renders its bytes literally, so a <!-- inside one
     # is visible text, not a comment opener -- treating it as one swallowed
     # the rest of the body of any PR that mentions the token.
-    if (!in_comment && line ~ /^[[:space:]]*(```|~~~)/) { in_fence = !in_fence; print; next }
-    if (in_fence) { print; next }
+    if (in_fence) {
+      if (match(line, /^[[:space:]]*(`{3,}|~{3,})/)) {
+        seg = substr(line, RSTART, RLENGTH)
+        gsub(/[[:space:]]/, "", seg)
+        if (substr(seg, 1, 1) == fence_char && length(seg) >= fence_len) in_fence = 0
+      }
+      print; next
+    }
+    if (!in_comment && match(line, /^[[:space:]]*(`{3,}|~{3,})/)) {
+      seg = substr(line, RSTART, RLENGTH)
+      gsub(/[[:space:]]/, "", seg)
+      fence_char = substr(seg, 1, 1); fence_len = length(seg); in_fence = 1
+      print; next
+    }
     out = ""
     while (length(line) > 0) {
       if (in_comment) {
@@ -88,8 +100,20 @@ awk '
 # copy of the whole template must not read as the template filled in.
 section() {
   awk -v want="## $1" '
-    /^[[:space:]]*(```|~~~)/ { in_fence = !in_fence; if (grabbing) print; next }
-    in_fence { if (grabbing) print; next }
+    in_fence {
+      if (match($0, /^[[:space:]]*(`{3,}|~{3,})/)) {
+        seg = substr($0, RSTART, RLENGTH)
+        gsub(/[[:space:]]/, "", seg)
+        if (substr(seg, 1, 1) == fence_char && length(seg) >= fence_len) in_fence = 0
+      }
+      if (grabbing) print; next
+    }
+    match($0, /^[[:space:]]*(`{3,}|~{3,})/) {
+      seg = substr($0, RSTART, RLENGTH)
+      gsub(/[[:space:]]/, "", seg)
+      fence_char = substr(seg, 1, 1); fence_len = length(seg); in_fence = 1
+      if (grabbing) print; next
+    }
     $0 == want { grabbing = 1; next }
     grabbing && /^## / { exit }
     grabbing { print }

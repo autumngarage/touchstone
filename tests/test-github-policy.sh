@@ -1244,6 +1244,28 @@ if accepts; then
 fi
 ok "fenced headings are not sections"
 
+echo "==> a longer fence is not closed by a shorter line"
+# Markdown closes a fence only with the same character repeated at least as
+# many times as the opener; the parser must agree or fenced samples re-enter
+# section parsing while the rendered body keeps them hidden.
+body '````
+```
+## Intent
+real
+## Invariants
+- x
+## Validation
+- Tests: pass
+## Review tier
+normal
+## Why this tier
+x
+````'
+if accepts; then
+  fail "a four-backtick fence was closed by a three-backtick line"
+fi
+ok "fence closing honors delimiter length"
+
 echo "==> a bare list marker satisfies nothing"
 body '## Intent
 -
