@@ -1,0 +1,48 @@
+# Release — bumps the homebrew-touchstone tap when a GitHub Release is
+# published here. The whole release cycle is:
+#
+#   git tag -a vX.Y.Z -m "touchstone X.Y.Z" <reviewed main sha>
+#   git push origin vX.Y.Z
+#   gh release create vX.Y.Z --verify-tag --generate-notes
+#
+# VERSION on main must already read X.Y.Z (bumped through an ordinary PR),
+# and the tag must point at a commit that reached main through the merge
+# gate: a release is a name for reviewed state, never a new state.
+#
+# The published event runs the shared bump workflow in autumn-garage, which
+# downloads the tag's tarball, computes its sha256, and rewrites the tap
+# formula's url + sha256. `brew upgrade touchstone` sees it about a minute
+# later. Homebrew installs the tool only; no repository is ever modified by
+# a release.
+#
+# Manual re-run for a tag whose event was lost:
+#   gh workflow run release.yml -f tag_name=vX.Y.Z
+#
+# Requires the HOMEBREW_TAP_PAT secret: contents:write on the tap.
+
+name: release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag to bump the formula to (e.g. v3.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  bump-tap:
+    # Prereleases do not reach the tap; manual dispatch always runs.
+    if: github.event_name == 'workflow_dispatch' || !github.event.release.prerelease
+    uses: autumngarage/autumn-garage/.github/workflows/homebrew-bump.yml@a167e010ed38b5dc88b70e2f36887468f42133c1 # v1
+    with:
+      formula-name: touchstone
+      tap-repo: autumngarage/homebrew-touchstone
+      tag-name: ${{ inputs.tag_name || github.event.release.tag_name }}
+    secrets:
+      HOMEBREW_TAP_PAT: ${{ secrets.HOMEBREW_TAP_PAT }}
