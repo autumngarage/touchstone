@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/touchstone-adopt.sh — plan-first repository adoption and upgrade.
+# scripts/touchstone-adopt.sh — plan-first repository adoption.
 # shellcheck disable=SC2034 # globals are consumed by sourced adoption modules.
 
 set -euo pipefail
@@ -33,7 +33,6 @@ usage() {
 Usage:
   touchstone adopt [--check|--dry-run] [--json] [--project DIR]
     [--tracker github|linear] [--tracker-prefix KEY] [--task NAME=COMMAND ...]
-  touchstone upgrade [--check|--dry-run] [--json] [--project DIR]
 EOF
   exit 2
 }
@@ -123,7 +122,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-case "$OPERATION" in adopt | upgrade) ;; -h | --help | help) usage ;; *) usage ;; esac
+case "$OPERATION" in adopt) ;; -h | --help | help) usage ;; *) usage ;; esac
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -167,9 +166,6 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ "$OPERATION" = upgrade ] && { [ "$MANUAL_TASK_COUNT" -gt 0 ] || [ -n "$TRACKER_TYPE$TRACKER_PREFIX" ]; }; then
-  invalid_invocation "upgrade does not accept task or tracker replacement options" "Upgrade refreshes only Touchstone-owned steering."
-fi
 case "$TRACKER_TYPE" in '' | github | linear) ;; *) invalid_invocation "unsupported tracker '$TRACKER_TYPE'" "Use github or linear." ;; esac
 if [ "$TRACKER_TYPE" = linear ]; then
   printf '%s' "$TRACKER_PREFIX" | grep -Eq '^[A-Z][A-Z0-9]*$' \
@@ -213,8 +209,6 @@ source "$SCRIPT_ROOT/scripts/lib/touchstone-legacy-config.sh"
 source "$SCRIPT_ROOT/scripts/lib/touchstone-tracker-config.sh"
 # shellcheck disable=SC1091 # sources resolve from the installed CLI root.
 source "$SCRIPT_ROOT/scripts/lib/touchstone-adopt-plan.sh"
-# shellcheck disable=SC1091 # sources resolve from the installed CLI root.
-source "$SCRIPT_ROOT/scripts/lib/touchstone-adopt-steering.sh"
 
 require_head_file() {
   local relative="$1" head_blob worktree_blob
@@ -390,16 +384,16 @@ plan_tracker_contract() {
 }
 
 plan_tracker_contract
+# Adoption writes the project's own declarations and nothing else. Steering
+# reaches agents through the installed tool (touchstone steering install);
+# a repository copy would override the machine-level block and drift, which
+# is the defect this replaced.
 if [ -e "$PROJECT_ROOT/.touchstone.toml" ] || [ -L "$PROJECT_ROOT/.touchstone.toml" ]; then
   [ "$MANUAL_TASK_COUNT" -eq 0 ] \
     || invalid_invocation "an existing validation declaration cannot be replaced by adoption options" "Edit project-owned values in a separate reviewed change."
   read_existing_contract
-  plan_steering "$([ "$OPERATION" = upgrade ] && printf true || printf false)"
-elif [ "$OPERATION" = upgrade ]; then
-  contract_refusal "repository is not adopted; run touchstone adopt first"
 else
   compile_new_contract
-  plan_steering true
 fi
 
 render_plan_diff

@@ -751,9 +751,6 @@ case "$ACTION" in
     if [ "$CHANGED" -eq 0 ] && principles_current; then
       echo "==> already current: machine-level steering matches the contract"
     else
-      # Only the machine-level claim: adopt/upgrade still install repository
-      # copies that override this block (docs/product-contract.md, AUT-317),
-      # and a success message must not report a migration it did not perform.
       # A dry run performed nothing at all, and must say so.
       if [ "$DRY_RUN" = true ]; then
         echo "==> dry run: predictions above; nothing was installed"

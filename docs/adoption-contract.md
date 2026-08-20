@@ -1,6 +1,6 @@
 # Adoption Contract
 
-This document owns the public adoption and upgrade interface. The durable
+This document owns the public adoption interface. The durable
 product boundary remains in [product-contract.md](product-contract.md), and the
 generated project declaration is owned by
 [validation-contract.md](validation-contract.md).
@@ -9,11 +9,13 @@ generated project declaration is owned by
 
 `touchstone adopt --check` reports whether repository-file adoption is current.
 `touchstone adopt --dry-run` prints the complete proposed diff. Plain
-`touchstone adopt` applies that same plan. `touchstone upgrade` exposes the same
-three modes but refreshes only Touchstone-owned steering bytes; it never
-rewrites an accepted declaration of any supported schema.
+`touchstone adopt` applies that same plan. Adoption writes the project's own
+declarations only — it neither reads nor writes instruction files, because
+steering reaches agents through the installed tool (`touchstone steering
+install`), never through repository copies. There is no `upgrade` subcommand;
+it existed only to refresh copies that no longer exist.
 
-Both commands accept `--json` and `--project DIR`. Fresh adoption accepts
+The command accepts `--json` and `--project DIR`. Fresh adoption accepts
 repeated `--task NAME=COMMAND` arguments for the explicit manual path and
 `--tracker github|linear`; Linear also requires `--tracker-prefix KEY`.
 Compatibility defaults a missing tracker option or declaration to GitHub.
@@ -72,20 +74,17 @@ proposal.
 
 ## Ownership and safety
 
-The planner may propose the project-owned `.touchstone.toml` and
-`.touchstone-tracker.toml` declarations, create complete Touchstone-owned
-sources under `.touchstone/`, and create or replace only the exact
-`touchstone:steering` block in `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md`.
-Everything outside those markers remains project-owned. Updates preserve each
-existing file's mode as project-owned metadata.
+The planner may propose exactly two files, both project-owned:
+`.touchstone.toml` and `.touchstone-tracker.toml`. It creates no directory,
+touches no instruction file, and installs no steering — steering reaches
+agents through the installed tool. Updates preserve each existing file's mode
+as project-owned metadata.
 
-Existing valid declarations of any supported schema remain byte-for-byte unchanged. Adopt
-fills missing steering integration points without refreshing existing managed
-sources; explicit upgrade refreshes them. Symlinks, malformed or repeated
-markers, ignored managed outputs, untracked existing managed output,
-unsupported schema and paths outside the repository refuse without a write.
+Existing valid declarations of any supported schema remain byte-for-byte
+unchanged. Dangling declaration symlinks, ignored managed outputs, unsupported
+schemas, and paths outside the repository refuse without a write.
 
-No adoption or upgrade operation deletes a project file. A breaking schema,
+No adoption operation deletes a project file. A breaking schema,
 obsolete path, or remote-policy change requires its own explicit reviewable
 operation and recovery plan.
 

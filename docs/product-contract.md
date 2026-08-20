@@ -23,14 +23,11 @@ once. A steering change ships with the tool; no repository is rewritten, no
 pull request is opened per consumer, and nothing drifts because nothing is
 duplicated.
 
-**Not yet true of `adopt` and `upgrade`.** Both still stage
-`.touchstone/TOUCHSTONE.md`, the routed principles, and managed blocks in a
-repository's own `AGENTS.md`, `GEMINI.md`, and `CLAUDE.md`
-(`scripts/lib/touchstone-adopt-steering.sh`). Because every driver layers
-project files over user-level ones, those copies win, and a newly adopted
-repository still carries a duplicate that can drift. Retiring that planner is
-tracked as AUT-317 and must land before any repository adopts this contract.
-Until it does, the paragraph above describes `steering install` alone.
+Adoption writes a repository's own declarations and nothing else. It neither
+reads nor writes instruction files, and there is no `upgrade` subcommand:
+with no repository copy to refresh, the operation had no remaining job. A
+copy left by a pre-retirement adoption is the operator's to remove; re-running
+`adopt` never refreshes or deletes it.
 
 Copying was the alternative and it failed measurably: on 2026-08-18, zero of
 ten consumer repositories carried a block matching this contract, and several
@@ -87,7 +84,7 @@ explain that owner's decision; they may not recompute it.
 | Require inline review threads to be resolved | GitHub conversation resolution | GitHub review thread state | An unresolved thread blocks even after a reply; resolution alone cannot satisfy the separate answer check |
 | Bind merge to the reviewed head | GitHub merge API | Expected head passed to the merge mutation | Moving the head before merge is rejected |
 | Claim work | Configured tracker adapter | Tracker-neutral claim contract | GitHub- and Linear-backed fixtures distinguish verified from unavailable transport |
-| Carry agent steering | The installed tool, machine-wide | One delimited block in each driver's user-level instruction file; repository copies remain until AUT-317 retires them | `touchstone steering check` compares the installed block against the tool's contract; deterministic size-cap, path-integrity, and steering-contract assertions run in the required suite |
+| Carry agent steering | The installed tool, machine-wide | One delimited block in each driver's user-level instruction file; repositories carry none | `touchstone steering check` compares the installed block against the tool's contract; deterministic size-cap, path-integrity, and steering-contract assertions run in the required suite |
 | Adopt and evolve a repository | Touchstone CLI adoption module | Versioned project declarations and reviewable plan/apply output | Fresh, current, repeat, old-compatible, and unsupported-schema fixtures |
 | Install and upgrade the local tool | Homebrew | Versioned formula and checksummed release | Install, upgrade, rollback, and no-project-mutation tests pass |
 
