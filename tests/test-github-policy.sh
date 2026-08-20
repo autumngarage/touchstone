@@ -1122,6 +1122,25 @@ ok "repeated scaffolding stripping holds"
 
 echo "==> ordered unchecked task items are still promises"
 body '## Intent
++ [ ] plus-marker task
+
+## Validation
++ [ ] Tests
+
+## Invariants
++ [ ] x
+
+## Review tier
+normal
+
+## Why this tier
++ [ ] contained'
+if accepts; then
+  fail "plus-prefixed unchecked task items satisfied the gate"
+fi
+ok "the third Markdown bullet marker strips like the other two"
+
+body '## Intent
 1. [ ] run tests
 
 ## Invariants
