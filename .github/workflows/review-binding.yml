@@ -21,6 +21,10 @@ on:
     types: [completed]
   status:
   push:
+  # Deliberately no merge_group trigger: that event runs the workflow from the
+  # queue's temporary merge commit, which includes PR code, and this job holds
+  # checks: write. The inert signal workflow carries merge_group here through
+  # workflow_run, so the queue verdict is always published from this branch.
 
 permissions:
   checks: write
@@ -117,8 +121,18 @@ jobs:
               "$comments_file" >"$output"
           }
 
+          # QUEUE_RUN_ID is the pending review-binding check precreated on the
+          # PR's active merge-queue commit for the evaluation in progress. Every
+          # publication for the PR head -- verdict, cancellation, or API failure
+          # -- reaches that run too, so the queue commit can never keep a verdict
+          # the PR head no longer has. Empty outside an evaluation.
+          QUEUE_RUN_ID=""
           publish_check() {
             local run_id="$1" conclusion="$2" title="$3" summary="$4"
+            if [ -n "$QUEUE_RUN_ID" ] && [ "$run_id" != "$QUEUE_RUN_ID" ]; then
+              publish_check "$QUEUE_RUN_ID" "$conclusion" "$title" "$summary" \
+                || echo "WARNING: could not finalize queue check run $QUEUE_RUN_ID; it stays pending and the queue ejects on timeout." >&2
+            fi
             gh api -X PATCH "repos/$REPO/check-runs/$run_id" \
               -f status=completed \
               -f conclusion="$conclusion" \
@@ -132,11 +146,25 @@ jobs:
               "The check failed closed because GitHub evidence collection was incomplete: $detail"
           }
 
+          # The merge commit of the PR's active queue entry, or empty. A read
+          # failure is an evidence failure: the caller must fail closed, because
+          # a queue commit with a stale success would merge on it.
+          active_queue_commit() {
+            local number="$1"
+            # shellcheck disable=SC2016
+            gh api graphql -F owner="${REPO%%/*}" -F name="${REPO##*/}" -F pr="$number" \
+              -f query='query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){mergeQueueEntry{headCommit{oid}}}}}' \
+              --jq '.data.repository.pullRequest.mergeQueueEntry.headCommit.oid // empty'
+          }
+
+          # CHECK_SHA is the commit the check is published on. It is the PR head
+          # except under the merge queue, where it is the queue's merge commit.
+          CHECK_SHA=""
           create_pending() {
             local number="$1" head="$2" coordinates="$3"
             gh api -X POST "repos/$REPO/check-runs" \
               -f name=review-binding \
-              -f head_sha="$head" \
+              -f head_sha="${CHECK_SHA:-$head}" \
               -f status=in_progress \
               -f "output[title]=Reading authoritative review evidence" \
               -f "output[summary]=PR #$number at $coordinates." \
@@ -323,14 +351,14 @@ jobs:
               return 0
             fi
 
-            if ! newest_run="$(gh api "repos/$REPO/commits/$head/check-runs?check_name=review-binding&per_page=100" \
+            if ! newest_run="$(gh api "repos/$REPO/commits/${CHECK_SHA:-$head}/check-runs?check_name=review-binding&per_page=100" \
               --jq '[.check_runs[].id] | max // 0')"; then
               publish_api_failure "$run_id" "newer review-binding runs could not be inspected before publication"
               return 1
             fi
             if [ "$newest_run" != "$run_id" ]; then
               publish_check "$run_id" cancelled "A newer review-binding run owns this head" \
-                "Run $run_id did not publish its potentially stale verdict because check run $newest_run was created later for \`$head\`."
+                "Run $run_id did not publish its potentially stale verdict because check run $newest_run was created later for \`${CHECK_SHA:-$head}\`."
               return 0
             fi
             publish_check "$run_id" "$conclusion" "$title" "$summary"
@@ -365,7 +393,22 @@ jobs:
             workflow_run)
               [ "$(jq -r '.workflow_run.conclusion // ""' "$GITHUB_EVENT_PATH")" = success ] || exit 0
               event_head="$(jq -r '.workflow_run.head_sha' "$GITHUB_EVENT_PATH")"
-              work_items="$(jq -r '.workflow_run.pull_requests[]? | [.number, .head.sha] | @tsv' "$GITHUB_EVENT_PATH")"
+              event_branch="$(jq -r '.workflow_run.head_branch // ""' "$GITHUB_EVENT_PATH")"
+              # A merge-queue signal: head_branch is gh-readonly-queue/<base>/pr-<N>-<sha>
+              # and head_sha is the queue's merge commit. The verdict is about
+              # the PR's head; it is published on the queue commit.
+              queue_number="$(printf '%s' "$event_branch" | sed -nE 's#^gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-fA-F]{40}$#\1#p')"
+              if [ -n "$queue_number" ]; then
+                CHECK_SHA="$event_head"
+                if ! known_head="$(gh api "repos/$REPO/pulls/$queue_number" --jq '.head.sha')"; then
+                  run_id="$(create_pending "$queue_number" "$CHECK_SHA" "queue commit \`$CHECK_SHA\`")" || exit 1
+                  publish_api_failure "$run_id" "the pull request behind merge-queue branch $event_branch could not be read"
+                  exit 1
+                fi
+                work_items="$queue_number"$'\t'"$known_head"
+              else
+                work_items="$(jq -r '.workflow_run.pull_requests[]? | [.number, .head.sha] | @tsv' "$GITHUB_EVENT_PATH")"
+              fi
               if [ -z "$work_items" ]; then
                 work_items="$(gh api --paginate "repos/$REPO/commits/$event_head/pulls?per_page=100" \
                   --jq '.[] | select(.state == "open") | [.number, .head.sha] | @tsv')"
@@ -410,13 +453,40 @@ jobs:
                 failures=$((failures + 1))
               fi
             fi
-            printf '%s\t%s\t%s\n' "$number" "$known_head" "$pending_id" >>"$preinvalidated_items"
+            # The queue consumes the check on its own merge commit, and
+            # evidence keeps changing after a PR is enqueued. Invalidate that
+            # commit now, before any evidence is read, exactly as the PR head
+            # is -- an old success must not stay authoritative while the
+            # rebuild runs. A queue-origin run already owns its queue commit.
+            queue_pending_id=""
+            if [ -z "$CHECK_SHA" ]; then
+              if ! queue_commit="$(active_queue_commit "$number")"; then
+                echo "ERROR: could not read the merge-queue entry for PR #$number; failing closed." >&2
+                if [ -z "$pending_id" ] && known_head="$(gh api "repos/$REPO/pulls/$number" --jq '.head.sha')"; then
+                  pending_id="$(create_pending "$number" "$known_head" "known head \`$known_head\`; queue state unreadable")" || pending_id=""
+                fi
+                [ -z "$pending_id" ] || publish_api_failure "$pending_id" "the merge-queue entry could not be read"
+                failures=$((failures + 1))
+                continue
+              fi
+              if [ -n "$queue_commit" ]; then
+                if ! queue_pending_id="$(create_pending "$number" "$queue_commit" "queue commit \`$queue_commit\`; evidence pending")"; then
+                  echo "ERROR: could not neutralize queue commit $queue_commit for PR #$number." >&2
+                  [ -z "$pending_id" ] || publish_api_failure "$pending_id" "the queue commit could not be invalidated"
+                  failures=$((failures + 1))
+                  continue
+                fi
+              fi
+            fi
+            printf '%s\t%s\t%s\t%s\n' "$number" "$known_head" "$pending_id" "$queue_pending_id" >>"$preinvalidated_items"
           done <<<"$work_items"
 
-          while IFS=$'\t' read -r number known_head pending_id || [ -n "$number" ]; do
+          while IFS=$'\t' read -r number known_head pending_id queue_pending_id || [ -n "$number" ]; do
             [ -n "$number" ] || continue
+            QUEUE_RUN_ID="$queue_pending_id"
             if ! evaluate_pr "$number" "$known_head" "$pending_id"; then
               failures=$((failures + 1))
             fi
+            QUEUE_RUN_ID=""
           done <"$preinvalidated_items"
           [ "$failures" -eq 0 ]
