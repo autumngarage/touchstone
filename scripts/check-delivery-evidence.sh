@@ -103,8 +103,9 @@ section() {
       }
     }
     { line = $0; sub(/^ {0,3}/, "", line) }
+    { sub(/^#{2}\t/, "## ", line) }
     line == want { grabbing = 1; next }
-    grabbing && line ~ /^#{1,2} / { exit }
+    grabbing && line ~ /^#{1,2}[ \t]/ { exit }
     grabbing { print }
   ' "$STRIPPED_BODY"
 }

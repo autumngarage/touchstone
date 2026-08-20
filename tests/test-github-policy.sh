@@ -1754,6 +1754,11 @@ if accepts; then
   fail "prose under a following H1 satisfied an empty section"
 fi
 ok "an H1 closes the section before it"
+body "$(printf '## Intent\n\n##\tNotes\nUnrelated prose under a tab-delimited heading.\n\n## Validation\n- Build: n/a — shell\n- Automated tests: pass\n- Manual validation: n/a — none\n\n## Review tier\ntrivial\n\n## Why this tier\nDocs.')"
+if accepts; then
+  fail "prose under a tab-delimited heading satisfied an empty section"
+fi
+ok "a tab after the hashes is a heading boundary too"
 
 echo "==> a heading may carry up to three leading spaces"
 body '   ## Intent
