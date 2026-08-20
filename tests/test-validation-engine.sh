@@ -225,8 +225,8 @@ mv "$RUNNER_DECL/bad" "$RUNNER_DECL/.touchstone.toml"
 run_capture "$RUNNER_DECL" "$TMP_DIR/runner-bad.out" --check-contract
 [ "$RUN_STATUS" -ne 0 ] || fail "a malformed runner label was accepted"
 assert_contains "$TMP_DIR/runner-bad.out.err" "runner must be a GitHub-hosted runner label"
-for label in self-hosted "" "linux-large" "ubuntu"; do
-  sed "s/^runner = .*/runner = \"$label\"/" "$RUNNER_DECL/.touchstone.toml" >"$RUNNER_DECL/bad"
+for label in self-hosted "" "linux-large" "ubuntu" "ubuntu-not a label!" "macos-15;id" "windows-" "ubuntu-Latest" "ubuntu-latest/../x"; do
+  sed "s|^runner = .*|runner = \"$label\"|" "$RUNNER_DECL/.touchstone.toml" >"$RUNNER_DECL/bad"
   mv "$RUNNER_DECL/bad" "$RUNNER_DECL/.touchstone.toml"
   run_capture "$RUNNER_DECL" "$TMP_DIR/runner-bad2.out" --check-contract
   [ "$RUN_STATUS" -ne 0 ] || fail "runner label '$label' outside the hosted families was accepted"

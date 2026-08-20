@@ -359,10 +359,11 @@ while IFS= read -r line || [ -n "$line" ]; do
       # Only GitHub-hosted label families: the central workflow schedules on
       # this value, and a self-hosted or arbitrary label would route the
       # required check -- and the declaration's commands -- somewhere else.
-      case "$RUNNER" in
-        ubuntu-[a-z0-9.-]* | macos-[a-z0-9.-]* | windows-[a-z0-9.-]*) ;;
-        *) config_error "runner must be a GitHub-hosted runner label (ubuntu-*, macos-*, windows-*), got '$RUNNER' at line $LINE_NUMBER" ;;
-      esac
+      # The whole label is checked, not just its prefix: a glob suffix like
+      # `ubuntu-*` would accept spaces and shell metacharacters after the
+      # family. LC_ALL=C keeps the ranges literal under every locale.
+      printf '%s' "$RUNNER" | LC_ALL=C grep -Eq '^(ubuntu|macos|windows)-[a-z0-9][a-z0-9.-]*$' \
+        || config_error "runner must be a GitHub-hosted runner label (ubuntu-*, macos-*, windows-*), got '$RUNNER' at line $LINE_NUMBER"
       ;;
     validation:setup)
       parse_string "$raw_value" || config_error "setup must be a single-line basic string at line $LINE_NUMBER"
