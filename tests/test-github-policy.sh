@@ -1396,6 +1396,48 @@ else
   fail "the gate refused a valid body over a non-fence backtick line"
 fi
 
+echo "==> a backslash-escaped comment opener stays visible text"
+body '## Intent
+The literal token is \<!-- in the rendered body.
+
+## Invariants
+- x holds
+
+## Validation
+- Tests: pass
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "an escaped opener does not eat the body"
+else
+  fail "the gate refused a valid body over a backslash-escaped opener"
+fi
+
+echo "==> a backslash that escapes itself leaves the opener live"
+body '## Intent
+Path \\<!-- hides everything after it
+
+## Invariants
+- x holds
+
+## Validation
+- Tests: pass
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  fail "a doubled backslash was read as escaping the opener"
+else
+  ok "an even backslash run still opens the comment"
+fi
+
 echo "==> a bare list marker satisfies nothing"
 body '## Intent
 -

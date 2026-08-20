@@ -113,6 +113,16 @@ awk '
           continue
         }
       }
+      # A backslash escapes the "<" (CommonMark), so "\<!--" is visible
+      # text. Backslashes escape each other, so only an odd-length run
+      # immediately before the opener escapes it.
+      escapes = 0
+      while (escapes < length(prefix) && substr(prefix, length(prefix) - escapes, 1) == "\\") escapes++
+      if (escapes % 2 == 1) {
+        out = out prefix "<!--"
+        line = substr(line, open_at + 4)
+        continue
+      }
       out = out prefix
       line = substr(line, open_at + 4)
       in_comment = 1
