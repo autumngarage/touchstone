@@ -313,13 +313,32 @@ for required in \
   'live_head' \
   'newest_run' \
   'GITHUB_EVENT_PATH' \
-  'known_head'; do
+  'known_head' \
+  'merge_group:' \
+  'types: [checks_requested]' \
+  'head_sha="${CHECK_SHA:-$head}"' \
+  "CHECK_SHA=\"\$(jq -r '.merge_group.head_sha'" \
+  'gh-readonly-queue' \
+  'the pull request behind merge group ref'; do
   if grep -Fq "$required" "$WORKFLOW"; then
     ok "workflow contains: $required"
   else
     fail "workflow missing required guardrail: $required"
   fi
 done
+# The queue ref is the only PR coordinate a merge_group event carries; the
+# same expression the workflow uses must extract it and reject anything else.
+QUEUE_REF_EXPR="$(grep -oE "sed -nE 's#[^']*#\\\\1#p'" "$WORKFLOW" | head -1 | sed -E "s/^sed -nE '//; s/'$//")"
+if [ -z "$QUEUE_REF_EXPR" ]; then
+  fail "merge-group ref expression not found in workflow"
+else
+  parsed="$(printf '%s' 'refs/heads/gh-readonly-queue/main/pr-931-2222222222222222222222222222222222222222' | sed -nE "$QUEUE_REF_EXPR")"
+  [ "$parsed" = 931 ] && ok "merge-group ref yields its pull request number" \
+    || fail "merge-group ref parsed to '$parsed', expected 931"
+  parsed="$(printf '%s' 'refs/heads/feature/pr-12-not-a-queue' | sed -nE "$QUEUE_REF_EXPR")"
+  [ -z "$parsed" ] && ok "a non-queue ref yields no pull request number" \
+    || fail "non-queue ref parsed to '$parsed'"
+fi
 if grep -Fq 'BOOTSTRAP_BASE_SHA' "$WORKFLOW"; then
   fail "required review-binding workflow still carries its one-head bootstrap bypass"
 else
