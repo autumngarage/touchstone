@@ -63,7 +63,10 @@ case "$method $endpoint" in
     if [ -f "$state/auto-merge" ]; then emit '{"allow_auto_merge":true}'; else emit '{"allow_auto_merge":false}'; fi
     ;;
   "PATCH repos/autumngarage/touchstone")
-    case "${fields:-}" in *allow_auto_merge=true*) touch "$state/auto-merge" ;; esac
+    case "${fields:-}" in
+      *allow_auto_merge=true*) touch "$state/auto-merge" ;;
+      *allow_auto_merge=false*) rm -f "$state/auto-merge" ;;
+    esac
     echo "PATCH repo-settings" >>"$state/mutations.log"
     emit '{"allow_auto_merge":true}'
     ;;
@@ -338,7 +341,7 @@ init_branch() {
   rm -f "$TMP_DIR/state/ruleset.json" "$TMP_DIR/state/bad-effective-used" \
     "$TMP_DIR/state/branch-calls" "$TMP_DIR/state/org-mutation-failed" \
     "$TMP_DIR/state/branch-put-failed" "$TMP_DIR/state/local-workflow-absent" \
-    "$TMP_DIR/state/repo-ruleset.json"
+    "$TMP_DIR/state/repo-ruleset.json" "$TMP_DIR/state/auto-merge"
 }
 
 run_policy() {
@@ -618,6 +621,7 @@ if GH_FAKE_FAIL_REPO_MUTATION=1 run_policy apply "$POLICY" >/dev/null 2>&1; then
 fi
 [ ! -f "$TMP_DIR/state/repo-ruleset.json" ] || fail "a rejected companion ruleset was left behind"
 [ ! -f "$TMP_DIR/state/ruleset.json" ] || fail "the organization ruleset was left installed after the companion failed"
+[ ! -f "$TMP_DIR/state/auto-merge" ] || fail "a failed apply left auto-merge enabled although it was off before"
 ok "a rejected companion ruleset restores the prior policy"
 
 # Re-establish the applied state for the rollback case.
@@ -645,8 +649,9 @@ run_policy rollback "$TMP_DIR/backup.json" "$POLICY"
 [ -f "$TMP_DIR/state/branch.json" ] || fail "rollback did not restore branch protection"
 [ ! -f "$TMP_DIR/state/ruleset.json" ] || fail "rollback did not remove the replacement ruleset"
 [ ! -f "$TMP_DIR/state/repo-ruleset.json" ] || fail "rollback did not remove the companion repository ruleset"
-tail -3 "$TMP_DIR/state/mutations.log" >"$TMP_DIR/rollback-order.txt"
-diff -u <(printf 'PUT branch-protection\nDELETE org-ruleset\nDELETE repo-ruleset\n') "$TMP_DIR/rollback-order.txt" >/dev/null \
+[ ! -f "$TMP_DIR/state/auto-merge" ] || fail "rollback did not restore auto-merge to its captured value (off)"
+tail -4 "$TMP_DIR/state/mutations.log" >"$TMP_DIR/rollback-order.txt"
+diff -u <(printf 'PUT branch-protection\nDELETE org-ruleset\nDELETE repo-ruleset\nPATCH repo-settings\n') "$TMP_DIR/rollback-order.txt" >/dev/null \
   || fail "rollback created a protection gap: $(tr '\n' ' ' <"$TMP_DIR/rollback-order.txt")"
 ok "rollback restores the captured gate before removing its replacement"
 

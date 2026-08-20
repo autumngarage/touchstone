@@ -180,6 +180,17 @@ verify_auto_merge_allowed() {
   [ "$allowed" = true ] || die "repository setting allow_auto_merge is off; the merge queue cannot admit pull requests"
 }
 
+auto_merge_setting() {
+  api "repos/$ORG/$REPOSITORY" --jq '.allow_auto_merge'
+}
+
+set_auto_merge() {
+  local desired="$1" current
+  current="$(auto_merge_setting)" || return $?
+  [ "$current" = "$desired" ] && return 0
+  api --method PATCH "repos/$ORG/$REPOSITORY" -F "allow_auto_merge=$desired" >/dev/null
+}
+
 ensure_auto_merge_allowed() {
   local allowed
   allowed="$(api "repos/$ORG/$REPOSITORY" --jq '.allow_auto_merge')" || return $?
@@ -397,7 +408,10 @@ restore_branch_protection() {
 }
 
 restore_policy_state() {
-  local expected_ruleset="$1" expected_protection="$2" expected_repo_ruleset="${3:-null}" current current_protection payload id
+  local expected_ruleset="$1" expected_protection="$2" expected_repo_ruleset="${3:-null}" expected_auto_merge="${4:-}" current current_protection payload id
+  if [ -n "$expected_auto_merge" ] && [ "$expected_auto_merge" != null ]; then
+    set_auto_merge "$expected_auto_merge" || return $?
+  fi
   if [ "$expected_protection" != null ]; then
     restore_branch_protection "$expected_protection" || return $?
   fi
@@ -498,7 +512,8 @@ case "$COMMAND" in
     echo "Would install/replace organization ruleset: $RULESET_NAME"
     if [ "$DESIRED_REPO_RULESET" != null ]; then
       echo "Would install/replace repository ruleset: $REPO_RULESET_NAME"
-      [ "$(api "repos/$ORG/$REPOSITORY" --jq '.allow_auto_merge')" = true ] \
+      current_auto_merge="$(auto_merge_setting)" || die "could not read the repository's auto-merge setting"
+      [ "$current_auto_merge" = true ] \
         || echo "Would enable the repository setting allow_auto_merge (the queue admits pull requests through it)."
     elif [ "$(managed_repo_ruleset_json)" != null ]; then
       echo "Would DELETE repository ruleset: $REPO_RULESET_NAME (policy no longer declares it)"
@@ -511,6 +526,7 @@ case "$COMMAND" in
     branch="$(branch_protection_json)"
     managed="$(managed_ruleset_json)"
     managed_repo="$(managed_repo_ruleset_json)"
+    auto_merge="$(auto_merge_setting)" || die "could not read the repository's auto-merge setting"
     if [ "$branch" = null ]; then
       rollback_prerequisites='{}'
     else
@@ -518,14 +534,14 @@ case "$COMMAND" in
     fi
     repository_rulesets="$(api "repos/$ORG/$REPOSITORY/rulesets?includes_parents=false")"
     effective_rulesets="$(api "repos/$ORG/$REPOSITORY/rulesets?includes_parents=true")"
-    jq -n --argjson branch "$branch" --argjson managed "$managed" --argjson managedRepo "$managed_repo" \
+    jq -n --argjson branch "$branch" --argjson managed "$managed" --argjson managedRepo "$managed_repo" --argjson autoMerge "$auto_merge" \
       --argjson rollbackPrerequisites "$rollback_prerequisites" \
       --argjson repositoryRulesets "$repository_rulesets" --argjson effectiveRulesets "$effective_rulesets" \
       --arg org "$ORG" --arg repository "$REPOSITORY" --arg branchName "$BRANCH" \
       '{contractVersion:1,capturedAt:(now|todate),organization:$org,repository:$repository,branch:$branchName,
         rollbackPrerequisites:$rollbackPrerequisites,
         branchProtection:$branch,repositoryRulesets:$repositoryRulesets,effectiveRulesets:$effectiveRulesets,
-        managedOrganizationRuleset:$managed,managedRepositoryRuleset:$managedRepo}' >"$ARTIFACT"
+        managedOrganizationRuleset:$managed,managedRepositoryRuleset:$managedRepo,allowAutoMerge:$autoMerge}' >"$ARTIFACT"
     echo "Wrote backup: $ARTIFACT"
     ;;
   apply)
@@ -536,6 +552,7 @@ case "$COMMAND" in
     source_ruleset="$(managed_ruleset_json)"
     source_protection="$(branch_protection_json)"
     source_repo_ruleset="$(managed_repo_ruleset_json)"
+    source_auto_merge="$(auto_merge_setting)" || die "could not read the repository's auto-merge setting"
     if [ "$source_ruleset" = null ] && [ "$source_protection" = null ]; then
       die "no existing protection is present to guard policy replacement"
     fi
@@ -558,7 +575,7 @@ case "$COMMAND" in
       fi
       verify_policy_state "$desired" null "$DESIRED_REPO_RULESET" || exit $?
     ); then
-      (restore_policy_state "$source_ruleset" "$source_protection" "$source_repo_ruleset") \
+      (restore_policy_state "$source_ruleset" "$source_protection" "$source_repo_ruleset" "$source_auto_merge") \
         || die "policy replacement failed and the complete prior state could not be restored"
       die "policy replacement failed; the complete prior policy state was restored"
     fi
@@ -582,6 +599,8 @@ case "$COMMAND" in
     [ "$(jq -r .branch "$ARTIFACT")" = "$BRANCH" ] || die "backup branch does not match policy"
     before="$(jq -c .managedOrganizationRuleset "$ARTIFACT")"
     before_repo="$(jq -c '.managedRepositoryRuleset // null' "$ARTIFACT")"
+    # `//` treats false as absent; the setting is a real boolean.
+    before_auto_merge="$(jq -r 'if has("allowAutoMerge") then .allowAutoMerge else "null" end' "$ARTIFACT")"
     protection="$(jq -c .branchProtection "$ARTIFACT")"
     if [ "$protection" = null ] && [ "$before" = null ]; then
       die "backup contains no branch protection or managed ruleset to restore"
@@ -617,6 +636,7 @@ case "$COMMAND" in
         verify_ruleset_against "$before" || exit $?
       fi
       restore_repo_ruleset "$before_repo" || exit $?
+      if [ "$before_auto_merge" != null ]; then set_auto_merge "$before_auto_merge" || exit $?; fi
       if [ "$protection" = null ]; then
         current_protection="$(branch_protection_json)" || exit $?
         if [ "$current_protection" != null ]; then
