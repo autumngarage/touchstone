@@ -1625,6 +1625,53 @@ else
   fail "fully filled Validation rows were refused"
 fi
 
+echo "==> an empty fenced block is not content"
+body '## Intent
+```
+```
+
+## Invariants
+```bash
+```
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  fail "empty fence delimiters satisfied a required section"
+fi
+ok "fence delimiters alone are scaffolding"
+body '## Intent
+```
+real intent inside a fence
+```
+
+## Invariants
+- x holds
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "content inside a fence still counts"
+else
+  fail "fenced content was refused"
+fi
+
 echo "==> a higher-level heading ends a section"
 body '## Intent
 

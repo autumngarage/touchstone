@@ -117,6 +117,9 @@ filled() {
     { line = $0
       sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
       if (line == "") next
+      # A fence delimiter is scaffolding too: an empty fenced block has two
+      # delimiter lines and no content.
+      if (line ~ /^(`{3,}|~{3,})[[:space:]]*[A-Za-z0-9_-]*[[:space:]]*$/) next
       # Bullets, task boxes, and "Label:" prefixes are scaffolding, not
       # content: judge what follows. Stripped repeatedly, so "- -" or a
       # nested empty list cannot smuggle a marker through as evidence.
