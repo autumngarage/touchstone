@@ -409,6 +409,16 @@ rerun_review_gate() {
   done
 }
 
+verify_live_head_and_base_ref() {
+  local number="$1" head="$2" base_ref="$3" live_head live_base
+  read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json headRefOid,baseRefName \
+    --jq '[.headRefOid,.baseRefName] | @tsv' \
+    || fail_operation "could not re-read PR coordinates: $READ_OUTPUT" "Inspect GitHub before retrying."
+  IFS="$(printf '\t')" read -r live_head live_base <<<"$READ_OUTPUT"
+  [ "$live_head" = "$head" ] && [ "$live_base" = "$base_ref" ] \
+    || fail_input "PR #$number moved (head $live_head on $live_base) while the review gate was re-run" "Re-review the live head, then retry."
+}
+
 verify_live_coordinates() {
   local number="$1" head="$2" base_ref="$3" base_sha="$4" live_row live_head live_base live_base_sha
   read_with_retry gh pr view "$number" --repo "$REPO_SPEC" \
@@ -621,6 +631,10 @@ merge_pr() {
     # when it is green. The verdict is GitHub's; this only requests it.
     if review_gate_required "$base"; then
       rerun_review_gate "$number" "$head"
+      # Requesting the re-run can wait for an in-progress run; the head and
+      # the base *ref* must still be what the evaluation covers. The base tip
+      # may advance -- the gate binds by ancestry.
+      verify_live_head_and_base_ref "$number" "$head" "$base"
       [ "$JSON_MODE" = true ] || printf 'Review gate re-run requested for run %s; GitHub merges when it passes.\n' "$REVIEW_GATE_RUN_ID" >&2
     fi
     merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash \
