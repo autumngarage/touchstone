@@ -408,13 +408,36 @@ grep -Fq 'Policy operations require `gh`, `git`, `jq`, and `diff`.' "$POLICY_GUI
   || fail "policy guide does not declare its jq runtime dependency"
 grep -Fq 'brew_install_if_missing "jq" "jq"' "$SETUP" \
   || fail "declared jq dependency is absent from setup"
-grep -Fq '.rollbackPrerequisites.repositoryFiles = []' "$POLICY_GUIDE" \
-  || fail "canary derivation retained Touchstone-only rollback prerequisites"
+grep -Fq 'derive-consumer-policy.sh touchstone-policy-canary' "$POLICY_GUIDE" \
+  || fail "canary guide does not derive the canary policy through the one derivation script"
 grep -Fq 'rollback restores the fresh' "$POLICY_GUIDE" \
   || fail "canary guide does not name the source of rollback protection"
-grep -Fq '.managedRepositoryRuleset.name = "Touchstone merge queue v1: autumngarage/touchstone-policy-canary@main"' "$POLICY_GUIDE" \
-  || fail "canary derivation does not re-derive the companion ruleset marker"
+# The derivation owns the coordinate rewrites; the canary exercises the
+# same path as every consumer.
+derived="$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary)"
+jq -e '
+  .repository == "touchstone-policy-canary"
+  and .rollbackPrerequisites.repositoryFiles == []
+  and .managedRuleset.name == "Touchstone policy v1: autumngarage/touchstone-policy-canary@main"
+  and .managedRuleset.conditions.repository_name.include == ["touchstone-policy-canary"]
+  and .managedRepositoryRuleset.name == "Touchstone merge queue v1: autumngarage/touchstone-policy-canary@main"
+' <<<"$derived" >/dev/null || fail "consumer derivation does not rewrite every ownership coordinate"
 ok "ruleset expresses PR-only audited bypass and every native gate"
+
+echo "==> Checked-in consumer policies equal their derivation"
+# One contract, many repositories: a consumer policy may differ from the
+# canonical one only in the repository coordinates and the absence of
+# Touchstone's own rollback prerequisites.
+for consumer in "$ROOT"/policy/github/consumers/*.json; do
+  [ -f "$consumer" ] || continue
+  name="$(basename "$consumer" .json)"
+  diff -u <(bash "$ROOT/scripts/derive-consumer-policy.sh" "$name" | jq -S .) <(jq -S . "$consumer") >/dev/null \
+    || fail "policy/github/consumers/$name.json drifted from its derivation; regenerate it with scripts/derive-consumer-policy.sh"
+  run_policy diff "$consumer" >/dev/null 2>"$TMP_DIR/consumer-$name.err" \
+    || grep -q "HTTP 404\|unhandled fake gh call" "$TMP_DIR/consumer-$name.err" \
+    || fail "consumer policy $name was refused locally: $(tail -1 "$TMP_DIR/consumer-$name.err")"
+done
+ok "consumer policies are exact derivations of the canonical policy"
 
 echo "==> Read-only diff and dry-run"
 init_branch

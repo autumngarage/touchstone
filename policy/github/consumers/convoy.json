@@ -1,0 +1,122 @@
+{
+  "contractVersion": 1,
+  "organization": "autumngarage",
+  "repository": "convoy",
+  "workflowSource": {
+    "repository": "touchstone-workflows",
+    "branchProtection": {
+      "enforce_admins": true,
+      "required_pull_request_reviews": true,
+      "required_conversation_resolution": true,
+      "allow_force_pushes": false,
+      "allow_deletions": false
+    }
+  },
+  "branch": "main",
+  "rollbackPrerequisites": {
+    "repositoryFiles": []
+  },
+  "managedRuleset": {
+    "name": "Touchstone policy v1: autumngarage/convoy@main",
+    "target": "branch",
+    "enforcement": "active",
+    "bypass_actors": [
+      {
+        "actor_id": null,
+        "actor_type": "OrganizationAdmin",
+        "bypass_mode": "pull_request"
+      }
+    ],
+    "conditions": {
+      "repository_name": {
+        "include": [
+          "convoy"
+        ],
+        "exclude": [],
+        "protected": false
+      },
+      "ref_name": {
+        "include": [
+          "~DEFAULT_BRANCH"
+        ],
+        "exclude": []
+      }
+    },
+    "rules": [
+      {
+        "type": "deletion"
+      },
+      {
+        "type": "non_fast_forward"
+      },
+      {
+        "type": "pull_request",
+        "parameters": {
+          "allowed_merge_methods": [
+            "squash"
+          ],
+          "dismiss_stale_reviews_on_push": false,
+          "require_code_owner_review": false,
+          "require_last_push_approval": false,
+          "required_approving_review_count": 0,
+          "required_review_thread_resolution": true
+        }
+      },
+      {
+        "type": "required_status_checks",
+        "parameters": {
+          "do_not_enforce_on_create": false,
+          "required_status_checks": [
+            {
+              "context": "review-binding",
+              "integration_id": 15368
+            }
+          ],
+          "strict_required_status_checks_policy": false
+        }
+      },
+      {
+        "type": "workflows",
+        "parameters": {
+          "do_not_enforce_on_create": false,
+          "workflows": [
+            {
+              "path": ".github/workflows/validate.yml",
+              "ref": "refs/heads/main",
+              "repository_id": 1333343261,
+              "sha": "5719b59619add320b39c994cff696444b4b98c25"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "managedRepositoryRuleset": {
+    "name": "Touchstone merge queue v1: autumngarage/convoy@main",
+    "target": "branch",
+    "enforcement": "active",
+    "bypass_actors": [],
+    "conditions": {
+      "ref_name": {
+        "include": [
+          "~DEFAULT_BRANCH"
+        ],
+        "exclude": []
+      }
+    },
+    "rules": [
+      {
+        "type": "merge_queue",
+        "parameters": {
+          "check_response_timeout_minutes": 60,
+          "grouping_strategy": "ALLGREEN",
+          "max_entries_to_build": 1,
+          "max_entries_to_merge": 1,
+          "merge_method": "SQUASH",
+          "min_entries_to_merge": 1,
+          "min_entries_to_merge_wait_minutes": 0
+        }
+      }
+    ]
+  }
+}
