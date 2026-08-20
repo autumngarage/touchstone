@@ -78,10 +78,16 @@ differs per worktree. Never derive it from `$(git branch --show-current)` —
 that reads the same checkout the command reads, so it agrees with a wrong
 worktree and binds nothing.
 
-## Distribution — currently absent
+## Distribution — Homebrew, tag-driven
 
-The `touchstone` CLI, the bootstrap, the auto-update path, and the Homebrew release automation were all deleted. Nothing distributes Touchstone right now, and nothing needs to: the projects that use it are frozen on their committed copies.
+Touchstone is distributed through `autumngarage/homebrew-touchstone`. A release is a name for reviewed state, never a new state: bump `VERSION` through an ordinary PR, then
 
-The rebuild is Homebrew-distributed and deliberately thin — it observes and sequences, never adjudicates. Homebrew upgrades the installed tool only; it never mutates repositories. Adoption compiles project facts into an explicit versioned contract, and already-correct consumers remain valid without routine sync. Restoring the tap-bump workflow is part of that work, not of this state.
+```bash
+git tag -a vX.Y.Z -m "touchstone X.Y.Z" <reviewed main sha>
+git push origin vX.Y.Z
+gh release create vX.Y.Z --verify-tag --generate-notes
+```
+
+`.github/workflows/release.yml` reacts to the published release and rewrites the tap formula's `url` and `sha256` through the shared `homebrew-bump` workflow; `brew upgrade touchstone` sees it about a minute later. Homebrew upgrades the installed tool only — it never mutates a repository. Adoption compiles project facts into an explicit versioned contract, and already-correct consumers remain valid without routine sync. The tool version (`VERSION`, `touchstone version`) and the project-contract schema are separate lines; see `docs/product-contract.md`.
 
 The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so GitHub approval count does not represent it. The required `review-binding` check binds trusted review evidence to the exact head and requires a later qualifying answer for every finding; GitHub independently requires every inline thread resolved.
