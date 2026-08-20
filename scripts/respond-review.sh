@@ -81,6 +81,28 @@ REPO_NAME="${REPO_WITH_OWNER##*/}"
 [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] \
   || fail "could not parse owner/name from '$REPO_WITH_OWNER'."
 
+# Every parsed GitHub response comes through here. A successful gh call may
+# still write debug or warning diagnostics to stderr; merging the streams
+# turned those lines into an author login or a reply id (AUT-294). On success
+# only stdout is returned; on failure both streams form the error detail.
+gh_read() {
+  local stderr_file output status=0
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/respond-review.XXXXXXXX")" \
+    || {
+      echo "could not create a file for gh diagnostics"
+      return 1
+    }
+  output="$(gh "$@" 2>"$stderr_file")" || status=$?
+  if [ "$status" -eq 0 ]; then
+    printf '%s\n' "$output"
+  else
+    cat "$stderr_file"
+    [ -z "$output" ] || printf '%s\n' "$output"
+  fi
+  rm -f -- "$stderr_file"
+  return "$status"
+}
+
 # Runs a GraphQL query with bounded retries; transient gateway responses
 # (HTML instead of JSON) surface as gh errors and are retried before the
 # script fails closed.
@@ -88,7 +110,7 @@ graphql_with_retry() {
   local attempt=1 output status
   while :; do
     status=0
-    output="$(gh api graphql "$@" 2>&1)" || status=$?
+    output="$(gh_read api graphql "$@")" || status=$?
     if [ "$status" -eq 0 ]; then
       printf '%s\n' "$output"
       return 0
@@ -160,20 +182,20 @@ $REPLY_MARKER"
 # be marked answered without the answer ever being written, and
 # --all-resolved-check would call the PR clean (#722). Authorship is therefore
 # part of the predicate: the reply must be ours.
-REPLY_AUTHOR="$(gh api user --jq '.login' 2>&1)" \
+REPLY_AUTHOR="$(gh_read api user --jq '.login')" \
   || fail "could not resolve the authenticated user for reply idempotency: $REPLY_AUTHOR"
 [ -n "$REPLY_AUTHOR" ] || fail "GitHub returned no authenticated login; refusing to trust the idempotency marker."
-EXISTING_REPLY="$(gh api --paginate \
+EXISTING_REPLY="$(gh_read api --paginate \
   "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/comments" \
-  --jq ".[] | select(.in_reply_to_id == $COMMENT_ID) | select((.user.login // \"\") == \"$REPLY_AUTHOR\") | .body" 2>&1)" \
+  --jq ".[] | select(.in_reply_to_id == $COMMENT_ID) | select((.user.login // \"\") == \"$REPLY_AUTHOR\") | .body")" \
   || fail "could not inspect existing replies for comment $COMMENT_ID: $EXISTING_REPLY"
 if printf '%s' "$EXISTING_REPLY" | grep -qF "$REPLY_MARKER"; then
   echo "==> Reply for comment $COMMENT_ID already posted (marker found); skipping the reply step."
   echo "    matched our own reply as @$REPLY_AUTHOR."
 else
   echo "==> Replying to review comment $COMMENT_ID on PR #$PR_NUMBER ..."
-  REPLY_ID="$(gh api "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/comments/$COMMENT_ID/replies" \
-    -f body="$REPLY_BODY" --jq '.id' 2>&1)" \
+  REPLY_ID="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/comments/$COMMENT_ID/replies" \
+    -f body="$REPLY_BODY" --jq '.id')" \
     || fail "could not post the reply: $REPLY_ID"
   echo "    reply id: $REPLY_ID"
 fi
