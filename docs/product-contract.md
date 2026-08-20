@@ -97,11 +97,14 @@ An adopted repository contains declarations and narrow integration points, not
 a copy of Touchstone's implementation:
 
 - `.touchstone.toml` declares its schema version, exact validation commands,
-  required tasks, runtime/setup requirements, and explicit monorepo targets.
-  `.touchstone-tracker.toml` declares the project's issue tracker once.
-  [The validation contract](validation-contract.md) owns the accepted schema shapes
-  and verdict semantics; [the tracker contract](tracker-contract.md) owns
-  claim configuration, references, and outcomes.
+  one project-owned setup step, and the execution stage of any commit-time
+  authoring guard. `.touchstone-tracker.toml` declares the project's issue
+  tracker once. [The validation contract](validation-contract.md) owns the
+  accepted schema shapes and verdict semantics; [the tracker
+  contract](tracker-contract.md) owns claim configuration, references, and
+  outcomes. Every field and engine feature carries a recorded reason to exist
+  in `audits/2026-08-20-schema-engine-keep-or-delete.md`; a field without a
+  named observed failure is deleted before the tap publishes, not after.
 - An organization ruleset requires a workflow selected from a protected
   Touchstone source repository, path, and full commit SHA. A consumer PR cannot
   replace that invocation. The required workflow and Homebrew CLI execute the
