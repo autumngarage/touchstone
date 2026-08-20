@@ -223,7 +223,10 @@ echo "==> No file invokes a touchstone CLI subcommand"
 # developer machine and red on the required check, which is the worst possible
 # split: local green is what people trust. Both boundaries are now bracket
 # expressions, which behave identically on both platforms.
-CLI_SUBCOMMANDS='doctor|status|update|update-all|new|init|release|list|diff|sync|changelog'
+# `update` is absent on purpose: 3.0.1 ships it as a compatibility no-op for
+# repositories still on the 2.x scripts (their sync guard calls it), so a
+# mention of it is a mention of a command that exists.
+CLI_SUBCOMMANDS='doctor|status|update-all|upgrade|new|init|release|list|diff|sync|changelog'
 CLI_PATTERN="(^|[^-/[:alnum:]])touchstone (${CLI_SUBCOMMANDS})([^[:alnum:]-]|$)"
 
 # The check must be able to fail, and must be proven to on THIS platform

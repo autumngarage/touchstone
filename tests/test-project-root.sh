@@ -187,6 +187,29 @@ if bash "$BROKEN_ROOT/bin/touchstone" version >/dev/null 2>&1; then
 fi
 pass "VERSION read failures refuse with a non-zero exit"
 
+echo "==> update is a compatibility no-op for repositories on the 2.x scripts"
+# Their sync guard runs `touchstone update --check` whenever a touchstone is
+# on PATH; 3.0.0 removing the command broke every vendored open-pr.sh on an
+# upgraded machine. The shim succeeds, writes nothing, and says why.
+SHIM_PROJECT="$TMP_DIR/shim-project"
+mkdir -p "$SHIM_PROJECT"
+printf 'untouched\n' >"$SHIM_PROJECT/file.txt"
+for args in "--check" "--ship" "--in-place" ""; do
+  # shellcheck disable=SC2086
+  if ! (cd "$SHIM_PROJECT" && bash "$REPO_ROOT/bin/touchstone" update $args >"$TMP_DIR/update.out" 2>"$TMP_DIR/update.err"); then
+    fail "touchstone update $args exited non-zero"
+  fi
+  # The 2.x setup.sh pipes this through grep -E "Already|Needs update|Run: touchstone update".
+  grep -qx "Already up to date." "$TMP_DIR/update.out" || fail "touchstone update $args did not emit the 2.x sentinel"
+  grep -q "nothing to do" "$TMP_DIR/update.err" || fail "touchstone update $args did not explain itself"
+done
+[ "$(ls -A "$SHIM_PROJECT")" = "file.txt" ] && [ "$(cat "$SHIM_PROJECT/file.txt")" = untouched ] \
+  || fail "touchstone update wrote to the repository"
+if bash "$REPO_ROOT/bin/touchstone" upgrade >/dev/null 2>&1; then
+  fail "the removed upgrade subcommand is still accepted"
+fi
+pass "update succeeds without writing; upgrade stays unknown"
+
 echo "==> pr open binds the branch it will act on"
 # Two pull requests were opened for the wrong branch because open acts on
 # whatever branch the invoking directory has checked out, and a worktree has a

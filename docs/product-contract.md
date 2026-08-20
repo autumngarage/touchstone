@@ -174,8 +174,9 @@ or modifies projects.
 
 Two version lines exist and are never conflated. The **tool version**
 (`VERSION`, reported by `touchstone version` as `touchstone v<semver>`) names
-the released CLI; it is `3.0.0` because the post-strip command surface shares
-nothing with `2.15.0`, and the bump keeps `brew upgrade` a genuine upgrade.
+the released CLI; the line starts at `3.0.0` because the post-strip command
+surface shares nothing with `2.15.0`, and the bump keeps `brew upgrade` a
+genuine upgrade. `touchstone version` reports the current release.
 The **project contract** line currently spans schemas `1` and `2` — schema 2
 adds only the optional execution-stage field — and every v3 CLI release
 accepts every valid declaration of both.

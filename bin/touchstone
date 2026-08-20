@@ -74,6 +74,19 @@ case "$COMMAND" in
   steering)
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-steering-install.sh" "$@"
     ;;
+  update)
+    # Compatibility boundary for repositories still carrying the 2.x scripts:
+    # their sync guard runs `touchstone update --check` whenever a touchstone
+    # is on PATH, and 3.0.0 removing the command broke every vendored
+    # open-pr.sh on a machine that upgraded. Touchstone 3 never syncs a
+    # repository, so the honest answer is "nothing to do": succeed, say so,
+    # and write nothing. Removed when the last 2.x consumer adopts.
+    # The first line is the 2.x sentinel its vendored setup.sh and sync guard
+    # grep for; the explanation follows on stderr.
+    echo "Already up to date."
+    echo "touchstone update: nothing to do. Touchstone 3 installs the tool through Homebrew and never writes to a repository; the 2.x scripts here keep working as committed. To move this repository onto the current contract, run: touchstone adopt" >&2
+    exit 0
+    ;;
   help | -h | --help)
     usage
     ;;
