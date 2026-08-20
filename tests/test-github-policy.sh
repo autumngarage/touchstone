@@ -58,9 +58,10 @@ case "$method $endpoint" in
     emit '{"id":1333343261}'
     ;;
   "GET repos/autumngarage/touchstone-workflows/commits/main")
-    emit '{"sha":"5719b59619add320b39c994cff696444b4b98c25"}'
+    emit '{"sha":"00a0b299b76f3405641aae4b6d0bd92591a5d1f1"}'
     ;;
-  "GET repos/autumngarage/touchstone-workflows/contents/.github/workflows/validate.yml?ref=5719b59619add320b39c994cff696444b4b98c25")
+  "GET repos/autumngarage/touchstone-workflows/contents/.github/workflows/validate.yml?ref=00a0b299b76f3405641aae4b6d0bd92591a5d1f1" | \
+  "GET repos/autumngarage/touchstone-workflows/contents/.github/workflows/review-gate.yml?ref=00a0b299b76f3405641aae4b6d0bd92591a5d1f1")
     emit '{"type":"file"}'
     ;;
   "GET repos/autumngarage/touchstone/contents/.github/workflows/validate.yml?ref=main")
@@ -71,7 +72,7 @@ case "$method $endpoint" in
     fi
     emit "{\"type\":\"file\",\"sha\":\"${GH_FAKE_ROLLBACK_FILE_SHA:-c2dc082e0702090f3fc9de095d78a85ddde902a5}\"}"
     ;;
-  "GET repos/autumngarage/touchstone-workflows/compare/5719b59619add320b39c994cff696444b4b98c25...5719b59619add320b39c994cff696444b4b98c25")
+  "GET repos/autumngarage/touchstone-workflows/compare/00a0b299b76f3405641aae4b6d0bd92591a5d1f1...00a0b299b76f3405641aae4b6d0bd92591a5d1f1")
     emit '{"status":"identical"}'
     ;;
   "GET repos/autumngarage/touchstone-workflows/branches/main/protection")
@@ -356,6 +357,11 @@ jq -e '
     and .path == ".github/workflows/validate.yml"
     and .ref == "refs/heads/main"
     and (.sha | test("^[0-9a-f]{40}$"))))
+  and any(.managedRuleset.rules[]; .type == "workflows" and any(.parameters.workflows[];
+    .repository_id == 1333343261
+    and .path == ".github/workflows/review-gate.yml"
+    and .ref == "refs/heads/main"
+    and (.sha | test("^[0-9a-f]{40}$"))))
   and any(.managedRuleset.rules[]; .type == "deletion")
   and any(.managedRuleset.rules[]; .type == "non_fast_forward")
 ' "$POLICY" >/dev/null || fail "checked-in ruleset is missing a required invariant"
@@ -467,12 +473,12 @@ ok "self-hosted or unprotected required-workflow sources fail closed"
 # Every required workflow is verified, not only the first: a second entry
 # whose file is absent at its pin must be refused.
 jq '(.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows) += [{
-  path: ".github/workflows/review-gate.yml", ref: "refs/heads/main", repository_id: 1333343261,
-  sha: "5719b59619add320b39c994cff696444b4b98c25"}]' "$POLICY" >"$TMP_DIR/two-workflows-policy.json"
+  path: ".github/workflows/not-yet-there.yml", ref: "refs/heads/main", repository_id: 1333343261,
+  sha: "00a0b299b76f3405641aae4b6d0bd92591a5d1f1"}]' "$POLICY" >"$TMP_DIR/two-workflows-policy.json"
 if run_policy dry-run "$TMP_DIR/two-workflows-policy.json" >/dev/null 2>"$TMP_DIR/two-workflows.err"; then
   fail "a second required workflow missing at its pin was accepted"
 fi
-grep -q "review-gate.yml does not exist at pinned SHA" "$TMP_DIR/two-workflows.err" \
+grep -q "not-yet-there.yml does not exist at pinned SHA" "$TMP_DIR/two-workflows.err" \
   || fail "the missing second workflow was not the stated refusal: $(tail -1 "$TMP_DIR/two-workflows.err")"
 ok "every required workflow is verified at its pin"
 

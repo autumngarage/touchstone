@@ -1859,9 +1859,9 @@ EOF
 
   jq -e '
   .workflowSource.repository != .repository
-  and (.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[0]
+  and (.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]
+    | select(.path == ".github/workflows/validate.yml")
     | (.sha | test("^[0-9a-f]{40}$"))
-    and .path == ".github/workflows/validate.yml"
     and .ref == "refs/heads/main")
   and .workflowSource.branchProtection.enforce_admins
   and .workflowSource.branchProtection.required_pull_request_reviews
