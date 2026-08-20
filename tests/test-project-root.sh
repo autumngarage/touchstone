@@ -152,6 +152,27 @@ else
   pass "touchstone-run.sh sources nothing"
 fi
 
+echo "==> the version surface reports the released shape"
+# The Homebrew formula's test block asserts on exactly "touchstone v"; a
+# reshaped or empty report breaks every install's verification.
+out="$(bash "$REPO_ROOT/bin/touchstone" version)"
+# Anchored: the glob form let "v3.0.0garbage" pass.
+printf '%s\n' "$out" | awk '/^touchstone v[0-9]+\.[0-9]+\.[0-9]+$/ { ok = 1 } END { exit !ok }' \
+  || fail "version output is not the released shape: $out"
+[ "$out" = "touchstone v$(tr -d '[:space:]' <"$REPO_ROOT/VERSION")" ] \
+  || fail "version output disagrees with the VERSION file"
+
+# A malformed VERSION must refuse, not print an unusable shape.
+BROKEN_ROOT="$TMP_DIR/broken-version"
+mkdir -p "$BROKEN_ROOT/bin" "$BROKEN_ROOT/scripts"
+cp "$REPO_ROOT/bin/touchstone" "$BROKEN_ROOT/bin/touchstone"
+printf 'not a version\n' >"$BROKEN_ROOT/VERSION"
+if bash "$BROKEN_ROOT/bin/touchstone" version >/dev/null 2>&1; then
+  fail "a malformed VERSION file still reported a version"
+else
+  pass "a malformed VERSION refuses loudly"
+fi
+
 echo "==> pr open binds the branch it will act on"
 # Two pull requests were opened for the wrong branch because open acts on
 # whatever branch the invoking directory has checked out, and a worktree has a

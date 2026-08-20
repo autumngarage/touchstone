@@ -22,6 +22,7 @@ Usage:
   touchstone adopt [--check|--dry-run] [arguments]
   touchstone tracker claim [arguments]
   touchstone pr open|status|merge [arguments]
+  touchstone version
   touchstone steering install|check|uninstall [--home DIR] [--dry-run]
 EOF
 }
@@ -41,6 +42,23 @@ case "$COMMAND" in
     ;;
   pr)
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" "$@"
+    ;;
+  version)
+    # The formula's test block and consumers reporting which tool they run
+    # both depend on this exact "touchstone v<semver>" shape -- so an
+    # unreadable, empty, or malformed VERSION fails loudly instead of
+    # printing a shape nothing downstream can use.
+    RELEASED_VERSION="$(tr -d '[:space:]' <"$TOUCHSTONE_ROOT/VERSION")" || {
+      echo "ERROR: could not read $TOUCHSTONE_ROOT/VERSION" >&2
+      exit 1
+    }
+    case "$RELEASED_VERSION" in
+      *[!0-9.]* | . | .* | *. | *..* | '')
+        echo "ERROR: VERSION is not a dotted release number: '$RELEASED_VERSION'" >&2
+        exit 1
+        ;;
+    esac
+    printf 'touchstone v%s\n' "$RELEASED_VERSION"
     ;;
   steering)
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-steering-install.sh" "$@"

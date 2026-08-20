@@ -209,8 +209,9 @@ fi
 # follow a successful setup straight into command-not-found.
 #
 # Matched by subcommand rather than by the bare word, so prose about the
-# project and the surviving scripts/touchstone-run.sh both stay legal. When
-# the CLI is rebuilt, delete this check in the commit that ships it.
+# project and the surviving scripts/touchstone-run.sh both stay legal. A
+# subcommand leaves this list in the commit that ships it -- `version` did
+# (AUT-276) -- and the check retires entirely when the last one does.
 # =============================================================================
 
 echo ""
@@ -222,7 +223,7 @@ echo "==> No file invokes a touchstone CLI subcommand"
 # developer machine and red on the required check, which is the worst possible
 # split: local green is what people trust. Both boundaries are now bracket
 # expressions, which behave identically on both platforms.
-CLI_SUBCOMMANDS='doctor|status|update|update-all|new|init|version|release|list|diff|sync|changelog'
+CLI_SUBCOMMANDS='doctor|status|update|update-all|new|init|release|list|diff|sync|changelog'
 CLI_PATTERN="(^|[^-/[:alnum:]])touchstone (${CLI_SUBCOMMANDS})([^[:alnum:]-]|$)"
 
 # The check must be able to fail, and must be proven to on THIS platform
