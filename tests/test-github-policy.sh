@@ -811,7 +811,9 @@ Bind the branch a PR is opened for.
 - The reviewed head is the merged head.
 
 ## Validation
+- Build: n/a — shell
 - Automated tests: full suite, pass.
+- Manual validation: opened a PR from a worktree; the request bound the expected branch.
 
 ## Review tier
 serious
@@ -854,7 +856,9 @@ Real intent.
 - Something true.
 
 ## Validation
-- Tests: pass.
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 $tier
@@ -873,7 +877,9 @@ body '## Intent
 Fix a typo in a comment.
 
 ## Validation
-- Lint: pass.
+- Build: n/a — comment only
+- Automated tests: lint, pass.
+- Manual validation: n/a — none
 
 ## Review tier
 trivial
@@ -890,7 +896,9 @@ body '## Intent
 Fix a typo.
 
 ## Validation
-- Lint: pass.
+- Build: n/a — comment only
+- Automated tests: lint, pass.
+- Manual validation: n/a — none
 
 ## Review tier
 trivial
@@ -908,7 +916,9 @@ body '## Intent
 Change how merges bind.
 
 ## Validation
-- Tests: pass.
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 normal
@@ -930,7 +940,9 @@ $evasion
 - Real invariant.
 
 ## Validation
-- Tests: pass.
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 normal
@@ -978,6 +990,7 @@ Fix prose.
 ## Validation
 - Build: n/a — documentation only, no build step
 - Automated tests: full suite, pass
+- Manual validation: n/a — rendered blocks are asserted by the suite
 
 ## Review tier
 normal
@@ -1036,7 +1049,9 @@ body '## Intent
 - <!-- hidden behind a bullet -->
 
 ## Validation
-- Tests: pass.
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 trivial
@@ -1059,7 +1074,9 @@ real
 - x holds
 
 ## Validation
-- Tests: pass
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 <!-- trivial | normal | serious -->
@@ -1080,7 +1097,9 @@ real
 ## Invariants
 - x
 ## Validation
-- Tests: pass
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 ## Review tier
 normal
 ## Why this tier
@@ -1097,7 +1116,9 @@ body '## Intent
 * *
 
 ## Validation
-- Tests: pass.
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 trivial
@@ -1158,7 +1179,9 @@ Support the literal `<!--` token in templates.
 - x holds
 
 ## Validation
-- Tests: pass
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 normal
@@ -1182,7 +1205,9 @@ real
 - x
 
 ## Validation
-- Tests: pass
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 normal
@@ -1222,7 +1247,9 @@ real
 ## Invariants
 - x
 ## Validation
-- Tests: pass
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 ## Review tier
 normal
 ## Why this tier
@@ -1244,7 +1271,9 @@ real
 ## Invariants
 - x
 ## Validation
-- Tests: pass
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 ## Review tier
 normal
 ## Why this tier
@@ -1265,7 +1294,9 @@ real
 ## Invariants
 - x
 ## Validation
-- Tests: pass
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 ## Review tier
 normal
 ## Why this tier
@@ -1286,7 +1317,9 @@ Support the ``<!--`` token in templates.
 - x holds
 
 ## Validation
-- Tests: pass
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 normal
@@ -1309,7 +1342,9 @@ real
 - x
 
 ## Validation
-- Tests: pass
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 $bad_tier
@@ -1330,7 +1365,9 @@ real
 ## Invariants
 - x
 ## Validation
-- Tests: pass
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 ## Review tier
 normal
 ## Why this tier
@@ -1351,7 +1388,9 @@ Example:
 - x
 
 ## Validation
-- Tests: pass
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 normal
@@ -1372,7 +1411,9 @@ See ```inline`code``` here.
 - x holds
 
 ## Validation
-- Tests: pass
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 normal
@@ -1393,7 +1434,9 @@ The literal token is \<!-- in the rendered body.
 - x holds
 
 ## Validation
-- Tests: pass
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 normal
@@ -1412,7 +1455,9 @@ body '## Intent
 *
 
 ## Validation
-- Tests: pass.
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 trivial
@@ -1435,7 +1480,9 @@ body '## Intent
 <!-- one-line guidance -->
 
 ## Validation
-- Tests: pass.
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 trivial
@@ -1455,7 +1502,9 @@ token` across a line break, and `<!-- -->` inline, and > quoted `    <!--`.
 - x holds
 
 ## Validation
-- Tests: pass
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 normal
@@ -1474,7 +1523,9 @@ body 'Support the literal `<!--` token in an opening sentence.
 Real intent.
 
 ## Validation
-- Tests: pass.
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 trivial
@@ -1526,6 +1577,39 @@ body '## Intent
 Real intent.
 
 ## Validation
+- Build: pass
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "deleting two of the three shipped Validation rows satisfied the section"
+fi
+ok "all three shipped Validation rows are required"
+body '## Intent
+Real intent.
+
+## Validation
+The Build: passed in CI, honestly.
+- Build:
+- Automated tests: suite passed
+- Manual validation: n/a — no UI
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "prose mentioning a row label was read as the row value"
+fi
+ok "a row value comes from its own bullet, not from prose"
+body '## Intent
+Real intent.
+
+## Validation
 - Build: n/a — shell
 - Automated tests: suite passed
 - Manual validation: n/a — no UI
@@ -1548,7 +1632,9 @@ body '## Intent
 Unrelated prose under an H1 is not Intent.
 
 ## Validation
-- Tests: pass.
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
 ## Review tier
 trivial
@@ -1565,7 +1651,9 @@ body '   ## Intent
 Real intent.
 
   ## Validation
-- Tests: pass.
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
 
  ## Review tier
 trivial

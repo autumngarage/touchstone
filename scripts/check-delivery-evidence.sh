@@ -141,22 +141,19 @@ filled() {
   '
 }
 
-# Every labelled row the template puts under Validation must be filled: one
-# filled row does not satisfy the section, because the rows are the promise.
-# Each row is judged by the same rules as a section, so a bare `n/a`, `TBD`,
-# or an unedited placeholder on one row is absence on that row.
-validation_rows() {
-  printf '%s\n' "$1" | awk '
-    /^[[:space:]]*[-*+][[:space:]]+[A-Za-z][A-Za-z ]*:/ {
-      row = $0
-      sub(/^[[:space:]]*[-*+][[:space:]]+/, "", row)
-      label = row; sub(/:.*$/, "", label)
-      print label
-    }'
-}
+# The template's three Validation rows are the promise: Build, Automated
+# tests, Manual validation. Each must be present and each is judged by the
+# same rules as a section, so a deleted row, a bare `n/a`, `TBD`, or an
+# unedited placeholder on any of them is absence on that row. The value is
+# read from the labelled bullet itself, never from prose that mentions it.
+VALIDATION_ROWS="Build
+Automated tests
+Manual validation"
 row_text() {
   printf '%s\n' "$1" | awk -v label="$2" '
-    index($0, label ":") { row = $0; sub(/^[^:]*:[[:space:]]*/, "", row); print row; exit }'
+    BEGIN { pattern = "^[[:space:]]*[-*+][[:space:]]+" label ":" }
+    $0 ~ pattern { row = $0; sub(pattern "[[:space:]]*", "", row); print row; found = 1; exit }
+    END { if (!found) exit 1 }'
 }
 
 FAILURES=0
@@ -183,9 +180,12 @@ VALIDATION_SECTION="$(section "Validation")"
 filled "$VALIDATION_SECTION" || report "a '## Validation' section recording what actually ran"
 while IFS= read -r row; do
   [ -n "$row" ] || continue
-  filled "$(row_text "$VALIDATION_SECTION" "$row")" \
-    || report "the Validation row '$row:' filled in (what ran and its result, or n/a with a reason)"
-done < <(validation_rows "$VALIDATION_SECTION")
+  if ! value="$(row_text "$VALIDATION_SECTION" "$row")"; then
+    report "the Validation row '- $row:' present (the template ships it; record what ran, or n/a with a reason)"
+  elif ! filled "$value"; then
+    report "the Validation row '- $row:' filled in (what ran and its result, or n/a with a reason)"
+  fi
+done <<<"$VALIDATION_ROWS"
 [ -z "$TIER" ] || filled "$(section "Why this tier")" \
   || report "a '## Why this tier' section justifying the '$TIER' classification"
 
