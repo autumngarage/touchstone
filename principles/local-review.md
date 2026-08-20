@@ -166,8 +166,9 @@ Invoke it against the slice, passing the contract as additional instructions:
 
 ```bash
 # The normal-tier pass runs before the commit exists, so it reviews the
-# staged slice; --committed --base <default> is the branch-level form the
-# serious tier's pre-push Codex review uses instead.
+# staged slice. The serious tier's branch-level pre-push review is
+# `codex review --base <default>` (its CLI has no --committed flag; --base
+# alone selects the branch diff, and it cannot combine with a prompt).
 coderabbit review --agent --uncommitted -c /path/to/contract.md
 ```
 
