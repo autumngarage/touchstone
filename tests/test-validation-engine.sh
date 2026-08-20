@@ -199,6 +199,15 @@ run_capture "$CONTRACT_ONLY" "$TMP_DIR/contract-only-json.out" --check-contract 
 [ ! -e "$CONTRACT_ONLY/setup-ran" ] || fail "JSON contract check executed setup"
 [ ! -e "$CONTRACT_ONLY/command-ran" ] || fail "JSON contract check executed a task"
 
+echo "==> contract-only JSON reports the declared schema number"
+V2_REPORT="$TMP_DIR/v2-report"
+write_contract "$V2_REPORT" "true"
+sed 's/^schema = 1$/schema = 2/' "$V2_REPORT/.touchstone.toml" >"$V2_REPORT/v2" && mv "$V2_REPORT/v2" "$V2_REPORT/.touchstone.toml"
+run_capture "$V2_REPORT" "$TMP_DIR/v2-report.out" --check-contract --json
+[ "$RUN_STATUS" -eq 0 ] || fail "schema-2 contract-only validation failed"
+[ "$(cat "$TMP_DIR/v2-report.out")" = '{"schema":2,"verdict":"valid","runner":"ubuntu-latest"}' ] \
+  || fail "schema-2 contract-only JSON did not report schema 2: $(cat "$TMP_DIR/v2-report.out")"
+
 echo "==> a declared runner is reported for the central workflow to schedule on"
 RUNNER_DECL="$TMP_DIR/runner-decl"
 write_contract "$RUNNER_DECL" "true"
