@@ -42,6 +42,14 @@ def answers_body_finding($id):
 | ($root.pr.baseSha // "") as $base
 | ($root.pr.baseRefHash // "") as $base_ref_hash
 | ($root.pr.number // 0) as $number
+# A request binds the base it was made against. The base may advance
+# underneath it -- every merge to main moves the tip -- and a review of this
+# head against an ancestor of the current base is still a review of this
+# head: the merged combination is the required workflow's job, not the
+# reviewer's. The workflow supplies the acceptable bases (the current tip and
+# any request base that is its ancestor); absent that list, only the exact
+# tip qualifies. A retargeted ref is still refused through the ref hash.
+| (($root.pr.acceptableBaseShas // [$base]) | map(ascii_downcase)) as $acceptable_bases
 | [
     $root.statuses[]?
     | select(.context == "touchstone/review-request-v1")
@@ -53,7 +61,7 @@ def answers_body_finding($id):
     | select(
         (.pr | tonumber) == $number
         and (.ref | ascii_downcase) == ($base_ref_hash | ascii_downcase)
-        and (.base | ascii_downcase) == ($base | ascii_downcase)
+        and ((.base | ascii_downcase) as $request_base | $acceptable_bases | any(. == $request_base))
       )
     | . as $marker
     | $root.issueComments[]?
