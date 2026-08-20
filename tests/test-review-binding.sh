@@ -730,10 +730,19 @@ case "$1 ${2:-}" in
   api*)
     if has 'actions/runs/77/rerun' "$@"; then
       echo "rerun 77" >>"$GH_STATE/gate-reruns"
-    elif has 'actions/runs/77' "$@"; then
-      printf 'completed\n'
+    elif has 'rules/branches/' "$@"; then
+      if [ -f "$GH_STATE/review-gate" ]; then printf 'true\n'; else printf 'false\n'; fi
     elif has 'actions/runs?head_sha=' "$@"; then
-      [ ! -f "$GH_STATE/review-gate" ] || printf '77\n'
+      if [ -f "$GH_STATE/review-gate" ]; then
+        if [ -f "$GH_STATE/gate-in-progress" ]; then
+          rm -f "$GH_STATE/gate-in-progress"
+          printf '77 in_progress\n'
+        else
+          printf '77 completed\n'
+        fi
+      else
+        printf ' \n'
+      fi
     elif has '/issues/comments/1' "$@"; then
       [ "${GH_MODE:-ok}" = live_comment_invalid ] || printf '%s\n' 1
     elif has '/issues/7/comments' "$@"; then
@@ -800,7 +809,15 @@ EOF
   run_pr "$TMP/out" open --title 'Gate' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   [ -f "$TMP/state/gate-reruns" ] && grep -q 'rerun 77' "$TMP/state/gate-reruns" \
-    || fail "open did not re-run the review-gate run for the head: $(grep -c actions "$GH_CALLS") gate calls; out: $(tail -c 300 "$TMP/out")"
+    || fail "open did not re-run the review-gate run for the head"
+  rm -f "$TMP/state/gate-reruns"
+  touch "$TMP/state/gate-in-progress"
+  run_pr "$TMP/out" open --title 'Gate' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
+    || fail "open did not wait for an in-progress gate run before re-running it"
+  [ "$(grep -c 'actions/runs?head_sha=' "$GH_CALLS")" -ge 2 ] \
+    || fail "open did not poll the in-progress gate run"
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns"
 
   echo "==> open refuses head drift and reconciles a lying creation response"
@@ -1045,10 +1062,17 @@ case "$1 $2" in
     fi
     ;;
   "pr view")
-    echo "abcdef0123456789abcdef0123456789abcdef01"
+    printf 'abcdef0123456789abcdef0123456789abcdef01\tmain\n'
+    ;;
+  "api repos/autumngarage/current/rules/branches/main")
+    if [ -f "$GH_STATE/review-gate" ]; then echo true; else echo false; fi
     ;;
   "api repos/autumngarage/current/actions/runs?head_sha=abcdef0123456789abcdef0123456789abcdef01&per_page=100")
-    [ ! -f "$GH_STATE/review-gate" ] || echo 77
+    if [ -f "$GH_STATE/review-gate" ]; then
+      if [ -f "$GH_STATE/gate-in-progress" ]; then rm -f "$GH_STATE/gate-in-progress"; echo "77 in_progress"; else echo "77 completed"; fi
+    else
+      echo " "
+    fi
     ;;
   "api -X")
     # POST .../actions/runs/77/rerun
@@ -1095,6 +1119,11 @@ STUB
   [ "$RUN_RC" -eq 0 ] || fail "answer with a review gate exited $RUN_RC"
   grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null && ok "answer re-ran the review gate" \
     || fail "answer did not re-run the review gate"
+  rm -f "$GH_STATE/gate-reruns"
+  touch "$GH_STATE/gate-in-progress"
+  TOUCHSTONE_GRAPHQL_RETRY_DELAY=0 run 7 --comment-id 51 --body-file "$RR/body"
+  grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null && ok "answer waited for an in-progress gate run" \
+    || fail "answer skipped the refresh while the gate run was in progress"
   rm -f "$GH_STATE/review-gate"
 
   echo "==> --all-resolved-check reads the thread list from stdout alone"

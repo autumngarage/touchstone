@@ -349,37 +349,63 @@ emit_open_result() {
   fi
 }
 
-# Where the repository runs the pinned review-gate required workflow, a new
+# Where the repository requires the pinned review-gate workflow, a new
 # request or answer is evidence the gate has not seen: required workflows run
 # only on pull-request and merge-queue events, so the driver asks GitHub to
-# re-run the gate's existing run for this head. The driver can request an
-# evaluation; it cannot set the result. Returns 1 when no such run exists,
-# which means the repository still runs the status-publishing review-binding.
+# re-run the gate's run for this head. The driver can request an evaluation;
+# it cannot set the result. Detection reads the effective ruleset, not the
+# run list, so a run that has not appeared yet is never mistaken for the
+# absence of the gate. A run still in progress is waited for, then re-run:
+# it may have read the evidence before the request landed.
 REVIEW_GATE_RUN_ID=""
+review_gate_required() {
+  local base_ref="$1"
+  read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/rules/branches/$base_ref" \
+    --jq '[.[] | select(.type == "workflows") | .parameters.workflows[]?.path] | any(. == ".github/workflows/review-gate.yml")' \
+    || fail_operation "could not read the effective rules for $base_ref: $READ_OUTPUT" "Retry after GitHub recovers."
+  [ "$READ_OUTPUT" = true ]
+}
+
 rerun_review_gate() {
-  local head="$1" run_id
-  read_with_retry gh api --hostname "$REPO_HOST" \
-    "repos/$REPO/actions/runs?head_sha=$head&per_page=100" \
-    --jq '[.workflow_runs[] | select(.name == "review-gate" and (.event == "pull_request" or .event == "merge_group"))] | sort_by(.id) | last | .id // empty' \
-    || fail_operation "could not inspect review-gate runs for $head: $READ_OUTPUT" "Retry after GitHub recovers."
-  run_id="$READ_OUTPUT"
-  [ -n "$run_id" ] || return 1
-  # A run still in progress already reads the new evidence; re-running it
-  # would only be refused.
-  read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$run_id" --jq '.status' \
-    || fail_operation "could not read review-gate run $run_id: $READ_OUTPUT" "Retry after GitHub recovers."
-  if [ "$READ_OUTPUT" = completed ]; then
-    gh api --hostname "$REPO_HOST" -X POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>&1 \
-      || fail_operation "could not re-run review-gate run $run_id" "Re-run it from the Actions tab, then retry."
-  fi
-  REVIEW_GATE_RUN_ID="$run_id"
-  return 0
+  local head="$1" attempt=1 run_id status
+  while :; do
+    read_with_retry gh api --hostname "$REPO_HOST" \
+      "repos/$REPO/actions/runs?head_sha=$head&per_page=100" \
+      --jq '[.workflow_runs[] | select(.name == "review-gate" and (.event == "pull_request" or .event == "merge_group"))] | sort_by(.id) | last | "\(.id // "") \(.status // "")"' \
+      || fail_operation "could not inspect review-gate runs for $head: $READ_OUTPUT" "Retry after GitHub recovers."
+    read -r run_id status <<<"$READ_OUTPUT"
+    if [ -n "$run_id" ] && [ "$status" = completed ]; then
+      gh api --hostname "$REPO_HOST" -X POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>&1 \
+        || fail_operation "could not re-run review-gate run $run_id" "Re-run it from the Actions tab, then retry."
+      REVIEW_GATE_RUN_ID="$run_id"
+      return 0
+    fi
+    [ "$attempt" -lt "$REQUEST_ATTEMPTS" ] \
+      || fail_operation "review-gate run for $head did not reach a re-runnable state (last: ${run_id:-none} ${status:-absent})" "Wait for the gate run to finish, then re-run this command."
+    [ "$JSON_MODE" = true ] || printf 'Review gate run %s; retrying in %ss.\n' "${status:-not yet present}" "$RETRY_DELAY" >&2
+    attempt=$((attempt + 1))
+    sleep "$RETRY_DELAY"
+  done
+}
+
+verify_live_coordinates() {
+  local number="$1" head="$2" base_ref="$3" base_sha="$4" live_row live_head live_base live_base_sha
+  read_with_retry gh pr view "$number" --repo "$REPO_SPEC" \
+    --json headRefOid,baseRefName,baseRefOid \
+    --jq '[.headRefOid,.baseRefName,.baseRefOid] | @tsv' \
+    || fail_operation "could not re-read review coordinates: $READ_OUTPUT" "Inspect GitHub before retrying."
+  live_row="$READ_OUTPUT"
+  IFS="$(printf '\t')" read -r live_head live_base live_base_sha <<<"$live_row"
+  [ "$live_head" = "$head" ] && [ "$live_base" = "$base_ref" ] && [ "$live_base_sha" = "$base_sha" ] \
+    || fail_input "PR coordinates moved before the review request was bound" "Push or integrate the live head/base, then request review once for that binding."
 }
 
 wait_for_request_binding() {
   local number="$1" head="$2" base_ref="$3" base_sha="$4" request_url="$5"
   local comment_id base_ref_hash description attempt=1 live_comment live_row live_head live_base live_base_sha marker
-  if rerun_review_gate "$head"; then
+  if review_gate_required "$base_ref"; then
+    rerun_review_gate "$head"
+    verify_live_coordinates "$number" "$head" "$base_ref" "$base_sha"
     [ "$JSON_MODE" = true ] || printf 'Review gate re-run requested for run %s.\n' "$REVIEW_GATE_RUN_ID" >&2
     return 0
   fi
