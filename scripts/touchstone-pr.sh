@@ -349,9 +349,40 @@ emit_open_result() {
   fi
 }
 
+# Where the repository runs the pinned review-gate required workflow, a new
+# request or answer is evidence the gate has not seen: required workflows run
+# only on pull-request and merge-queue events, so the driver asks GitHub to
+# re-run the gate's existing run for this head. The driver can request an
+# evaluation; it cannot set the result. Returns 1 when no such run exists,
+# which means the repository still runs the status-publishing review-binding.
+REVIEW_GATE_RUN_ID=""
+rerun_review_gate() {
+  local head="$1" run_id
+  read_with_retry gh api --hostname "$REPO_HOST" \
+    "repos/$REPO/actions/runs?head_sha=$head&per_page=100" \
+    --jq '[.workflow_runs[] | select(.name == "review-gate" and (.event == "pull_request" or .event == "merge_group"))] | sort_by(.id) | last | .id // empty' \
+    || fail_operation "could not inspect review-gate runs for $head: $READ_OUTPUT" "Retry after GitHub recovers."
+  run_id="$READ_OUTPUT"
+  [ -n "$run_id" ] || return 1
+  # A run still in progress already reads the new evidence; re-running it
+  # would only be refused.
+  read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$run_id" --jq '.status' \
+    || fail_operation "could not read review-gate run $run_id: $READ_OUTPUT" "Retry after GitHub recovers."
+  if [ "$READ_OUTPUT" = completed ]; then
+    gh api --hostname "$REPO_HOST" -X POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>&1 \
+      || fail_operation "could not re-run review-gate run $run_id" "Re-run it from the Actions tab, then retry."
+  fi
+  REVIEW_GATE_RUN_ID="$run_id"
+  return 0
+}
+
 wait_for_request_binding() {
   local number="$1" head="$2" base_ref="$3" base_sha="$4" request_url="$5"
   local comment_id base_ref_hash description attempt=1 live_comment live_row live_head live_base live_base_sha marker
+  if rerun_review_gate "$head"; then
+    [ "$JSON_MODE" = true ] || printf 'Review gate re-run requested for run %s.\n' "$REVIEW_GATE_RUN_ID" >&2
+    return 0
+  fi
   comment_id="${request_url##*issuecomment-}"
   case "$comment_id" in '' | *[!0-9]*) fail_operation "review request URL has no stable comment ID: $request_url" "Inspect the surviving request comment." ;; esac
   base_ref_hash="$(printf '%s' "$base_ref" | git hash-object --stdin)" \

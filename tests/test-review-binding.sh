@@ -728,7 +728,13 @@ case "$1 ${2:-}" in
     printf '%s\n' 71
     ;;
   api*)
-    if has '/issues/comments/1' "$@"; then
+    if has 'actions/runs/77/rerun' "$@"; then
+      echo "rerun 77" >>"$GH_STATE/gate-reruns"
+    elif has 'actions/runs/77' "$@"; then
+      printf 'completed\n'
+    elif has 'actions/runs?head_sha=' "$@"; then
+      [ ! -f "$GH_STATE/review-gate" ] || printf '77\n'
+    elif has '/issues/comments/1' "$@"; then
       [ "${GH_MODE:-ok}" = live_comment_invalid ] || printf '%s\n' 1
     elif has '/issues/7/comments' "$@"; then
       if [ -f "$GH_STATE/review-request" ]; then printf '%s\n' https://example.test/pr/7#issuecomment-1; fi
@@ -787,6 +793,15 @@ EOF
   GH_MODE=auth_unrelated run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'auth status --hostname github.com'
+
+  echo "==> open re-runs the pinned review gate where the repository has one"
+  touch "$TMP/state/review-gate"
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/review-request"
+  run_pr "$TMP/out" open --title 'Gate' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  [ -f "$TMP/state/gate-reruns" ] && grep -q 'rerun 77' "$TMP/state/gate-reruns" \
+    || fail "open did not re-run the review-gate run for the head: $(grep -c actions "$GH_CALLS") gate calls; out: $(tail -c 300 "$TMP/out")"
+  rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns"
 
   echo "==> open refuses head drift and reconciles a lying creation response"
   rm -f "$TMP/state/pr-exists" "$TMP/state/review-request"
@@ -1029,6 +1044,16 @@ case "$1 $2" in
       echo "<!-- touchstone:respond-review comment=51 -->"
     fi
     ;;
+  "pr view")
+    echo "abcdef0123456789abcdef0123456789abcdef01"
+    ;;
+  "api repos/autumngarage/current/actions/runs?head_sha=abcdef0123456789abcdef0123456789abcdef01&per_page=100")
+    [ ! -f "$GH_STATE/review-gate" ] || echo 77
+    ;;
+  "api -X")
+    # POST .../actions/runs/77/rerun
+    has 'actions/runs/77/rerun' "$@" && echo "rerun 77" >>"$GH_STATE/gate-reruns"
+    ;;
   *) exit 1 ;;
 esac
 exit 0
@@ -1062,6 +1087,15 @@ STUB
     || fail "rerun posted a duplicate reply (replies=$replies): author check read stderr"
   grep -qF 'matched our own reply as @alice' "$RR/out" && ok "author parsed as alice" \
     || fail "author was not parsed cleanly: $(grep 'matched' "$RR/out")"
+
+  echo "==> an answer re-runs the pinned review gate where the repository has one"
+  touch "$GH_STATE/review-gate"
+  rm -f "$GH_STATE/gate-reruns"
+  run 7 --comment-id 51 --body-file "$RR/body"
+  [ "$RUN_RC" -eq 0 ] || fail "answer with a review gate exited $RUN_RC"
+  grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null && ok "answer re-ran the review gate" \
+    || fail "answer did not re-run the review gate"
+  rm -f "$GH_STATE/review-gate"
 
   echo "==> --all-resolved-check reads the thread list from stdout alone"
   run 7 --all-resolved-check

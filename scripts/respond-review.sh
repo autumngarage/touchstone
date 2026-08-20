@@ -224,6 +224,20 @@ VERIFY="$(graphql_with_retry \
 # Answered findings satisfy the gate on an unchanged head (issue #751) — the
 # next step after resolving every thread is the MERGE GATE, never another
 # review request of the same head (PR #755 review, round 8).
+# An answer is evidence the pinned review-gate has not seen. Ask GitHub to
+# re-run the gate for this head; where the repository still runs the
+# status-publishing review-binding, its own event handlers pick the answer up.
+HEAD_SHA="$(gh_read pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" \
+  || fail "could not read the PR head to refresh the review gate: $HEAD_SHA"
+GATE_RUN="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/actions/runs?head_sha=$HEAD_SHA&per_page=100" \
+  --jq '[.workflow_runs[] | select(.name == "review-gate" and .status == "completed")] | sort_by(.id) | last | .id // empty')" \
+  || fail "could not inspect review-gate runs: $GATE_RUN"
+if [ -n "$GATE_RUN" ]; then
+  gh api -X POST "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$GATE_RUN/rerun" >/dev/null \
+    || fail "could not re-run review-gate run $GATE_RUN; re-run it from the Actions tab."
+  echo "==> Review gate re-run requested (run $GATE_RUN)."
+fi
+
 echo "==> Replied and resolved. When every thread is answered, prove it and merge:"
 echo "    bash scripts/respond-review.sh $PR_NUMBER --all-resolved-check"
 echo "    gh pr merge $PR_NUMBER --squash --match-head-commit \"\$(gh pr view $PR_NUMBER --json headRefOid --jq .headRefOid)\""
