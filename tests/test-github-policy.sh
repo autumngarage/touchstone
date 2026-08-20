@@ -403,6 +403,8 @@ grep -Fq '.rollbackPrerequisites.repositoryFiles = []' "$POLICY_GUIDE" \
   || fail "canary derivation retained Touchstone-only rollback prerequisites"
 grep -Fq 'rollback restores the fresh' "$POLICY_GUIDE" \
   || fail "canary guide does not name the source of rollback protection"
+grep -Fq '.managedRepositoryRuleset.name = "Touchstone merge queue v1: autumngarage/touchstone-policy-canary@main"' "$POLICY_GUIDE" \
+  || fail "canary derivation does not re-derive the companion ruleset marker"
 ok "ruleset expresses PR-only audited bypass and every native gate"
 
 echo "==> Read-only diff and dry-run"
@@ -558,6 +560,9 @@ run_policy apply "$POLICY" >/dev/null
 
 echo "==> A policy that drops the companion removes the installed queue"
 jq 'del(.managedRepositoryRuleset)' "$POLICY" >"$TMP_DIR/no-companion-policy.json"
+run_policy dry-run "$TMP_DIR/no-companion-policy.json" >"$TMP_DIR/no-companion-dry-run.txt" 2>&1 || true
+grep -q "Would DELETE repository ruleset" "$TMP_DIR/no-companion-dry-run.txt" \
+  || fail "dry-run did not disclose the planned companion deletion"
 run_policy apply "$TMP_DIR/no-companion-policy.json" >/dev/null
 [ ! -f "$TMP_DIR/state/repo-ruleset.json" ] \
   || fail "the companion ruleset survived a policy that no longer declares it"

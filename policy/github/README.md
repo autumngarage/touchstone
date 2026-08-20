@@ -87,6 +87,7 @@ jq '
   | .rollbackPrerequisites.repositoryFiles = []
   | .managedRuleset.name = "Touchstone policy v1: autumngarage/touchstone-policy-canary@main"
   | .managedRuleset.conditions.repository_name.include = ["touchstone-policy-canary"]
+  | .managedRepositoryRuleset.name = "Touchstone merge queue v1: autumngarage/touchstone-policy-canary@main"
 ' policy/github/touchstone-main.json >"$canary_policy"
 ```
 

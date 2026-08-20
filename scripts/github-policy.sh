@@ -461,19 +461,23 @@ case "$COMMAND" in
     fi
     diff -u -L current -L desired \
       <(printf '%s\n' "$current") <(printf '%s\n' "$desired") || [ "$?" -eq 1 ]
-    if [ "$DESIRED_REPO_RULESET" != null ]; then
-      current_repo="$(managed_repo_ruleset_json)"
-      [ "$current_repo" = null ] || current_repo="$(normalize_ruleset <<<"$current_repo")"
-      diff -u -L current-repository -L desired-repository \
-        <(printf '%s\n' "$current_repo") <(printf '%s\n' "$(normalize_ruleset <<<"$DESIRED_REPO_RULESET")") || [ "$?" -eq 1 ]
-    fi
+    current_repo="$(managed_repo_ruleset_json)"
+    [ "$current_repo" = null ] || current_repo="$(normalize_ruleset <<<"$current_repo")"
+    desired_repo=null
+    [ "$DESIRED_REPO_RULESET" = null ] || desired_repo="$(normalize_ruleset <<<"$DESIRED_REPO_RULESET")"
+    diff -u -L current-repository -L desired-repository \
+      <(printf '%s\n' "$current_repo") <(printf '%s\n' "$desired_repo") || [ "$?" -eq 1 ]
     ;;
   dry-run)
     verify_rollback_removal_planned
     verify_source
     "$0" diff "$POLICY"
     echo "Would install/replace organization ruleset: $RULESET_NAME"
-    [ "$DESIRED_REPO_RULESET" = null ] || echo "Would install/replace repository ruleset: $REPO_RULESET_NAME"
+    if [ "$DESIRED_REPO_RULESET" != null ]; then
+      echo "Would install/replace repository ruleset: $REPO_RULESET_NAME"
+    elif [ "$(managed_repo_ruleset_json)" != null ]; then
+      echo "Would DELETE repository ruleset: $REPO_RULESET_NAME (policy no longer declares it)"
+    fi
     echo "Would verify the active effective rules before removing legacy branch protection."
     ;;
   backup)
