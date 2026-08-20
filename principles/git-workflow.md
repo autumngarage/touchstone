@@ -180,6 +180,17 @@ gh pr merge <n> --squash --match-head-commit "$(gh pr view <n> --json headRefOid
 
 **`--match-head-commit` is the head binding.** It refuses the merge if the PR head moved since you checked the gate — which is exactly the race that lets an unreviewed commit slip in behind a passing review.
 
+**Where the ruleset requires a merge queue, that command enqueues instead of
+merging.** The queue builds the merged result — your head on top of the current
+default branch and anything ahead of you — and runs the required checks there,
+so two PRs that are each green alone cannot land a broken combination. You do
+not rebase because the default branch moved: a request binds the base it was
+made against or any ancestor of the current tip, and the queue owns the
+combination. If the queue ejects the PR, that is GitHub's verdict on the
+combination: fix forward on the branch, re-review the new head, re-enqueue.
+`touchstone pr merge` reports `queued`; `MERGED` arrives when the queue lands
+it.
+
 **`gh pr merge` exit codes lie in both directions.** It can exit nonzero after the merge actually succeeded, and it can exit zero having merely *armed* auto-merge while a check is still red. Never trust the exit code alone:
 
 ```bash

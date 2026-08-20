@@ -58,9 +58,9 @@ case "$method $endpoint" in
     emit '{"id":1333343261}'
     ;;
   "GET repos/autumngarage/touchstone-workflows/commits/main")
-    emit '{"sha":"8b29144eaacc25f1fcf71e1db7cd160bc3bb9085"}'
+    emit '{"sha":"5719b59619add320b39c994cff696444b4b98c25"}'
     ;;
-  "GET repos/autumngarage/touchstone-workflows/contents/.github/workflows/validate.yml?ref=8b29144eaacc25f1fcf71e1db7cd160bc3bb9085")
+  "GET repos/autumngarage/touchstone-workflows/contents/.github/workflows/validate.yml?ref=5719b59619add320b39c994cff696444b4b98c25")
     emit '{"type":"file"}'
     ;;
   "GET repos/autumngarage/touchstone/contents/.github/workflows/validate.yml?ref=main")
@@ -71,7 +71,7 @@ case "$method $endpoint" in
     fi
     emit "{\"type\":\"file\",\"sha\":\"${GH_FAKE_ROLLBACK_FILE_SHA:-c2dc082e0702090f3fc9de095d78a85ddde902a5}\"}"
     ;;
-  "GET repos/autumngarage/touchstone-workflows/compare/8b29144eaacc25f1fcf71e1db7cd160bc3bb9085...8b29144eaacc25f1fcf71e1db7cd160bc3bb9085")
+  "GET repos/autumngarage/touchstone-workflows/compare/5719b59619add320b39c994cff696444b4b98c25...5719b59619add320b39c994cff696444b4b98c25")
     emit '{"status":"identical"}'
     ;;
   "GET repos/autumngarage/touchstone-workflows/branches/main/protection")
@@ -331,6 +331,14 @@ jq -e '
   and any(.managedRuleset.rules[]; .type == "deletion")
   and any(.managedRuleset.rules[]; .type == "non_fast_forward")
 ' "$POLICY" >/dev/null || fail "checked-in ruleset is missing a required invariant"
+# The merged result is validated by the merge queue, not by making every open
+# PR rebase: strict up-to-date is off and the queue rule is on, together. One
+# without the other either serializes every merge (AUT-331) or lands
+# combinations nothing tested.
+jq -e '
+  any(.managedRuleset.rules[]; .type == "required_status_checks" and .parameters.strict_required_status_checks_policy == false)
+  and any(.managedRuleset.rules[]; .type == "merge_queue" and .parameters.merge_method == "SQUASH" and .parameters.grouping_strategy == "ALLGREEN")
+' "$POLICY" >/dev/null || fail "policy must pair a merge queue with non-strict status checks"
 [ "$(git hash-object "$ROLLBACK_VALIDATE")" = "c2dc082e0702090f3fc9de095d78a85ddde902a5" ] \
   || fail "durable rollback workflow differs from its recorded prerequisite blob"
 grep -Fq 'Policy operations require `gh`, `git`, `jq`, and `diff`.' "$POLICY_GUIDE" \
