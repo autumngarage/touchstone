@@ -16,6 +16,12 @@
 # driver to read it (the author) then skipped the local pass entirely for a
 # day. Prose instructs; only a gate enforces. This is the gate.
 #
+# Threat model: lazy omission, not forgery. An author who wants to lie can
+# write false prose no parser detects -- substance is review's job. This
+# check catches unfilled templates and accidentally hidden text, so Markdown
+# handling favors never refusing an honest body over never accepting an
+# exotic one, and its parsing is line-local by declared limit.
+#
 # Exit 0 when the evidence is recorded, 1 when it is missing or unfilled.
 
 set -euo pipefail
@@ -50,8 +56,8 @@ awk '
     # is visible text, not a comment opener -- treating it as one swallowed
     # the rest of the body of any PR that mentions the token.
     if (in_fence) {
-      if (match(line, /^[[:space:]]*(`{3,}|~{3,})/)) {
-        seg = substr(line, RSTART, RLENGTH)
+      if (match(line, /^[[:space:]]*(`{3,}|~{3,})[[:space:]]*$/)) {
+        seg = line
         gsub(/[[:space:]]/, "", seg)
         if (substr(seg, 1, 1) == fence_char && length(seg) >= fence_len) in_fence = 0
       }
@@ -74,16 +80,26 @@ awk '
       }
       open_at = index(line, "<!--")
       if (open_at == 0) { out = out line; line = ""; continue }
-      # An opener inside an inline code span is likewise visible text: count
-      # backticks before it -- an odd count means we are inside a span.
+      # An opener inside an inline code span is visible text. Spans open and
+      # close with equal-length backtick runs (CommonMark), so runs are
+      # tracked, not single characters -- parity counting broke on
+      # double-backtick spans. Line-local, per the declared limit above.
       prefix = substr(line, 1, open_at - 1)
-      ticks = gsub(/`/, "`", prefix)
-      if (ticks % 2 == 1) {
+      span_len = 0
+      scan = prefix
+      while (match(scan, /`+/)) {
+        run = RLENGTH
+        if (span_len == 0) span_len = run
+        else if (run == span_len) span_len = 0
+        scan = substr(scan, RSTART + RLENGTH)
+      }
+      if (span_len > 0) {
         rest = substr(line, open_at)
-        close_tick = index(rest, "`")
-        if (close_tick > 0) {
-          out = out prefix substr(rest, 1, close_tick)
-          line = substr(rest, close_tick + 1)
+        closer = sprintf("%0*d", span_len, 0); gsub(/0/, "`", closer)
+        close_at = index(rest, closer)
+        if (close_at > 0) {
+          out = out prefix substr(rest, 1, close_at + span_len - 1)
+          line = substr(rest, close_at + span_len)
           continue
         }
       }
@@ -101,8 +117,8 @@ awk '
 section() {
   awk -v want="## $1" '
     in_fence {
-      if (match($0, /^[[:space:]]*(`{3,}|~{3,})/)) {
-        seg = substr($0, RSTART, RLENGTH)
+      if (match($0, /^[[:space:]]*(`{3,}|~{3,})[[:space:]]*$/)) {
+        seg = $0
         gsub(/[[:space:]]/, "", seg)
         if (substr(seg, 1, 1) == fence_char && length(seg) >= fence_len) in_fence = 0
       }

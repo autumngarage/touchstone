@@ -1266,6 +1266,50 @@ if accepts; then
 fi
 ok "fence closing honors delimiter length"
 
+echo "==> Markdown edge fidelity: strict closers, run-length spans"
+# A closing fence is delimiter plus trailing spaces only; an info-string line
+# inside a fence closes nothing.
+body '````
+```not-a-closing-fence
+## Intent
+real
+## Invariants
+- x
+## Validation
+- Tests: pass
+## Review tier
+normal
+## Why this tier
+x
+````'
+if accepts; then
+  fail "an info-string line inside a fence was treated as its closer"
+fi
+ok "a closer is the delimiter alone"
+
+# Inline spans open and close with equal-length runs; a double-backtick span
+# holding a comment opener is visible text, and refusing it blocks exactly
+# the authors discussing this template.
+body '## Intent
+Support the ``<!--`` token in templates.
+
+## Invariants
+- x holds
+
+## Validation
+- Tests: pass
+
+## Review tier
+normal
+
+## Why this tier
+contained'
+if accepts; then
+  ok "a double-backtick span keeps its comment opener visible"
+else
+  fail "the gate refused a valid body using a double-backtick span"
+fi
+
 echo "==> a bare list marker satisfies nothing"
 body '## Intent
 -
