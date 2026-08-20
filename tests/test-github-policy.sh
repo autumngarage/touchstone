@@ -1759,6 +1759,45 @@ if accepts; then
   fail "prose under a tab-delimited heading satisfied an empty section"
 fi
 ok "a tab after the hashes is a heading boundary too"
+body '## Intent
+
+Notes
+=====
+Unrelated prose under a Setext heading.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "prose under a Setext heading satisfied an empty section"
+fi
+ok "a Setext heading ends the section before it"
+body '## Intent
+Real intent
+---
+still part of intent? no: a dash underline makes the line above an H2, so the section is just the heading line
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+trivial
+
+## Why this tier
+Docs.'
+if accepts; then
+  fail "a dash-underlined line counted as section content"
+fi
+ok "a dash underline is a Setext H2 boundary, not content"
 
 echo "==> a heading may carry up to three leading spaces"
 body '   ## Intent

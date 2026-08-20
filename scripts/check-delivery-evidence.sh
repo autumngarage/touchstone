@@ -106,7 +106,16 @@ section() {
     { sub(/^#{2}\t/, "## ", line) }
     line == want { grabbing = 1; next }
     grabbing && line ~ /^#{1,2}[ \t]/ { exit }
-    grabbing { print }
+    # Setext: a paragraph line underlined by = or - is an H1/H2 and ends the
+    # section; the underlined line is the heading, not content. Output runs
+    # one line behind so the underline can retract it.
+    grabbing && have_pending && line ~ /^(=+|-+)[[:space:]]*$/ && pending_is_text { have_pending = 0; exit }
+    grabbing {
+      if (have_pending) print pending
+      pending = $0; have_pending = 1
+      pending_is_text = ($0 ~ /[^[:space:]]/ && $0 !~ /^[[:space:]]*([-*+>]|[0-9]+[.)])([[:space:]]|$)/ && $0 !~ /^[[:space:]]*#/)
+    }
+    END { if (have_pending) print pending }
   ' "$STRIPPED_BODY"
 }
 
