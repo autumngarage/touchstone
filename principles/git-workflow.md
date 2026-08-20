@@ -88,6 +88,11 @@ anything, wedging the pull request until the comment is deleted.
 When a later head needs re-review, re-run the project's PR-open command; it is
 idempotent and confirms the gate bound the request.
 
+**Before the PR exists** — work slicing, the review tier, and the bounded
+local review — is owned by `principles/local-review.md`. This document owns
+everything after: answering findings, thread resolution, the round budget,
+merge, and recovery.
+
 **Head convergence.** A pre-commit or pre-push hook can create a *newer* commit than the one you thought you were pushing. Review binds the head that actually landed on the remote, so confirm which one that is before reading a verdict as covering your work:
 
 ```bash

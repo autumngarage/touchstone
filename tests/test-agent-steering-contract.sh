@@ -72,6 +72,9 @@ for file in \
   # loop terminates. Without these an agent treats a reviewer that always has
   # another remark as a finish line.
   assert_contains "$file" "Stop when the task is correct"
+  # The pre-PR review contract is routed, not restated; the route must exist
+  # in every rendered surface.
+  assert_contains "$file" "principles/local-review.md"
   assert_contains "$file" "deterministic gates first"
   assert_contains "$file" "Exact-head review after a fix commit is never skipped"
   assert_contains "$file" "never reopen the design space"
@@ -411,7 +414,7 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Merge
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "project-documented executable merge boundary"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "It is the whole mechanism"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Parallel file-writing agents use worktrees by default"
-assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Touchstone does not invoke a local semantic reviewer or model router"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Touchstone invokes no model router"
 
 echo "==> active product surfaces do not reintroduce the retired model router"
 # The two compatibility helpers may name retired paths solely to back them up
