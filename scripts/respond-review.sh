@@ -255,10 +255,14 @@ GATE_REQUIRED="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/rules/branches/$BASE_
   --jq '[.[] | select(.type == "workflows") | .parameters.workflows[]?.path] | any(. == ".github/workflows/review-gate.yml")')" \
   || fail "could not read the effective rules for $BASE_REF: $GATE_REQUIRED"
 if [ "$GATE_REQUIRED" = true ]; then
+  # The pinned gate runs under a workflow id the repository does not list; a
+  # local workflow sharing the name is listed and is not the gate.
+  LOCAL_WORKFLOW_IDS="$(gh_read api --paginate "repos/$REPO_OWNER/$REPO_NAME/actions/workflows?per_page=100" --jq '[.workflows[].id]' | tr -d '\n' | sed 's/\]\[/,/g')" \
+    || fail "could not list the repository's workflows: $LOCAL_WORKFLOW_IDS"
   attempt=1
   while :; do
     GATE_ROW="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/actions/runs?head_sha=$HEAD_SHA&per_page=100" \
-      --jq "[.workflow_runs[] | select(.name == \"review-gate\" and any(.pull_requests[]?; .number == $PR_NUMBER))] | sort_by(.id) | last | \"\(.id // \"\") \(.status // \"\")\"")" \
+      --jq "[.workflow_runs[] | select(.name == \"review-gate\" and any(.pull_requests[]?; .number == $PR_NUMBER) and ((.workflow_id as \$w | $LOCAL_WORKFLOW_IDS | index(\$w)) == null))] | sort_by(.id) | last | \"\(.id // \"\") \(.status // \"\")\"")" \
       || fail "could not inspect review-gate runs: $GATE_ROW"
     read -r GATE_RUN GATE_STATUS <<<"$GATE_ROW"
     if [ -n "$GATE_RUN" ] && [ "$GATE_STATUS" = completed ]; then

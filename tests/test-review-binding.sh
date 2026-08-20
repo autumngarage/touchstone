@@ -780,6 +780,8 @@ case "$1 ${2:-}" in
       else
         printf 'completed %s 2\n' "${GH_GATE_CONCLUSION:-success}"
       fi
+    elif has 'actions/workflows?' "$@"; then
+      printf '[1,2,3]\n'
     elif has 'rules/branches/' "$@"; then
       if [ -f "$GH_STATE/review-gate" ]; then printf 'true\n'; else printf 'false\n'; fi
     elif has 'actions/runs?head_sha=' "$@"; then
@@ -1132,13 +1134,15 @@ case "$1 $2" in
     echo 1 >>"$GH_STATE/replies"
     echo "71"
     ;;
-  "api --paginate")
-    if [ -f "$GH_STATE/replies" ]; then
-      echo "<!-- touchstone:respond-review comment=51 -->"
-    fi
-    ;;
   "pr view")
     printf 'abcdef0123456789abcdef0123456789abcdef01\tmain\n'
+    ;;
+  "api --paginate")
+    if has 'actions/workflows' "$@"; then
+      echo "[1,2,3]"
+    elif [ -f "$GH_STATE/replies" ]; then
+      echo "<!-- touchstone:respond-review comment=51 -->"
+    fi
     ;;
   "api repos/autumngarage/current/rules/branches/main")
     if [ -f "$GH_STATE/review-gate" ]; then echo true; else echo false; fi

@@ -391,7 +391,8 @@ wait_for_new_attempt() {
     read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$run_id" --jq '.run_attempt' \
       || fail_operation "could not read review-gate run $run_id: $READ_OUTPUT" "Retry after GitHub recovers."
     seen="$READ_OUTPUT"
-    [ "${seen:-0}" -le "${prior:-0}" ] || return 0
+    case "$seen$prior" in *[!0-9]* | "") fail_operation "review-gate run $run_id reported a non-numeric attempt ('$seen' after '$prior')" "Inspect the run in the Actions tab." ;; esac
+    [ "$seen" -le "$prior" ] || return 0
     [ "$attempt" -lt "$GATE_ATTEMPTS" ] \
       || fail_operation "review-gate run $run_id did not start its new attempt within $((GATE_ATTEMPTS * GATE_RETRY_DELAY))s" "Check the Actions tab, then retry."
     attempt=$((attempt + 1))
@@ -400,13 +401,20 @@ wait_for_new_attempt() {
 }
 
 rerun_review_gate() {
-  local number="$1" head="$2" attempt=1 run_id status prior_attempt
+  local number="$1" head="$2" attempt=1 run_id status prior_attempt local_workflow_ids
+  # A required workflow runs under a workflow id the repository does not list
+  # among its own; a repository-local workflow that happens to share the name
+  # is listed. Only the unlisted one is the pinned gate.
+  read_with_retry gh api --hostname "$REPO_HOST" --paginate "repos/$REPO/actions/workflows?per_page=100" \
+    --jq '[.workflows[].id]' \
+    || fail_operation "could not list the repository's workflows: $READ_OUTPUT" "Retry after GitHub recovers."
+  local_workflow_ids="$(printf '%s' "$READ_OUTPUT" | tr -d '\n' | sed 's/\]\[/,/g')"
   while :; do
     # Scoped to this pull request: two open PRs can share a head SHA, and
     # re-running the other one's gate would prove nothing about this request.
     read_with_retry gh api --hostname "$REPO_HOST" \
       "repos/$REPO/actions/runs?head_sha=$head&per_page=100" \
-      --jq "[.workflow_runs[] | select(.name == \"review-gate\" and (.event == \"pull_request\" or .event == \"merge_group\") and any(.pull_requests[]?; .number == $number))] | sort_by(.id) | last | \"\(.id // \"\") \(.status // \"\")\"" \
+      --jq "[.workflow_runs[] | select(.name == \"review-gate\" and (.event == \"pull_request\" or .event == \"merge_group\") and any(.pull_requests[]?; .number == $number) and ((.workflow_id as \$w | $local_workflow_ids | index(\$w)) == null))] | sort_by(.id) | last | \"\(.id // \"\") \(.status // \"\")\"" \
       || fail_operation "could not inspect review-gate runs for $head: $READ_OUTPUT" "Retry after GitHub recovers."
     read -r run_id status <<<"$READ_OUTPUT"
     if [ -n "$run_id" ] && [ "$status" = completed ]; then
