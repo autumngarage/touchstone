@@ -443,6 +443,16 @@ refresh_review_gate_before_merge() {
   done
 }
 
+verify_live_head_and_base_ref() {
+  local number="$1" head="$2" base_ref="$3" live_head live_base
+  read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json headRefOid,baseRefName \
+    --jq '[.headRefOid,.baseRefName] | @tsv' \
+    || fail_operation "could not re-read PR coordinates: $READ_OUTPUT" "Inspect GitHub before retrying."
+  IFS="$(printf '\t')" read -r live_head live_base <<<"$READ_OUTPUT"
+  [ "$live_head" = "$head" ] && [ "$live_base" = "$base_ref" ] \
+    || fail_input "PR #$number moved (head $live_head on $live_base) while the review gate re-ran" "Re-review the live head, then retry."
+}
+
 verify_live_coordinates() {
   local number="$1" head="$2" base_ref="$3" base_sha="$4" live_row live_head live_base live_base_sha
   read_with_retry gh pr view "$number" --repo "$REPO_SPEC" \
@@ -651,9 +661,10 @@ merge_pr() {
     [ "$state" = OPEN ] || fail_input "PR #$PR_NUMBER is $state" "Only an open or merged PR is supported."
     if review_gate_required "$base"; then
       refresh_review_gate_before_merge "$number" "$head"
-      # The wait can be minutes; the evaluation covered this head on this
-      # base, so both must still be live before the merge is requested.
-      verify_live_coordinates "$number" "$head" "$base" "$base_sha"
+      # The wait can be minutes. The head and the base *ref* must still be
+      # live; the base *tip* may advance underneath -- the gate binds by
+      # ancestry and the queue validates the merged result.
+      verify_live_head_and_base_ref "$number" "$head" "$base"
     fi
     merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash \
       --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
