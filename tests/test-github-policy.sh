@@ -28,6 +28,7 @@ cat >"$TMP_DIR/bin/gh" <<'EOF'
 set -euo pipefail
 
 method=GET
+fields=""
 endpoint=""
 jq_filter=""
 while [ "$#" -gt 0 ]; do
@@ -37,6 +38,7 @@ while [ "$#" -gt 0 ]; do
     --method | -X) method="$2"; shift 2 ;;
     --input) shift 2 ;;
     --jq) jq_filter="$2"; shift 2 ;;
+    -F | -f) fields="${fields:-} $2"; shift 2 ;;
     -*) shift ;;
     *) endpoint="$1"; shift ;;
   esac
@@ -56,6 +58,14 @@ emit() {
 case "$method $endpoint" in
   "GET repos/autumngarage/touchstone-workflows")
     emit '{"id":1333343261}'
+    ;;
+  "GET repos/autumngarage/touchstone")
+    if [ -f "$state/auto-merge" ]; then emit '{"allow_auto_merge":true}'; else emit '{"allow_auto_merge":false}'; fi
+    ;;
+  "PATCH repos/autumngarage/touchstone")
+    case "${fields:-}" in *allow_auto_merge=true*) touch "$state/auto-merge" ;; esac
+    echo "PATCH repo-settings" >>"$state/mutations.log"
+    emit '{"allow_auto_merge":true}'
     ;;
   "GET repos/autumngarage/touchstone-workflows/commits/main")
     emit '{"sha":"00a0b299b76f3405641aae4b6d0bd92591a5d1f1"}'
@@ -547,10 +557,20 @@ run_policy apply "$POLICY"
   || fail "apply did not install ruleset first"
 [ "$(sed -n '2p' "$TMP_DIR/state/mutations.log")" = "POST repo-ruleset" ] \
   || fail "apply did not install the companion repository ruleset after the organization ruleset"
-[ "$(sed -n '3p' "$TMP_DIR/state/mutations.log")" = "DELETE branch-protection" ] \
+[ "$(sed -n '3p' "$TMP_DIR/state/mutations.log")" = "PATCH repo-settings" ] \
+  || fail "apply did not enable auto-merge after the companion ruleset"
+[ "$(sed -n '4p' "$TMP_DIR/state/mutations.log")" = "DELETE branch-protection" ] \
   || fail "apply removed branch protection before verified ruleset install"
 jq -e 'any(.rules[]; .type == "merge_queue")' "$TMP_DIR/state/repo-ruleset.json" >/dev/null \
   || fail "companion repository ruleset does not carry the merge queue"
+[ -f "$TMP_DIR/state/auto-merge" ] || fail "apply did not enable allow_auto_merge for the queue"
+rm -f "$TMP_DIR/state/auto-merge"
+touch "$TMP_DIR/state/local-workflow-absent"
+if run_policy verify "$POLICY" >/dev/null 2>&1; then
+  fail "verify accepted a repository whose allow_auto_merge is off"
+fi
+rm -f "$TMP_DIR/state/local-workflow-absent"
+touch "$TMP_DIR/state/auto-merge"
 before_count="$(wc -l <"$TMP_DIR/state/mutations.log" | tr -d ' ')"
 jq '.rules |= reverse' "$TMP_DIR/state/ruleset.json" >"$TMP_DIR/state/reordered.json"
 mv "$TMP_DIR/state/reordered.json" "$TMP_DIR/state/ruleset.json"
