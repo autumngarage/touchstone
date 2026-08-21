@@ -269,6 +269,24 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Lifecycle parity: git-workflow.md enumerates the steering's steps, no second lifecycle"
+# The routed document once carried an eight-step lifecycle next to the
+# steering's nine (no claim, no reconcile); a fresh agent quoted both. The
+# invariant: the same count, the same numbers, and each step's leading word
+# (the verb the steering bolds) in the same position.
+steering_steps="$(sed -n '/^## Required Delivery Workflow/,/^## /p' "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
+  | sed -nE 's/^([1-9])\. \*\*([A-Za-z]+)[^*]*\*\*.*/\1 \2/p')"
+workflow_steps="$(sed -n '/^## The lifecycle/,/^## /p' "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  | sed -nE 's/^([1-9])\. \*\*([A-Za-z]+)[^*]*\*\*.*/\1 \2/p')"
+if [ -z "$steering_steps" ]; then
+  fail "could not read the numbered steps of TOUCHSTONE.md's Required Delivery Workflow"
+elif [ "$steering_steps" != "$workflow_steps" ]; then
+  fail "principles/git-workflow.md's lifecycle does not mirror the steering's steps:"
+  diff <(printf '%s\n' "$steering_steps") <(printf '%s\n' "$workflow_steps") >&2 || true
+else
+  echo "  ok: $(printf '%s\n' "$steering_steps" | wc -l | tr -d ' ') steps, same numbers and leading verbs"
+fi
+
 if [ "$ERRORS" -gt 0 ]; then
   echo ""
   echo "==> FAIL: $ERRORS scope-guardrail check(s) failed"
