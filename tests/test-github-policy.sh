@@ -475,16 +475,42 @@ echo "==> Checked-in consumer policies equal their derivation"
 # canonical one only in the repository coordinates and the absence of
 # Touchstone's own rollback prerequisites.
 bash "$ROOT/scripts/derive-consumer-policy.sh" vesper --no-queue extra >/dev/null 2>&1 && fail "derive accepted a surplus argument" || ok "derive refuses surplus arguments"
+# Stock macOS /bin/bash is 3.2; the empty --require-status case must derive
+# there too (set -u and empty arrays are where 3.2 differs).
+if [ -x /bin/bash ] && /bin/bash -c '[ "${BASH_VERSINFO[0]}" -le 4 ]' 2>/dev/null; then
+  diff -q <(/bin/bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --no-queue) <(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --no-queue) >/dev/null \
+    && ok "derivation without --require-status is identical under /bin/bash $(/bin/bash -c 'echo ${BASH_VERSION%%(*}')" \
+    || fail "derivation differs or fails under /bin/bash (bash 3/4)"
+fi
+# --require-status adds exactly one repository-owned context rule and nothing
+# else: the canonical rules are joined, never removed or weakened.
+with_status="$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --no-queue --require-status canary/body-check --require-status canary/body-check)"
+without_status="$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --no-queue)"
+[ "$(jq -c '[.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context]' <<<"$with_status")" = '["canary/body-check"]' ] \
+  && [ "$(jq -S 'del(.managedRuleset.rules[] | select(.type == "required_status_checks"))' <<<"$with_status")" = "$(jq -S . <<<"$without_status")" ] \
+  && ok "--require-status adds one deduplicated context rule and changes nothing else" \
+  || fail "--require-status changed more than the status rule"
+[ "$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --no-queue --require-status "validate (ubuntu-latest)" | jq -r '.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context')" = "validate (ubuntu-latest)" ] \
+  && ok "derive preserves an Actions-shaped context verbatim" || fail "derive mangled or refused 'validate (ubuntu-latest)'"
+bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --no-queue --require-status "$(printf 'two\nlines')" >/dev/null 2>&1 && fail "derive accepted a context containing a line break" || ok "derive refuses a context containing a line break"
+# A PR-only publisher never reports on a queue commit; the flag is refused
+# with the queue so a queued consumer cannot be wedged by its own gate.
+bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --require-status canary/body-check >/dev/null 2>&1 && fail "derive accepted --require-status with the merge queue" || ok "derive refuses --require-status without --no-queue"
+bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --no-queue --require-status >/dev/null 2>&1 && fail "derive accepted --require-status without a value" || ok "derive refuses --require-status without a value"
 for consumer in "$ROOT"/policy/github/consumers/*.json; do
   [ -f "$consumer" ] || continue
   name="$(basename "$consumer" .json)"
   # A queue-less consumer (private repository outside Enterprise Cloud) is the
   # same derivation with --no-queue; the checked-in file says which it is.
-  derive_flag=""
-  jq -e '.managedRepositoryRuleset == null' "$consumer" >/dev/null && derive_flag="--no-queue"
-  # shellcheck disable=SC2086 # an empty flag must vanish, not become ""
-  diff -u <(bash "$ROOT/scripts/derive-consumer-policy.sh" "$name" $derive_flag | jq -S .) <(jq -S . "$consumer") >/dev/null \
-    || fail "policy/github/consumers/$name.json drifted from its derivation; regenerate it with scripts/derive-consumer-policy.sh $name $derive_flag"
+  # A consumer-owned required status (convoy's delivery-protocol) is the same
+  # derivation with --require-status; the checked-in rule says which.
+  derive_flags=()
+  jq -e '.managedRepositoryRuleset == null' "$consumer" >/dev/null && derive_flags+=(--no-queue)
+  while IFS= read -r context; do
+    [ -n "$context" ] && derive_flags+=(--require-status "$context")
+  done < <(jq -r '[.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | .[]' "$consumer")
+  diff -u <(bash "$ROOT/scripts/derive-consumer-policy.sh" "$name" ${derive_flags[@]+"${derive_flags[@]}"} | jq -S .) <(jq -S . "$consumer") >/dev/null \
+    || fail "policy/github/consumers/$name.json drifted from its derivation; regenerate it with scripts/derive-consumer-policy.sh $name ${derive_flags[*]+"${derive_flags[*]}"}"
   run_policy diff "$consumer" >/dev/null 2>"$TMP_DIR/consumer-$name.err" \
     || grep -q "HTTP 404\|unhandled fake gh call" "$TMP_DIR/consumer-$name.err" \
     || fail "consumer policy $name was refused locally: $(tail -1 "$TMP_DIR/consumer-$name.err")"
