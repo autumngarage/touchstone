@@ -54,14 +54,26 @@ normal` without classifying; `ship-pr.sh` binds merge before review exists.
 
 Criterion (1) passed in every cell for the first time. Criterion (2) passes
 wherever the sandbox allows a temp file; AUT-421 is the only blocker for the
-Codex cells. Criterion (3) failed everywhere, but every quoted contradiction
-was either already fixed in flight or is fixed by the three PRs above; none
-required a design change.
+Codex cells. Criterion (3) failed everywhere; of the quoted contradictions,
+all but three are fixed by the three PRs above, and three are routed
+(AUT-396 body-only re-request; AUT-403 worker tier and ship-pr merge order)
+and remain open findings against (3) until they land. None required a
+design change.
+
+## Stopping rule, corrected
+
+Round 2 said "done is two consecutive passing rounds"; with three rounds per
+contract version and a failed round 3, that can never be met for 3.2.1 — the
+rule contradicted the cap. Corrected: **done is one passing confirmation
+round after a round whose findings were fixed.** One clean run is the
+standard confirmation; a second clean run proves nothing the first did not.
 
 ## Round 4
 
 The confirmation run, after #969, arpeggio#52, and vesper#930 merge. Same
-prompt, same four cells. Pass for the Claude cells requires (3) clean; the
-Codex cells cannot pass (2) until AUT-421 lands and are scored on (1) and
-(3). Round 4 is the last cold-start round for 3.2.x whatever the result; what
-remains becomes tracked issues.
+prompt, same four cells. A Claude cell passes with (1), (2), and (3) clean,
+where (3) is judged against the shipped documents at that head; the routed
+items above are disclosed in the prompt's scope as known-open so they are not
+re-counted. The Codex cells cannot pass (2) until AUT-421 lands and are
+scored on (1) and (3). Round 4 is the last cold-start round for 3.2.x
+whatever the result; what remains becomes tracked issues.
