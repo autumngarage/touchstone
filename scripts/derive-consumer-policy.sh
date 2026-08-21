@@ -50,8 +50,11 @@ while [ "$#" -gt 0 ]; do
       ;;
     --require-status)
       [ "$#" -ge 2 ] || usage
+      # A status context is whatever the publishing workflow named it --
+      # `validate (ubuntu-latest)` is a normal Actions shape -- so only the
+      # unrepresentable is refused: empty, or containing a line break.
       case "$2" in
-        "" | *[[:space:]]* | *[!A-Za-z0-9._/-]*) usage ;;
+        "" | *$'\n'* | *$'\r'*) usage ;;
       esac
       STATUS_CONTEXTS+=("$2")
       shift 2

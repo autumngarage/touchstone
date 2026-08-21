@@ -483,7 +483,9 @@ without_status="$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-poli
   && [ "$(jq -S 'del(.managedRuleset.rules[] | select(.type == "required_status_checks"))' <<<"$with_status")" = "$(jq -S . <<<"$without_status")" ] \
   && ok "--require-status adds one deduplicated context rule and changes nothing else" \
   || fail "--require-status changed more than the status rule"
-bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --require-status "bad context" >/dev/null 2>&1 && fail "derive accepted a context with whitespace" || ok "derive refuses a malformed status context"
+[ "$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --require-status "validate (ubuntu-latest)" | jq -r '.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context')" = "validate (ubuntu-latest)" ] \
+  && ok "derive preserves an Actions-shaped context verbatim" || fail "derive mangled or refused 'validate (ubuntu-latest)'"
+bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --require-status "$(printf 'two\nlines')" >/dev/null 2>&1 && fail "derive accepted a context containing a line break" || ok "derive refuses a context containing a line break"
 bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --require-status >/dev/null 2>&1 && fail "derive accepted --require-status without a value" || ok "derive refuses --require-status without a value"
 for consumer in "$ROOT"/policy/github/consumers/*.json; do
   [ -f "$consumer" ] || continue
