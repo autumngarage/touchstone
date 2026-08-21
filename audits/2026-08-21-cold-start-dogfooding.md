@@ -36,7 +36,8 @@ the same wall: they could not learn, from the tool, what GitHub enforces.
 1. **Enforcement is not legible from the tool** (4/4). `adopt --check` says
    "remote policy: separate operation"; `pr status` does not enumerate rules.
    Agents ran four `gh api` calls and read a workflow comment to find that
-   nothing protected `main`. Every agent named this as the single most
+   no Touchstone gate protected `main` (vesper carried only its repo-local
+   pull-request, deletion, and force-push rules; arpeggio had no ruleset). Every agent named this as the single most
    valuable fix. → AUT-408: a new `touchstone policy status` (and the same
    field on `pr status`) reads the effective rules and reports `applied |
    partial | none` with what is missing; `adopt --check` stays offline and
