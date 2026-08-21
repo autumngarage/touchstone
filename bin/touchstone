@@ -63,7 +63,13 @@ case "$COMMAND" in
               echo "ERROR: --project requires a non-empty directory" >&2
               exit 2
             }
-            ANSWER_PROJECT="$2"
+            # Absolute against the invoking directory before any cd: a
+            # relative operand would otherwise resolve through an exported
+            # CDPATH and bind a different checkout.
+            case "$2" in
+              /*) ANSWER_PROJECT="$2" ;;
+              *) ANSWER_PROJECT="$PWD/$2" ;;
+            esac
             shift 2
             ;;
           --body-file)
@@ -86,7 +92,7 @@ case "$COMMAND" in
         esac
       done
       if [ -n "$ANSWER_PROJECT" ]; then
-        cd "$ANSWER_PROJECT" || {
+        cd -- "$ANSWER_PROJECT" || {
           echo "ERROR: --project directory is not accessible: $ANSWER_PROJECT" >&2
           exit 2
         }

@@ -708,6 +708,11 @@ STUB
   (cd "$TMP" && printf 'reply\n' >reply.md && GH_REPO=other/repo GIT_DIR="$TMP/elsewhere.git" ANSWER_LOG="$TMP/answer2.argv" bash "$TMP/tool/bin/touchstone" pr answer 7 --comment-id 51 --body-file reply.md --project "$TMP/tool/elsewhere")
   grep -qx "$TMP/reply.md" "$TMP/answer2.argv" || fail "a relative --body-file was not resolved against the invoking directory: $(tr '\n' ' ' <"$TMP/answer2.argv")"
   [ "$(cat "$TMP/answer2.argv.ghrepo")" = "unset unset" ] || fail "GH_REPO or GIT_DIR survived into a --project answer: $(cat "$TMP/answer2.argv.ghrepo")"
+  # A relative --project resolves against the invoking directory even when an
+  # exported CDPATH holds a same-named directory elsewhere.
+  mkdir -p "$TMP/cdtrap/elsewhere" "$TMP/invoke/elsewhere"
+  (cd "$TMP/invoke" && CDPATH="$TMP/cdtrap" ANSWER_LOG="$TMP/answer4.argv" bash "$TMP/tool/bin/touchstone" pr answer 7 --comment-id 51 --body-file "$TMP/body" --project elsewhere)
+  [ "$(cat "$TMP/answer4.argv.cwd")" = "$(cd "$TMP/invoke/elsewhere" && pwd)" ] || fail "a relative --project resolved through CDPATH: $(cat "$TMP/answer4.argv.cwd")"
   if ANSWER_LOG="$TMP/answer3.argv" bash "$TMP/tool/bin/touchstone" pr answer 7 --comment-id 51 --body-file "$TMP/body" --project "" >"$TMP/answer3.out" 2>&1; then
     fail "pr answer accepted an empty --project"
   fi
