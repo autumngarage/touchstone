@@ -36,14 +36,19 @@ policy contains the Touchstone ruleset, the server rejects direct pushes.
 
 ## The lifecycle
 
+The lifecycle is the nine-step **Required Delivery Workflow** in the steering
+block, and this document does not enumerate a second one: the steps below
+carry the same numbers and add only the detail the steering leaves out.
+
 1. **Pull.** `git pull --rebase` on the default branch before starting work.
-2. **Branch — before any edit that might become a commit.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`. Do this as step one of the work, not as a cleanup step later.
-3. **Check the tree before changing it.** Run `git status --short` and `git branch --show-current` before starting implementation. If the tree is dirty with unrelated user changes, do not stash them and do not auto-commit on the user's behalf. Ask how to proceed, or branch around the changes when the file surfaces are disjoint. `git stash` is hidden multi-agent state, not a coordination mechanism.
-4. **Loop: change → commit → push.** Each meaningful sub-task gets its own commit and push. Stage explicit file paths (not `git add -A`), write a concise message, push to the open branch.
-5. **Ship.** Push and open the PR — see "Opening a PR" below.
-6. **Answer every piece of PR feedback before merging.** Reply to each comment and resolve its thread, whoever left it. Where effective policy requires conversation resolution, GitHub blocks unresolved threads; elsewhere resolving them remains mandatory driver procedure.
-7. **Merge**, bound to the head the review actually saw — see "Merging" below.
-8. **Clean up after merge.** Delete the local feature branch once the PR is merged.
+2. **Branch — before any edit that might become a commit.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`. Do this as step one of the work, not as a cleanup step later. Check the tree first: run `git status --short` and `git branch --show-current`. If the tree is dirty with unrelated user changes, do not stash them and do not auto-commit on the user's behalf — ask how to proceed, or branch around the changes when the file surfaces are disjoint. `git stash` is hidden multi-agent state, not a coordination mechanism.
+3. **Claim tracked work** — see "Claiming tracked work before agent dispatch" below.
+4. **Change + commit.** Each meaningful sub-task gets its own commit: stage explicit file paths (not `git add -A`), write a concise message. The tier's local pass sets the push cadence: a normal-tier change pushes whenever a commit is ready (its pass ran at pre-commit on the staged slice); a serious-tier change pushes once per head it wants reviewed, because its branch-level pass runs at pre-push. After a review round, batch every fix into one commit and push once (`principles/local-review.md`).
+5. **Reconcile tracked work** before opening the PR — fixed items get the closing reference in the PR body; partial or stale items get a tracker note.
+6. **Ship.** Push and open the PR — see "Opening a PR" below.
+7. **Answer every piece of PR feedback before merging.** Reply to each comment and resolve its thread, whoever left it. Where effective policy requires conversation resolution, GitHub blocks unresolved threads; elsewhere resolving them remains mandatory driver procedure.
+8. **Merge**, bound to the head the review actually saw — see "Merging" below.
+9. **Clean up after merge.** Delete the local feature branch once the PR is merged.
 
 ## Before trusting any merge: what does GitHub enforce here?
 
