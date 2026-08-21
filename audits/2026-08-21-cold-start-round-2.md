@@ -2,7 +2,7 @@
 
 Same method as [round 1](2026-08-21-cold-start-dogfooding.md): fresh Claude
 Code and Codex (`codex exec --sandbox read-only`) agents, no session context,
-one read-only prompt per repository, after the round-1 fixes (AUT-407–412)
+one read-only prompt per repository, after the round-1 fixes (AUT-407, 408, 409, 412; AUT-410 and 411 still open)
 shipped in touchstone 3.2.0 and the consumer policies were applied to vesper
 and arpeggio. Convoy is still pending adoption (AUT-402).
 
