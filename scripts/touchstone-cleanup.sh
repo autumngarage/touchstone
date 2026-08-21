@@ -16,8 +16,9 @@
 #   checkout      the working tree is not on the default branch at origin's
 #                 tip (detached HEAD, a feature branch, or behind/ahead)
 #   worktree      a linked worktree other than the main checkout exists
-#   local-branch  a local branch whose pull request is merged or closed
-#   remote-branch a remote branch whose pull request is merged or closed
+#   local-branch  a local branch whose pull request (from this repository,
+#                 at the branch's current SHA) is merged or closed
+#   remote-branch the same for a branch on origin
 #   untracked     untracked files in the working tree (build and test
 #                 residue such as __pycache__; a dirty tree also refuses the
 #                 next ship)
@@ -129,35 +130,57 @@ while IFS= read -r path; do
 done < <(git worktree list --porcelain | awk '$1 == "worktree" { print $2 }')
 
 # --- branches whose pull request is finished ------------------------------------
+# A ref is "finished" only when a pull request from THIS repository with
+# that head name is merged or closed AND its head SHA is the ref's current
+# SHA. Name alone is not enough: a reused branch name, or a fork's PR with
+# the same name, would otherwise recommend deleting live work. The query is
+# driven by the refs being checked (one bounded read per ref), so there is
+# no "recent N pull requests" window to fall outside of. A failed read is a
+# finding, never an empty list.
 if [ "$GH_OK" = true ]; then
-  # One read for every non-open PR head, instead of one read per branch.
-  FINISHED_HEADS="$(gh pr list --state merged --limit 200 --json headRefName,number,state --jq '.[] | [.headRefName, .number, .state] | @tsv' 2>/dev/null || true)
-$(gh pr list --state closed --limit 200 --json headRefName,number,state --jq '.[] | [.headRefName, .number, .state] | @tsv' 2>/dev/null || true)"
-  OPEN_HEADS="$(gh pr list --state open --limit 200 --json headRefName --jq '.[].headRefName' 2>/dev/null || true)"
+  REPO_FULL="${REPO_ROW%%	*}"
   finished_for() {
-    # A branch with an open PR is not finished even if an older PR on the
-    # same name was closed.
-    printf '%s\n' "$OPEN_HEADS" | grep -qxF -- "$1" && return 1
-    printf '%s\n' "$FINISHED_HEADS" | awk -F'\t' -v b="$1" '$1 == b { print "#" $2 " " tolower($3); exit }'
+    # $1 branch name, $2 current sha -> prints "#N merged|closed" or nothing
+    local rows
+    rows="$(gh pr list --state all --head "$1" --limit 50 \
+      --json number,state,headRefOid,headRepository,headRepositoryOwner \
+      --jq '.[] | [.number, .state, .headRefOid, ((.headRepositoryOwner.login // "") + "/" + (.headRepository.name // ""))] | @tsv' 2>/dev/null)" || return 2
+    # Any OPEN pull request on this head means the branch is in flight.
+    printf '%s\n' "$rows" | awk -F'\t' '$2 == "OPEN" { found = 1 } END { exit !found }' && return 1
+    printf '%s\n' "$rows" | awk -F'\t' -v sha="$2" -v repo="$REPO_FULL" \
+      '($2 == "MERGED" || $2 == "CLOSED") && $3 == sha && $4 == repo { print "#" $1 " " tolower($2); exit }'
   }
-  while IFS= read -r branch; do
+  # finished_for runs in a command substitution, so it cannot record a
+  # finding itself: exit 2 means the read failed and the caller records it.
+  read_failed() {
+    finding "github" "pull-request read failed for $1" "branch findings are incomplete; run with gh authenticated and retry"
+  }
+  while IFS=$'\t' read -r branch sha; do
     [ -n "$branch" ] && [ "$branch" != "$DEFAULT_BRANCH" ] || continue
-    pr="$(finished_for "$branch" || true)"
+    pr="$(finished_for "$branch" "$sha")" || {
+      [ $? -eq 2 ] && read_failed "$branch"
+      continue
+    }
     [ -n "$pr" ] || continue
     case "$pr" in
       *merged) finding "local-branch" "$branch ($pr)" "git branch -D $branch after confirming the merged head (principles/git-workflow.md, 'Periodic branch hygiene')" ;;
       *) finding "local-branch" "$branch ($pr)" "its PR was closed without merging: delete the branch if the work is abandoned, or reopen a PR for it" ;;
     esac
-  done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
-  while IFS= read -r branch; do
-    [ -n "$branch" ] && [ "$branch" != "$DEFAULT_BRANCH" ] || continue
-    pr="$(finished_for "$branch" || true)"
+  done < <(git for-each-ref --format='%(refname:short)	%(objectname)' refs/heads/)
+  while IFS=$'\t' read -r ref sha; do
+    branch="${ref#refs/remotes/origin/}"
+    # origin/HEAD is a symbolic ref, not a branch.
+    [ -n "$branch" ] && [ "$branch" != "$DEFAULT_BRANCH" ] && [ "$branch" != HEAD ] || continue
+    pr="$(finished_for "$branch" "$sha")" || {
+      [ $? -eq 2 ] && read_failed "origin/$branch"
+      continue
+    }
     [ -n "$pr" ] || continue
     case "$pr" in
       *merged) finding "remote-branch" "origin/$branch ($pr)" "git push origin --delete $branch" ;;
       *) finding "remote-branch" "origin/$branch ($pr)" "its PR was closed without merging: git push origin --delete $branch if the work is abandoned" ;;
     esac
-  done < <(git for-each-ref --format='%(refname:short)' refs/remotes/origin/ | sed 's|^origin/||' | grep -vx HEAD)
+  done < <(git for-each-ref --format='%(refname)	%(objectname)' refs/remotes/origin/)
 fi
 
 # --- report -----------------------------------------------------------------------

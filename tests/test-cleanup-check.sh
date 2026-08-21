@@ -24,14 +24,12 @@ case "$1 $2" in
     printf 'autumngarage/current\tmain\n'
     ;;
   "pr list")
-    st=""
-    while [ "$#" -gt 0 ]; do [ "$1" = --state ] && st="$2"; shift; done
-    f="$state/prs-$st"
-    [ -f "$f" ] || exit 0
-    case "$st" in
-      open) cut -f1 "$f" ;;
-      *) cat "$f" ;;
-    esac
+    # One read per head: rows are "head<TAB>number<TAB>state<TAB>sha<TAB>owner/repo"
+    [ -f "$state/list-down" ] && { echo "gh: GraphQL: rate limited" >&2; exit 1; }
+    head=""
+    while [ "$#" -gt 0 ]; do [ "$1" = --head ] && head="$2"; shift; done
+    [ -f "$state/prs" ] || exit 0
+    awk -F'\t' -v h="$head" '$1 == h { print $2 "\t" $3 "\t" $4 "\t" $5 }' "$state/prs"
     ;;
   *) echo "unhandled fake gh call: $*" >&2; exit 1 ;;
 esac
@@ -64,17 +62,33 @@ echo "==> each kind of leftover is reported once, with a remedy, and nothing is 
 echo residue >"$TMP/repo/__pycache__.tmp"
 echo tracked >"$TMP/repo/tracked.txt"
 git -C "$TMP/repo" add tracked.txt && git -C "$TMP/repo" -c user.email=t@example.com -c user.name=t commit -q -m tracked
-echo changed >>"$TMP/repo/tracked.txt"
+git -C "$TMP/repo" push -q origin main
 # a merged branch locally and on origin, and a closed-unmerged one on origin
 git -C "$TMP/repo" branch feat/done
 git -C "$TMP/repo" push -q origin feat/done
 git -C "$TMP/repo" push -q origin main:refs/heads/fix/abandoned
 git -C "$TMP/repo" fetch -q origin
-printf 'feat/done\t41\tMERGED\n' >"$TMP/state/prs-merged"
-printf 'fix/abandoned\t42\tCLOSED\n' >"$TMP/state/prs-closed"
+DONE_SHA="$(git -C "$TMP/repo" rev-parse feat/done)"
+ABANDONED_SHA="$(git -C "$TMP/repo" rev-parse origin/fix/abandoned)"
+# a reused branch name: its merged PR was at a different SHA, so the current
+# ref is live work and must not be reported
+git -C "$TMP/repo" branch feat/reused
+git -C "$TMP/repo" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m newer
+REUSED_SHA="$(git -C "$TMP/repo" rev-parse HEAD)"
+git -C "$TMP/repo" branch -f feat/reused "$REUSED_SHA"
+git -C "$TMP/repo" reset -q --hard origin/main
+echo changed >>"$TMP/repo/tracked.txt"
 # a linked worktree
 git -C "$TMP/repo" worktree add -q "$TMP/repo-wt" -b feat/in-flight >/dev/null 2>&1
-printf 'feat/in-flight\n' >"$TMP/state/prs-open"
+FLIGHT_SHA="$(git -C "$TMP/repo" rev-parse feat/in-flight)"
+{
+  printf 'feat/done\t41\tMERGED\t%s\tautumngarage/current\n' "$DONE_SHA"
+  printf 'fix/abandoned\t42\tCLOSED\t%s\tautumngarage/current\n' "$ABANDONED_SHA"
+  printf 'feat/reused\t30\tMERGED\t%s\tautumngarage/current\n' "$DONE_SHA"
+  printf 'feat/in-flight\t43\tOPEN\t%s\tautumngarage/current\n' "$FLIGHT_SHA"
+  printf 'feat/fork-name\t44\tMERGED\t%s\tsomeone/fork\n' "$DONE_SHA"
+} >"$TMP/state/prs"
+git -C "$TMP/repo" branch feat/fork-name "$DONE_SHA"
 run
 [ "$RC" -eq 1 ] || fail "leftovers did not exit 1 (rc=$RC)"
 for kind in untracked dirty worktree local-branch remote-branch; do
@@ -83,7 +97,9 @@ done
 grep -q 'feat/done (#41 merged)' "$TMP/out" && ok "merged branch names its PR" || fail "merged branch lacks its PR"
 grep -q 'fix/abandoned (#42 closed)' "$TMP/out" && grep -q 'closed without merging' "$TMP/out" \
   && ok "closed-unmerged branch gets the cautious remedy" || fail "closed branch remedy wrong"
-grep -q 'feat/in-flight' "$TMP/out" | grep -q 'local-branch' && fail "a branch with an open PR was reported as finished" || ok "open-PR branch is not a finished branch"
+grep -E '^  (local|remote)-branch.*feat/in-flight' "$TMP/out" >/dev/null && fail "a branch with an open PR was reported as finished" || ok "open-PR branch is not a finished branch"
+grep -E '^  local-branch.*feat/reused' "$TMP/out" >/dev/null && fail "a reused branch name at a new SHA was reported as finished" || ok "reused name at a new SHA is live work"
+grep -E '^  local-branch.*feat/fork-name' "$TMP/out" >/dev/null && fail "a fork's PR with the same head name counted as ours" || ok "fork PR with the same name is not ours"
 grep -q "repo-wt \[feat/in-flight\]" "$TMP/out" && ok "worktree named with its branch" || fail "worktree not named"
 # nothing mutated
 [ -f "$TMP/repo/__pycache__.tmp" ] && git -C "$TMP/repo" rev-parse --verify -q feat/done >/dev/null \
@@ -103,6 +119,13 @@ git -C "$TMP/repo" checkout -q feat/done
 run
 grep -q 'checkout.*on branch feat/done' "$TMP/out" && ok "feature checkout reported" || fail "feature checkout missed"
 git -C "$TMP/repo" checkout -q main
+
+echo "==> a failed pull-request read is a finding, never an empty list"
+touch "$TMP/state/list-down"
+run
+[ "$RC" -eq 1 ] && grep -q 'github.*pull-request read failed' "$TMP/out" && ok "list failure reported" || fail "list failure not reported: $(cat "$TMP/out")"
+grep -qE '^  (local|remote)-branch' "$TMP/out" && fail "branch findings claimed after a failed read" || ok "no branch claimed clean or finished after a failed read"
+rm -f "$TMP/state/list-down"
 
 echo "==> a failed GitHub read is a finding, never silence"
 touch "$TMP/state/gh-down"
