@@ -721,7 +721,6 @@ open_pr() {
     state=existing
   fi
   IFS="$(printf '\t')" read -r number url pr_head pr_base pr_base_sha <<<"$rows"
-  BODY_APPLIED=unchanged
   # Idempotent means "converges on the arguments given", not "no-ops": on a
   # reused PR the title and body passed now are applied when they differ from
   # what GitHub holds, and the result says so. Silently keeping the old body
@@ -729,6 +728,7 @@ open_pr() {
   # required delivery-evidence gate with no signal from the one command the
   # driver is told to use (AUT-437).
   if [ "$state" = existing ]; then
+    BODY_APPLIED=unchanged
     read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json title,body --jq '[.title, .body] | @json' \
       || fail_operation "could not read the existing pull request's title and body: $READ_OUTPUT" "Retry after GitHub recovers."
     live_title="$(printf '%s' "$READ_OUTPUT" | jq -r '.[0]')"

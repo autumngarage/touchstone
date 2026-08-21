@@ -463,6 +463,13 @@ EOF
   assert_rc "$RUN_RC" 0
   grep -q -- '--title Retitled' "$TMP/state/edits" && assert_has "$TMP/out" 'body: updated' && ok "title converges too" || fail "title not applied: $(cat "$TMP/state/edits" 2>/dev/null)"
   rm -f "$TMP/state/edits" "$TMP/state/pr-title" "$TMP/state/pr-body"
+  # A freshly created PR carries the body by construction and says nothing
+  # about applying it.
+  rm -f "$TMP/state/pr-exists"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"opened"'
+  assert_not_has "$TMP/out" '"body":'
 
   echo "==> open refuses head drift and reconciles a lying creation response"
   rm -f "$TMP/state/pr-exists" "$TMP/state/review-request"
