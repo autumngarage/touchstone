@@ -388,6 +388,18 @@ EOF
   GH_MODE=success_stderr run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" "\"head\":\"$HEAD_SHA\""
+  # A read-only sandbox (no writable TMPDIR) must still observe: the read
+  # captures stdout alone and lets diagnostics pass through, so the parsed
+  # data never contains them (AUT-421; Codex cold starts could not run this).
+  TMPDIR="$TMP/does-not-exist" GH_MODE=success_stderr run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  # run_pr merges both streams into the file; the JSON line itself must be
+  # intact and parse with the right head, whatever gh said on stderr.
+  [ "$(grep '^{' "$TMP/out" | jq -r .head)" = "$HEAD_SHA" ] \
+    || fail "status without a writable TMPDIR did not produce a clean JSON line: $(cat "$TMP/out")"
+  TMPDIR="$TMP/does-not-exist" run_pr "$TMP/out" policy-status --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"enforcement":{"status":"partial"'
   assert_not_has "$TMP/out" 'debug detail'
   run_pr "$TMP/out" status 7 --title invalid
   assert_rc "$RUN_RC" 2
