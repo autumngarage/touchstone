@@ -196,9 +196,11 @@ the pinned gate's run for the reviewed head (`gh api -X POST
 repos/<owner>/<repo>/actions/runs/<id>/rerun`), then
 
 ```bash
-gh pr merge <n> --squash --match-head-commit "$(gh pr view <n> --json headRefOid --jq .headRefOid)"
+gh pr merge <n> --squash --match-head-commit <reviewed-sha>
 ```
 
+(`<reviewed-sha>` is the head the review covered, written out — never the
+live `headRefOid`, which would bind the merge to whatever was pushed last),
 then re-read `state`, `headRefOid`, merge-queue and auto-merge state: merged,
 queued, or auto-merge-enabled count only while `headRefOid` still equals the
 reviewed head, and only `state == MERGED` proves the merge.
