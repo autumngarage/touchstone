@@ -429,6 +429,25 @@ fi
 [ "$(bash "$PREFIX/bin/touchstone" version)" = "touchstone v9.9.2" ] && pass "wrapper runs the upgraded version" || fail "wrapper did not follow the upgrade"
 [ -d "$PREFIX/cli/9.9.1" ] && pass "previous release retained for rollback (current can be edited back)" || fail "previous release removed"
 
+echo "==> Overlapping installers are serialised, and a failed publication keeps the active release"
+make_release 9.9.3 "$INSTALL_TMP/v9.9.3.tar.gz"
+make_formula 9.9.3 "$(sha256_of "$INSTALL_TMP/v9.9.3.tar.gz")" "$INSTALL_TMP/formula-9.9.3.rb"
+mkdir "$PREFIX/.install.lock"
+if bash "$REPO_ROOT/install.sh" --prefix "$PREFIX" --formula-file "$INSTALL_TMP/formula-9.9.3.rb" --archive-file "$INSTALL_TMP/v9.9.3.tar.gz" >"$INSTALL_TMP/lock.out" 2>&1; then
+  fail "a second installer ran while the lock was held"
+else
+  grep -q "another installer holds" "$INSTALL_TMP/lock.out" && pass "second installer refused while the lock is held" || fail "unexpected: $(cat "$INSTALL_TMP/lock.out")"
+fi
+rmdir "$PREFIX/.install.lock"
+# Publication failure: make the release directory unwritable so the new tree
+# cannot be published; `current` must still name a tree that runs.
+chmod 555 "$PREFIX/cli"
+bash "$REPO_ROOT/install.sh" --prefix "$PREFIX" --formula-file "$INSTALL_TMP/formula-9.9.3.rb" --archive-file "$INSTALL_TMP/v9.9.3.tar.gz" >"$INSTALL_TMP/pub.out" 2>&1 && fail "publication into an unwritable release directory succeeded"
+chmod 755 "$PREFIX/cli"
+[ "$(cat "$PREFIX/current")" = "9.9.2" ] || fail "a failed publication changed current: $(cat "$PREFIX/current")"
+[ "$(bash "$PREFIX/bin/touchstone" version)" = "touchstone v9.9.2" ] && pass "the active release still runs after a failed publication" || fail "the wrapper broke after a failed publication"
+[ ! -e "$PREFIX/.install.lock" ] && pass "the lock is released on failure" || fail "the lock was left behind"
+
 echo "==> Input validation"
 bash "$REPO_ROOT/install.sh" --prefix relative/path >/dev/null 2>&1 && fail "relative prefix accepted" || pass "relative prefix refused"
 # A Windows drive path passes the absolute-path grammar. On this machine the

@@ -8,8 +8,13 @@
 # sha256 -- downloads that tarball, verifies the checksum, and unpacks it
 # under a prefix it owns. It never writes to a repository.
 #
-#   curl -fsSL https://raw.githubusercontent.com/autumngarage/touchstone/main/install.sh | bash
+#   curl -fsSL -o install.sh https://raw.githubusercontent.com/autumngarage/touchstone/vX.Y.Z/install.sh
 #   bash install.sh [--version X.Y.Z] [--prefix DIR]
+#
+# Fetch the installer from a release tag, not a moving branch, and run the
+# saved file rather than piping into bash: a pipe hides a failed download and
+# executes whatever the branch holds at that second. The installer itself
+# then only ever installs the release the tap formula records and verifies.
 #
 # Layout under --prefix (default $HOME/.touchstone):
 #   cli/<version>/   the release tree (bin/, scripts/, hooks/, principles/ ...)
@@ -156,15 +161,32 @@ released="$(head -n 1 "$unpacked/VERSION" 2>/dev/null | tr -d '[:space:]')"
 
 # Install into place atomically: a failed unpack never leaves a half tree
 # that the wrapper would run.
-# Per-process staging: two installers on one prefix never share a partial
-# tree, and the final rename publishes a complete tree or nothing.
+# One publisher at a time per prefix: overlapping installers (two shells, a
+# hook firing mid-upgrade) would otherwise race on the shared target and the
+# `current` pointer. The lock is a directory, which is atomic to create.
 mkdir -p "$PREFIX/cli" "$PREFIX/bin"
+lock="$PREFIX/.install.lock"
+if ! mkdir "$lock" 2>/dev/null; then
+  die "another installer holds $lock; wait for it, or remove the directory if no installer is running"
+fi
+trap 'rm -rf "$tmp" "$lock"' EXIT
+# Publish without a gap: the previous tree of this version (a reinstall) is
+# set aside, not deleted, until the new one is in place, so a failed rename
+# leaves `current` pointing at a tree that still exists.
 staging="$target.partial.$$"
 rm -rf "$staging"
 mv "$unpacked" "$staging"
 chmod +x "$staging/bin/touchstone"
-rm -rf "$target"
-mv "$staging" "$target"
+previous=""
+if [ -e "$target" ]; then
+  previous="$target.previous.$$"
+  mv "$target" "$previous" || die "could not set aside the existing $target"
+fi
+if ! mv "$staging" "$target"; then
+  [ -z "$previous" ] || mv "$previous" "$target" || true
+  die "could not publish $target; the previous tree was restored"
+fi
+[ -z "$previous" ] || rm -rf "$previous"
 
 # The wrapper embeds the prefix as data, never as shell source: it is written
 # through printf %q so a prefix containing metacharacters cannot execute when
@@ -188,8 +210,8 @@ wrapper_next="$(mktemp "$PREFIX/bin/touchstone.next.XXXXXX")"
 } >"$wrapper_next"
 chmod +x "$wrapper_next"
 mv "$wrapper_next" "$PREFIX/bin/touchstone"
-printf '%s\n' "$VERSION" >"$PREFIX/current.next"
-mv "$PREFIX/current.next" "$PREFIX/current"
+printf '%s\n' "$VERSION" >"$PREFIX/current.next.$$"
+mv "$PREFIX/current.next.$$" "$PREFIX/current"
 
 printf 'touchstone %s installed at %s\n' "$VERSION" "$target"
 case ":$PATH:" in
