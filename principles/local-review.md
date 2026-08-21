@@ -228,8 +228,9 @@ is met:
 
 - **trivial** — no initiated review; deterministic checks alone complete it.
 - **normal** — one local pass has run and its findings are triaged, **or**
-  the recorded waiver applies (no local reviewer configured, or quota
-  exhausted and recorded in the validation block).
+  the recorded waiver applies (the tier's reviewer CLI is not installed or
+  not authenticated on this machine, or its quota is exhausted — either way
+  recorded in the validation block).
 - **serious** — the pre-push local pass ran or the same recorded waiver
   applies, and the PR-side review evidence covers the head that merges (the
   gate enforces the latter).
