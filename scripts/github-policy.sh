@@ -407,6 +407,23 @@ restore_branch_protection() {
   fi
 }
 
+# Undo a bootstrap: delete the managed organization and repository rulesets
+# this run created and put the auto-merge setting back. Nothing else existed.
+remove_bootstrapped_state() {
+  local prior_auto_merge="$1" current current_repo
+  current="$(managed_ruleset_json)" || return $?
+  if [ "$current" != null ]; then
+    api --method DELETE "orgs/$ORG/rulesets/$(jq -r .id <<<"$current")" || return $?
+  fi
+  current_repo="$(managed_repo_ruleset_json)" || return $?
+  if [ "$current_repo" != null ]; then
+    api --method DELETE "repos/$ORG/$REPOSITORY/rulesets/$(jq -r .id <<<"$current_repo")" || return $?
+  fi
+  if [ -n "$prior_auto_merge" ]; then
+    set_auto_merge "$prior_auto_merge" || return $?
+  fi
+}
+
 restore_policy_state() {
   local expected_ruleset="$1" expected_protection="$2" expected_repo_ruleset="${3:-null}" expected_auto_merge="${4:-}" current current_protection payload id
   if [ "$expected_protection" != null ]; then
@@ -555,8 +572,15 @@ case "$COMMAND" in
     source_protection="$(branch_protection_json)"
     source_repo_ruleset="$(managed_repo_ruleset_json)"
     source_auto_merge="$(auto_merge_setting)" || die "could not read the repository's auto-merge setting"
+    # A repository with neither a managed ruleset nor legacy protection is a
+    # fresh consumer: there is nothing to replace, so the install is a
+    # bootstrap. Its failure path is the mirror image -- remove what this run
+    # created -- because "restore the prior state" means restoring nothing,
+    # which restore_policy_state rightly refuses for a replacement.
+    bootstrap=false
     if [ "$source_ruleset" = null ] && [ "$source_protection" = null ]; then
-      die "no existing protection is present to guard policy replacement"
+      bootstrap=true
+      echo "No prior protection on $ORG/$REPOSITORY@$BRANCH: installing the policy fresh (bootstrap)."
     fi
     if ! (
       if [ "$source_ruleset" = null ]; then
@@ -577,6 +601,11 @@ case "$COMMAND" in
       fi
       verify_policy_state "$desired" null "$DESIRED_REPO_RULESET" || exit $?
     ); then
+      if [ "$bootstrap" = true ]; then
+        (remove_bootstrapped_state "$source_auto_merge") \
+          || die "bootstrap failed and the rulesets it created could not be removed; inspect $ORG/$REPOSITORY rulesets"
+        die "bootstrap failed; the rulesets it created were removed and the repository is as it was"
+      fi
       (restore_policy_state "$source_ruleset" "$source_protection" "$source_repo_ruleset" "$source_auto_merge") \
         || die "policy replacement failed and the complete prior state could not be restored"
       die "policy replacement failed; the complete prior policy state was restored"

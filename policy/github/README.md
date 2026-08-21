@@ -29,6 +29,10 @@ the reviewed file removal immediately afterward and run `verify`; verification
 fails until those files are absent from `main`. A repeated apply is a no-op.
 `rollback` restores captured protection before removing or replacing the
 managed ruleset, so neither direction introduces an unprotected interval.
+A repository with neither a managed ruleset nor legacy branch protection — a
+fresh consumer — is bootstrapped: `apply` says so, installs the policy, and
+on any failure removes exactly the rulesets it created and restores the
+auto-merge setting, leaving the repository as it was.
 
 The checked-in pre-migration seed requires the historical local validation
 workflow and the `review-binding` status its publisher produced. Their exact,

@@ -550,6 +550,29 @@ grep -q "not-yet-there.yml does not exist at pinned SHA" "$TMP_DIR/two-workflows
   || fail "the missing second workflow was not the stated refusal: $(tail -1 "$TMP_DIR/two-workflows.err")"
 ok "every required workflow is verified at its pin"
 
+echo "==> A repository with no protection at all bootstraps, and a failed bootstrap leaves nothing behind"
+# A fresh consumer has neither a managed ruleset nor legacy branch protection.
+rm -f "$TMP_DIR/state/branch.json" "$TMP_DIR/state/ruleset.json" "$TMP_DIR/state/repo-ruleset.json" "$TMP_DIR/state/auto-merge" "$TMP_DIR/state/bad-effective-used"
+: >"$TMP_DIR/state/mutations.log"
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_BAD_EFFECTIVE_ONCE=1 \
+  "$SCRIPT" apply "$POLICY" >"$TMP_DIR/bootstrap-fail.out" 2>&1; then
+  fail "a bootstrap whose verification failed reported success"
+fi
+grep -q "bootstrap failed; the rulesets it created were removed" "$TMP_DIR/bootstrap-fail.out" \
+  || fail "failed bootstrap did not report its own cleanup: $(tail -1 "$TMP_DIR/bootstrap-fail.out")"
+[ ! -f "$TMP_DIR/state/ruleset.json" ] || fail "failed bootstrap left the organization ruleset behind"
+[ ! -f "$TMP_DIR/state/repo-ruleset.json" ] || fail "failed bootstrap left the repository ruleset behind"
+[ ! -f "$TMP_DIR/state/auto-merge" ] || fail "failed bootstrap left auto-merge enabled"
+ok "failed bootstrap removes what it created"
+: >"$TMP_DIR/state/mutations.log"
+run_policy apply "$POLICY" >"$TMP_DIR/bootstrap.out" 2>&1 || fail "bootstrap apply failed: $(cat "$TMP_DIR/bootstrap.out")"
+grep -q "installing the policy fresh (bootstrap)" "$TMP_DIR/bootstrap.out" || fail "bootstrap was not announced"
+grep -q "Applied and verified GitHub policy" "$TMP_DIR/bootstrap.out" || fail "bootstrap did not verify"
+[ -f "$TMP_DIR/state/ruleset.json" ] && [ -f "$TMP_DIR/state/repo-ruleset.json" ] && [ -f "$TMP_DIR/state/auto-merge" ] \
+  && ok "bootstrap installed both rulesets and enabled auto-merge" \
+  || fail "bootstrap did not install the complete policy state"
+grep -q "DELETE" "$TMP_DIR/state/mutations.log" && fail "bootstrap deleted something on a bare repository" || ok "bootstrap deleted nothing"
+
 echo "==> Ambiguous and failed reads fail closed"
 if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_DUPLICATE_RULESET=1 \
   "$SCRIPT" diff "$POLICY" >/dev/null 2>&1; then
