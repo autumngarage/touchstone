@@ -494,7 +494,8 @@ enforcement_remedy() {
   local name="${REPO##*/}"
   if [ "$REPO" = "autumngarage/touchstone" ]; then
     printf 'scripts/github-policy.sh apply policy/github/touchstone-main.json (in the Touchstone checkout), then close/reopen open PRs'
-  elif [ -f "$TOOL_ROOT/policy/github/consumers/$name.json" ]; then
+  elif [ -f "$TOOL_ROOT/policy/github/consumers/$name.json" ] \
+    && [ "$(jq -r '"\(.organization)/\(.repository)"' "$TOOL_ROOT/policy/github/consumers/$name.json")" = "$REPO" ]; then
     printf 'scripts/github-policy.sh apply policy/github/consumers/%s.json (in the Touchstone checkout), then close/reopen open PRs' "$name"
   else
     printf 'derive a consumer policy first: scripts/derive-consumer-policy.sh %s > policy/github/consumers/%s.json, review and merge it, then scripts/github-policy.sh apply it and close/reopen open PRs' "$name" "$name"
