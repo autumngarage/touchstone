@@ -1087,7 +1087,7 @@ assert_contains "$ADOPTION/manual-one.json" '"schema":"touchstone.adoption/v1"'
 assert_contains "$ADOPTION/manual-one.json" '"profile":"manual"'
 assert_contains "$ADOPTION/manual-one.json" '"path":".touchstone.toml"'
 assert_contains "$ADOPTION/manual-one.json" '"path":".touchstone-tracker.toml"'
-assert_contains "$ADOPTION/manual-one.json" '"remotePolicy":{"status":"separate-operation"}'
+assert_contains "$ADOPTION/manual-one.json" '"remotePolicy":{"status":"separate-operation","inspect":"touchstone policy status"}'
 assert_contains "$ADOPTION/manual-one.json" 'type = \"linear\"'
 assert_contains "$ADOPTION/manual-one.json" 'key_prefix = \"AUT\"'
 assert_not_contains "$ADOPTION/manual-one.json" 'old mode'
@@ -1748,7 +1748,7 @@ project' ] || fail "$2 wrote an unexpected sibling outside the consumer"
     cmp -s "$TMP/$id-dry-1" "$TMP/$id-dry-2" || fail "$id dry-run was nondeterministic"
     assert_clean "$repo" "$id dry-run"
     run_cli "$TMP/$id-policy-boundary" "${args[@]}" --dry-run
-    assert_contains "$TMP/$id-policy-boundary" 'remote policy: separate operation'
+    assert_contains "$TMP/$id-policy-boundary" 'remote policy: not inspected here; run: touchstone policy status'
 
     run_cli "$TMP/$id-apply" "${args[@]}"
     [ "$RUN_STATUS" -eq 0 ] || fail "$id apply failed"

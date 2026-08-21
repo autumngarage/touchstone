@@ -11,7 +11,8 @@ precondition for recovery.
 touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
                    [--expect-branch BRANCH]
 touchstone pr status PR
-touchstone pr merge PR --head SHA
+touchstone pr merge PR --head SHA [--unguarded]
+touchstone policy status [--base BRANCH]
 ```
 
 Every command accepts `--project DIR` and `--json`. JSON has schema
@@ -103,6 +104,49 @@ taking this document's word for it.
   recovery is a four-part reconciliation that is easy to skip precisely when it
   matters. Binding the reviewed head to both the mutation and the reconciliation
   is one step here and two easily-forgotten flags there.
+
+- `policy status` reads the base branch's effective rules once and reports
+  `enforcement: applied | partial | none` with what is missing — the three
+  pinned required workflows, the merge queue, and the native pull-request,
+  force-push, and deletion rules. `pr status` carries the same field for the
+  PR's base. Raw equivalent: `gh api repos/O/R/rules/branches/<ref>` and a
+  reading of the workflows and rule types.
+  Why not the raw sequence: on 2026-08-21 four fresh agents (two Claude, two
+  Codex) each needed four API calls and a workflow comment to learn that
+  nothing protected `main` on a consumer, and every one of them named this
+  read as the single thing that would have raised their confidence. The
+  steering says "inspect the repository's effective rules"; this is the
+  inspection.
+- `merge` takes its guarded path only when enforcement is `applied`;
+  otherwise it **fails closed**. The terms: a *pinned gate* is the
+  `review-gate` workflow required from the policy's source repository, ref,
+  and revision (the tool's own `policy/github/touchstone-main.json`);
+  `applied` means all three pinned workflows, the merge queue, and the native
+  pull-request, force-push, and deletion rules are present; `partial` and
+  `none` name what is missing. The policy consulted is the repository's own where the tool ships one
+  (`policy/github/consumers/<repo>.json`; a private consumer derived
+  `--no-queue` legitimately expects no queue), otherwise the canonical one.
+  `applied` → re-run the gate, request the merge — with `--auto` where the
+  policy carries no queue, since there is nothing to enter and GitHub refuses
+  a plain merge while the re-run is pending.
+  Anything else → refuse with the remedy (apply the consumer policy, then
+  close/reopen open PRs), or with `--unguarded` record on the PR — once per
+  head, by marker — that an unguarded merge was requested and exactly what
+  enforcement is missing (a partial policy may still carry the gate; other
+  checks or reviews may still have run), then request the merge. A failed rules read is an operational error
+  (exit 1), never a verdict. Rollout: repositories whose policy is not yet
+  applied receive the refusal and its remedy; nothing merges differently
+  where the policy is applied. Before this, `merge` on an unprotected
+  repository was a push-and-merge button (vesper #928, 2026-08-21).
+
+## Generated evidence
+
+A generated PR body states only what its generator observed. A validation
+row is filled for something the generator ran, or names GitHub's own check as
+the witness; anything else is `n/a — <source>`. The `delivery-evidence` gate
+checks the shape of the rows, so a generator that asserts "validation ran"
+without running it passes the gate with a claim — the failure the rule
+exists to prevent (vesper `ship-pr.sh`, 2026-08-21).
 
 ## Safety and recovery
 

@@ -45,6 +45,19 @@ policy contains the Touchstone ruleset, the server rejects direct pushes.
 7. **Merge**, bound to the head the review actually saw — see "Merging" below.
 8. **Clean up after merge.** Delete the local feature branch once the PR is merged.
 
+## Before trusting any merge: what does GitHub enforce here?
+
+```bash
+touchstone policy status
+```
+
+It reads the default branch's effective rules and reports `enforcement:
+applied`, or names what is missing (the pinned `validate`, `review-gate`, and
+`delivery-evidence` workflows, the merge queue, the native rules). Where it
+is not `applied`, exact-head review and every answered finding remain
+mandatory driver procedure, `touchstone pr merge` refuses without
+`--unguarded`, and the gap is tracked — not inferred from this document.
+
 ## Opening a PR
 
 ```bash

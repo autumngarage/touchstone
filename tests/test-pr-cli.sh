@@ -65,6 +65,34 @@ ok() {
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_CALLS"
 has() { local needle="$1"; shift; printf '%s\n' "$*" | grep -qF -- "$needle"; }
+serve_rules() {
+  # A real effective-rules document through the caller's real jq: the
+  # policy's three pinned workflows plus the queue and the native rules
+  # when the gate is "installed", only the native rules otherwise.
+  pr_rule='{"type":"pull_request","parameters":{"required_review_thread_resolution":true}}'
+  [ ! -f "$GH_STATE/pr-rule-no-threads" ] || pr_rule='{"type":"pull_request","parameters":{}}'
+  if [ -f "$GH_STATE/review-gate" ]; then
+    pin_sha="$GH_POLICY_SHA"
+    [ ! -f "$GH_STATE/stale-pin" ] || pin_sha="0000000000000000000000000000000000000000"
+    queue_rule=',{"type":"merge_queue"}'
+    [ ! -f "$GH_STATE/no-queue-rule" ] || queue_rule=""
+    rules='['"$pr_rule"',{"type":"deletion"},{"type":"non_fast_forward"}'"$queue_rule"',{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$GH_POLICY_SHA"'"}]}}]'
+  elif [ -f "$GH_STATE/no-rules" ]; then
+    rules='[]'
+  else
+    rules='[{"type":"pull_request","parameters":{"required_review_thread_resolution":true}},{"type":"deletion"},{"type":"non_fast_forward"}]'
+  fi
+  # Served as two pages, as --paginate would deliver them: the native
+  # rules on one page, the workflows and queue on the next.
+  page1="$(printf '%s' "$rules" | jq -c '[.[] | select(.type != "workflows" and .type != "merge_queue")]')"
+  page2="$(printf '%s' "$rules" | jq -c '[.[] | select(.type == "workflows" or .type == "merge_queue")]')"
+  if has --jq "$@"; then
+    printf '%s' "$rules" | jq -r "$(value_after --jq "$@")"
+  else
+    printf '%s\n%s\n' "$page1" "$page2"
+  fi
+}
+
 value_after() {
   local wanted="$1"
   shift
@@ -121,6 +149,11 @@ case "$1 ${2:-}" in
     esac
     ;;
   "pr comment")
+    if has 'touchstone:unguarded-merge' "$@"; then
+      touch "$GH_STATE/unguarded-recorded"
+      printf '%s\n' https://example.test/pr/7#issuecomment-9
+      exit 0
+    fi
     [ "${GH_MODE:-ok}" != comment_success_stderr ] || printf 'comment debug detail\n' >&2
     [ "${GH_MODE:-ok}" = comment_unverified ] ||
       printf '%s %s %s\n' "$GH_HEAD" "$GH_BASE_REF" "$GH_BASE_SHA" >"$GH_STATE/review-request"
@@ -204,7 +237,14 @@ case "$1 ${2:-}" in
     fi
     ;;
   "api --paginate")
-    if has '/issues/7/comments' "$@"; then
+    if has 'rules/branches/' "$@"; then
+      serve_rules "$@"
+    elif has 'touchstone:unguarded-merge' "$@"; then
+      # The count of prior unguarded-merge records for this head, one per
+      # page as --paginate delivers it: two pages, the record (if any) on the
+      # second.
+      if [ -f "$GH_STATE/unguarded-recorded" ]; then printf '0\n1\n'; else printf '0\n0\n'; fi
+    elif has '/issues/7/comments' "$@"; then
       if [ "${GH_MODE:-ok}" = many_requests ]; then
         for index in $(awk 'BEGIN { for (i = 1; i <= 4000; i++) print i }'); do
           printf 'https://example.test/pr/7#issuecomment-%s\talice\t%s\n' "$index" \
@@ -244,7 +284,12 @@ case "$1 ${2:-}" in
     printf '%s\n' 71
     ;;
   api*)
-    if has 'actions/runs/77/rerun' "$@"; then
+    if has 'repos/autumngarage/current --jq .allow_auto_merge' "$@"; then
+      # The repository's auto-merge setting: on unless the fixture says otherwise.
+      if [ -f "$GH_STATE/auto-merge-off" ]; then printf 'false\n'; else printf 'true\n'; fi
+    elif has 'user --jq .login' "$@"; then
+      printf 'alice\n'
+    elif has 'actions/runs/77/rerun' "$@"; then
       echo "rerun 77" >>"$GH_STATE/gate-reruns"
       # After a re-run the run is in progress until the fake says otherwise.
       [ -f "$GH_STATE/gate-after-rerun" ] || echo 2 >"$GH_STATE/gate-after-rerun"
@@ -274,7 +319,7 @@ case "$1 ${2:-}" in
     elif has 'actions/workflows?' "$@"; then
       printf '1\n2\n3\n'
     elif has 'rules/branches/' "$@"; then
-      if [ -f "$GH_STATE/review-gate" ]; then printf 'true\n'; else printf 'false\n'; fi
+      serve_rules "$@"
     elif has 'actions/runs?head_sha=' "$@"; then
       # Real selector over a real list: the pinned gate (run 77, unlisted
       # workflow id 999) next to a NEWER repository-local decoy of the same
@@ -310,7 +355,8 @@ case "$1 ${2:-}" in
 esac
 EOF
   chmod +x "$TMP/bin/gh"
-  export PATH="$TMP/bin:$PATH" GH_CALLS="$TMP/calls" GH_STATE="$TMP/state" GH_HEAD="$HEAD_SHA"
+  GH_POLICY_SHA="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[].sha] | unique | .[0]' "$ROOT/policy/github/touchstone-main.json")"
+  export PATH="$TMP/bin:$PATH" GH_CALLS="$TMP/calls" GH_STATE="$TMP/state" GH_HEAD="$HEAD_SHA" GH_POLICY_SHA
   export GH_BASE_REF=main GH_BASE_SHA=base-sha
   export TOUCHSTONE_READ_ATTEMPTS=2 TOUCHSTONE_REQUEST_ATTEMPTS=2 TOUCHSTONE_RETRY_DELAY=0 TOUCHSTONE_GATE_RETRY_DELAY=0
 
@@ -538,6 +584,110 @@ EOF
   assert_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
 
+  echo "==> without a pinned gate, merge fails closed unless --unguarded, which records the gap"
+  rm -f "$TMP/state/review-gate" "$TMP/state/merged"
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'enforcement on main of autumngarage/current is partial'
+  assert_has "$TMP/out" 'derive a consumer policy first'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  : >"$GH_CALLS"
+  rm -f "$TMP/state/unguarded-recorded"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
+  assert_rc "$RUN_RC" 0
+  grep -q 'touchstone:unguarded-merge head=' "$GH_CALLS" || fail "unguarded merge did not record the gap on the PR"
+  grep -q 'Unguarded merge requested' "$GH_CALLS" || fail "the record does not describe an attempt"
+  assert_has "$GH_CALLS" 'pr merge'
+  # A retry reuses the record instead of posting it again.
+  : >"$GH_CALLS"
+  rm -f "$TMP/state/merged"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
+  assert_rc "$RUN_RC" 0
+  [ "$(grep -c '^pr comment' "$GH_CALLS" || true)" -eq 0 ] || fail "a retried unguarded merge posted a second record"
+  rm -f "$TMP/state/unguarded-recorded"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --unguarded --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'applies to merge only'
+
+  echo "==> policy status and pr status report what GitHub enforces"
+  run_pr "$TMP/out" policy-status --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"enforcement":{"status":"partial","missing":["delivery-evidence workflow","merge queue","review-gate workflow","validate workflow"]}'
+  run_pr "$TMP/out" policy-status
+  assert_has "$TMP/out" 'enforcement: partial (missing: delivery-evidence workflow, merge queue, review-gate workflow, validate workflow)'
+  # No consumer policy is shipped for this fixture repository: the remedy is
+  # the derivation step, never a file that does not exist.
+  assert_has "$TMP/out" 'remedy: derive a consumer policy first: scripts/derive-consumer-policy.sh current'
+  touch "$TMP/state/review-gate"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  # The same paths from a stale revision are not the canonical gates, and a
+  # stale gate does not take the guarded merge path either.
+  touch "$TMP/state/stale-pin"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"status":"partial"'
+  assert_has "$TMP/out" 'review-gate workflow (present but not pinned at the policy revision)'
+  assert_has "$TMP/out" 'validate workflow (present but not pinned at the policy revision)'
+  assert_not_has "$TMP/out" 'delivery-evidence workflow'
+  : >"$GH_CALLS"
+  rm -f "$TMP/state/merged"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'not pinned at the policy revision'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  rm -f "$TMP/state/stale-pin"
+  # A pull-request rule without thread resolution is not the policy's rule.
+  touch "$TMP/state/pr-rule-no-threads"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" 'pull-request rule (with thread resolution)'
+  rm -f "$TMP/state/pr-rule-no-threads"
+  # Nothing at all -- no rules, auto-merge off -- is "none", not "partial".
+  rm -f "$TMP/state/review-gate"
+  touch "$TMP/state/no-rules" "$TMP/state/auto-merge-off"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"status":"none"'
+  rm -f "$TMP/state/no-rules" "$TMP/state/auto-merge-off"
+  touch "$TMP/state/review-gate"
+  # A consumer derived --no-queue expects no queue: the tool consults the
+  # repository's own shipped policy, reports applied without a queue rule,
+  # and merges by arming auto-merge (there is no queue to enter).
+  mkdir -p "$TMP/tool2/policy/github/consumers"
+  cp -R "$ROOT/bin" "$ROOT/scripts" "$TMP/tool2/"
+  cp "$ROOT/VERSION" "$TMP/tool2/VERSION"
+  cp "$ROOT/policy/github/touchstone-main.json" "$TMP/tool2/policy/github/touchstone-main.json"
+  jq '.managedRepositoryRuleset = null | .repository = "current"' "$ROOT/policy/github/touchstone-main.json" >"$TMP/tool2/policy/github/consumers/current.json"
+  # A same-named consumer file for another organization must not be consulted.
+  jq '.organization = "someone-else"' "$TMP/tool2/policy/github/consumers/current.json" >"$TMP/tool2/policy/github/consumers/current.other.json"
+  touch "$TMP/state/no-queue-rule"
+  set +e
+  bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
+  RUN_RC=$?
+  set -e
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"policy":"policy/github/consumers/current.json"'
+  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  : >"$GH_CALLS"
+  rm -f "$TMP/state/merged" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
+  set +e
+  GH_MODE=auto_merge bash "$TMP/tool2/bin/touchstone" pr merge 7 --head "$HEAD_SHA" --project "$TMP/project" --json >"$TMP/out" 2>&1
+  RUN_RC=$?
+  set -e
+  assert_rc "$RUN_RC" 0
+  grep -q '^pr merge.*--auto' "$GH_CALLS" || fail "a queue-less consumer merge did not arm auto-merge: $(grep '^pr merge' "$GH_CALLS")"
+  assert_has "$TMP/out" '"status":"auto-merge-enabled"'
+  touch "$TMP/state/auto-merge-off"
+  set +e
+  bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
+  set -e
+  assert_has "$TMP/out" '"missing":["auto-merge setting"]'
+  rm -f "$TMP/state/auto-merge-off" "$TMP/state/no-queue-rule"
+  run_pr "$TMP/out" status 7 --json
+  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  run_pr "$TMP/out" status 7
+  assert_has "$TMP/out" 'enforcement on main: applied'
+  rm -f "$TMP/state/review-gate"
+
   echo "==> merge binds both mutation and reconciliation to the reviewed head"
   rm -f "$TMP/state/merged"
   run_pr "$TMP/out" merge 7 --json
@@ -546,39 +696,39 @@ EOF
   run_pr "$TMP/out" merge 7 --head wrong --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'expected head wrong'
-  GH_MODE=merge_lied run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  GH_MODE=merge_lied run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"merged"'
   assert_has "$GH_CALLS" "--match-head-commit $HEAD_SHA"
-  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"already-merged"'
   assert_not_has "$GH_CALLS" 'pr merge'
 
   rm -f "$TMP/state/merged"
-  GH_MODE=merge_queue run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  GH_MODE=merge_queue run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"queued"'
-  GH_MODE=auto_merge run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  GH_MODE=auto_merge run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"auto-merge-enabled"'
 
   echo "==> merge refuses a success state observed on a moved head"
   rm -f "$TMP/state/merged"
-  GH_MODE=merge_head_moved run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  GH_MODE=merge_head_moved run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" 'moved to moved-head during merge reconciliation'
   assert_not_has "$TMP/out" '"status":"merged"'
 
   echo "==> an unsuccessful mutation never claims a merge"
   rm -f "$TMP/state/merged"
-  GH_MODE=merge_failed run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  GH_MODE=merge_failed run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" 'GitHub did not accept merge'
   assert_not_has "$TMP/out" '"status":"merged"'
 
   echo "==> merge preserves both diagnostics when reconciliation also fails"
-  GH_MODE=merge_reconcile_failed run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  GH_MODE=merge_reconcile_failed run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" 'merge rejected by rules'
   assert_has "$TMP/out" 'GraphQL unavailable'

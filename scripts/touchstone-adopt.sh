@@ -418,11 +418,11 @@ emit_result() {
     done <"$CHANGES_FILE"
     printf '],"diff":'
     json_string "$diff"
-    printf ',"remotePolicy":{"status":"separate-operation"}}\n'
+    printf ',"remotePolicy":{"status":"separate-operation","inspect":"touchstone policy status"}}\n'
   else
     printf '%s: %s; %s file change(s)\n' "$OPERATION" "$status" "$CHANGE_COUNT"
     [ -z "$diff" ] || printf '%s\n' "$diff"
-    printf 'remote policy: separate operation\n'
+    printf 'remote policy: not inspected here; run: touchstone policy status\n'
   fi
 }
 

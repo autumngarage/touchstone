@@ -177,7 +177,7 @@ restore_repo_ruleset() {
 verify_auto_merge_allowed() {
   local allowed
   allowed="$(api "repos/$ORG/$REPOSITORY" --jq '.allow_auto_merge')" || return $?
-  [ "$allowed" = true ] || die "repository setting allow_auto_merge is off; the merge queue cannot admit pull requests"
+  [ "$allowed" = true ] || die "repository setting allow_auto_merge is off; pull requests land through it (the queue admits through it, and without a queue touchstone pr merge arms it)"
 }
 
 auto_merge_setting() {
@@ -538,11 +538,11 @@ case "$COMMAND" in
     verify_source
     "$0" diff "$POLICY"
     echo "Would install/replace organization ruleset: $RULESET_NAME"
+    current_auto_merge="$(auto_merge_setting)" || die "could not read the repository's auto-merge setting"
+    [ "$current_auto_merge" = true ] \
+      || echo "Would enable the repository setting allow_auto_merge (pull requests land through it: the queue admits through it, and without a queue touchstone pr merge arms it)."
     if [ "$DESIRED_REPO_RULESET" != null ]; then
       echo "Would install/replace repository ruleset: $REPO_RULESET_NAME"
-      current_auto_merge="$(auto_merge_setting)" || die "could not read the repository's auto-merge setting"
-      [ "$current_auto_merge" = true ] \
-        || echo "Would enable the repository setting allow_auto_merge (the queue admits pull requests through it)."
     elif [ "$(managed_repo_ruleset_json)" != null ]; then
       echo "Would DELETE repository ruleset: $REPO_RULESET_NAME (policy no longer declares it)"
     fi
@@ -610,7 +610,10 @@ case "$COMMAND" in
       fi
       verify_ruleset || exit $?
       restore_repo_ruleset "$DESIRED_REPO_RULESET" || exit $?
-      [ "$DESIRED_REPO_RULESET" = null ] || ensure_auto_merge_allowed || exit $?
+      # Auto-merge is how a PR lands in both shapes: the queue admits through
+      # it, and a queue-less consumer's `touchstone pr merge` arms it so the
+      # merge waits for the required workflows instead of being refused.
+      ensure_auto_merge_allowed || exit $?
       if [ "$source_protection" != null ]; then
         api --method DELETE "repos/$ORG/$REPOSITORY/branches/$BRANCH/protection" || exit $?
       fi
@@ -632,7 +635,7 @@ case "$COMMAND" in
     verify_source
     verify_ruleset
     verify_repo_ruleset_against "$DESIRED_REPO_RULESET"
-    [ "$DESIRED_REPO_RULESET" = null ] || verify_auto_merge_allowed
+    verify_auto_merge_allowed
     [ "$(branch_protection_json)" = null ] || die "legacy branch protection still duplicates the ruleset"
     verify_rollback_files_absent
     echo "Verified legacy branch protection is absent."
