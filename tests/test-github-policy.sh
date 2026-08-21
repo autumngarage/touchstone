@@ -475,6 +475,13 @@ echo "==> Checked-in consumer policies equal their derivation"
 # canonical one only in the repository coordinates and the absence of
 # Touchstone's own rollback prerequisites.
 bash "$ROOT/scripts/derive-consumer-policy.sh" vesper --no-queue extra >/dev/null 2>&1 && fail "derive accepted a surplus argument" || ok "derive refuses surplus arguments"
+# Stock macOS /bin/bash is 3.2; the empty --require-status case must derive
+# there too (set -u and empty arrays are where 3.2 differs).
+if [ -x /bin/bash ] && /bin/bash -c '[ "${BASH_VERSINFO[0]}" -le 4 ]' 2>/dev/null; then
+  diff -q <(/bin/bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --no-queue) <(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --no-queue) >/dev/null \
+    && ok "derivation without --require-status is identical under /bin/bash $(/bin/bash -c 'echo ${BASH_VERSION%%(*}')" \
+    || fail "derivation differs or fails under /bin/bash (bash 3/4)"
+fi
 # --require-status adds exactly one repository-owned context rule and nothing
 # else: the canonical rules are joined, never removed or weakened.
 with_status="$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --no-queue --require-status canary/body-check --require-status canary/body-check)"

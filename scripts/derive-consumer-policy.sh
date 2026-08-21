@@ -42,6 +42,9 @@ esac
 shift
 QUEUE=true
 STATUS_CONTEXTS=()
+# Counted explicitly: under bash 3.2 with set -u, ${#array[@]} on an empty
+# array is an unbound-variable error.
+STATUS_COUNT=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --no-queue)
@@ -57,12 +60,13 @@ while [ "$#" -gt 0 ]; do
         "" | *$'\n'* | *$'\r'*) usage ;;
       esac
       STATUS_CONTEXTS+=("$2")
+      STATUS_COUNT=$((STATUS_COUNT + 1))
       shift 2
       ;;
     *) usage ;;
   esac
 done
-if [ "${#STATUS_CONTEXTS[@]}" -gt 0 ]; then
+if [ "$STATUS_COUNT" -gt 0 ]; then
   contexts_json="$(printf '%s\n' "${STATUS_CONTEXTS[@]}" | jq -R . | jq -s 'unique')"
 else
   contexts_json='[]'
