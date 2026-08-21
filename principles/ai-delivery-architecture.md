@@ -30,7 +30,7 @@ Commit
   v
 Ship
   |
-  | git push, then gh pr create (closing reference in the PR body)
+  | git push, then touchstone pr open (closing reference in the PR body)
   v
 Agentic PR Review Loop
   |
@@ -96,7 +96,7 @@ The driver AI is Claude Code, Codex, Gemini CLI, or another AGENTS.md-native cod
 - run focused checks during implementation
 - stage explicit file paths
 - commit coherent changes
-- ship with `git push` + `gh pr create`, then request review on the exact head
+- ship with `git push` + `touchstone pr open --expect-branch <branch>`, which requests review on the exact head (raw recovery: `gh pr create`, then a bare `@codex review`)
 - answer every piece of PR feedback and resolve its thread
 - commit fixes for actionable feedback and ship again
 - explain the outcome to the user
