@@ -121,6 +121,11 @@ case "$1 ${2:-}" in
     esac
     ;;
   "pr comment")
+    if has 'touchstone:unguarded-merge' "$@"; then
+      touch "$GH_STATE/unguarded-recorded"
+      printf '%s\n' https://example.test/pr/7#issuecomment-9
+      exit 0
+    fi
     [ "${GH_MODE:-ok}" != comment_success_stderr ] || printf 'comment debug detail\n' >&2
     [ "${GH_MODE:-ok}" = comment_unverified ] ||
       printf '%s %s %s\n' "$GH_HEAD" "$GH_BASE_REF" "$GH_BASE_SHA" >"$GH_STATE/review-request"
@@ -204,7 +209,10 @@ case "$1 ${2:-}" in
     fi
     ;;
   "api --paginate")
-    if has '/issues/7/comments' "$@"; then
+    if has 'touchstone:unguarded-merge' "$@"; then
+      # The count of prior unguarded-merge records for this head.
+      if [ -f "$GH_STATE/unguarded-recorded" ]; then printf '1\n'; else printf '0\n'; fi
+    elif has '/issues/7/comments' "$@"; then
       if [ "${GH_MODE:-ok}" = many_requests ]; then
         for index in $(awk 'BEGIN { for (i = 1; i <= 4000; i++) print i }'); do
           printf 'https://example.test/pr/7#issuecomment-%s\talice\t%s\n' "$index" \
@@ -278,11 +286,17 @@ case "$1 ${2:-}" in
       # policy's three pinned workflows plus the queue and the native rules
       # when the gate is "installed", only the native rules otherwise.
       if [ -f "$GH_STATE/review-gate" ]; then
-        rules='[{"type":"pull_request"},{"type":"deletion"},{"type":"non_fast_forward"},{"type":"merge_queue"},{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml"},{"path":".github/workflows/review-gate.yml"},{"path":".github/workflows/delivery-evidence.yml"}]}}]'
+        pin_sha="$GH_POLICY_SHA"
+        [ ! -f "$GH_STATE/stale-pin" ] || pin_sha="0000000000000000000000000000000000000000"
+        rules='[{"type":"pull_request"},{"type":"deletion"},{"type":"non_fast_forward"},{"type":"merge_queue"},{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$GH_POLICY_SHA"'"}]}}]'
       else
         rules='[{"type":"pull_request"},{"type":"deletion"},{"type":"non_fast_forward"}]'
       fi
-      printf '%s' "$rules" | jq -r "$(value_after --jq "$@")"
+      if has --jq "$@"; then
+        printf '%s' "$rules" | jq -r "$(value_after --jq "$@")"
+      else
+        printf '%s\n' "$rules"
+      fi
     elif has 'actions/runs?head_sha=' "$@"; then
       # Real selector over a real list: the pinned gate (run 77, unlisted
       # workflow id 999) next to a NEWER repository-local decoy of the same
@@ -318,7 +332,8 @@ case "$1 ${2:-}" in
 esac
 EOF
   chmod +x "$TMP/bin/gh"
-  export PATH="$TMP/bin:$PATH" GH_CALLS="$TMP/calls" GH_STATE="$TMP/state" GH_HEAD="$HEAD_SHA"
+  GH_POLICY_SHA="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[].sha] | unique | .[0]' "$ROOT/policy/github/touchstone-main.json")"
+  export PATH="$TMP/bin:$PATH" GH_CALLS="$TMP/calls" GH_STATE="$TMP/state" GH_HEAD="$HEAD_SHA" GH_POLICY_SHA
   export GH_BASE_REF=main GH_BASE_SHA=base-sha
   export TOUCHSTONE_READ_ATTEMPTS=2 TOUCHSTONE_REQUEST_ATTEMPTS=2 TOUCHSTONE_RETRY_DELAY=0 TOUCHSTONE_GATE_RETRY_DELAY=0
 
@@ -552,14 +567,22 @@ EOF
   run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'no pinned review gate protects main'
-  assert_has "$TMP/out" 'policy/github/consumers/current.json'
+  assert_has "$TMP/out" 'derive a consumer policy first'
   assert_not_has "$GH_CALLS" 'pr merge'
   : >"$GH_CALLS"
+  rm -f "$TMP/state/unguarded-recorded"
   run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 0
-  assert_has "$GH_CALLS" 'pr comment'
-  grep -q 'Merged without a pinned review gate' "$GH_CALLS" || fail "unguarded merge did not record the gap on the PR"
+  grep -q 'touchstone:unguarded-merge head=' "$GH_CALLS" || fail "unguarded merge did not record the gap on the PR"
+  grep -q 'Unguarded merge requested' "$GH_CALLS" || fail "the record does not describe an attempt"
   assert_has "$GH_CALLS" 'pr merge'
+  # A retry reuses the record instead of posting it again.
+  : >"$GH_CALLS"
+  rm -f "$TMP/state/merged"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
+  assert_rc "$RUN_RC" 0
+  [ "$(grep -c '^pr comment' "$GH_CALLS" || true)" -eq 0 ] || fail "a retried unguarded merge posted a second record"
+  rm -f "$TMP/state/unguarded-recorded"
   run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --unguarded --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'applies to merge only'
@@ -567,13 +590,23 @@ EOF
   echo "==> policy status and pr status report what GitHub enforces"
   run_pr "$TMP/out" policy-status --json
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"enforcement":{"status":"partial","missing":["validate workflow","review-gate workflow","delivery-evidence workflow","merge queue"]}'
+  assert_has "$TMP/out" '"enforcement":{"status":"partial","missing":["delivery-evidence workflow","merge queue","review-gate workflow","validate workflow"]}'
   run_pr "$TMP/out" policy-status
-  assert_has "$TMP/out" 'enforcement: partial (missing: validate workflow, review-gate workflow, delivery-evidence workflow, merge queue)'
-  assert_has "$TMP/out" 'remedy: scripts/github-policy.sh apply policy/github/consumers/current.json'
+  assert_has "$TMP/out" 'enforcement: partial (missing: delivery-evidence workflow, merge queue, review-gate workflow, validate workflow)'
+  # No consumer policy is shipped for this fixture repository: the remedy is
+  # the derivation step, never a file that does not exist.
+  assert_has "$TMP/out" 'remedy: derive a consumer policy first: scripts/derive-consumer-policy.sh current'
   touch "$TMP/state/review-gate"
   run_pr "$TMP/out" policy-status --json
   assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  # The same paths from a stale revision are not the canonical gates.
+  touch "$TMP/state/stale-pin"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"status":"partial"'
+  assert_has "$TMP/out" 'review-gate workflow (present but not pinned at the policy revision)'
+  assert_has "$TMP/out" 'validate workflow (present but not pinned at the policy revision)'
+  assert_not_has "$TMP/out" 'delivery-evidence workflow'
+  rm -f "$TMP/state/stale-pin"
   run_pr "$TMP/out" status 7 --json
   assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
   run_pr "$TMP/out" status 7
