@@ -24,12 +24,17 @@ case "$1 $2" in
     printf 'autumngarage/current\tmain\n'
     ;;
   "pr list")
-    # One read per head: rows are "head<TAB>number<TAB>state<TAB>sha<TAB>owner/repo"
+    # Rows in $state/prs: "head<TAB>number<TAB>state<TAB>sha<TAB>owner/repo<TAB>base"
     [ -f "$state/list-down" ] && { echo "gh: GraphQL: rate limited" >&2; exit 1; }
-    head=""
-    while [ "$#" -gt 0 ]; do [ "$1" = --head ] && head="$2"; shift; done
+    head=""; fields=""
+    while [ "$#" -gt 0 ]; do [ "$1" = --head ] && head="$2"; [ "$1" = --json ] && fields="$2"; shift; done
     [ -f "$state/prs" ] || exit 0
-    awk -F'\t' -v h="$head" '$1 == h { print $2 "\t" $3 "\t" $4 "\t" $5 }' "$state/prs"
+    if [ -z "$head" ]; then
+      # the stacked-base read: open PRs as "base<TAB>number"
+      awk -F'\t' '$3 == "OPEN" { print $6 "\t" $2 }' "$state/prs"
+    else
+      awk -F'\t' -v h="$head" '$1 == h { print $2 "\t" $3 "\t" $4 "\t" $5 }' "$state/prs"
+    fi
     ;;
   *) echo "unhandled fake gh call: $*" >&2; exit 1 ;;
 esac
@@ -78,17 +83,28 @@ REUSED_SHA="$(git -C "$TMP/repo" rev-parse HEAD)"
 git -C "$TMP/repo" branch -f feat/reused "$REUSED_SHA"
 git -C "$TMP/repo" reset -q --hard origin/main
 echo changed >>"$TMP/repo/tracked.txt"
-# a linked worktree
-git -C "$TMP/repo" worktree add -q "$TMP/repo-wt" -b feat/in-flight >/dev/null 2>&1
+# a linked worktree, on a path with a space
+git -C "$TMP/repo" worktree add -q "$TMP/repo wt" -b feat/in-flight >/dev/null 2>&1
 FLIGHT_SHA="$(git -C "$TMP/repo" rev-parse feat/in-flight)"
+# a merged branch that still bases an open stacked PR: must not be deleted
+git -C "$TMP/repo" push -q origin main:refs/heads/feat/stack-parent
+git -C "$TMP/repo" fetch -q origin
+PARENT_SHA="$(git -C "$TMP/repo" rev-parse origin/feat/stack-parent)"
+# a fork's OPEN PR with the same name as our merged branch: ours is finished
+git -C "$TMP/repo" branch feat/fork-open "$DONE_SHA"
 {
-  printf 'feat/done\t41\tMERGED\t%s\tautumngarage/current\n' "$DONE_SHA"
-  printf 'fix/abandoned\t42\tCLOSED\t%s\tautumngarage/current\n' "$ABANDONED_SHA"
-  printf 'feat/reused\t30\tMERGED\t%s\tautumngarage/current\n' "$DONE_SHA"
-  printf 'feat/in-flight\t43\tOPEN\t%s\tautumngarage/current\n' "$FLIGHT_SHA"
-  printf 'feat/fork-name\t44\tMERGED\t%s\tsomeone/fork\n' "$DONE_SHA"
+  printf 'feat/done\t41\tMERGED\t%s\tautumngarage/current\tmain\n' "$DONE_SHA"
+  printf 'fix/abandoned\t42\tCLOSED\t%s\tautumngarage/current\tmain\n' "$ABANDONED_SHA"
+  printf 'feat/reused\t30\tMERGED\t%s\tautumngarage/current\tmain\n' "$DONE_SHA"
+  printf 'feat/in-flight\t43\tOPEN\t%s\tautumngarage/current\tmain\n' "$FLIGHT_SHA"
+  printf 'feat/fork-name\t44\tMERGED\t%s\tsomeone/fork\tmain\n' "$DONE_SHA"
+  printf 'feat/stack-parent\t45\tMERGED\t%s\tautumngarage/current\tmain\n' "$PARENT_SHA"
+  printf 'feat/stack-child\t46\tOPEN\t%s\tautumngarage/current\tfeat/stack-parent\n' "$DONE_SHA"
+  printf 'feat/fork-open\t47\tMERGED\t%s\tautumngarage/current\tmain\n' "$DONE_SHA"
+  printf 'feat/fork-open\t48\tOPEN\t%s\tsomeone/fork\tmain\n' "$DONE_SHA"
 } >"$TMP/state/prs"
 git -C "$TMP/repo" branch feat/fork-name "$DONE_SHA"
+rm -f "$TMP/repo/.git/FETCH_HEAD" # the fixture fetched; the check must not
 run
 [ "$RC" -eq 1 ] || fail "leftovers did not exit 1 (rc=$RC)"
 for kind in untracked dirty worktree local-branch remote-branch; do
@@ -100,10 +116,13 @@ grep -q 'fix/abandoned (#42 closed)' "$TMP/out" && grep -q 'closed without mergi
 grep -E '^  (local|remote)-branch.*feat/in-flight' "$TMP/out" >/dev/null && fail "a branch with an open PR was reported as finished" || ok "open-PR branch is not a finished branch"
 grep -E '^  local-branch.*feat/reused' "$TMP/out" >/dev/null && fail "a reused branch name at a new SHA was reported as finished" || ok "reused name at a new SHA is live work"
 grep -E '^  local-branch.*feat/fork-name' "$TMP/out" >/dev/null && fail "a fork's PR with the same head name counted as ours" || ok "fork PR with the same name is not ours"
-grep -q "repo-wt \[feat/in-flight\]" "$TMP/out" && ok "worktree named with its branch" || fail "worktree not named"
+grep -q "repo wt \[feat/in-flight\]" "$TMP/out" && ok "worktree path with a space kept whole" || fail "worktree path split: $(grep worktree "$TMP/out")"
+grep -E '^  remote-branch.*feat/stack-parent.*still bases open PR #46' "$TMP/out" >/dev/null && ! grep -E 'delete feat/stack-parent' "$TMP/out" >/dev/null \
+  && ok "a merged branch that bases an open PR is preserved, retarget named" || fail "stack parent not protected: $(grep stack-parent "$TMP/out")"
+grep -E '^  local-branch.*feat/fork-open \(#47 merged\)' "$TMP/out" >/dev/null && ok "a fork's open PR does not hide our finished branch" || fail "fork open PR hid a finished branch"
 # nothing mutated
 [ -f "$TMP/repo/__pycache__.tmp" ] && git -C "$TMP/repo" rev-parse --verify -q feat/done >/dev/null \
-  && [ -d "$TMP/repo-wt" ] && ok "check mutated nothing" || fail "check mutated the repository"
+  && [ -d "$TMP/repo wt" ] && [ ! -f "$TMP/repo/.git/FETCH_HEAD" ] && ok "check mutated nothing (no FETCH_HEAD either)" || fail "check mutated the repository"
 
 echo "==> --json carries the same findings under a versioned schema"
 run --json
@@ -119,6 +138,12 @@ git -C "$TMP/repo" checkout -q feat/done
 run
 grep -q 'checkout.*on branch feat/done' "$TMP/out" && ok "feature checkout reported" || fail "feature checkout missed"
 git -C "$TMP/repo" checkout -q main
+
+echo "==> an unreachable origin is a checkout finding, not a clean exit"
+git -C "$TMP/repo" remote set-url origin "$TMP/does-not-exist.git"
+run
+grep -q 'checkout.*could not read origin/main' "$TMP/out" && ok "unreachable origin reported" || fail "unreachable origin not reported: $(cat "$TMP/out")"
+git -C "$TMP/repo" remote set-url origin "$TMP/origin.git"
 
 echo "==> a failed pull-request read is a finding, never an empty list"
 touch "$TMP/state/list-down"

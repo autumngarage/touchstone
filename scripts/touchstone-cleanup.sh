@@ -101,13 +101,17 @@ if [ -z "$CURRENT" ]; then
 elif [ "$CURRENT" != "$DEFAULT_BRANCH" ]; then
   finding "checkout" "on branch $CURRENT" "git checkout $DEFAULT_BRANCH && git pull --rebase (after its PR is merged)"
 else
-  git fetch --quiet origin "$DEFAULT_BRANCH" 2>/dev/null || true
-  if git rev-parse --verify --quiet "origin/$DEFAULT_BRANCH" >/dev/null; then
+  # Read origin's tip without fetching: a fetch writes FETCH_HEAD and may move
+  # the remote-tracking ref, and a swallowed fetch failure would let a stale
+  # cached ref claim "at origin". ls-remote reads and writes nothing.
+  if REMOTE_HEAD="$(git ls-remote --quiet --heads origin "refs/heads/$DEFAULT_BRANCH" 2>/dev/null | awk '{ print $1; exit }')" \
+    && [ -n "$REMOTE_HEAD" ]; then
     LOCAL_HEAD="$(git rev-parse HEAD)"
-    REMOTE_HEAD="$(git rev-parse "origin/$DEFAULT_BRANCH")"
     if [ "$LOCAL_HEAD" != "$REMOTE_HEAD" ]; then
       finding "checkout" "$DEFAULT_BRANCH is at ${LOCAL_HEAD:0:8}, origin at ${REMOTE_HEAD:0:8}" "git pull --rebase"
     fi
+  else
+    finding "checkout" "could not read origin/$DEFAULT_BRANCH (origin unreachable?)" "retry with network access; the checkout's position against origin is unverified"
   fi
 fi
 
@@ -121,13 +125,23 @@ while IFS= read -r line; do
 done < <(git status --porcelain --untracked-files=all 2>/dev/null)
 
 # --- worktrees -------------------------------------------------------------------
-MAIN_WORKTREE="$(git worktree list --porcelain | awk 'NR == 1 && $1 == "worktree" { print $2 }')"
-while IFS= read -r path; do
-  [ -n "$path" ] || continue
-  [ "$path" != "$MAIN_WORKTREE" ] || continue
-  branch="$(git -C "$path" branch --show-current 2>/dev/null || echo '(detached)')"
-  finding "worktree" "$path [$branch]" "git worktree remove '$path' once its PR is merged, then git worktree prune"
-done < <(git worktree list --porcelain | awk '$1 == "worktree" { print $2 }')
+# Porcelain records are NUL-separated with -z, so a path with spaces stays
+# one path; the first record is the main checkout.
+MAIN_WORKTREE=""
+while IFS= read -r -d '' record; do
+  case "$record" in
+    "worktree "*)
+      path="${record#worktree }"
+      if [ -z "$MAIN_WORKTREE" ]; then
+        MAIN_WORKTREE="$path"
+        continue
+      fi
+      branch="$(git -C "$path" branch --show-current 2>/dev/null)"
+      [ -n "$branch" ] || branch='(detached)'
+      finding "worktree" "$path [$branch]" "git worktree remove '$path' once its PR is merged, then git worktree prune"
+      ;;
+  esac
+done < <(git worktree list --porcelain -z)
 
 # --- branches whose pull request is finished ------------------------------------
 # A ref is "finished" only when a pull request from THIS repository with
@@ -145,10 +159,18 @@ if [ "$GH_OK" = true ]; then
     rows="$(gh pr list --state all --head "$1" --limit 50 \
       --json number,state,headRefOid,headRepository,headRepositoryOwner \
       --jq '.[] | [.number, .state, .headRefOid, ((.headRepositoryOwner.login // "") + "/" + (.headRepository.name // ""))] | @tsv' 2>/dev/null)" || return 2
-    # Any OPEN pull request on this head means the branch is in flight.
-    printf '%s\n' "$rows" | awk -F'\t' '$2 == "OPEN" { found = 1 } END { exit !found }' && return 1
+    # Any OPEN pull request from THIS repository on this head means the
+    # branch is in flight; a fork's open PR with the same name is not ours.
+    printf '%s\n' "$rows" | awk -F'\t' -v repo="$REPO_FULL" '$2 == "OPEN" && $4 == repo { found = 1 } END { exit !found }' && return 1
     printf '%s\n' "$rows" | awk -F'\t' -v sha="$2" -v repo="$REPO_FULL" \
       '($2 == "MERGED" || $2 == "CLOSED") && $3 == sha && $4 == repo { print "#" $1 " " tolower($2); exit }'
+  }
+  # A branch that is still the BASE of an open pull request is a stack's
+  # parent: deleting it closes the child PR, which cannot be reopened
+  # (principles/git-workflow.md, stacked PRs). Read once.
+  STACK_BASES="$(gh pr list --state open --limit 100 --json number,baseRefName --jq '.[] | [.baseRefName, .number] | @tsv' 2>/dev/null)" || STACK_BASES=""
+  bases_open_pr() {
+    printf '%s\n' "$STACK_BASES" | awk -F'\t' -v b="$1" '$1 == b { print "#" $2; exit }'
   }
   # finished_for runs in a command substitution, so it cannot record a
   # finding itself: exit 2 means the read failed and the caller records it.
@@ -176,6 +198,11 @@ if [ "$GH_OK" = true ]; then
       continue
     }
     [ -n "$pr" ] || continue
+    child="$(bases_open_pr "$branch")"
+    if [ -n "$child" ]; then
+      finding "remote-branch" "origin/$branch ($pr) still bases open PR $child" "do not delete: retarget $child to $DEFAULT_BRANCH (gh pr edit $child --base $DEFAULT_BRANCH) and rebase it first"
+      continue
+    fi
     case "$pr" in
       *merged) finding "remote-branch" "origin/$branch ($pr)" "git push origin --delete $branch" ;;
       *) finding "remote-branch" "origin/$branch ($pr)" "its PR was closed without merging: git push origin --delete $branch if the work is abandoned" ;;
