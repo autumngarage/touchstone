@@ -66,6 +66,19 @@ case "$COMMAND" in
             ANSWER_PROJECT="$2"
             shift 2
             ;;
+          --body-file)
+            # Resolved against the invoking directory before any cd, so a
+            # relative reply file means what the caller typed.
+            [ "$#" -ge 2 ] || {
+              echo "ERROR: --body-file requires a path" >&2
+              exit 2
+            }
+            case "$2" in
+              /*) ANSWER_ARGS+=("$1" "$2") ;;
+              *) ANSWER_ARGS+=("$1" "$PWD/$2") ;;
+            esac
+            shift 2
+            ;;
           *)
             ANSWER_ARGS+=("$1")
             shift
@@ -77,8 +90,11 @@ case "$COMMAND" in
           echo "ERROR: --project directory is not accessible: $ANSWER_PROJECT" >&2
           exit 2
         }
+        # --project binds the repository; an exported GH_REPO would override
+        # gh's local-repository resolution and answer on another repository.
+        unset GH_REPO
       fi
-      exec bash "$TOUCHSTONE_ROOT/scripts/respond-review.sh" "${ANSWER_ARGS[@]}"
+      exec bash "$TOUCHSTONE_ROOT/scripts/respond-review.sh" ${ANSWER_ARGS[@]+"${ANSWER_ARGS[@]}"}
     fi
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" "$@"
     ;;

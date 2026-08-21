@@ -700,12 +700,18 @@ EOF
   cat >"$TMP/tool/scripts/respond-review.sh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$PWD" >"$ANSWER_LOG.cwd"
+printf '%s\n' "${GH_REPO-unset}" >"$ANSWER_LOG.ghrepo"
 printf '%s\n' "$@" >"$ANSWER_LOG"
 STUB
   ANSWER_LOG="$TMP/answer.argv" bash "$TMP/tool/bin/touchstone" pr answer 7 --comment-id 51 --body-file "$TMP/body" --fix-commit abc123 --project "$TMP/tool/elsewhere"
   diff -u <(printf '7\n--comment-id\n51\n--body-file\n%s\n--fix-commit\nabc123\n' "$TMP/body") "$TMP/answer.argv" >/dev/null \
     || fail "pr answer did not forward its arguments intact: $(tr '\n' ' ' <"$TMP/answer.argv")"
   [ "$(cat "$TMP/answer.argv.cwd")" = "$(cd "$TMP/tool/elsewhere" && pwd)" ] || fail "pr answer did not honour --project"
+  # A relative reply file resolves against the invoking directory, not the
+  # project; an exported GH_REPO cannot redirect a --project answer.
+  (cd "$TMP" && printf 'reply\n' >reply.md && GH_REPO=other/repo ANSWER_LOG="$TMP/answer2.argv" bash "$TMP/tool/bin/touchstone" pr answer 7 --comment-id 51 --body-file reply.md --project "$TMP/tool/elsewhere")
+  grep -qx "$TMP/reply.md" "$TMP/answer2.argv" || fail "a relative --body-file was not resolved against the invoking directory: $(tr '\n' ' ' <"$TMP/answer2.argv")"
+  [ "$(cat "$TMP/answer2.argv.ghrepo")" = unset ] || fail "GH_REPO survived into a --project answer"
   if bash "$ROOT/bin/touchstone" pr answer 7 --json >"$TMP/answer.json.out" 2>&1; then
     fail "pr answer accepted --json"
   fi
