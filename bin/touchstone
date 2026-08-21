@@ -95,11 +95,17 @@ case "$COMMAND" in
     # Bash, Linux) re-runs its installer for the release the tap formula
     # currently records. The install kind is read from where this tree
     # lives, never guessed from the platform.
+    # An install.sh prefix is recognised by its layout, not its name:
+    # <prefix>/cli/<version> is this tree, and <prefix>/current names a version.
+    INSTALL_PREFIX=""
     case "$TOUCHSTONE_ROOT" in
-      */.touchstone/cli/*)
-        INSTALL_PREFIX="${TOUCHSTONE_ROOT%/cli/*}"
-        exec bash "$TOUCHSTONE_ROOT/install.sh" --prefix "$INSTALL_PREFIX" "$@"
-        ;;
+      */cli/*) INSTALL_PREFIX="${TOUCHSTONE_ROOT%/cli/*}" ;;
+    esac
+    if [ -n "$INSTALL_PREFIX" ] && [ -f "$INSTALL_PREFIX/current" ] \
+      && [ "$INSTALL_PREFIX/cli/$(cat "$INSTALL_PREFIX/current")" = "$TOUCHSTONE_ROOT" ]; then
+      exec bash "$TOUCHSTONE_ROOT/install.sh" --prefix "$INSTALL_PREFIX" "$@"
+    fi
+    case "$TOUCHSTONE_ROOT" in
       *)
         # Homebrew owns this tree only if this tree is the formula's libexec;
         # a source checkout on a machine that also has the formula must not

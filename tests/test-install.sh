@@ -47,7 +47,9 @@ end
 EOF
 }
 
-PREFIX="$TMP/home/.touchstone"
+# Deliberately not named .touchstone: the install kind is recognised by
+# layout (cli/<version> + current), never by the prefix's name.
+PREFIX="$TMP/home/tools/ts-cli"
 mkdir -p "$TMP/home"
 
 echo "==> A recorded release installs, verifies, and runs through the wrapper"
@@ -105,6 +107,13 @@ fi
 
 echo "==> Input validation"
 bash "$ROOT/install.sh" --prefix relative/path >/dev/null 2>&1 && fail "relative prefix accepted" || ok "relative prefix refused"
+# A Windows drive path passes the absolute-path grammar. On this machine the
+# run must stop before it creates anything (a relative "C:" directory would
+# otherwise appear), so the formula is pointed at a missing file: the refusal
+# is the fetch, not the prefix.
+bash "$ROOT/install.sh" --prefix "C:/Users/me/.touchstone" --formula-file "$TMP/does-not-exist.rb" >"$TMP/win.out" 2>&1 || true
+grep -q "must be an absolute path" "$TMP/win.out" && fail "a Windows drive prefix was refused as relative" || ok "Windows drive prefix accepted by the grammar"
+[ ! -e "$ROOT/C:" ] && [ ! -e "C:" ] || fail "the Windows-prefix probe created a relative C: directory"
 bash "$ROOT/install.sh" --version nope >/dev/null 2>&1 && fail "malformed version accepted" || ok "malformed version refused"
 bash "$ROOT/install.sh" --bogus >/dev/null 2>&1 && fail "unknown argument accepted" || ok "unknown argument refused"
 

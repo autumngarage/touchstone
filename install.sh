@@ -71,8 +71,10 @@ case "$VERSION" in
   '' | [0-9]*.[0-9]*.[0-9]*) ;;
   *) die "--version must be MAJOR.MINOR.PATCH, got '$VERSION'" 2 ;;
 esac
+# Absolute on POSIX (/...) or as Git Bash spells a Windows drive (C:/... or
+# /c/...); the wrapper embeds this path, so it must not depend on the cwd.
 case "$PREFIX" in
-  /*) ;;
+  /* | [A-Za-z]:/*) ;;
   *) die "--prefix must be an absolute path, got '$PREFIX'" 2 ;;
 esac
 
