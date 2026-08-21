@@ -532,7 +532,11 @@ fi
 # An absent driver file is reported as absent, not as a legacy block.
 rm -f "$HVER/.gemini/GEMINI.md"
 bash "$INSTALL" check --home "$HVER" >"$TMP_DIR/hver3.out" 2>&1 || true
-grep -q "GEMINI.md is absent (no block installed)" "$TMP_DIR/hver3.out" && pass "an absent driver file is named as absent" || fail "absent file misreported: $(grep GEMINI "$TMP_DIR/hver3.out" | head -1)"
+if grep -q "GEMINI.md is absent (no block installed)" "$TMP_DIR/hver3.out"; then
+  pass "an absent driver file is named as absent"
+else
+  fail "absent file misreported: $(grep GEMINI "$TMP_DIR/hver3.out" | head -1)"
+fi
 
 # Command-line paths inside routed documents are rewritten too: a fresh agent
 # ran `-c principles/local-review-contract.md` verbatim from local-review.md
@@ -552,7 +556,11 @@ HQ="$TMP_DIR/it's home"
 if bash "$INSTALL" install --home "$HQ" >"$TMP_DIR/hq.out" 2>&1; then
   fail "install accepted a home containing a single quote"
 else
-  grep -q "contains a single quote" "$TMP_DIR/hq.out" && pass "a home with a single quote is refused by name" || fail "unexpected refusal: $(cat "$TMP_DIR/hq.out")"
+  if grep -q "contains a single quote" "$TMP_DIR/hq.out"; then
+    pass "a home with a single quote is refused by name"
+  else
+    fail "unexpected refusal: $(cat "$TMP_DIR/hq.out")"
+  fi
 fi
 [ ! -e "$HQ/.claude/CLAUDE.md" ] || fail "install wrote into a refused home"
 
