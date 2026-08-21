@@ -100,7 +100,10 @@ The parent session owns the coordination boundary:
 - runs final deterministic tests
 - invokes the final review path
 - opens or routes PRs
-- cleans up worktrees with `git worktree remove`
+- cleans up worktrees with `git worktree remove` — whoever creates a
+  worktree removes it, and the dispatch record (issue comment or brief)
+  names the worktree path so a later sweep can find it; `touchstone cleanup
+  check` in the main checkout lists any that remain
 
 Workers own only their slice:
 
