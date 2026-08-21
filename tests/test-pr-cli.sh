@@ -128,8 +128,10 @@ case "$1 ${2:-}" in
     ;;
   "pr list")
     if [ -f "$GH_STATE/pr-exists" ]; then
+      head="$GH_HEAD"
+      [ "${GH_MODE:-ok}" = list_head_stale ] && head=stale-head-0000000000000000000000000000
       printf '7\thttps://example.test/pr/7\t%s\t%s\t%s\n' \
-        "$GH_HEAD" "${GH_BASE_REF:-main}" "${GH_BASE_SHA:-base-sha}"
+        "$head" "${GH_BASE_REF:-main}" "${GH_BASE_SHA:-base-sha}"
     fi
     ;;
   "pr edit")
@@ -463,6 +465,15 @@ EOF
   assert_rc "$RUN_RC" 0
   grep -q -- '--title Retitled' "$TMP/state/edits" && assert_has "$TMP/out" 'body: updated' && ok "title converges too" || fail "title not applied: $(cat "$TMP/state/edits" 2>/dev/null)"
   rm -f "$TMP/state/edits" "$TMP/state/pr-title" "$TMP/state/pr-body"
+  # A PR refused for head drift is not edited first: no partial mutation.
+  rm -f "$TMP/state/edits"
+  printf 'Original body.\n' >"$TMP/state/pr-body"
+  touch "$TMP/state/pr-exists"
+  GH_MODE=list_head_stale run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'does not match local/remote head'
+  [ ! -f "$TMP/state/edits" ] && ok "no edit before the head check refuses" || fail "a drifted PR was edited before being refused"
+  rm -f "$TMP/state/pr-body"
   # A freshly created PR carries the body by construction and says nothing
   # about applying it.
   rm -f "$TMP/state/pr-exists"

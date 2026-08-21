@@ -721,7 +721,15 @@ open_pr() {
     state=existing
   fi
   IFS="$(printf '\t')" read -r number url pr_head pr_base pr_base_sha <<<"$rows"
-  # Idempotent means "converges on the arguments given", not "no-ops": on a
+  [ "$pr_head" = "$local_head" ] \
+    || fail_input "PR head $pr_head does not match local/remote head $local_head" "Refresh the PR branch before review."
+  [ "$pr_base" = "$BASE_REF" ] \
+    || fail_input "PR base $pr_base does not match requested base $BASE_REF" "Pass the live base or retarget the PR explicitly."
+  [ -n "$pr_base_sha" ] \
+    || fail_operation "GitHub returned no base SHA for PR #$number" "Retry after GitHub returns the complete PR binding."
+  # Only after the head and base checks above: a PR that would be refused for
+  # drift is not edited first. Idempotent means "converges on the arguments
+  # given", not "no-ops": on a
   # reused PR the title and body passed now are applied when they differ from
   # what GitHub holds, and the result says so. Silently keeping the old body
   # let a PR opened before the evidence sections were written fail the
@@ -747,12 +755,6 @@ open_pr() {
       BODY_APPLIED=updated
     fi
   fi
-  [ "$pr_head" = "$local_head" ] \
-    || fail_input "PR head $pr_head does not match local/remote head $local_head" "Refresh the PR branch before review."
-  [ "$pr_base" = "$BASE_REF" ] \
-    || fail_input "PR base $pr_base does not match requested base $BASE_REF" "Pass the live base or retarget the PR explicitly."
-  [ -n "$pr_base_sha" ] \
-    || fail_operation "GitHub returned no base SHA for PR #$number" "Retry after GitHub returns the complete PR binding."
   request_marker="<!-- touchstone:pr-open head=$local_head base=$pr_base base_sha=$pr_base_sha -->"
   request_head_marker="<!-- touchstone:pr-open head=$local_head "
   read_with_retry gh api user --hostname "$REPO_HOST" --jq '.login' \
