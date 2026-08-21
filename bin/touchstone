@@ -23,7 +23,9 @@ Usage:
   touchstone tracker claim [arguments]
   touchstone pr open|status|merge [arguments]
   touchstone version
+  touchstone upgrade
   touchstone steering install|check|uninstall [--home DIR] [--dry-run]
+  touchstone hook branch-guard
 EOF
 }
 
@@ -73,6 +75,46 @@ case "$COMMAND" in
     ;;
   steering)
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-steering-install.sh" "$@"
+    ;;
+  hook)
+    # Agent hooks by name, so a consumer's settings never encode where the
+    # tool is installed (Homebrew's libexec on macOS, ~/.touchstone on
+    # Windows Git Bash). Stdin (the tool-call JSON) passes straight through.
+    HOOK_NAME="${1:-}"
+    case "$HOOK_NAME" in
+      branch-guard) exec bash "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" ;;
+      *)
+        echo "ERROR: unknown hook '${HOOK_NAME:-<none>}'; available: branch-guard" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  upgrade)
+    # Two install kinds, one command. A Homebrew install is upgraded by
+    # Homebrew; an install.sh prefix (the non-Homebrew path: Windows Git
+    # Bash, Linux) re-runs its installer for the release the tap formula
+    # currently records. The install kind is read from where this tree
+    # lives, never guessed from the platform.
+    case "$TOUCHSTONE_ROOT" in
+      */.touchstone/cli/*)
+        INSTALL_PREFIX="${TOUCHSTONE_ROOT%/cli/*}"
+        exec bash "$TOUCHSTONE_ROOT/install.sh" --prefix "$INSTALL_PREFIX" "$@"
+        ;;
+      *)
+        # Homebrew owns this tree only if this tree is the formula's libexec;
+        # a source checkout on a machine that also has the formula must not
+        # trigger `brew upgrade`.
+        if command -v brew >/dev/null 2>&1; then
+          BREW_OPT="$(brew --prefix touchstone 2>/dev/null || true)"
+          if [ -n "$BREW_OPT" ] && [ -d "$BREW_OPT/libexec" ] \
+            && [ "$(cd -P "$BREW_OPT/libexec" && pwd)" = "$TOUCHSTONE_ROOT" ]; then
+            exec brew upgrade touchstone
+          fi
+        fi
+        echo "ERROR: this touchstone ($TOUCHSTONE_ROOT) is neither a Homebrew install nor an install.sh prefix; upgrade it the way it was installed (a source checkout: git pull)." >&2
+        exit 1
+        ;;
+    esac
     ;;
   update)
     # Compatibility boundary for repositories still carrying the 2.x scripts:

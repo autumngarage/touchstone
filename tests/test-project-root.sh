@@ -205,10 +205,15 @@ for args in "--check" "--ship" "--in-place" ""; do
 done
 [ "$(ls -A "$SHIM_PROJECT")" = "file.txt" ] && [ "$(cat "$SHIM_PROJECT/file.txt")" = untouched ] \
   || fail "touchstone update wrote to the repository"
-if bash "$REPO_ROOT/bin/touchstone" upgrade >/dev/null 2>&1; then
-  fail "the removed upgrade subcommand is still accepted"
+# `upgrade` upgrades the tool (Homebrew, or an install.sh prefix), never a
+# repository: from a source checkout it names the install kinds and exits 1.
+if bash "$REPO_ROOT/bin/touchstone" upgrade >"$TMP_DIR/upgrade.out" 2>"$TMP_DIR/upgrade.err"; then
+  fail "upgrade from a source checkout succeeded; it must refuse rather than guess an install kind"
 fi
-pass "update succeeds without writing; upgrade stays unknown"
+grep -q "neither a Homebrew install nor an install.sh prefix" "$TMP_DIR/upgrade.err" \
+  || fail "upgrade did not name the install kinds it serves: $(cat "$TMP_DIR/upgrade.err")"
+[ "$(ls -A "$SHIM_PROJECT")" = "file.txt" ] || fail "touchstone upgrade wrote to the repository"
+pass "update succeeds without writing; upgrade serves the tool install, never a repository"
 
 echo "==> pr open binds the branch it will act on"
 # Two pull requests were opened for the wrong branch because open acts on

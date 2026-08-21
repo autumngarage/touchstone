@@ -87,6 +87,7 @@ explain that owner's decision; they may not recompute it.
 | Carry agent steering | The installed tool, machine-wide | One delimited block in each driver's user-level instruction file; Touchstone installs and manages no repository copy | `touchstone steering check` compares the installed block against the tool's contract; deterministic size-cap, path-integrity, and steering-contract assertions run in the required suite |
 | Adopt and evolve a repository | Touchstone CLI adoption module | Versioned project declarations and reviewable plan/apply output | Fresh, current, repeat, old-compatible, and unsupported-schema fixtures |
 | Install and upgrade the local tool | Homebrew | Versioned formula and checksummed release | Install, upgrade, rollback, and no-project-mutation tests pass |
+| Install and upgrade the local tool where Homebrew is absent (Windows Git Bash, Linux) | `install.sh` + `touchstone upgrade` | The tap formula's recorded url and sha256, verified before unpack | Offline installer test: verified install, idempotent re-run, checksum mismatch refused, unrecorded version refused, upgrade switches `current` and retains the prior release |
 
 The canonical Linear execution plan maps active issues to these jobs. Do not
 add an issue inventory here; issue state is volatile and Linear owns it.

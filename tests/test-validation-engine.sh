@@ -1866,10 +1866,13 @@ EOF
     cat "$TMP/upgrade-repeat" "$TMP/upgrade-repeat.err" >&2
     fail "repeated adoption was not current"
   fi
-  # Steering ships with the tool now; the upgrade subcommand that refreshed
-  # repository copies is deleted, and its absence is part of the contract.
+  # Steering ships with the tool now. `upgrade` upgrades the *tool* (Homebrew
+  # or an install.sh prefix); the 2.x invocation that refreshed repository
+  # copies is refused from a source checkout and writes nothing.
   run_cli "$TMP/upgrade-gone" upgrade --check --json --project "$upgrade_repo" || true
-  [ "$RUN_STATUS" -eq 2 ] || fail "the deleted upgrade subcommand must be an invalid invocation (exit 2), got $RUN_STATUS"
+  [ "$RUN_STATUS" -ne 0 ] || fail "the 2.x repository-refresh invocation of upgrade must be refused, got exit 0"
+  grep -q "neither a Homebrew install nor an install.sh prefix" "$TMP/upgrade-gone.err" \
+    || fail "upgrade did not explain the install kinds it serves: $(cat "$TMP/upgrade-gone.err")"
 
   echo "==> local and pinned-workflow adapters share validation semantics"
   policy_repo="$TMP/policy-consumer"

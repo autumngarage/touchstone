@@ -225,8 +225,10 @@ echo "==> No file invokes a touchstone CLI subcommand"
 # expressions, which behave identically on both platforms.
 # `update` is absent on purpose: 3.0.1 ships it as a compatibility no-op for
 # repositories still on the 2.x scripts (their sync guard calls it), so a
-# mention of it is a mention of a command that exists.
-CLI_SUBCOMMANDS='doctor|status|update-all|upgrade|new|init|release|list|diff|sync|changelog'
+# mention of it is a mention of a command that exists. `upgrade` is absent
+# because 3.2 ships it again with a different meaning -- it upgrades the
+# installed tool (Homebrew or an install.sh prefix), never a repository.
+CLI_SUBCOMMANDS='doctor|status|update-all|new|init|release|list|diff|sync|changelog'
 CLI_PATTERN="(^|[^-/[:alnum:]])touchstone (${CLI_SUBCOMMANDS})([^[:alnum:]-]|$)"
 
 # The check must be able to fail, and must be proven to on THIS platform
