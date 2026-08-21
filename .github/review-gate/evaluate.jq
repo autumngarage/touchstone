@@ -37,6 +37,23 @@ def standard_codex_review_body:
   | ($body | contains("### 💡 Codex Review"))
     and ($body | contains("Reviewed commit:"));
 
+# GitHub stamps a review's updated_at with the time its inline comments
+# attach -- exactly the latest attached comment's created_at, observed on
+# autumngarage/touchstone#931 -- so updated_at alone does not distinguish
+# that from an author edit. An edit is identified exactly: updated_at later
+# than the submission and later than every attached inline comment. Edits
+# within the same second as the last attachment share its timestamp and are
+# not distinguishable; that is GitHub's granularity, not a window chosen here.
+def edited_after_submission($root):
+  . as $review
+  | ([$review.submitted_at // empty]
+     + [$root.reviewComments[]?
+        | select(((.pull_request_review_id // 0) | tostring) == ($review.id | tostring))
+        | .created_at // empty]
+     | map(fromdateiso8601) | max) as $settled
+  | (($review.updated_at // "") | if . == "" then null else fromdateiso8601 end) as $updated
+  | $updated != null and $settled != null and $updated > $settled;
+
 def answers_body_finding($id):
   (.body // "") | contains("<!-- touchstone:review-answer id=\($id) -->");
 
@@ -118,7 +135,7 @@ def answers_body_finding($id):
     | ($finding.updated_at // $finding.submitted_at // "") as $finding_at
     | select(
         (standard_codex_review_body | not)
-        or (($finding.updated_at // "") > ($finding.submitted_at // ""))
+        or ($finding | edited_after_submission($root))
         or (any($root.reviewComments[]?;
           .in_reply_to_id == null
           and ((.pull_request_review_id // 0) | tostring) == ($finding.id | tostring)) | not)
