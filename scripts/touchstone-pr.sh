@@ -822,7 +822,7 @@ merge_pr() {
       prior_records="$(printf '%s\n' "$READ_OUTPUT" | awk '{ total += $1 } END { print total + 0 }')"
       if [ "$prior_records" = 0 ]; then
         gh pr comment "$PR_NUMBER" --repo "$REPO_SPEC" --body "$unguarded_marker
-Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarded\`: enforcement on \`$base\` is $(enforcement_text) — the canonical pinned review gate is absent, so GitHub does not require it for this merge (other checks or reviews may still have run). Apply the consumer policy to close the gap." >/dev/null \
+Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarded\`: enforcement on \`$base\` is $(enforcement_text), so GitHub's requirements for this merge differ from the policy by exactly what is listed (other checks or reviews may still have run). Apply the consumer policy to close the gap." >/dev/null \
           || fail_operation "could not record the unguarded merge request on PR #$PR_NUMBER" "Inspect GitHub before retrying."
       fi
       # The base inspected and recorded must be the base merged into.

@@ -615,6 +615,18 @@ else
   ok "bootstrap deleted nothing"
 fi
 
+echo "==> A queue-less policy still enables auto-merge (touchstone pr merge arms it)"
+rm -f "$TMP_DIR/state/branch.json" "$TMP_DIR/state/ruleset.json" "$TMP_DIR/state/repo-ruleset.json" "$TMP_DIR/state/auto-merge" "$TMP_DIR/state/bad-effective-used"
+jq '.managedRepositoryRuleset = null' "$POLICY" >"$TMP_DIR/queueless.json"
+run_policy apply "$TMP_DIR/queueless.json" >"$TMP_DIR/queueless.out" 2>&1 || fail "queue-less apply failed: $(cat "$TMP_DIR/queueless.out")"
+[ -f "$TMP_DIR/state/auto-merge" ] && ok "auto-merge enabled without a queue" || fail "queue-less apply left auto-merge disabled"
+[ ! -f "$TMP_DIR/state/repo-ruleset.json" ] || fail "queue-less apply created a repository ruleset"
+touch "$TMP_DIR/state/local-workflow-absent"
+run_policy verify "$TMP_DIR/queueless.json" >"$TMP_DIR/queueless-verify.out" 2>&1 || fail "queue-less verify failed: $(tail -1 "$TMP_DIR/queueless-verify.out")"
+rm -f "$TMP_DIR/state/auto-merge"
+run_policy verify "$TMP_DIR/queueless.json" >/dev/null 2>&1 && fail "verify passed with auto-merge disabled on a queue-less policy" || ok "verify requires auto-merge on a queue-less policy"
+rm -f "$TMP_DIR/state/ruleset.json" "$TMP_DIR/state/local-workflow-absent"
+
 echo "==> Ambiguous and failed reads fail closed"
 if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_DUPLICATE_RULESET=1 \
   "$SCRIPT" diff "$POLICY" >/dev/null 2>&1; then
