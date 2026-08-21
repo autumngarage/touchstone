@@ -88,9 +88,6 @@ die() {
 }
 
 [ -n "$HOME_DIR" ] || die "no home directory: set HOME or pass --home"
-case "$HOME_DIR" in
-  *"'"*) die "the home directory contains a single quote, which the rewritten command examples cannot quote safely: $HOME_DIR" ;;
-esac
 # The rendered routes are absolute paths agents follow from wherever they are
 # started. A relative --home would embed routes that resolve only from this
 # command's working directory -- and check would agree, because it renders the
@@ -104,6 +101,12 @@ case "$HOME_DIR" in
     # privileged install would then write to the filesystem root.
     HOME_DIR="$(pwd -P)/$HOME_DIR" || die "could not resolve --home: $HOME_DIR"
     ;;
+esac
+# After canonicalization, so a relative --home under a quoted directory is
+# judged by its full path: rewritten command examples single-quote the
+# installed path, and a single quote is the one character that cannot carry.
+case "$HOME_DIR" in
+  *"'"*) die "the home directory contains a single quote, which the rewritten command examples cannot quote safely: $HOME_DIR" ;;
 esac
 [ -f "$SOURCE" ] || die "canonical steering is missing: $SOURCE"
 
