@@ -162,6 +162,9 @@ mv "$target.partial" "$target"
 # a CLI or hook invocation that starts mid-upgrade never reads a half-written
 # script.
 prefix_quoted="$(printf '%q' "$PREFIX")"
+# Unique per process: two installers sharing a prefix must not write the same
+# staging file; the rename keeps the last complete one.
+wrapper_next="$(mktemp "$PREFIX/bin/touchstone.next.XXXXXX")"
 {
   printf '#!/usr/bin/env bash\n'
   printf '# Touchstone CLI wrapper (installed by install.sh). Runs the version named\n'
@@ -172,9 +175,9 @@ prefix_quoted="$(printf '%q' "$PREFIX")"
   printf 'current="$(cat "$prefix/current" 2>/dev/null)" || { echo "ERROR: $prefix/current is missing; re-run install.sh" >&2; exit 1; }\n'
   # shellcheck disable=SC2016
   printf 'exec bash "$prefix/cli/$current/bin/touchstone" "$@"\n'
-} >"$PREFIX/bin/touchstone.next"
-chmod +x "$PREFIX/bin/touchstone.next"
-mv "$PREFIX/bin/touchstone.next" "$PREFIX/bin/touchstone"
+} >"$wrapper_next"
+chmod +x "$wrapper_next"
+mv "$wrapper_next" "$PREFIX/bin/touchstone"
 printf '%s\n' "$VERSION" >"$PREFIX/current.next"
 mv "$PREFIX/current.next" "$PREFIX/current"
 
