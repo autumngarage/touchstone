@@ -9,8 +9,9 @@
 # the whole exchange and fails loudly at every step.
 #
 # Usage:
-#   bash scripts/respond-review.sh <pr-number> --comment-id <id> --body-file <file> [--fix-commit <sha>]
-#   bash scripts/respond-review.sh <pr-number> --all-resolved-check
+#   touchstone pr answer <pr-number> --comment-id <id> --body-file <file> [--fix-commit <sha>]
+#   touchstone pr answer <pr-number> --all-resolved-check
+#   (installed name; from a source checkout: bash scripts/respond-review.sh …)
 #
 # Modes:
 #   --comment-id + --body-file   Reply to the review comment (body read from
@@ -156,7 +157,7 @@ if [ "$ALL_RESOLVED_CHECK" = true ]; then
   printf '%s\n' "$UNRESOLVED" | while IFS=$'\t' read -r _tid cid path; do
     echo "       comment $cid ($path)" >&2
   done
-  echo "       Answer each with: bash scripts/respond-review.sh $PR_NUMBER --comment-id <id> --body-file <file>" >&2
+  echo "       Answer each with: touchstone pr answer $PR_NUMBER --comment-id <id> --body-file <file>" >&2
   exit 1
 fi
 
@@ -280,7 +281,7 @@ if [ "$GATE_REQUIRED" = true ]; then
 fi
 
 echo "==> Replied and resolved. When every thread is answered, prove it and merge:"
-echo "    bash scripts/respond-review.sh $PR_NUMBER --all-resolved-check"
+echo "    touchstone pr answer $PR_NUMBER --all-resolved-check"
 echo "    gh pr merge $PR_NUMBER --squash --match-head-commit \"\$(gh pr view $PR_NUMBER --json headRefOid --jq .headRefOid)\""
 echo "    gh pr view $PR_NUMBER --json state,mergedAt   # the merge exit code lies in both directions"
 echo "    (Pushed new commits instead? The head moved — request one review for the new head.)"

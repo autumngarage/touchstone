@@ -207,8 +207,12 @@ gh api graphql -f query='
   }' -F threadId=<PRRT_...>
 ```
 
-Thread IDs and their numeric root review comment IDs come from the mapped
-`unresolvedThreads` result above. The token needs Contents: read and write.
+Thread IDs (`PRRT_…`) and their numeric root review comment IDs come from the
+mapped `unresolvedThreads` result above — the reply takes the numeric ID, the
+mutation takes the thread ID. After the mutation, re-read the thread and
+confirm `isResolved == true` before counting it answered; the token needs
+Contents: read and write. Then re-run the pinned gate for the head, as
+`touchstone pr answer` does.
 
 ## Merging
 

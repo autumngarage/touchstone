@@ -51,7 +51,34 @@ case "$COMMAND" in
     # and was unreachable from the installed tool until it had a name here.
     if [ "${1:-}" = answer ]; then
       shift
-      exec bash "$TOUCHSTONE_ROOT/scripts/respond-review.sh" "$@"
+      # --project DIR is honoured here (the script resolves the repository
+      # from its working directory through gh); --json is not an output
+      # mode of this operation and is refused by the script's parser.
+      ANSWER_PROJECT=""
+      ANSWER_ARGS=()
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --project)
+            [ "$#" -ge 2 ] || {
+              echo "ERROR: --project requires a directory" >&2
+              exit 2
+            }
+            ANSWER_PROJECT="$2"
+            shift 2
+            ;;
+          *)
+            ANSWER_ARGS+=("$1")
+            shift
+            ;;
+        esac
+      done
+      if [ -n "$ANSWER_PROJECT" ]; then
+        cd "$ANSWER_PROJECT" || {
+          echo "ERROR: --project directory is not accessible: $ANSWER_PROJECT" >&2
+          exit 2
+        }
+      fi
+      exec bash "$TOUCHSTONE_ROOT/scripts/respond-review.sh" "${ANSWER_ARGS[@]}"
     fi
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" "$@"
     ;;

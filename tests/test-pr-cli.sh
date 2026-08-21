@@ -691,6 +691,24 @@ EOF
   bash "$ROOT/bin/touchstone" pr answer >"$TMP/answer.out" 2>&1 || true
   grep -qE 'respond-review|--comment-id' "$TMP/answer.out" || fail "pr answer did not dispatch to respond-review: $(head -3 "$TMP/answer.out")"
   grep -q 'respond-review.sh" "$@"' "$ROOT/bin/touchstone" || fail "pr answer does not exec respond-review.sh"
+  echo "==> pr answer is the installed name for respond-review and forwards its arguments"
+  # A stand-in script records the argv it received and the directory it ran
+  # in, so the dispatch is asserted by what arrives, not by usage text.
+  mkdir -p "$TMP/tool/bin" "$TMP/tool/scripts" "$TMP/tool/elsewhere"
+  cp "$ROOT/bin/touchstone" "$TMP/tool/bin/touchstone"
+  printf '%s\n' "$(cat "$ROOT/VERSION")" >"$TMP/tool/VERSION"
+  cat >"$TMP/tool/scripts/respond-review.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$PWD" >"$ANSWER_LOG.cwd"
+printf '%s\n' "$@" >"$ANSWER_LOG"
+STUB
+  ANSWER_LOG="$TMP/answer.argv" bash "$TMP/tool/bin/touchstone" pr answer 7 --comment-id 51 --body-file "$TMP/body" --fix-commit abc123 --project "$TMP/tool/elsewhere"
+  diff -u <(printf '7\n--comment-id\n51\n--body-file\n%s\n--fix-commit\nabc123\n' "$TMP/body") "$TMP/answer.argv" >/dev/null \
+    || fail "pr answer did not forward its arguments intact: $(tr '\n' ' ' <"$TMP/answer.argv")"
+  [ "$(cat "$TMP/answer.argv.cwd")" = "$(cd "$TMP/tool/elsewhere" && pwd)" ] || fail "pr answer did not honour --project"
+  if bash "$ROOT/bin/touchstone" pr answer 7 --json >"$TMP/answer.json.out" 2>&1; then
+    fail "pr answer accepted --json"
+  fi
 
   echo "==> merge binds both mutation and reconciliation to the reviewed head"
   rm -f "$TMP/state/merged"
