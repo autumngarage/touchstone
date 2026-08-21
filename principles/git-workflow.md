@@ -638,7 +638,7 @@ assignments are worse than no assignment at all.
 **When this rule does NOT apply.**
 
 - **Items you're proposing or analyzing, not implementing.** Claim only when implementation actually starts.
-- **Drive-by fixes during unrelated work.** A one-line typo fix doesn't need a claim — but if it warrants its own commit, it warrants a closing reference at minimum.
+- **Drive-by fixes during unrelated work that have no tracker item of their own.** A one-line typo fix doesn't need a claim — but if it warrants its own commit, it warrants a closing reference at minimum, and if an item exists for it, step 3 applies: claim it.
 
 **For bundles.** When one lane closes multiple items, claim and comment on all
 of them with the same branch reference.
