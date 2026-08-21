@@ -46,8 +46,9 @@ checkout exposed (vesper's validator, finding 2, fixed in vesper#929).
 3. **Read-only commands are not operationally read-only** (2/2 Codex,
    repeat of round 1 finding 7). `steering check` and `policy status` need
    a writable `$TMPDIR`; in a read-only sandbox the exact command the
-   steering prescribes for "inspect the effective rules" fails. Still open;
-   it is the reason both Codex runs could not confirm `applied`.
+   steering prescribes for "inspect the effective rules" fails. Open as
+   AUT-421 (split from AUT-412, which shipped the prose sweep); it is the
+   reason both Codex runs could not confirm `applied`.
 4. **The Linear claim remains the top blocker** (2/2 Codex, 2/2 Claude
    noted it). Steering step 3 now says the claim is manual for Linear, which
    the agents read correctly — and then stopped, because a mandatory manual
