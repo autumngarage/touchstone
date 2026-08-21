@@ -182,11 +182,16 @@ if [ -e "$target" ]; then
   previous="$target.previous.$$"
   mv "$target" "$previous" || die "could not set aside the existing $target"
 fi
-if ! mv "$staging" "$target"; then
+# TOUCHSTONE_INSTALL_FAIL_PUBLISH is a test seam: the publication rename is
+# the one step whose failure must leave the active release intact, and no
+# permission bit stops root from renaming.
+if [ -n "${TOUCHSTONE_INSTALL_FAIL_PUBLISH:-}" ] || ! mv "$staging" "$target"; then
   [ -z "$previous" ] || mv "$previous" "$target" || true
   die "could not publish $target; the previous tree was restored"
 fi
-[ -z "$previous" ] || rm -rf "$previous"
+if [ -n "$previous" ] && ! rm -rf "$previous"; then
+  printf 'warning: the set-aside tree %s could not be removed; the new release is published and current will name it\n' "$previous" >&2
+fi
 
 # The wrapper embeds the prefix as data, never as shell source: it is written
 # through printf %q so a prefix containing metacharacters cannot execute when

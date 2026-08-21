@@ -439,11 +439,14 @@ else
   grep -q "another installer holds" "$INSTALL_TMP/lock.out" && pass "second installer refused while the lock is held" || fail "unexpected: $(cat "$INSTALL_TMP/lock.out")"
 fi
 rmdir "$PREFIX/.install.lock"
-# Publication failure: make the release directory unwritable so the new tree
-# cannot be published; `current` must still name a tree that runs.
-chmod 555 "$PREFIX/cli"
-bash "$REPO_ROOT/install.sh" --prefix "$PREFIX" --formula-file "$INSTALL_TMP/formula-9.9.3.rb" --archive-file "$INSTALL_TMP/v9.9.3.tar.gz" >"$INSTALL_TMP/pub.out" 2>&1 && fail "publication into an unwritable release directory succeeded"
-chmod 755 "$PREFIX/cli"
+# Publication failure, injected through the installer's seam (no permission
+# bit stops root from renaming): `current` must still name a tree that runs,
+# and a reinstall's set-aside tree must be restored.
+mkdir -p "$PREFIX/cli/9.9.3" && printf 'stand-in\n' >"$PREFIX/cli/9.9.3/marker"
+TOUCHSTONE_INSTALL_FAIL_PUBLISH=1 bash "$REPO_ROOT/install.sh" --prefix "$PREFIX" --formula-file "$INSTALL_TMP/formula-9.9.3.rb" --archive-file "$INSTALL_TMP/v9.9.3.tar.gz" >"$INSTALL_TMP/pub.out" 2>&1 && fail "an injected publication failure reported success"
+grep -q "the previous tree was restored" "$INSTALL_TMP/pub.out" || fail "publication failure was not reported: $(cat "$INSTALL_TMP/pub.out")"
+[ -f "$PREFIX/cli/9.9.3/marker" ] && pass "the set-aside tree is restored after a failed publication" || fail "the set-aside tree was not restored"
+rm -rf "$PREFIX/cli/9.9.3"
 [ "$(cat "$PREFIX/current")" = "9.9.2" ] || fail "a failed publication changed current: $(cat "$PREFIX/current")"
 [ "$(bash "$PREFIX/bin/touchstone" version)" = "touchstone v9.9.2" ] && pass "the active release still runs after a failed publication" || fail "the wrapper broke after a failed publication"
 [ ! -e "$PREFIX/.install.lock" ] && pass "the lock is released on failure" || fail "the lock was left behind"
