@@ -456,17 +456,19 @@ git branch -d <branch>                      # git refuses unmerged work
 Squash-merged branches are the common case, and their commits are *not* ancestors of the default branch even though their changes are applied, so `git branch -d` refuses them — and `git diff main...<branch>` stays non-empty after a squash (it compares against the merge base, not the squash commit), so it proves nothing either. The proof that the content landed is GitHub's: the PR is `MERGED` at the head you reviewed. Then force-delete that branch and only that branch:
 
 ```bash
-# The PR for THIS branch, merged, at the commit the local branch still points at.
-gh pr list --head <branch> --state merged --json number,headRefOid --jq '.[] | [.number, .headRefOid] | @tsv'
-git rev-parse <branch>        # must equal that headRefOid: no commits after the merge
-git checkout main && git pull --rebase
-git branch -D <branch>
+branch=<branch>
+default="$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)"
+# Exactly one merged PR for THIS branch, and the local branch ref (not a
+# same-named tag) still at the head it merged: otherwise stop.
+merged_head="$(gh pr list --head "$branch" --state merged --json headRefOid --jq 'if length == 1 then .[0].headRefOid else error("expected exactly one merged PR for \(length) found") end')" || exit 1
+[ "$(git rev-parse --verify "refs/heads/$branch")" = "$merged_head" ] || { echo "local $branch is not at the merged head; unmerged work"; exit 1; }
+git checkout "$default" && git pull --rebase
+git branch -D "$branch"
 ```
 
-Bind the evidence to the branch: the merged PR must be the one whose head is
-this branch, and the local branch must still point at that merged head — a
-commit added after the merge is unmerged work. Never `git branch -D` without
-that read.
+The sequence fails closed: zero or several merged PRs, or a local ref that
+moved past the merged head, stops before anything is deleted. Never
+`git branch -D` without it.
 
 Never delete a branch that serves as an open PR's base or head; that is what orphans a stack (see below).
 
