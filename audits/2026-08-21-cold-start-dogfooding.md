@@ -11,8 +11,13 @@ stale, and rate confidence. Findings are treated as evidence about the
 contract first; project-local fixes only where the contract is right and the
 project diverged.
 
-Repositories: vesper (at PRs 927/928, policy not yet applied), arpeggio (at PR
-51, policy not yet applied). Convoy follows its adoption (AUT-402).
+Repositories: vesper (at PRs 927/928) and arpeggio (at PR 51). "Policy not
+yet applied" is the observed state on 2026-08-21 ~02:30–03:00Z, read by the
+agents from `gh api repos/<owner>/<repo>/rules/branches/main` (no `workflows`
+or `merge_queue` rule; vesper's only ruleset was the repo-local "Protect main
+delivery"), not inferred from the checked-in consumer policies, which declare
+desired state. Convoy follows its adoption (AUT-402); its round records the
+same observation.
 
 ## Results
 
@@ -32,9 +37,15 @@ the same wall: they could not learn, from the tool, what GitHub enforces.
    "remote policy: separate operation"; `pr status` does not enumerate rules.
    Agents ran four `gh api` calls and read a workflow comment to find that
    nothing protected `main`. Every agent named this as the single most
-   valuable fix. → AUT-408 (`enforcement: applied | not applied` in
-   `adopt --check` / `pr status`; `pr merge` fails closed on an unguarded
-   base).
+   valuable fix. → AUT-408: a new `touchstone policy status` (and the same
+   field on `pr status`) reads the effective rules and reports `applied |
+   partial | none` with what is missing; `adopt --check` stays offline and
+   deterministic per `docs/adoption-contract.md` and only points at it.
+   `pr merge` refuses to *request* a merge on a base with no pinned gate
+   unless `--unguarded` is passed, recording the gap on the PR — the tool
+   declines to act against the driver's mandatory procedure without an
+   explicit acknowledgement, as `--expect-head` declines a moved head; the
+   verdict on any merge it does request remains GitHub's.
 2. **`touchstone steering check` reported DRIFT on a current machine and
    prescribed a mutation** (2/2 Claude). The installed block predated the
    3.1 rename; nothing refreshes it after `brew upgrade`, and the message
@@ -62,9 +73,11 @@ the same wall: they could not learn, from the tool, what GitHub enforces.
    `ship-pr.sh`: "run by the required validate workflow", tier hardcoded to
    `serious`). → AUT-408 (rule) and AUT-403 (vesper fix; also scrapes every
    mentioned `AUT-n` into `Fixes`).
-7. **"Read-only" commands need a temp file** (Codex sandbox, 2/2): `adopt
-   --check`, `steering check`, `pr status` failed under a read-only
-   filesystem. Low severity; folded into AUT-412.
+7. **"Read-only" commands need a writable temp directory** (Codex sandbox,
+   2/2): `adopt --check`, `steering check`, `pr status` modify no repository
+   file but create scratch files under `$TMPDIR` (or `/tmp`), and failed under
+   a read-only filesystem. Low severity; AUT-412 documents the requirement
+   and degrades with a clear message.
 8. Confirmed reproduction of the vesper session report: at #927,
    `CLAUDE.md` did not name the ship path; the general fix is the steering
    naming `touchstone pr open|merge` (AUT-407, #957), not per-repo prose.
