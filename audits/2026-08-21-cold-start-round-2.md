@@ -2,7 +2,7 @@
 
 Same method as [round 1](2026-08-21-cold-start-dogfooding.md): fresh Claude
 Code and Codex (`codex exec --sandbox read-only`) agents, no session context,
-one read-only prompt per repository, after the round-1 fixes (AUT-407, 408, 409, 412; AUT-410 and 411 still open)
+one read-only prompt per repository, after the round-1 fixes AUT-407, 408, 409 (AUT-412's prose sweep, #963, landed at 09:48Z — after these runs; AUT-410 and 411 still open)
 shipped in touchstone 3.2.0 and the consumer policies were applied to vesper
 and arpeggio. Convoy is still pending adoption (AUT-402).
 
@@ -100,9 +100,13 @@ installed tool. Only those three kinds of finding count; preferences and
 "would be clearer" remarks are logged and not acted on, the same bar review
 findings meet. **Done is two consecutive rounds with every cell passing.**
 After that, cold starts stop being a loop: one run per release that changes
-the steering or the CLI, same pass condition. Three rounds per contract
-version is the cap, as for PR review; what is left after round 3 becomes a
-tracked issue, not a fourth round.
+the steering or the CLI, same pass condition. The cap is three rounds **per
+contract version** — a release that changes the steering or the CLI starts a
+new count, the way the review budget follows a capability across PRs.
+Rounds 1 and 2 ran against 3.2.0; round 3 is the first against 3.2.1, so two
+consecutive passes (rounds 3 and 4) fit inside that version's budget. What is
+left after a version's third round becomes a tracked issue, not a fourth
+round.
 
 Against that bar, round 2 failed on (1) for the vesper cells — the
 generated body asserted release-only tests had run (finding 7, evidence the
@@ -114,6 +118,8 @@ Everything else above is logged, not scored.
 ## Next round
 
 After 3.2.1 is installed (`pr answer`, `upgrade --help`), vesper#929 and
-touchstone #965/#966 are merged, and AUT-410 has a transport or an explicit "claim via
-the Linear MCP tool, here is the call" step in the steering. Include convoy
+touchstone #965/#966 are merged, and AUT-410 has a transport the fresh
+agent's environment actually provides — a prose step naming the MCP call does
+not unblock a sandbox that has no Linear tool (finding 4). Until then a
+Codex cell can at best pass (1) and (3). Include convoy
 on Windows Git Bash with Codex once AUT-402 lands.
