@@ -497,8 +497,10 @@ enforcement_remedy() {
   elif [ -f "$TOOL_ROOT/policy/github/consumers/$name.json" ] \
     && [ "$(jq -r '"\(.organization)/\(.repository)"' "$TOOL_ROOT/policy/github/consumers/$name.json")" = "$REPO" ]; then
     printf 'scripts/github-policy.sh apply policy/github/consumers/%s.json (in the Touchstone checkout), then close/reopen open PRs' "$name"
-  else
+  elif [ "${REPO%%/*}" = "$(jq -r .organization "$CANONICAL_POLICY")" ]; then
     printf 'derive a consumer policy first: scripts/derive-consumer-policy.sh %s > policy/github/consumers/%s.json, review and merge it, then scripts/github-policy.sh apply it and close/reopen open PRs' "$name" "$name"
+  else
+    printf 'this tool ships policy for the %s organization only; %s needs its own policy file modelled on policy/github/touchstone-main.json before scripts/github-policy.sh apply' "$(jq -r .organization "$CANONICAL_POLICY")" "$REPO"
   fi
 }
 
