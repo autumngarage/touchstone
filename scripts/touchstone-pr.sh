@@ -126,18 +126,29 @@ clean_diagnostic() {
 
 capture_command() {
   local output diagnostic status=0
-  CAPTURE_STDERR_TEMP="$(mktemp "${TMPDIR:-/tmp}/touchstone-pr-read.XXXXXX")" || {
-    CAPTURE_OUTPUT=""
-    CAPTURE_ERROR="could not create a scratch file under ${TMPDIR:-/tmp}: this command modifies no repository file but needs a writable temporary directory (set TMPDIR)"
-    return 1
-  }
-  set +e
-  output="$("$@" 2>"$CAPTURE_STDERR_TEMP")"
-  status=$?
-  set -e
-  diagnostic="$(cat "$CAPTURE_STDERR_TEMP")"
-  rm -f -- "$CAPTURE_STDERR_TEMP"
-  CAPTURE_STDERR_TEMP=""
+  # The scratch file keeps stderr out of the parsed stream (PR #883 found
+  # successful reads turning into corrupt data when the two were merged).
+  # Where no temporary directory is writable -- a read-only sandbox, where
+  # fresh agents run `policy status` and `pr status` -- the read still
+  # happens: stdout alone is captured and parsed, and stderr passes through
+  # to the terminal instead of being quoted back. The property that matters
+  # (diagnostics never enter the data) holds either way.
+  if CAPTURE_STDERR_TEMP="$(mktemp "${TMPDIR:-/tmp}/touchstone-pr-read.XXXXXX" 2>/dev/null)"; then
+    set +e
+    output="$("$@" 2>"$CAPTURE_STDERR_TEMP")"
+    status=$?
+    set -e
+    diagnostic="$(cat "$CAPTURE_STDERR_TEMP")"
+    rm -f -- "$CAPTURE_STDERR_TEMP"
+    CAPTURE_STDERR_TEMP=""
+  else
+    CAPTURE_STDERR_TEMP=""
+    set +e
+    output="$("$@")"
+    status=$?
+    set -e
+    diagnostic="(diagnostics were printed above; no writable temporary directory under ${TMPDIR:-/tmp} to capture them)"
+  fi
   CAPTURE_OUTPUT="$output"
   CAPTURE_ERROR=""
   if [ "$status" -ne 0 ]; then
