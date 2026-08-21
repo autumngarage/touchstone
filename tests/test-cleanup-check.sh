@@ -111,6 +111,7 @@ for kind in untracked dirty worktree local-branch remote-branch; do
   grep -qE "^  $kind " "$TMP/out" && ok "$kind reported" || fail "$kind not reported: $(cat "$TMP/out")"
 done
 grep -q 'feat/done (#41 merged)' "$TMP/out" && ok "merged branch names its PR" || fail "merged branch lacks its PR"
+grep -q -- "--force-with-lease=feat/done:$DONE_SHA :feat/done" "$TMP/out" && ok "remote delete remedy is lease-protected" || fail "remote remedy not lease-protected: $(grep 'origin/feat/done' -A1 "$TMP/out")"
 grep -q 'fix/abandoned (#42 closed)' "$TMP/out" && grep -q 'closed without merging' "$TMP/out" \
   && ok "closed-unmerged branch gets the cautious remedy" || fail "closed branch remedy wrong"
 grep -E '^  (local|remote)-branch.*feat/in-flight' "$TMP/out" >/dev/null && fail "a branch with an open PR was reported as finished" || ok "open-PR branch is not a finished branch"
@@ -182,6 +183,12 @@ run
 [ "$RC" -eq 1 ] && grep -q 'github.*repository read failed' "$TMP/out" && ok "gh failure reported" || fail "gh failure not reported: $(cat "$TMP/out")"
 grep -qE '^  (local|remote)-branch' "$TMP/out" && fail "branch findings claimed without GitHub" || ok "branch findings withheld without GitHub"
 rm -f "$TMP/state/gh-down"
+
+echo "==> a relative --project resolves against the invoking directory, not CDPATH"
+mkdir -p "$TMP/cdtrap/repo"
+(cd "$TMP" && CDPATH="$TMP/cdtrap" bash "$ROOT/bin/touchstone" cleanup check --project repo --json >"$TMP/out2" 2>&1 || true)
+jq -e '.schema == "touchstone.cleanup/v1"' "$TMP/out2" >/dev/null 2>&1 && ! grep -q cdtrap "$TMP/out2" \
+  && ok "relative --project used the invoking directory" || fail "relative --project went through CDPATH or failed: $(head -c 300 "$TMP/out2")"
 
 echo "==> invalid input exits 2"
 set +e

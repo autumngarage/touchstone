@@ -40,7 +40,10 @@ while [ "$#" -gt 0 ]; do
         echo "ERROR: --project requires a non-empty directory" >&2
         exit 2
       }
-      PROJECT_DIR="$2"
+      case "$2" in
+        /*) PROJECT_DIR="$2" ;;
+        *) PROJECT_DIR="$PWD/$2" ;; # absolute before cd: never resolved through CDPATH
+      esac
       shift 2
       ;;
     --json)
@@ -59,7 +62,7 @@ done
 }
 
 if [ -n "$PROJECT_DIR" ]; then
-  cd "$PROJECT_DIR" 2>/dev/null || {
+  cd -- "$PROJECT_DIR" 2>/dev/null || {
     echo "ERROR: --project directory is not accessible: $PROJECT_DIR" >&2
     exit 2
   }
@@ -116,13 +119,17 @@ else
 fi
 
 # --- dirty and untracked -------------------------------------------------------
-while IFS= read -r line; do
-  [ -n "$line" ] || continue
-  case "$line" in
-    '?? '*) finding "untracked" "${line#?? }" "remove it, or add it to .gitignore if every checkout produces it" ;;
-    *) finding "dirty" "${line:3}" "commit, stash, or discard it" ;;
-  esac
-done < <(git status --porcelain --untracked-files=all 2>/dev/null)
+if STATUS_LINES="$(git status --porcelain --untracked-files=all 2>&1)"; then
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      '?? '*) finding "untracked" "${line#?? }" "remove it, or add it to .gitignore if every checkout produces it" ;;
+      *) finding "dirty" "${line:3}" "commit, stash, or discard it" ;;
+    esac
+  done <<<"$STATUS_LINES"
+else
+  finding "dirty" "git status failed: $(printf '%s' "$STATUS_LINES" | head -1)" "repair the working tree; dirty and untracked files are unverified"
+fi
 
 # --- worktrees -------------------------------------------------------------------
 # Porcelain records are NUL-separated with -z, so a path with spaces stays
@@ -235,15 +242,15 @@ if [ "$GH_OK" = true ]; then
       continue
     fi
     case "$pr" in
-      *merged) finding "remote-branch" "origin/$branch ($pr)" "git push origin --delete $branch" ;;
-      *) finding "remote-branch" "origin/$branch ($pr)" "its PR was closed without merging: git push origin --delete $branch if the work is abandoned" ;;
+      *merged) finding "remote-branch" "origin/$branch ($pr)" "git push origin --force-with-lease=$branch:$sha :$branch (deletes only while the branch is still at that SHA)" ;;
+      *) finding "remote-branch" "origin/$branch ($pr)" "its PR was closed without merging: git push origin --force-with-lease=$branch:$sha :$branch if the work is abandoned" ;;
     esac
   done < <(printf '%s\n' "$REMOTE_HEADS" | awk 'NF == 2 { print $1 "\t" $2 }')
 fi
 
 # --- report -----------------------------------------------------------------------
 if [ "$JSON" = true ]; then
-  printf '{"schema":"touchstone.cleanup/v1","defaultBranch":"%s","findings":[' "$DEFAULT_BRANCH"
+  printf '{"schema":"touchstone.cleanup/v1","defaultBranch":%s,"findings":[' "$(printf '%s' "$DEFAULT_BRANCH" | jq -Rs .)"
   first=true
   for f in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
     IFS=$'\t' read -r kind subject remedy <<<"$f"
