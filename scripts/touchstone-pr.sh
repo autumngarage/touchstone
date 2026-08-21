@@ -418,9 +418,11 @@ read_enforcement() {
     || fail_operation "the tool's policy file is missing: $CANONICAL_POLICY" "Reinstall touchstone."
   expected="$(jq -c '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | {path, repository_id, ref, sha}]' "$CANONICAL_POLICY")" \
     || fail_operation "could not read the expected workflow pins from $CANONICAL_POLICY" "Reinstall touchstone."
-  read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/rules/branches/$encoded" \
+  # Every page: the endpoint pages at 30 rules and `--paginate` emits one
+  # array per page, merged here before evaluation.
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/rules/branches/$encoded?per_page=100" \
     || fail_operation "could not read the effective rules for $base_ref: $READ_OUTPUT" "Retry after GitHub recovers."
-  ENFORCEMENT_MISSING="$(printf '%s' "$READ_OUTPUT" | jq -r --argjson expected "$expected" '
+  ENFORCEMENT_MISSING="$(printf '%s' "$READ_OUTPUT" | jq -s 'add // []' | jq -r --argjson expected "$expected" '
       ([.[] | select(.type == "workflows") | .parameters.workflows[]?]) as $w
       | def gate($name; $path):
           ($expected[] | select(.path == $path)) as $e
@@ -749,7 +751,7 @@ status_pr() {
 
 merge_pr() {
   local number state url head base base_sha merge_state draft merge_output merge_status=0
-  local merge_diagnostic final_state final_row final_head auto_merge queue_state unguarded_marker
+  local merge_diagnostic final_state final_row final_head auto_merge queue_state unguarded_marker prior_records
   [ -n "$EXPECTED_HEAD" ] \
     || fail_input "merge requires --head SHA" "Pass the exact reviewed head from GitHub."
   read_pr_row
@@ -792,7 +794,10 @@ merge_pr() {
       read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
         --jq "[.[] | select((.body // \"\") | contains(\"$unguarded_marker\"))] | length" \
         || fail_operation "could not inspect PR #$PR_NUMBER comments for a prior unguarded-merge record: $READ_OUTPUT" "Inspect GitHub before retrying."
-      if [ "$READ_OUTPUT" = 0 ]; then
+      # One count per page: sum them, so a PR past 100 comments cannot turn
+      # "0\n0" into a skipped record.
+      prior_records="$(printf '%s\n' "$READ_OUTPUT" | awk '{ total += $1 } END { print total + 0 }')"
+      if [ "$prior_records" = 0 ]; then
         gh pr comment "$PR_NUMBER" --repo "$REPO_SPEC" --body "$unguarded_marker
 Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarded\`: enforcement on \`$base\` is $(enforcement_text) — the canonical pinned review gate is absent, so GitHub does not require it for this merge (other checks or reviews may still have run). Apply the consumer policy to close the gap." >/dev/null \
           || fail_operation "could not record the unguarded merge request on PR #$PR_NUMBER" "Inspect GitHub before retrying."

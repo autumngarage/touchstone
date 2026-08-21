@@ -65,6 +65,30 @@ ok() {
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_CALLS"
 has() { local needle="$1"; shift; printf '%s\n' "$*" | grep -qF -- "$needle"; }
+serve_rules() {
+  # A real effective-rules document through the caller's real jq: the
+  # policy's three pinned workflows plus the queue and the native rules
+  # when the gate is "installed", only the native rules otherwise.
+  if [ -f "$GH_STATE/review-gate" ]; then
+    pin_sha="$GH_POLICY_SHA"
+    [ ! -f "$GH_STATE/stale-pin" ] || pin_sha="0000000000000000000000000000000000000000"
+    rules='[{"type":"pull_request"},{"type":"deletion"},{"type":"non_fast_forward"},{"type":"merge_queue"},{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$GH_POLICY_SHA"'"}]}}]'
+  elif [ -f "$GH_STATE/no-rules" ]; then
+    rules='[]'
+  else
+    rules='[{"type":"pull_request"},{"type":"deletion"},{"type":"non_fast_forward"}]'
+  fi
+  # Served as two pages, as --paginate would deliver them: the native
+  # rules on one page, the workflows and queue on the next.
+  page1="$(printf '%s' "$rules" | jq -c '[.[] | select(.type != "workflows" and .type != "merge_queue")]')"
+  page2="$(printf '%s' "$rules" | jq -c '[.[] | select(.type == "workflows" or .type == "merge_queue")]')"
+  if has --jq "$@"; then
+    printf '%s' "$rules" | jq -r "$(value_after --jq "$@")"
+  else
+    printf '%s\n%s\n' "$page1" "$page2"
+  fi
+}
+
 value_after() {
   local wanted="$1"
   shift
@@ -209,9 +233,13 @@ case "$1 ${2:-}" in
     fi
     ;;
   "api --paginate")
-    if has 'touchstone:unguarded-merge' "$@"; then
-      # The count of prior unguarded-merge records for this head.
-      if [ -f "$GH_STATE/unguarded-recorded" ]; then printf '1\n'; else printf '0\n'; fi
+    if has 'rules/branches/' "$@"; then
+      serve_rules "$@"
+    elif has 'touchstone:unguarded-merge' "$@"; then
+      # The count of prior unguarded-merge records for this head, one per
+      # page as --paginate delivers it: two pages, the record (if any) on the
+      # second.
+      if [ -f "$GH_STATE/unguarded-recorded" ]; then printf '0\n1\n'; else printf '0\n0\n'; fi
     elif has '/issues/7/comments' "$@"; then
       if [ "${GH_MODE:-ok}" = many_requests ]; then
         for index in $(awk 'BEGIN { for (i = 1; i <= 4000; i++) print i }'); do
@@ -282,23 +310,7 @@ case "$1 ${2:-}" in
     elif has 'actions/workflows?' "$@"; then
       printf '1\n2\n3\n'
     elif has 'rules/branches/' "$@"; then
-      # A real effective-rules document through the caller's real jq: the
-      # policy's three pinned workflows plus the queue and the native rules
-      # when the gate is "installed", only the native rules otherwise.
-      if [ -f "$GH_STATE/review-gate" ]; then
-        pin_sha="$GH_POLICY_SHA"
-        [ ! -f "$GH_STATE/stale-pin" ] || pin_sha="0000000000000000000000000000000000000000"
-        rules='[{"type":"pull_request"},{"type":"deletion"},{"type":"non_fast_forward"},{"type":"merge_queue"},{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$GH_POLICY_SHA"'"}]}}]'
-      elif [ -f "$GH_STATE/no-rules" ]; then
-        rules='[]'
-      else
-        rules='[{"type":"pull_request"},{"type":"deletion"},{"type":"non_fast_forward"}]'
-      fi
-      if has --jq "$@"; then
-        printf '%s' "$rules" | jq -r "$(value_after --jq "$@")"
-      else
-        printf '%s\n' "$rules"
-      fi
+      serve_rules "$@"
     elif has 'actions/runs?head_sha=' "$@"; then
       # Real selector over a real list: the pinned gate (run 77, unlisted
       # workflow id 999) next to a NEWER repository-local decoy of the same
@@ -541,7 +553,7 @@ EOF
   echo "==> merge asks the pinned gate to re-evaluate, then asks GitHub to merge"
   touch "$TMP/state/review-gate" "$TMP/state/pr-exists"
   rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
-  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 0
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
     || fail "merge did not ask the review gate to re-evaluate before requesting the merge"
