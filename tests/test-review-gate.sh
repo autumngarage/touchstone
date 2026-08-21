@@ -66,14 +66,14 @@ run_case "an answered inline finding passes" '
   .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
   | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
                        {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"OWNER","user":{"login":"henry"},"body":"Fixed."}]' success
-echo "==> A review body edited by GitHub's inline attachment is not a finding; a later author edit is"
+echo "==> A review body stamped by GitHub's inline attachment is not a finding; any later edit is"
 STANDARD_BODY="### 💡 Codex Review\\n\\nHere are some automated review suggestions for this pull request.\\n\\n**Reviewed commit:** \`1111111111\`"
-run_case "the one-second attachment bump on a standard review body passes" '
+run_case "the attachment stamp (updated_at equals the last inline comment) passes" '
   .reviews = [{"id":7,"body":"'"$STANDARD_BODY"'","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:01Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
-  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
+  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:01Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
                        {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"OWNER","user":{"login":"henry"},"body":"Fixed."}]' success
-run_case "a standard review body edited minutes later is a body finding" '
-  .reviews = [{"id":7,"body":"'"$STANDARD_BODY"'","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:25:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+run_case "a standard review body edited two seconds after its last attachment is a body finding" '
+  .reviews = [{"id":7,"body":"'"$STANDARD_BODY"'","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:03Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
   | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
                        {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"OWNER","user":{"login":"henry"},"body":"Fixed."}]' failure "body-only finding"
 [ "$ERRORS" -eq 0 ] || {

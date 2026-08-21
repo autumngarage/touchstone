@@ -37,12 +37,13 @@ def standard_codex_review_body:
   | ($body | contains("### 💡 Codex Review"))
     and ($body | contains("Reviewed commit:"));
 
-# GitHub stamps a review's updated_at when its inline comments attach,
-# typically a second after submitted_at. An author edit is a later change:
-# later than submission and later than every attached comment, by more than
-# the attachment settle window.
-def review_attachment_settle_seconds: 60;
-
+# GitHub stamps a review's updated_at with the time its inline comments
+# attach -- exactly the latest attached comment's created_at, observed on
+# autumngarage/touchstone#931 -- so updated_at alone does not distinguish
+# that from an author edit. An edit is identified exactly: updated_at later
+# than the submission and later than every attached inline comment. Edits
+# within the same second as the last attachment share its timestamp and are
+# not distinguishable; that is GitHub's granularity, not a window chosen here.
 def edited_after_submission($root):
   . as $review
   | ([$review.submitted_at // empty]
@@ -51,8 +52,7 @@ def edited_after_submission($root):
         | .created_at // empty]
      | map(fromdateiso8601) | max) as $settled
   | (($review.updated_at // "") | if . == "" then null else fromdateiso8601 end) as $updated
-  | $updated != null and $settled != null
-    and ($updated - $settled) > review_attachment_settle_seconds;
+  | $updated != null and $settled != null and $updated > $settled;
 
 def answers_body_finding($id):
   (.body // "") | contains("<!-- touchstone:review-answer id=\($id) -->");
