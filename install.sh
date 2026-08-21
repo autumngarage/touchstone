@@ -156,15 +156,25 @@ chmod +x "$target.partial/bin/touchstone"
 rm -rf "$target"
 mv "$target.partial" "$target"
 
-cat >"$PREFIX/bin/touchstone" <<WRAPPER
-#!/usr/bin/env bash
-# Touchstone CLI wrapper (installed by install.sh). Runs the version named
-# in $PREFIX/current; \`touchstone upgrade\` rewrites that file.
-set -euo pipefail
-current="\$(cat "$PREFIX/current" 2>/dev/null)" || { echo "ERROR: $PREFIX/current is missing; re-run install.sh" >&2; exit 1; }
-exec bash "$PREFIX/cli/\$current/bin/touchstone" "\$@"
-WRAPPER
-chmod +x "$PREFIX/bin/touchstone"
+# The wrapper embeds the prefix as data, never as shell source: it is written
+# through printf %q so a prefix containing metacharacters cannot execute when
+# the wrapper starts. Written to a temporary file and renamed into place, so
+# a CLI or hook invocation that starts mid-upgrade never reads a half-written
+# script.
+prefix_quoted="$(printf '%q' "$PREFIX")"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf '# Touchstone CLI wrapper (installed by install.sh). Runs the version named\n'
+  printf '# in <prefix>/current; "touchstone upgrade" rewrites that file.\n'
+  printf 'set -euo pipefail\n'
+  printf 'prefix=%s\n' "$prefix_quoted"
+  # shellcheck disable=SC2016 # the wrapper's own variables, expanded when it runs
+  printf 'current="$(cat "$prefix/current" 2>/dev/null)" || { echo "ERROR: $prefix/current is missing; re-run install.sh" >&2; exit 1; }\n'
+  # shellcheck disable=SC2016
+  printf 'exec bash "$prefix/cli/$current/bin/touchstone" "$@"\n'
+} >"$PREFIX/bin/touchstone.next"
+chmod +x "$PREFIX/bin/touchstone.next"
+mv "$PREFIX/bin/touchstone.next" "$PREFIX/bin/touchstone"
 printf '%s\n' "$VERSION" >"$PREFIX/current.next"
 mv "$PREFIX/current.next" "$PREFIX/current"
 
