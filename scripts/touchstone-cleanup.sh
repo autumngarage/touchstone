@@ -73,6 +73,11 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
   exit 2
 }
 
+# Names and paths that appear inside an executable remedy are shell-quoted:
+# a branch Git accepts (`feat;rm -rf x`) must not become a command a driver
+# pastes. printf %q is what bash itself uses to re-enter a word.
+q() { printf '%q' "$1"; }
+
 FINDINGS=()
 FINDING_COUNT=0
 finding() {
@@ -100,9 +105,9 @@ fi
 # --- checkout ----------------------------------------------------------------
 CURRENT="$(git branch --show-current 2>/dev/null || true)"
 if [ -z "$CURRENT" ]; then
-  finding "checkout" "detached HEAD at $(git rev-parse --short HEAD)" "git checkout $DEFAULT_BRANCH && git pull --rebase"
+  finding "checkout" "detached HEAD at $(git rev-parse --short HEAD)" "git checkout $(q "$DEFAULT_BRANCH") && git pull --rebase"
 elif [ "$CURRENT" != "$DEFAULT_BRANCH" ]; then
-  finding "checkout" "on branch $CURRENT" "git checkout $DEFAULT_BRANCH && git pull --rebase (after its PR is merged)"
+  finding "checkout" "on branch $CURRENT" "git checkout $(q "$DEFAULT_BRANCH") && git pull --rebase (after its PR is merged)"
 else
   # Read origin's tip without fetching: a fetch writes FETCH_HEAD and may move
   # the remote-tracking ref, and a swallowed fetch failure would let a stale
@@ -146,7 +151,7 @@ emit_worktree() {
   if [ "$WT_PRUNABLE" = true ]; then
     finding "worktree" "$WT_PATH [${WT_BRANCH:-(detached)}] directory missing" "git worktree prune (the directory is gone; Git still records it)"
   else
-    finding "worktree" "$WT_PATH [${WT_BRANCH:-(detached)}]" "git worktree remove '$WT_PATH' once its PR is merged, then git worktree prune"
+    finding "worktree" "$WT_PATH [${WT_BRANCH:-(detached)}]" "git worktree remove $(q "$WT_PATH") once its PR is merged, then git worktree prune"
   fi
 }
 while IFS= read -r -d '' record; do
@@ -212,7 +217,7 @@ if [ "$GH_OK" = true ]; then
     }
     [ -n "$pr" ] || continue
     case "$pr" in
-      *merged) finding "local-branch" "$branch ($pr)" "git branch -D $branch after confirming the merged head (principles/git-workflow.md, 'Periodic branch hygiene')" ;;
+      *merged) finding "local-branch" "$branch ($pr)" "git branch -D $(q "$branch") after confirming the merged head (principles/git-workflow.md, 'Periodic branch hygiene')" ;;
       *) finding "local-branch" "$branch ($pr)" "its PR was closed without merging: delete the branch if the work is abandoned, or reopen a PR for it" ;;
     esac
   done < <(git for-each-ref --format='%(refname:short)	%(objectname)' refs/heads/)
@@ -238,12 +243,12 @@ if [ "$GH_OK" = true ]; then
     [ -n "$pr" ] || continue
     child="$(bases_open_pr "$branch")"
     if [ -n "$child" ]; then
-      finding "remote-branch" "origin/$branch ($pr) still bases open PR $child" "do not delete: retarget $child to $DEFAULT_BRANCH (gh pr edit $child --base $DEFAULT_BRANCH) and rebase it first"
+      finding "remote-branch" "origin/$branch ($pr) still bases open PR $child" "do not delete: retarget $child to $(q "$DEFAULT_BRANCH") (gh pr edit ${child#\#} --base $(q "$DEFAULT_BRANCH")) and rebase it first"
       continue
     fi
     case "$pr" in
-      *merged) finding "remote-branch" "origin/$branch ($pr)" "git push origin --force-with-lease=$branch:$sha :$branch (deletes only while the branch is still at that SHA)" ;;
-      *) finding "remote-branch" "origin/$branch ($pr)" "its PR was closed without merging: git push origin --force-with-lease=$branch:$sha :$branch if the work is abandoned" ;;
+      *merged) finding "remote-branch" "origin/$branch ($pr)" "git push origin --force-with-lease=$(q "$branch"):$sha :$(q "$branch") (deletes only while the branch is still at that SHA)" ;;
+      *) finding "remote-branch" "origin/$branch ($pr)" "its PR was closed without merging: git push origin --force-with-lease=$(q "$branch"):$sha :$(q "$branch") if the work is abandoned" ;;
     esac
   done < <(printf '%s\n' "$REMOTE_HEADS" | awk 'NF == 2 { print $1 "\t" $2 }')
 fi

@@ -184,6 +184,13 @@ run
 grep -qE '^  (local|remote)-branch' "$TMP/out" && fail "branch findings claimed without GitHub" || ok "branch findings withheld without GitHub"
 rm -f "$TMP/state/gh-down"
 
+echo "==> a branch name with shell metacharacters is quoted in its remedy"
+git -C "$TMP/repo" branch 'feat/semi;touch' "$DONE_SHA"
+printf 'feat/semi;touch\t49\tMERGED\t%s\tautumngarage/current\tmain\n' "$DONE_SHA" >>"$TMP/state/prs"
+run
+grep -qF 'git branch -D feat/semi\;touch' "$TMP/out" && ok "metacharacter branch quoted in remedy" || fail "unquoted branch in remedy: $(grep 'semi' "$TMP/out")"
+git -C "$TMP/repo" branch -D 'feat/semi;touch' >/dev/null
+
 echo "==> a relative --project resolves against the invoking directory, not CDPATH"
 mkdir -p "$TMP/cdtrap/repo"
 (cd "$TMP" && CDPATH="$TMP/cdtrap" bash "$ROOT/bin/touchstone" cleanup check --project repo --json >"$TMP/out2" 2>&1 || true)
