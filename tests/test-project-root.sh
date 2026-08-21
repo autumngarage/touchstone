@@ -405,6 +405,11 @@ else
   grep -q "predates the non-Homebrew install" "$INSTALL_TMP/old.out" && pass "pre-installer release refused" || fail "unexpected: $(cat "$INSTALL_TMP/old.out")"
 fi
 [ "$(cat "$PREFIX/current")" = "9.9.1" ] || fail "a refused old release changed current"
+# The message names the file that is actually missing.
+(cd "$INSTALL_TMP/stage-9.9.0" && cp "$REPO_ROOT/install.sh" "touchstone-9.9.0/install.sh" && rm "touchstone-9.9.0/hooks/branch-guard.sh" && tar -czf "$INSTALL_TMP/v9.9.0b.tar.gz" "touchstone-9.9.0")
+make_formula 9.9.0 "$(sha256_of "$INSTALL_TMP/v9.9.0b.tar.gz")" "$INSTALL_TMP/formula-9.9.0b.rb"
+bash "$REPO_ROOT/install.sh" --prefix "$PREFIX" --formula-file "$INSTALL_TMP/formula-9.9.0b.rb" --archive-file "$INSTALL_TMP/v9.9.0b.tar.gz" >"$INSTALL_TMP/oldb.out" 2>&1 && fail "an archive without the hook was installed"
+grep -q "hooks/branch-guard.sh is missing" "$INSTALL_TMP/oldb.out" && pass "the missing hook is named" || fail "wrong refusal: $(cat "$INSTALL_TMP/oldb.out")"
 
 echo "==> A version the formula does not record is refused"
 if bash "$REPO_ROOT/install.sh" --prefix "$PREFIX" --formula-file "$INSTALL_TMP/formula-9.9.1.rb" --archive-file "$INSTALL_TMP/v9.9.1.tar.gz" --version 1.2.3 >"$INSTALL_TMP/pin.out" 2>&1; then

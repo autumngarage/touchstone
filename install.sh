@@ -147,19 +147,24 @@ unpacked="$(find "$tmp/unpack" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
 # The first release to carry this installer also carries `upgrade` and
 # `hook`; an older archive (the formula still naming 3.1.0, say) would install
 # a tool that cannot upgrade itself or serve hooks from this prefix.
-[ -f "$unpacked/install.sh" ] && [ -f "$unpacked/hooks/branch-guard.sh" ] \
-  || die "release $VERSION predates the non-Homebrew install (no install.sh in the archive); wait for the formula to record a release that carries it"
+for required in install.sh hooks/branch-guard.sh; do
+  [ -f "$unpacked/$required" ] \
+    || die "release $VERSION predates the non-Homebrew install ($required is missing from the archive); wait for the formula to record a release that carries it"
+done
 released="$(head -n 1 "$unpacked/VERSION" 2>/dev/null | tr -d '[:space:]')"
 [ "$released" = "$VERSION" ] || die "the archive reports VERSION '$released', not $VERSION"
 
 # Install into place atomically: a failed unpack never leaves a half tree
 # that the wrapper would run.
+# Per-process staging: two installers on one prefix never share a partial
+# tree, and the final rename publishes a complete tree or nothing.
 mkdir -p "$PREFIX/cli" "$PREFIX/bin"
-rm -rf "$target.partial"
-mv "$unpacked" "$target.partial"
-chmod +x "$target.partial/bin/touchstone"
+staging="$target.partial.$$"
+rm -rf "$staging"
+mv "$unpacked" "$staging"
+chmod +x "$staging/bin/touchstone"
 rm -rf "$target"
-mv "$target.partial" "$target"
+mv "$staging" "$target"
 
 # The wrapper embeds the prefix as data, never as shell source: it is written
 # through printf %q so a prefix containing metacharacters cannot execute when
