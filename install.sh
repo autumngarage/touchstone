@@ -179,6 +179,14 @@ rm -rf "$staging"
 mv "$unpacked" "$staging"
 chmod +x "$staging/bin/touchstone"
 previous=""
+# An interrupt between set-aside and publication must put the previous tree
+# back; the EXIT trap below covers normal failure, this covers signals.
+restore_previous() {
+  if [ -n "$previous" ] && [ -e "$previous" ] && [ ! -e "$target" ]; then
+    mv "$previous" "$target" 2>/dev/null || true
+  fi
+}
+trap 'restore_previous; rm -rf "$tmp" "$lock"; exit 130' INT TERM
 if [ -e "$target" ]; then
   previous="$target.previous.$$"
   mv "$target" "$previous" || die "could not set aside the existing $target"
