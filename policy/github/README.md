@@ -86,6 +86,11 @@ it required with `--require-status CONTEXT` (repeatable): the derivation adds
 one `required_status_checks` rule naming those contexts and changes nothing
 else, so applying the policy never silently drops a gate the project relied
 on. The canonical rules are only ever joined, never removed or weakened.
+Such a policy depends on the repository's own publisher: if that workflow is
+removed or stops reporting the context, every merge blocks on a pending
+status until the policy is regenerated without the flag. The flag requires
+`--no-queue`: a `pull_request`-only publisher never reports on a merge-queue
+commit, so a queued consumer would reject every entry.
 
 Every adopted repository's policy is an exact derivation of the canonical
 one — `scripts/derive-consumer-policy.sh REPOSITORY [--no-queue] [--require-status CONTEXT]...` — checked in under

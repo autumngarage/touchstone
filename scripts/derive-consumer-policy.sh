@@ -66,6 +66,14 @@ while [ "$#" -gt 0 ]; do
     *) usage ;;
   esac
 done
+# A repository-owned status is published by a workflow that, today, runs on
+# pull_request only; on a queued consumer the queue commit would never carry
+# the context and every entry would be rejected. Until a consumer ships a
+# merge_group-publishing workflow, the flag is refused with the queue.
+if [ "$STATUS_COUNT" -gt 0 ] && [ "$QUEUE" = true ]; then
+  echo "derive-consumer-policy.sh: --require-status needs --no-queue; a pull_request-only publisher never reports on a merge-queue commit" >&2
+  exit 2
+fi
 if [ "$STATUS_COUNT" -gt 0 ]; then
   contexts_json="$(printf '%s\n' "${STATUS_CONTEXTS[@]}" | jq -R . | jq -s 'unique')"
 else
