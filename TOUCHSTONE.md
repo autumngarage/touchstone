@@ -86,4 +86,4 @@ Never push directly to the default branch, even in an emergency; rewriting your 
 | hit a bug in an upstream tool (don't silently work around it) | `principles/file-upstream-bugs.md` |
 | write, trust, or audit agent memory — it is a cache, not truth | `principles/memory-hygiene.md` |
 
-Claude Code agents: the bundled `touchstone-*` and `memory-audit` skills mirror this table in your session header. Trust whichever surface fires first.
+Claude Code agents: the bundled `touchstone-*` and `memory-audit` skills mirror this table in your session header; `touchstone steering install` keeps them current. Trust whichever surface fires first.

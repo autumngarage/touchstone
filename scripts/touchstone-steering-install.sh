@@ -36,6 +36,62 @@ PRINCIPLES_RELATIVE=".touchstone/principles"
 # directions: an operator file can resemble ours, and one of ours can change
 # until it no longer matches the pattern. The manifest is a fact.
 PRINCIPLES_MANIFEST=".touchstone-installed"
+# The bundled Claude skills are routed documents in another layout: they
+# reference `principles/...` the same way, the steering tells Claude agents to
+# trust them, and a copy that is not refreshed by install drifts exactly the
+# way a copied principle did (2026-08-21: the installed git-workflow skill
+# still said `open-pr.sh --auto-merge`). They are installed under the same
+# ownership rules as the principles, one manifest per destination.
+SKILLS_SOURCE="$ROOT/skills"
+SKILLS_RELATIVE=".claude/skills"
+# The active document set. Every routed-document function reads these rather
+# than the principles constants, so the same code installs both sets.
+SET_NAME=""
+SET_SOURCE=""
+SET_RELATIVE=""
+use_set() {
+  case "$1" in
+    principles)
+      SET_NAME=principles
+      SET_SOURCE="$PRINCIPLES_SOURCE"
+      SET_RELATIVE="$PRINCIPLES_RELATIVE"
+      ;;
+    skills)
+      SET_NAME=skills
+      SET_SOURCE="$SKILLS_SOURCE"
+      SET_RELATIVE="$SKILLS_RELATIVE"
+      ;;
+    *) die "unknown document set: $1" ;;
+  esac
+}
+DOCUMENT_SETS="principles skills"
+# The relative paths of the active set's documents, one per line, sorted.
+# Principles are flat markdown; a skill is <name>/SKILL.md plus any
+# <name>/agents/*.yaml the driver reads.
+set_documents() {
+  [ -d "$SET_SOURCE" ] || return 0
+  case "$SET_NAME" in
+    principles) (cd "$SET_SOURCE" && ls -1 ./*.md 2>/dev/null | sed 's|^\./||') ;;
+    skills) (cd "$SET_SOURCE" && find . -type f \( -name SKILL.md -o -path '*/agents/*.yaml' \) | sed 's|^\./||' | LC_ALL=C sort) ;;
+  esac
+}
+# A document's relative path may have directories, but no component may be
+# empty, `.`, `..`, or dash-led, and the path is never absolute: a manifest
+# entry that fails this must never direct a write or delete outside the set's
+# destination.
+valid_relative_name() {
+  local path="$1" component rest
+  [ -n "$path" ] || return 1
+  case "$path" in /* | *//* | */) return 1 ;; esac
+  rest="$path"
+  while :; do
+    component="${rest%%/*}"
+    case "$component" in '' | . | .. | -*) return 1 ;; esac
+    [ "$rest" != "$component" ] || break
+    rest="${rest#*/}"
+  done
+  return 0
+}
 BEGIN_MARKER='<!-- touchstone:steering:start -->'
 # The start marker may carry attributes (see restore-newline below).
 BEGIN_MARKER_RE='^<!-- touchstone:steering:start( restore-newline| created-file)? -->$'
@@ -310,9 +366,16 @@ render_block "$BLOCK"
 # Fail before any driver file is touched if the routed destination cannot be
 # prepared, so a bad path cannot leave three instruction files pointing at
 # documents that were never installed.
+# A set with no documents (a release that ships no skills) installs, checks,
+# and removes nothing, and creates no directory.
+set_is_empty() { [ -z "$(set_documents)" ]; }
+
 preflight_principles() {
-  local destination="$HOME_DIR/$PRINCIPLES_RELATIVE"
-  [ -d "$PRINCIPLES_SOURCE" ] || die "routed steering documents are missing: $PRINCIPLES_SOURCE"
+  local destination="$HOME_DIR/$SET_RELATIVE"
+  if [ "$SET_NAME" = principles ]; then
+    [ -d "$SET_SOURCE" ] || die "routed steering documents are missing: $SET_SOURCE"
+  fi
+  set_is_empty && return 0
   if [ -e "$destination" ] && [ ! -d "$destination" ]; then
     die "$destination exists and is not a directory; move it before installing"
   fi
@@ -337,8 +400,8 @@ preflight_principles() {
   # trusting it to say what may be deleted later.
   local manifest="$destination/$PRINCIPLES_MANIFEST" recorded
   if [ -e "$manifest" ] || [ -L "$manifest" ]; then
-    [ -e "$manifest" ] || die "$PRINCIPLES_RELATIVE/$PRINCIPLES_MANIFEST is a dangling symlink; move it before installing"
-    [ -f "$(resolve_link "$manifest")" ] || die "$PRINCIPLES_RELATIVE/$PRINCIPLES_MANIFEST is not a regular file; move it before installing"
+    [ -e "$manifest" ] || die "$SET_RELATIVE/$PRINCIPLES_MANIFEST is a dangling symlink; move it before installing"
+    [ -f "$(resolve_link "$manifest")" ] || die "$SET_RELATIVE/$PRINCIPLES_MANIFEST is not a regular file; move it before installing"
     local tab line
     tab="$(printf '\t')"
     while IFS= read -r line; do
@@ -349,34 +412,36 @@ preflight_principles() {
       # could slip past this refusal.
       case "$line" in
         *"$tab"*) recorded="${line#*"$tab"}" ;;
-        *) die "$PRINCIPLES_RELATIVE/$PRINCIPLES_MANIFEST has an entry with no recorded checksum: $line" ;;
+        *) die "$SET_RELATIVE/$PRINCIPLES_MANIFEST has an entry with no recorded checksum: $line" ;;
       esac
-      case "$recorded" in
-        '' | */* | . | .. | -*)
-          die "$PRINCIPLES_RELATIVE/$PRINCIPLES_MANIFEST contains an entry that is not a plain name: $recorded"
-          ;;
-      esac
+      valid_relative_name "$recorded" \
+        || die "$SET_RELATIVE/$PRINCIPLES_MANIFEST contains an entry that is not a valid relative name: $recorded"
     done <"$manifest"
   fi
 
   local doc name
-  for doc in "$PRINCIPLES_SOURCE"/*.md; do
-    [ -f "$doc" ] || continue
-    name="$(basename "$doc")"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    doc="$SET_SOURCE/$name"
+    valid_relative_name "$name" || die "shipped document has an invalid name: $name"
     if [ -d "$destination/$name" ]; then
-      die "$PRINCIPLES_RELATIVE/$name is a directory; move it before installing"
+      die "$SET_RELATIVE/$name is a directory; move it before installing"
     fi
     # A file we did not install belongs to the operator. Detect it here, before
-    # any driver file is written, so the refusal costs nothing.
-    :
-    # -L as well as -e: a dangling symlink is not `-e`, so a link the operator
-    # made to a file that does not exist yet read as "absent" and was replaced
-    # by a regular file, losing the link with nothing preserved.
+    # any driver file is written, so the refusal costs nothing. -L as well as
+    # -e: a dangling symlink is not `-e`, so a link the operator made to a
+    # file that does not exist yet read as "absent" and was replaced by a
+    # regular file, losing the link with nothing preserved.
+    #
+    # The skills set is the exception by construction: its directories are
+    # named for this tool's own skills (touchstone-*, memory-audit), and the
+    # copies found there predate management -- install preserves them as
+    # `.SKILL.md.replaced` and takes over, rather than refusing forever.
     if { [ -e "$destination/$name" ] || [ -L "$destination/$name" ]; } \
-      && ! principles_owned "$name"; then
-      die "$PRINCIPLES_RELATIVE/$name exists and was not installed by touchstone; move it before installing"
+      && ! principles_owned "$name" && [ "$SET_NAME" != skills ]; then
+      die "$SET_RELATIVE/$name exists and was not installed by touchstone; move it before installing"
     fi
-  done
+  done < <(set_documents)
 }
 
 # Render one routed document with its cross-references pointing at the
@@ -432,12 +497,9 @@ stage_path() {
 }
 
 shipped_document() {
-  local candidate="$1" doc
-  for doc in "$PRINCIPLES_SOURCE"/*.md; do
-    [ -f "$doc" ] || continue
-    [ "$(basename "$doc")" = "$candidate" ] && return 0
-  done
-  return 1
+  local candidate="$1"
+  valid_relative_name "$candidate" || return 1
+  set_documents | grep -qxF -- "$candidate"
 }
 
 # Ownership must be provable on the install path too, not only on uninstall:
@@ -447,7 +509,7 @@ shipped_document() {
 # cannot, and which a document the operator edited after install no longer
 # matches.
 principles_owned() {
-  local name="$1" destination="$HOME_DIR/$PRINCIPLES_RELATIVE"
+  local name="$1" destination="$HOME_DIR/$SET_RELATIVE"
   local manifest="$destination/$PRINCIPLES_MANIFEST"
   [ -f "$manifest" ] || return 1
   shipped_document "$name" || return 1
@@ -456,13 +518,17 @@ principles_owned() {
 }
 
 install_principles() {
-  local destination="$HOME_DIR/$PRINCIPLES_RELATIVE" doc name staged backup suffix manifest_staged
+  local destination="$HOME_DIR/$SET_RELATIVE" doc name staged backup suffix manifest_staged
+  set_is_empty && return 0
   stage_path "$destination" "$PRINCIPLES_MANIFEST"
   manifest_staged="$STAGED_PATH"
-  for doc in "$PRINCIPLES_SOURCE"/*.md; do
-    [ -f "$doc" ] || continue
-    name="$(basename "$doc")"
-    stage_path "$destination" "$name"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    doc="$SET_SOURCE/$name"
+    # A nested document lives in its own directory; staging happens beside it
+    # so the final mv stays a same-directory rename.
+    mkdir -p "$(dirname "$destination/$name")" || die "could not create $(dirname "$SET_RELATIVE/$name")"
+    stage_path "$(dirname "$destination/$name")" "$(basename "$name")"
     staged="$STAGED_PATH"
     render_principle "$doc" "$staged" || {
       rm -f -- "$staged"
@@ -478,10 +544,10 @@ install_principles() {
       # only surviving copy of operator content, and a symlink at that path
       # would send the write somewhere else entirely, so find a free name
       # rather than trusting the obvious one to be unused.
-      backup="$destination/.$name.replaced"
+      backup="$(dirname "$destination/$name")/.$(basename "$name").replaced"
       suffix=1
       while [ -e "$backup" ] || [ -L "$backup" ]; do
-        backup="$destination/.$name.replaced.$suffix"
+        backup="$(dirname "$destination/$name")/.$(basename "$name").replaced.$suffix"
         suffix=$((suffix + 1))
         [ "$suffix" -le 1000 ] || die "too many preserved copies of $name; clear $destination"
       done
@@ -494,7 +560,7 @@ install_principles() {
       die "could not install $name"
     }
     printf '%s\t%s\n' "$(cksum <"$destination/$name")" "$name" >>"$manifest_staged"
-  done
+  done < <(set_documents)
   # A release that removes or renames a document must not leave the copy it
   # installed behind: the old manifest is the only record that we wrote it,
   # and replacing that manifest is the moment the knowledge is lost.
@@ -502,7 +568,7 @@ install_principles() {
     local prior_sum prior_name pruned prune_suffix
     while IFS="$(printf '\t')" read -r prior_sum prior_name; do
       [ -n "$prior_name" ] || continue
-      case "$prior_name" in */* | . | .. | -*) continue ;; esac
+      valid_relative_name "$prior_name" || continue
       shipped_document "$prior_name" && continue
       [ -f "$destination/$prior_name" ] || continue
       if [ "$prior_sum" = "$(cksum <"$destination/$prior_name")" ]; then
@@ -510,10 +576,10 @@ install_principles() {
         # honest -- an entry naming an operator's file can carry that file's
         # own checksum. Same answer as the overwrite path: keep the bytes, so
         # a dishonest entry costs a stray file rather than their content.
-        pruned="$destination/.$prior_name.replaced"
+        pruned="$(dirname "$destination/$prior_name")/.$(basename "$prior_name").replaced"
         prune_suffix=1
         while [ -e "$pruned" ] || [ -L "$pruned" ]; do
-          pruned="$destination/.$prior_name.replaced.$prune_suffix"
+          pruned="$(dirname "$destination/$prior_name")/.$(basename "$prior_name").replaced.$prune_suffix"
           prune_suffix=$((prune_suffix + 1))
           # Refuse, never clobber: breaking with an occupied name in hand
           # lets the mv below destroy that preserved copy.
@@ -554,7 +620,8 @@ install_principles() {
 }
 
 principles_current() {
-  local destination="$HOME_DIR/$PRINCIPLES_RELATIVE" doc
+  local destination="$HOME_DIR/$SET_RELATIVE" doc
+  set_is_empty && return 0
   [ -d "$destination" ] || return 1
   # The manifest is part of the installed state: without it, uninstall cannot
   # tell our documents from the operator's, so a missing manifest is drift.
@@ -568,25 +635,26 @@ principles_current() {
     shipped_document "$recorded_name" || return 1
   done < <(cut -f 2- <"$destination/$PRINCIPLES_MANIFEST")
   local rendered="$TMP_DIR/.principle-check" doc_name
-  for doc in "$PRINCIPLES_SOURCE"/*.md; do
-    [ -f "$doc" ] || continue
-    doc_name="$(basename "$doc")"
+  while IFS= read -r doc_name; do
+    [ -n "$doc_name" ] || continue
     [ -f "$destination/$doc_name" ] || return 1
     grep -qxF "$(cksum <"$destination/$doc_name")	$doc_name" \
       "$destination/$PRINCIPLES_MANIFEST" || return 1
-  done
-  for doc in "$PRINCIPLES_SOURCE"/*.md; do
-    [ -f "$doc" ] || continue
-    render_principle "$doc" "$rendered" || return 1
-    cmp -s "$rendered" "$destination/$(basename "$doc")" || return 1
-  done
+    render_principle "$SET_SOURCE/$doc_name" "$rendered" || return 1
+    cmp -s "$rendered" "$destination/$doc_name" || return 1
+  done < <(set_documents)
   return 0
 }
 
 # Fail before any driver file is touched if a destination is unusable. A dry
 # run runs the same checks: reporting an install that would immediately fail
 # as "would reach every agent" is the one answer a dry run must never give.
-[ "$ACTION" != install ] || preflight_principles
+if [ "$ACTION" = install ]; then
+  for document_set in $DOCUMENT_SETS; do
+    use_set "$document_set"
+    preflight_principles
+  done
+fi
 
 CHANGED=0
 DRIFTED=0
@@ -768,22 +836,203 @@ for staged in ${STAGED_PATHS[@]+"${STAGED_PATHS[@]}"}; do
   printf '  %s: %s\n' "$([ "$ACTION" = uninstall ] && printf removed || printf installed)" "$label"
 done
 
+uninstall_set() {
+  local principles_home doc name manifest_referent manifest_ours manifest_entries manifest_line manifest_name manifest_sum recorded_sum recorded retired retire_suffix
+  set_is_empty && return 0
+  # Remove only the documents this tool installed. The directory may hold
+  # the operator's own files; a recursive delete would take them too.
+  principles_home="${HOME_DIR:?}/${SET_RELATIVE:?}"
+  if [ -d "$principles_home" ]; then
+    # Remove exactly what the manifest records, so a bundled name the
+    # operator owns is left alone even across releases that change which
+    # documents ship.
+    if [ ! -f "$principles_home/$PRINCIPLES_MANIFEST" ]; then
+      # No ownership record. Bytes identical to what this release renders
+      # are still provably ours -- the same rule the manifest path applies
+      # -- and anything else is reported, never guessed at. Silence here
+      # claimed a complete removal that left every document behind.
+      while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        doc="$SET_SOURCE/$name"
+        [ -f "$principles_home/$name" ] || continue
+        if render_principle "$doc" "$TMP_DIR/.verify" \
+          && cmp -s "$TMP_DIR/.verify" "$principles_home/$name"; then
+          # Same write-through rule as everywhere else: remove the referent
+          # our bytes live at, then clear the pointer left dangling.
+          rm -f -- "$(resolve_link "$principles_home/$name")"
+          [ ! -L "$principles_home/$name" ] || rm -f -- "$principles_home/$name"
+        else
+          printf '  kept: %s (no ownership manifest and bytes differ from this release)\n' "$name" >&2
+        fi
+      done < <(set_documents)
+    fi
+    if [ -f "$principles_home/$PRINCIPLES_MANIFEST" ]; then
+      # Judge the manifest's self-description NOW, against the directory as
+      # it stands before this run deletes the documents it lists --
+      # afterwards even our own manifest would fail its own check.
+      manifest_referent="$(resolve_link "$principles_home/$PRINCIPLES_MANIFEST")"
+      # Ours must be PROVEN, so it starts false and only an entry that
+      # checks out establishes it -- an empty file proves nothing and a
+      # zero-entry loop must not leave the presumption standing.
+      manifest_ours=false
+      manifest_entries=0
+      while IFS= read -r manifest_line; do
+        [ -n "$manifest_line" ] || continue
+        manifest_entries=$((manifest_entries + 1))
+        manifest_ours=true
+        case "$manifest_line" in
+          *[0-9]" "*[0-9]"$(printf '\t')"*) ;;
+          *)
+            manifest_ours=false
+            break
+            ;;
+        esac
+        manifest_name="${manifest_line#*"$(printf '\t')"}"
+        manifest_sum="${manifest_line%%"$(printf '\t')"*}"
+        shipped_document "$manifest_name" || {
+          manifest_ours=false
+          break
+        }
+        # Shape alone is spoofable (principles/README.md makes README.md a
+        # shipped name). A manifest we wrote also DESCRIBES the directory:
+        # each recorded checksum must match the file it names.
+        if [ ! -f "$principles_home/$manifest_name" ] \
+          || [ "$manifest_sum" != "$(cksum <"$principles_home/$manifest_name")" ]; then
+          manifest_ours=false
+          break
+        fi
+      done <"$manifest_referent"
+      while IFS="$(printf '\t')" read -r recorded_sum recorded; do
+        [ -n "$recorded" ] || continue
+        # Entries are relative names whose every component is plain. A parent
+        # reference, an absolute path, or a dash-led component is a corrupted
+        # or edited manifest and must never direct a delete outside this
+        # directory.
+        valid_relative_name "$recorded" || {
+          printf '  skipped: manifest entry is not a valid relative name: %s\n' "$recorded" >&2
+          continue
+        }
+        [ -f "$principles_home/$recorded" ] || continue
+        # Provenance comes from the shipped set, not from the manifest. cksum
+        # is unkeyed and reproducible, so anyone who can append a line can
+        # also compute a matching checksum for an operator's file -- the
+        # manifest cannot vouch for itself. A name this tool never ships is
+        # therefore never deleted, whatever the manifest claims.
+        if ! shipped_document "$recorded"; then
+          printf '  kept: %s is recorded but is not a document this tool installs\n' "$recorded" >&2
+          continue
+        fi
+        # Among names we do ship, the checksum still decides: a document
+        # edited after install carries the operator's content now.
+        # Ownership that does not depend on the manifest: render what this
+        # release would install for that name and compare bytes. A file
+        # identical to our own output is provably ours, and the check is
+        # reproducible by anyone. Only that earns an outright delete.
+        if render_principle "$SET_SOURCE/$recorded" "$TMP_DIR/.verify" \
+          && cmp -s "$TMP_DIR/.verify" "$principles_home/$recorded"; then
+          # Install writes through a symlink, so uninstall must remove what
+          # it wrote -- the referent -- and leave the operator's link. The
+          # asymmetry deleted the link and kept the document.
+          rm -f -- "$(resolve_link "$principles_home/$recorded")"
+          [ ! -L "$principles_home/$recorded" ] || rm -f -- "$principles_home/$recorded"
+        elif [ "$recorded_sum" = "$(cksum <"$principles_home/$recorded")" ]; then
+          # The manifest says ours but the bytes are not what we render --
+          # an older release's content, or an edit. The manifest shares a
+          # trust domain with the file it describes, so it cannot authorize
+          # destroying content. Retire it instead: recoverable either way.
+          retired="$(dirname "$principles_home/$recorded")/.$(basename "$recorded").removed"
+          retire_suffix=1
+          while [ -e "$retired" ] || [ -L "$retired" ]; do
+            retired="$(dirname "$principles_home/$recorded")/.$(basename "$recorded").removed.$retire_suffix"
+            retire_suffix=$((retire_suffix + 1))
+            # Refuse rather than break: breaking left the loop holding an
+            # occupied name, and the mv below then destroyed that backup --
+            # the same defect already fixed in the .replaced loop.
+            if [ "$retire_suffix" -gt 1000 ]; then
+              printf '  kept: %s has too many preserved copies to retire\n' "$recorded" >&2
+              retired=""
+              break
+            fi
+          done
+          if [ -n "$retired" ] \
+            && mv -f -- "$(resolve_link "$principles_home/$recorded")" "$retired" 2>/dev/null; then
+            # Retiring the referent leaves the pointer dangling; clear it,
+            # as the deletion branch already does.
+            [ ! -L "$principles_home/$recorded" ] \
+              || rm -f -- "$principles_home/$recorded"
+            printf '  retired: %s -> %s\n' "$recorded" "$(basename "$retired")"
+          else
+            printf '  kept: %s could not be retired\n' "$recorded" >&2
+          fi
+        else
+          printf '  kept: %s does not match what was installed\n' "$recorded" >&2
+        fi
+      done <"$principles_home/$PRINCIPLES_MANIFEST"
+      # Same rule as the routed documents: install wrote the referent, so
+      # that is what uninstall may remove -- but only after proving the
+      # bytes are plausibly ours. A manifest we wrote is nothing but
+      # `cksum size<TAB>shipped-name` lines; an operator's notes file that a
+      # symlink happens to reach never matches that shape, so it is retired
+      # by rename rather than destroyed.
+      # Verdict computed above, before the documents were removed. Zero
+      # entries proves nothing either way.
+      if [ "$manifest_ours" = true ] && [ "$manifest_entries" -gt 0 ]; then
+        rm -f -- "$manifest_referent"
+      else
+        retired="$principles_home/$PRINCIPLES_MANIFEST.removed"
+        retire_suffix=1
+        while [ -e "$retired" ] || [ -L "$retired" ]; do
+          retired="$principles_home/$PRINCIPLES_MANIFEST.removed.$retire_suffix"
+          retire_suffix=$((retire_suffix + 1))
+          [ "$retire_suffix" -le 1000 ] || {
+            retired=""
+            break
+          }
+        done
+        if [ -n "$retired" ] && mv -f -- "$manifest_referent" "$retired" 2>/dev/null; then
+          printf '  retired: manifest content this tool cannot verify -> %s\n' "$(basename "$retired")" >&2
+        else
+          printf '  kept: manifest content this tool cannot verify\n' >&2
+        fi
+      fi
+      [ ! -L "$principles_home/$PRINCIPLES_MANIFEST" ] \
+        || rm -f -- "$principles_home/$PRINCIPLES_MANIFEST"
+    fi
+    # Only if nothing of the operator's remains: a skill's directory, then
+    # the set's directory, then its parent.
+    while IFS= read -r name; do
+      [ -n "$name" ] || continue
+      case "$name" in */*) rmdir "$(dirname "$principles_home/$name")" 2>/dev/null || true ;; esac
+    done < <(set_documents | LC_ALL=C sort -r)
+    rmdir "$principles_home" 2>/dev/null || true
+    rmdir "$(dirname "$principles_home")" 2>/dev/null || true
+  fi
+}
+
 case "$ACTION" in
   check)
-    if ! principles_current; then
-      printf '  DRIFT: %s does not carry the current routed documents\n' "$PRINCIPLES_RELATIVE" >&2
-      DRIFTED=$((DRIFTED + 1))
-    fi
+    for document_set in $DOCUMENT_SETS; do
+      use_set "$document_set"
+      if ! principles_current; then
+        printf '  DRIFT: %s does not carry the current routed documents\n' "$SET_RELATIVE" >&2
+        DRIFTED=$((DRIFTED + 1))
+      fi
+    done
     if [ "$DRIFTED" -ne 0 ]; then
       echo "ERROR: $DRIFTED user-level steering file(s) do not carry this tool's contract" >&2
-      echo "Run: touchstone steering install -- it rewrites only the block between the markers in each driver file and the routed documents it installed under ~/.touchstone/principles (idempotent; everything outside them is untouched). A tool upgrade does not refresh either by itself." >&2
+      echo "Run: touchstone steering install -- it rewrites only the block between the markers in each driver file and the routed documents it installed under ~/.touchstone/principles and ~/.claude/skills (idempotent; everything outside them is untouched). A tool upgrade does not refresh them by itself." >&2
       exit 1
     fi
     echo "==> PASS: every supported driver reads the current contract"
     ;;
   install)
-    [ "$DRY_RUN" = true ] || install_principles
-    if [ "$CHANGED" -eq 0 ] && principles_current; then
+    sets_current=true
+    for document_set in $DOCUMENT_SETS; do
+      use_set "$document_set"
+      [ "$DRY_RUN" = true ] || install_principles
+      principles_current || sets_current=false
+    done
+    if [ "$CHANGED" -eq 0 ] && [ "$sets_current" = true ]; then
       echo "==> already current: machine-level steering matches the contract"
     else
       # A dry run performed nothing at all, and must say so.
@@ -796,174 +1045,14 @@ case "$ACTION" in
     ;;
   uninstall)
     if [ "$DRY_RUN" = true ]; then
-      printf '  would remove: %s\n' "$PRINCIPLES_RELATIVE"
+      printf '  would remove: %s\n  would remove: %s\n' "$PRINCIPLES_RELATIVE" "$SKILLS_RELATIVE"
       echo "==> dry run: nothing was removed"
       exit 0
     fi
-    # Remove only the documents this tool installed. The directory may hold
-    # the operator's own files; a recursive delete would take them too.
-    principles_home="${HOME_DIR:?}/${PRINCIPLES_RELATIVE:?}"
-    if [ -d "$principles_home" ]; then
-      # Remove exactly what the manifest records, so a bundled name the
-      # operator owns is left alone even across releases that change which
-      # documents ship.
-      if [ ! -f "$principles_home/$PRINCIPLES_MANIFEST" ]; then
-        # No ownership record. Bytes identical to what this release renders
-        # are still provably ours -- the same rule the manifest path applies
-        # -- and anything else is reported, never guessed at. Silence here
-        # claimed a complete removal that left every document behind.
-        for doc in "$PRINCIPLES_SOURCE"/*.md; do
-          [ -f "$doc" ] || continue
-          name="$(basename "$doc")"
-          [ -f "$principles_home/$name" ] || continue
-          if render_principle "$doc" "$TMP_DIR/.verify" \
-            && cmp -s "$TMP_DIR/.verify" "$principles_home/$name"; then
-            # Same write-through rule as everywhere else: remove the referent
-            # our bytes live at, then clear the pointer left dangling.
-            rm -f -- "$(resolve_link "$principles_home/$name")"
-            [ ! -L "$principles_home/$name" ] || rm -f -- "$principles_home/$name"
-          else
-            printf '  kept: %s (no ownership manifest and bytes differ from this release)\n' "$name" >&2
-          fi
-        done
-      fi
-      if [ -f "$principles_home/$PRINCIPLES_MANIFEST" ]; then
-        # Judge the manifest's self-description NOW, against the directory as
-        # it stands before this run deletes the documents it lists --
-        # afterwards even our own manifest would fail its own check.
-        manifest_referent="$(resolve_link "$principles_home/$PRINCIPLES_MANIFEST")"
-        # Ours must be PROVEN, so it starts false and only an entry that
-        # checks out establishes it -- an empty file proves nothing and a
-        # zero-entry loop must not leave the presumption standing.
-        manifest_ours=false
-        manifest_entries=0
-        while IFS= read -r manifest_line; do
-          [ -n "$manifest_line" ] || continue
-          manifest_entries=$((manifest_entries + 1))
-          manifest_ours=true
-          case "$manifest_line" in
-            *[0-9]" "*[0-9]"$(printf '\t')"*) ;;
-            *)
-              manifest_ours=false
-              break
-              ;;
-          esac
-          manifest_name="${manifest_line#*"$(printf '\t')"}"
-          manifest_sum="${manifest_line%%"$(printf '\t')"*}"
-          shipped_document "$manifest_name" || {
-            manifest_ours=false
-            break
-          }
-          # Shape alone is spoofable (principles/README.md makes README.md a
-          # shipped name). A manifest we wrote also DESCRIBES the directory:
-          # each recorded checksum must match the file it names.
-          if [ ! -f "$principles_home/$manifest_name" ] \
-            || [ "$manifest_sum" != "$(cksum <"$principles_home/$manifest_name")" ]; then
-            manifest_ours=false
-            break
-          fi
-        done <"$manifest_referent"
-        while IFS="$(printf '\t')" read -r recorded_sum recorded; do
-          [ -n "$recorded" ] || continue
-          # Entries are plain basenames. Anything else -- a path separator, a
-          # parent reference, a leading dash -- is a corrupted or edited
-          # manifest and must never direct a delete outside this directory.
-          case "$recorded" in
-            */* | . | .. | -*)
-              printf '  skipped: manifest entry is not a plain name: %s\n' "$recorded" >&2
-              continue
-              ;;
-          esac
-          [ -f "$principles_home/$recorded" ] || continue
-          # Provenance comes from the shipped set, not from the manifest. cksum
-          # is unkeyed and reproducible, so anyone who can append a line can
-          # also compute a matching checksum for an operator's file -- the
-          # manifest cannot vouch for itself. A name this tool never ships is
-          # therefore never deleted, whatever the manifest claims.
-          if ! shipped_document "$recorded"; then
-            printf '  kept: %s is recorded but is not a document this tool installs\n' "$recorded" >&2
-            continue
-          fi
-          # Among names we do ship, the checksum still decides: a document
-          # edited after install carries the operator's content now.
-          # Ownership that does not depend on the manifest: render what this
-          # release would install for that name and compare bytes. A file
-          # identical to our own output is provably ours, and the check is
-          # reproducible by anyone. Only that earns an outright delete.
-          if render_principle "$PRINCIPLES_SOURCE/$recorded" "$TMP_DIR/.verify" \
-            && cmp -s "$TMP_DIR/.verify" "$principles_home/$recorded"; then
-            # Install writes through a symlink, so uninstall must remove what
-            # it wrote -- the referent -- and leave the operator's link. The
-            # asymmetry deleted the link and kept the document.
-            rm -f -- "$(resolve_link "$principles_home/$recorded")"
-            [ ! -L "$principles_home/$recorded" ] || rm -f -- "$principles_home/$recorded"
-          elif [ "$recorded_sum" = "$(cksum <"$principles_home/$recorded")" ]; then
-            # The manifest says ours but the bytes are not what we render --
-            # an older release's content, or an edit. The manifest shares a
-            # trust domain with the file it describes, so it cannot authorize
-            # destroying content. Retire it instead: recoverable either way.
-            retired="$principles_home/.$recorded.removed"
-            retire_suffix=1
-            while [ -e "$retired" ] || [ -L "$retired" ]; do
-              retired="$principles_home/.$recorded.removed.$retire_suffix"
-              retire_suffix=$((retire_suffix + 1))
-              # Refuse rather than break: breaking left the loop holding an
-              # occupied name, and the mv below then destroyed that backup --
-              # the same defect already fixed in the .replaced loop.
-              if [ "$retire_suffix" -gt 1000 ]; then
-                printf '  kept: %s has too many preserved copies to retire\n' "$recorded" >&2
-                retired=""
-                break
-              fi
-            done
-            if [ -n "$retired" ] \
-              && mv -f -- "$(resolve_link "$principles_home/$recorded")" "$retired" 2>/dev/null; then
-              # Retiring the referent leaves the pointer dangling; clear it,
-              # as the deletion branch already does.
-              [ ! -L "$principles_home/$recorded" ] \
-                || rm -f -- "$principles_home/$recorded"
-              printf '  retired: %s -> %s\n' "$recorded" "$(basename "$retired")"
-            else
-              printf '  kept: %s could not be retired\n' "$recorded" >&2
-            fi
-          else
-            printf '  kept: %s does not match what was installed\n' "$recorded" >&2
-          fi
-        done <"$principles_home/$PRINCIPLES_MANIFEST"
-        # Same rule as the routed documents: install wrote the referent, so
-        # that is what uninstall may remove -- but only after proving the
-        # bytes are plausibly ours. A manifest we wrote is nothing but
-        # `cksum size<TAB>shipped-name` lines; an operator's notes file that a
-        # symlink happens to reach never matches that shape, so it is retired
-        # by rename rather than destroyed.
-        # Verdict computed above, before the documents were removed. Zero
-        # entries proves nothing either way.
-        if [ "$manifest_ours" = true ] && [ "$manifest_entries" -gt 0 ]; then
-          rm -f -- "$manifest_referent"
-        else
-          retired="$principles_home/$PRINCIPLES_MANIFEST.removed"
-          retire_suffix=1
-          while [ -e "$retired" ] || [ -L "$retired" ]; do
-            retired="$principles_home/$PRINCIPLES_MANIFEST.removed.$retire_suffix"
-            retire_suffix=$((retire_suffix + 1))
-            [ "$retire_suffix" -le 1000 ] || {
-              retired=""
-              break
-            }
-          done
-          if [ -n "$retired" ] && mv -f -- "$manifest_referent" "$retired" 2>/dev/null; then
-            printf '  retired: manifest content this tool cannot verify -> %s\n' "$(basename "$retired")" >&2
-          else
-            printf '  kept: manifest content this tool cannot verify\n' >&2
-          fi
-        fi
-        [ ! -L "$principles_home/$PRINCIPLES_MANIFEST" ] \
-          || rm -f -- "$principles_home/$PRINCIPLES_MANIFEST"
-      fi
-      # Only if nothing of the operator's remains.
-      rmdir "$principles_home" 2>/dev/null || true
-      rmdir "$(dirname "$principles_home")" 2>/dev/null || true
-    fi
+    for document_set in $DOCUMENT_SETS; do
+      use_set "$document_set"
+      uninstall_set
+    done
     echo "==> removed from $CHANGED file(s) plus the routed documents; content outside the markers untouched"
     ;;
 esac

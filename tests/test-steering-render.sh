@@ -1481,6 +1481,55 @@ else
   pass "an unknown argument is rejected"
 fi
 
+echo "==> the bundled skills are routed documents: installed, checked, preserved, and removed like the principles"
+# The installed git-workflow skill still said `open-pr.sh --auto-merge` on
+# 2026-08-21 because nothing refreshed ~/.claude/skills (AUT-429).
+HS="$TMP_DIR/hs"
+mkdir -p "$HS/.claude/skills/touchstone-git-workflow" "$HS/.codex" "$HS/.gemini"
+printf 'bash scripts/open-pr.sh --auto-merge\n' >"$HS/.claude/skills/touchstone-git-workflow/SKILL.md"
+bash "$INSTALL" install --home "$HS" >"$TMP_DIR/hs.out" 2>&1 || fail "install with a pre-existing unmanaged skill failed: $(cat "$TMP_DIR/hs.out")"
+grep -q 'preserved: touchstone-git-workflow/SKILL.md -> .SKILL.md.replaced' "$TMP_DIR/hs.out" \
+  && [ "$(cat "$HS/.claude/skills/touchstone-git-workflow/.SKILL.md.replaced")" = 'bash scripts/open-pr.sh --auto-merge' ] \
+  && pass "a stale unmanaged skill is preserved and taken over" \
+  || fail "stale skill was not preserved and replaced: $(cat "$TMP_DIR/hs.out")"
+grep -q 'open-pr' "$HS/.claude/skills/touchstone-git-workflow/SKILL.md" && fail "the stale skill text survived the install" || true
+for skill in touchstone-git-workflow touchstone-pre-impl touchstone-agent-swarms touchstone-audit-weak-points memory-audit; do
+  [ -f "$HS/.claude/skills/$skill/SKILL.md" ] || fail "skill $skill was not installed"
+done
+[ -f "$HS/.claude/skills/memory-audit/agents/openai.yaml" ] || fail "nested skill asset was not installed"
+grep -qF "$HS/.touchstone/principles/git-workflow.md" "$HS/.claude/skills/touchstone-git-workflow/SKILL.md" \
+  && pass "skills reference the installed principles by absolute path" \
+  || fail "skill cross-references were not rewritten"
+grep -q 'touchstone-git-workflow/SKILL.md' "$HS/.claude/skills/.touchstone-installed" \
+  && grep -q 'memory-audit/agents/openai.yaml' "$HS/.claude/skills/.touchstone-installed" \
+  && pass "skills are recorded in their own manifest with relative paths" \
+  || fail "skills manifest incomplete: $(cat "$HS/.claude/skills/.touchstone-installed")"
+bash "$INSTALL" check --home "$HS" >/dev/null 2>&1 && pass "check passes after a skills install" || fail "check fails right after install"
+printf 'edited\n' >>"$HS/.claude/skills/touchstone-pre-impl/SKILL.md"
+bash "$INSTALL" check --home "$HS" >"$TMP_DIR/hs.check" 2>&1 && fail "an edited skill was reported current" \
+  || { grep -q 'DRIFT: .claude/skills' "$TMP_DIR/hs.check" && pass "an edited skill is drift" || fail "drift did not name the skills set: $(cat "$TMP_DIR/hs.check")"; }
+bash "$INSTALL" install --home "$HS" >"$TMP_DIR/hs.out" 2>&1
+grep -q 'preserved: touchstone-pre-impl/SKILL.md' "$TMP_DIR/hs.out" && pass "an edited skill is preserved before reinstall" || fail "edited skill not preserved"
+bash "$INSTALL" check --home "$HS" >/dev/null 2>&1 && pass "reinstall converges the skills" || fail "reinstall did not converge"
+# A manifest entry that escapes the skills directory never directs a delete.
+printf '1 1\t../../escape.md\n' >>"$HS/.claude/skills/.touchstone-installed"
+printf 'bystander\n' >"$HS/escape.md"
+bash "$INSTALL" uninstall --home "$HS" >"$TMP_DIR/hs.un" 2>&1 || true
+[ -f "$HS/escape.md" ] && pass "a traversing skills-manifest entry is ignored on uninstall" || fail "uninstall followed a traversing manifest entry"
+[ ! -f "$HS/.claude/skills/touchstone-git-workflow/SKILL.md" ] && [ ! -f "$HS/.claude/skills/memory-audit/agents/openai.yaml" ] \
+  && pass "uninstall removes the installed skills" || fail "installed skills survived uninstall"
+[ -f "$HS/.claude/skills/touchstone-git-workflow/.SKILL.md.replaced" ] && pass "uninstall leaves the preserved copy" || fail "preserved copy was removed"
+# A release that ships no skills installs nothing under ~/.claude/skills.
+RELEASE_NOSKILLS="$TMP_DIR/release-noskills"
+mkdir -p "$RELEASE_NOSKILLS/scripts" "$RELEASE_NOSKILLS/principles"
+cp "$REPO_ROOT/TOUCHSTONE.md" "$RELEASE_NOSKILLS/TOUCHSTONE.md"
+cp "$REPO_ROOT/scripts/touchstone-steering-install.sh" "$RELEASE_NOSKILLS/scripts/"
+cp "$REPO_ROOT"/principles/*.md "$RELEASE_NOSKILLS/principles/"
+HN="$TMP_DIR/hn"
+mkdir -p "$HN/.claude" "$HN/.codex" "$HN/.gemini"
+bash "$RELEASE_NOSKILLS/scripts/touchstone-steering-install.sh" install --home "$HN" >/dev/null 2>&1 || fail "a release without skills failed to install"
+[ ! -e "$HN/.claude/skills" ] && pass "a release without skills creates no skills directory" || fail "an empty skills set created $HN/.claude/skills"
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "$FAILURES check(s) failed" >&2
   exit 1
