@@ -110,7 +110,7 @@ claim_github() {
 }
 
 claim_linear() {
-  emit unverifiable linear-transport-unavailable "Use the Linear API/MCP to assign $REFERENCE to yourself, then verify its assignee from Linear."
+  emit unverifiable linear-transport-unavailable "This adapter has no Linear transport (by design, until a consumer needs race safety): assign $REFERENCE to yourself through the Linear MCP (save_issue with assignee \"me\"), then re-read the issue (get_issue) and confirm the assignee before editing. This is a manual claim, not a race-safe one."
   exit 3
 }
 

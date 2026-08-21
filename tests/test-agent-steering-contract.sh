@@ -54,7 +54,7 @@ for file in \
   assert_contains "$file" "principles/git-workflow.md"
   assert_not_contains "$file" "touchstone worker"
   assert_contains "$file" "Claim tracked work before implementation"
-  assert_contains "$file" "configured tracker's race-safe claim"
+  assert_contains "$file" "assign yourself through the Linear MCP"
   assert_contains "$file" "unavailable transport is unverifiable"
   assert_contains "$file" "Reconcile tracked work"
   assert_contains "$file" 'Closes #123'
