@@ -16,8 +16,8 @@ yet applied" is the observed state on 2026-08-21 ~02:30–03:00Z, read by the
 agents from `gh api repos/<owner>/<repo>/rules/branches/main` (no `workflows`
 or `merge_queue` rule; vesper's only ruleset was the repo-local "Protect main
 delivery"), not inferred from the checked-in consumer policies, which declare
-desired state. Convoy follows its adoption (AUT-402); its round records the
-same observation.
+desired state. Convoy was not evaluated in this round; its round follows its
+adoption (AUT-402) and will record the same kind of observation.
 
 ## Results
 
