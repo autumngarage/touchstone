@@ -456,12 +456,17 @@ git branch -d <branch>                      # git refuses unmerged work
 Squash-merged branches are the common case, and their commits are *not* ancestors of the default branch even though their changes are applied, so `git branch -d` refuses them — and `git diff main...<branch>` stays non-empty after a squash (it compares against the merge base, not the squash commit), so it proves nothing either. The proof that the content landed is GitHub's: the PR is `MERGED` at the head you reviewed. Then force-delete that branch and only that branch:
 
 ```bash
-gh pr view <n> --json state,mergeCommit,headRefOid --jq '[.state, .mergeCommit.oid, .headRefOid] | @tsv'   # MERGED, a merge commit, your reviewed head
+# The PR for THIS branch, merged, at the commit the local branch still points at.
+gh pr list --head <branch> --state merged --json number,headRefOid --jq '.[] | [.number, .headRefOid] | @tsv'
+git rev-parse <branch>        # must equal that headRefOid: no commits after the merge
 git checkout main && git pull --rebase
 git branch -D <branch>
 ```
 
-Never `git branch -D` without that read — it is the difference between deleting merged work and losing unmerged work.
+Bind the evidence to the branch: the merged PR must be the one whose head is
+this branch, and the local branch must still point at that merged head — a
+commit added after the merge is unmerged work. Never `git branch -D` without
+that read.
 
 Never delete a branch that serves as an open PR's base or head; that is what orphans a stack (see below).
 
