@@ -474,11 +474,17 @@ echo "==> Checked-in consumer policies equal their derivation"
 # One contract, many repositories: a consumer policy may differ from the
 # canonical one only in the repository coordinates and the absence of
 # Touchstone's own rollback prerequisites.
+bash "$ROOT/scripts/derive-consumer-policy.sh" vesper --no-queue extra >/dev/null 2>&1 && fail "derive accepted a surplus argument" || ok "derive refuses surplus arguments"
 for consumer in "$ROOT"/policy/github/consumers/*.json; do
   [ -f "$consumer" ] || continue
   name="$(basename "$consumer" .json)"
-  diff -u <(bash "$ROOT/scripts/derive-consumer-policy.sh" "$name" | jq -S .) <(jq -S . "$consumer") >/dev/null \
-    || fail "policy/github/consumers/$name.json drifted from its derivation; regenerate it with scripts/derive-consumer-policy.sh"
+  # A queue-less consumer (private repository outside Enterprise Cloud) is the
+  # same derivation with --no-queue; the checked-in file says which it is.
+  derive_flag=""
+  jq -e '.managedRepositoryRuleset == null' "$consumer" >/dev/null && derive_flag="--no-queue"
+  # shellcheck disable=SC2086 # an empty flag must vanish, not become ""
+  diff -u <(bash "$ROOT/scripts/derive-consumer-policy.sh" "$name" $derive_flag | jq -S .) <(jq -S . "$consumer") >/dev/null \
+    || fail "policy/github/consumers/$name.json drifted from its derivation; regenerate it with scripts/derive-consumer-policy.sh $name $derive_flag"
   run_policy diff "$consumer" >/dev/null 2>"$TMP_DIR/consumer-$name.err" \
     || grep -q "HTTP 404\|unhandled fake gh call" "$TMP_DIR/consumer-$name.err" \
     || fail "consumer policy $name was refused locally: $(tail -1 "$TMP_DIR/consumer-$name.err")"

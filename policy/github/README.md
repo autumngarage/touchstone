@@ -70,8 +70,18 @@ Touchstone-owned and is never updated or deleted by this script.
 
 ## Consumer policies
 
+A private repository outside GitHub Enterprise Cloud cannot carry the merge
+queue: GitHub answers `Invalid rule 'merge_queue'` (measured 2026-08-21 on
+autumngarage/vesper and /arpeggio under the Team plan; public repositories
+and Enterprise Cloud accept it). Such consumers are derived with
+`--no-queue`, which drops only the companion repository ruleset; the pinned
+required workflows, pull-request-only delivery, thread resolution, and the
+native rules still apply, and the merge is not queued — the combination of
+two independently green PRs is validated by the next PR's run, not before
+landing. Regenerate without the flag when the plan or visibility changes.
+
 Every adopted repository's policy is an exact derivation of the canonical
-one — `scripts/derive-consumer-policy.sh REPOSITORY` — checked in under
+one — `scripts/derive-consumer-policy.sh REPOSITORY [--no-queue]` — checked in under
 `policy/github/consumers/` and refused by the test suite if it drifts. Apply
 one with `scripts/github-policy.sh apply policy/github/consumers/REPOSITORY.json`
 only once both hold: the repository has adopted (`touchstone adopt`), and
