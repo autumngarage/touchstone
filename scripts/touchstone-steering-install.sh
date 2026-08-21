@@ -129,6 +129,22 @@ cleanup_workspace() {
 }
 trap cleanup_workspace EXIT
 
+# The tool version that wrote a block is recorded inside it, so `check` can
+# say which side is newer instead of only "drift".
+TOOL_VERSION=""
+if [ -f "$ROOT/VERSION" ]; then
+  TOOL_VERSION="$(head -n 1 "$ROOT/VERSION" | tr -d '[:space:]')"
+fi
+TOOL_VERSION="${TOOL_VERSION:-unknown}"
+
+installed_block_version() {
+  # The version named in a file's installed block, or "pre-3.2" for a block
+  # written before versions were recorded.
+  local path="$1" found
+  found="$(sed -nE 's/^<!-- Installed by touchstone ([0-9][^ .]*(\.[0-9]+)*)\..*/\1/p' "$path" 2>/dev/null | head -n 1)"
+  printf '%s' "${found:-pre-3.2}"
+}
+
 render_block() {
   local out="$1"
   # The routing table names principles/*.md. Those documents are installed
@@ -137,9 +153,8 @@ render_block() {
   local principles_home="$HOME_DIR/$PRINCIPLES_RELATIVE"
   {
     printf '%s\n' "$BEGIN_MARKER"
+    printf '\n<!-- Installed by touchstone %s. Do not edit between the markers; edit the\n' "$TOOL_VERSION"
     cat <<'EOF'
-
-<!-- Installed by touchstone. Do not edit between the markers; edit the
      project's TOUCHSTONE.md upstream and reinstall. Everything outside the
      markers is yours. Remove with: touchstone steering uninstall -->
 EOF
@@ -607,13 +622,20 @@ for entry in "${TARGETS[@]}"; do
   # every operator edit outside the markers "drift", and comparing against a
   # tail rebuilt from the same file would hide real block drift.
   if [ "$ACTION" = check ]; then
-    if [ -f "$path" ] \
-      && awk -v b="$BEGIN_MARKER_RE" -v e="$END_MARKER" -v plain="$BEGIN_MARKER" \
-        '$0 ~ b { inside = 1; print plain; next } inside { print } $0 == e { inside = 0 }' "$path" \
-      | cmp -s - "$BLOCK"; then
-      printf '  ok: %s carries the current contract\n' "$relative"
+    # The version line is reported, never compared: a release that bumps
+    # VERSION without touching the contract must not read as drift on every
+    # machine. Only the contract text decides.
+    if [ ! -f "$path" ]; then
+      printf '  DRIFT: %s is absent (no block installed); this tool is %s\n' "$relative" "$TOOL_VERSION" >&2
+      DRIFTED=$((DRIFTED + 1))
+    elif awk -v b="$BEGIN_MARKER_RE" -v e="$END_MARKER" -v plain="$BEGIN_MARKER" \
+      '$0 ~ b { inside = 1; print plain; next } inside { print } $0 == e { inside = 0 }' "$path" \
+      | sed -E 's/^<!-- Installed by touchstone [^ .]+(\.[0-9]+)*\. /<!-- Installed by touchstone. /' \
+      | cmp -s - <(sed -E 's/^<!-- Installed by touchstone [^ .]+(\.[0-9]+)*\. /<!-- Installed by touchstone. /' "$BLOCK"); then
+      printf '  ok: %s carries the current contract (block from touchstone %s)\n' "$relative" "$(installed_block_version "$path")"
     else
-      printf '  DRIFT: %s does not carry the current contract\n' "$relative" >&2
+      printf '  DRIFT: %s carries the block from touchstone %s; this tool is %s\n' \
+        "$relative" "$(installed_block_version "$path")" "$TOOL_VERSION" >&2
       DRIFTED=$((DRIFTED + 1))
     fi
     continue
@@ -740,8 +762,8 @@ case "$ACTION" in
       DRIFTED=$((DRIFTED + 1))
     fi
     if [ "$DRIFTED" -ne 0 ]; then
-      echo "ERROR: $DRIFTED user-level steering file(s) do not carry the current contract" >&2
-      echo "Run: touchstone steering install" >&2
+      echo "ERROR: $DRIFTED user-level steering file(s) do not carry this tool's contract" >&2
+      echo "Run: touchstone steering install -- it rewrites only the block between the markers in each driver file and the routed documents it installed under ~/.touchstone/principles (idempotent; everything outside them is untouched). A tool upgrade does not refresh either by itself." >&2
       exit 1
     fi
     echo "==> PASS: every supported driver reads the current contract"

@@ -499,6 +499,41 @@ else
   fail "install destroyed an operator file"
 fi
 
+# The block records the tool version that wrote it, and `check` names both
+# sides when they differ -- a cold agent's first command must say what is
+# newer and that install touches only the block, not merely "DRIFT".
+HVER="$TMP_DIR/hver"
+bash "$INSTALL" install --home "$HVER" >/dev/null 2>&1
+if grep -q "^<!-- Installed by touchstone $(tr -d '[:space:]' <"$REPO_ROOT/VERSION")\." "$HVER/.claude/CLAUDE.md"; then
+  pass "the installed block records the tool version"
+else
+  fail "the installed block does not record the tool version"
+fi
+# A version-only difference is not drift: a patch release that bumps VERSION
+# without touching the contract must not send every machine to reinstall.
+sed -i.bak -E 's/^(<!-- Installed by touchstone )[0-9.]+\./\10.0.1./' "$HVER/.claude/CLAUDE.md" && rm -f "$HVER/.claude/CLAUDE.md.bak"
+if bash "$INSTALL" check --home "$HVER" >"$TMP_DIR/hver.out" 2>&1 && grep -q "block from touchstone 0.0.1" "$TMP_DIR/hver.out"; then
+  pass "a version-only difference is reported, not counted as drift"
+else
+  fail "a version-only difference was treated as drift: $(grep -E 'DRIFT|ok:' "$TMP_DIR/hver.out" | head -2 | tr '\n' ' ')"
+fi
+# Real contract drift names both versions and the bounded remedy.
+printf 'tampered\n' >>"$HVER/.claude/CLAUDE.md"
+sed -i.bak -E 's/^(<!-- touchstone:steering:end -->)$/extra line\n\1/' "$HVER/.claude/CLAUDE.md" && rm -f "$HVER/.claude/CLAUDE.md.bak"
+if bash "$INSTALL" check --home "$HVER" >"$TMP_DIR/hver2.out" 2>&1; then
+  fail "check passed on a block whose contract text differs"
+fi
+if grep -q "carries the block from touchstone 0.0.1; this tool is" "$TMP_DIR/hver2.out" \
+  && grep -q "rewrites only the block between the markers" "$TMP_DIR/hver2.out"; then
+  pass "check names both versions and says install touches only the block"
+else
+  fail "check did not explain the drift: $(grep -E 'DRIFT|Run:' "$TMP_DIR/hver2.out" | head -2 | tr '\n' ' ')"
+fi
+# An absent driver file is reported as absent, not as a legacy block.
+rm -f "$HVER/.gemini/GEMINI.md"
+bash "$INSTALL" check --home "$HVER" >"$TMP_DIR/hver3.out" 2>&1 || true
+grep -q "GEMINI.md is absent (no block installed)" "$TMP_DIR/hver3.out" && pass "an absent driver file is named as absent" || fail "absent file misreported: $(grep GEMINI "$TMP_DIR/hver3.out" | head -1)"
+
 # A later release changes what the tool *ships*, not the copy on disk. Build a
 # second checkout with a modified source document and reinstall from it: the
 # installed copy still matches what the manifest recorded, so it is still
