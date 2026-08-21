@@ -59,8 +59,8 @@ case "$COMMAND" in
       while [ "$#" -gt 0 ]; do
         case "$1" in
           --project)
-            [ "$#" -ge 2 ] || {
-              echo "ERROR: --project requires a directory" >&2
+            [ "$#" -ge 2 ] && [ -n "$2" ] || {
+              echo "ERROR: --project requires a non-empty directory" >&2
               exit 2
             }
             ANSWER_PROJECT="$2"
@@ -90,9 +90,10 @@ case "$COMMAND" in
           echo "ERROR: --project directory is not accessible: $ANSWER_PROJECT" >&2
           exit 2
         }
-        # --project binds the repository; an exported GH_REPO would override
-        # gh's local-repository resolution and answer on another repository.
-        unset GH_REPO
+        # --project binds the repository: an exported GH_REPO would override
+        # gh's local-repository resolution, and exported Git selectors
+        # (GIT_DIR, GIT_WORK_TREE, …) would point git at another checkout.
+        unset GH_REPO GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES
       fi
       exec bash "$TOUCHSTONE_ROOT/scripts/respond-review.sh" ${ANSWER_ARGS[@]+"${ANSWER_ARGS[@]}"}
     fi
