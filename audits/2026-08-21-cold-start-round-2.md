@@ -22,8 +22,10 @@ run by the operator; the agents in the read-only sandbox could not run it
 
 Round 1 found the happy path and stopped at enforcement legibility. Round 2
 found the happy path *and* the policy read, and stopped at two walls: the
-Linear claim has no transport, and the required check was red for reasons
-no driver could have fixed from inside the repository.
+Linear claim has no transport, and the required check was red — first for a
+reason no driver could fix from inside the repository (the central engine
+pin, finding 1), then for a consumer-local defect that only the merge-ref
+checkout exposed (vesper's validator, finding 2, fixed in vesper#929).
 
 ## Findings, generalised
 
@@ -72,10 +74,9 @@ no driver could have fixed from inside the repository.
    vesper commits were silently eaten by the commit-stage fragment check
    (the hook fails, nothing is committed, the push goes out with the old
    head). Project-local and deliberate, but the failure mode — a local hook
-   that rejects the commit while the driver believes it landed — is the
-   class `feedback_touchstone_commit_verify_traps` already names. A driver
-   must read `git log -1` after every commit; the steering says so only
-   implicitly.
+   that rejects the commit while the driver believes it landed — is now
+   tracked as AUT-419 (make the refusal unmissable; say "verify `git log
+   -1` after every commit" explicitly in the steering).
 
 ## What changed between the rounds
 
