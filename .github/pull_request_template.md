@@ -12,6 +12,8 @@
 - Build:
 - Automated tests:
 - Manual validation:
+- Local review:
+<!-- The tier's one local pass, recorded as it ran: `coderabbit review --agent --uncommitted` (normal) or `codex review --base <default>` (serious) — reviewer, head, and finding count (e.g. "codex on abc1234: 2 findings, both fixed"). Required for normal and serious; `n/a — <reason>` only when the reviewer CLI is not installed/authenticated or its quota is exhausted. -->
 
 ## Out of scope
 <!-- Intentionally excluded related work, and where it is tracked. -->

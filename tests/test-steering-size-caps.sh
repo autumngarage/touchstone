@@ -84,9 +84,13 @@ assert_under() {
 # tail measured. Raised from 10.5 KiB on 2026-08-21 when steps 6 and 8 began
 # naming the concrete CLI commands instead of "the project's sequencer", and
 # to 11 KiB the same day when step 9 became the cleanup checklist (AUT-431)
-# instead of "delete the local branch if it persists".
-echo "==> TOUCHSTONE.md size cap (11 KiB — lean router)"
-assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 11264
+# instead of "delete the local branch if it persists", and to 11.5 KiB when
+# the local review pass became its own step with required evidence
+# (AUT-443: four PRs shipped without it and no gate could notice). Three
+# raises in one day is the signal AUT-438 (composite routing) answers if it
+# recurs; each raise here names the observed failure that earned it.
+echo "==> TOUCHSTONE.md size cap (11.5 KiB — lean router)"
+assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 11776
 
 echo "==> AGENTS.md size cap (24 KiB — leaves headroom under Codex's 32 KiB default)"
 assert_under "AGENTS.md" "$TOUCHSTONE_ROOT/AGENTS.md" 24576

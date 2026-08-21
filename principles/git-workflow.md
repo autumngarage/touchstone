@@ -36,19 +36,20 @@ policy contains the Touchstone ruleset, the server rejects direct pushes.
 
 ## The lifecycle
 
-The lifecycle is the nine-step **Required Delivery Workflow** in the steering
+The lifecycle is the ten-step **Required Delivery Workflow** in the steering
 block, and this document does not enumerate a second one: the steps below
 carry the same numbers and add only the detail the steering leaves out.
 
 1. **Pull.** `git pull --rebase` on the default branch before starting work.
 2. **Branch — before any edit that might become a commit.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`. Do this as step one of the work, not as a cleanup step later. Check the tree first: run `git status --short` and `git branch --show-current`. If the tree is dirty with unrelated user changes, do not stash them and do not auto-commit on the user's behalf — ask how to proceed, or branch around the changes when the file surfaces are disjoint. `git stash` is hidden multi-agent state, not a coordination mechanism.
 3. **Claim tracked work** — see "Claiming tracked work before agent dispatch" below.
-4. **Change + commit.** Each meaningful sub-task gets its own commit: stage explicit file paths (not `git add -A`), write a concise message. The tier's local pass sets the push cadence: a normal-tier change pushes whenever a commit is ready (its pass ran at pre-commit on the staged slice); a serious-tier change pushes once per head it wants reviewed, because its branch-level pass runs at pre-push. After a review round, batch every fix into one commit and push once (`principles/local-review.md`).
-5. **Reconcile tracked work** before opening the PR — fixed items get the closing reference in the PR body; partial or stale items get a tracker note.
-6. **Ship.** Push and open the PR — see "Opening a PR" below.
-7. **Answer every piece of PR feedback before merging.** Reply to each comment and resolve its thread, whoever left it. Where effective policy requires conversation resolution, GitHub blocks unresolved threads; elsewhere resolving them remains mandatory driver procedure.
-8. **Merge**, bound to the head the review actually saw — see "Merging" below.
-9. **Clean up after merge, and before the session ends** — see "Leaving no mess" below. `touchstone cleanup check` must report nothing.
+4. **Change + commit.** Each meaningful sub-task gets its own commit: stage explicit file paths (not `git add -A`), write a concise message. The tier sets the push cadence: a normal-tier change pushes whenever a commit is ready; a serious-tier change pushes once per head it wants reviewed, because its local pass runs on the branch before push. After a review round, batch every fix into one commit and push once.
+5. **Local review — the tier's one pass, and its evidence.** `principles/local-review.md` routes it: normal → `coderabbit review --agent --uncommitted` on the staged slice before the commit; serious → `codex review --base <default>` on the branch before the push. This is the one step of the contract nothing else witnesses — an agent shipped four PRs without running it and no gate could notice (AUT-443) — so it leaves evidence: the PR body's `- Local review:` row records reviewer, head, and finding count (`codex on abc1234: 3 findings, 2 fixed, 1 routed`), or `n/a — <reason>` when the reviewer CLI is not installed, not authenticated, or out of quota. The `delivery-evidence` gate refuses a normal or serious PR whose row is missing, bare, or names no reviewer.
+6. **Reconcile tracked work** before opening the PR — fixed items get the closing reference in the PR body; partial or stale items get a tracker note.
+7. **Ship.** Push and open the PR — see "Opening a PR" below.
+8. **Answer every piece of PR feedback before merging.** Reply to each comment and resolve its thread, whoever left it. Where effective policy requires conversation resolution, GitHub blocks unresolved threads; elsewhere resolving them remains mandatory driver procedure.
+9. **Merge**, bound to the head the review actually saw — see "Merging" below.
+10. **Clean up after merge, and before the session ends** — see "Leaving no mess" below. `touchstone cleanup check` must report nothing.
 
 ## Before trusting any merge: what does GitHub enforce here?
 

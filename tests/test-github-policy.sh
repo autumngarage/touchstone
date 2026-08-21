@@ -1017,6 +1017,7 @@ Bind the branch a PR is opened for.
 - Build: n/a — shell
 - Automated tests: full suite, pass.
 - Manual validation: opened a PR from a worktree; the request bound the expected branch.
+- Local review: codex on the branch head: 0 findings.
 
 ## Review tier
 serious
@@ -1122,6 +1123,7 @@ Change how merges bind.
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: codex on the branch head: 0 findings.
 
 ## Review tier
 normal
@@ -1194,6 +1196,7 @@ Fix prose.
 - Build: n/a — documentation only, no build step
 - Automated tests: full suite, pass
 - Manual validation: n/a — rendered blocks are asserted by the suite
+- Local review: codex on the branch head: 0 findings.
 
 ## Review tier
 normal
@@ -1280,6 +1283,7 @@ real
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: coderabbit on the staged slice: 1 finding, fixed.
 
 ## Review tier
 <!-- trivial | normal | serious -->
@@ -1303,6 +1307,7 @@ real
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: codex on the branch head: 0 findings.
 ## Review tier
 normal
 ## Why this tier
@@ -1385,6 +1390,7 @@ Support the literal `<!--` token in templates.
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: codex on the branch head: 0 findings.
 
 ## Review tier
 normal
@@ -1411,6 +1417,7 @@ real
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: codex on the branch head: 0 findings.
 
 ## Review tier
 normal
@@ -1453,6 +1460,7 @@ real
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: codex on the branch head: 0 findings.
 ## Review tier
 normal
 ## Why this tier
@@ -1477,6 +1485,7 @@ real
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: codex on the branch head: 0 findings.
 ## Review tier
 normal
 ## Why this tier
@@ -1500,6 +1509,7 @@ real
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: codex on the branch head: 0 findings.
 ## Review tier
 normal
 ## Why this tier
@@ -1523,6 +1533,7 @@ Support the ``<!--`` token in templates.
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: codex on the branch head: 0 findings.
 
 ## Review tier
 normal
@@ -1571,6 +1582,7 @@ real
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: codex on the branch head: 0 findings.
 ## Review tier
 normal
 ## Why this tier
@@ -1594,6 +1606,7 @@ Example:
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: codex on the branch head: 0 findings.
 
 ## Review tier
 normal
@@ -1617,6 +1630,7 @@ See ```inline`code``` here.
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: codex on the branch head: 0 findings.
 
 ## Review tier
 normal
@@ -1640,6 +1654,7 @@ The literal token is \<!-- in the rendered body.
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: codex on the branch head: 0 findings.
 
 ## Review tier
 normal
@@ -1708,6 +1723,7 @@ token` across a line break, and `<!-- -->` inline, and > quoted `    <!--`.
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: codex on the branch head: 0 findings.
 
 ## Review tier
 normal
@@ -1841,6 +1857,7 @@ body '## Intent
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: codex on the branch head: 0 findings.
 
 ## Review tier
 normal
@@ -1863,6 +1880,7 @@ body '## Intent
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: codex on the branch head: 0 findings.
 
 ## Review tier
 normal
@@ -1925,6 +1943,7 @@ real intent inside a fence
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
+- Local review: codex on the branch head: 0 findings.
 
 ## Review tier
 normal
@@ -2035,6 +2054,44 @@ if [ "$(id -u)" -ne 0 ]; then
   chmod 644 "$EVIDENCE_TMP/unreadable.md"
   ok "an existing but unreadable body fails closed"
 fi
+
+echo "==> the local review pass must leave evidence on normal and serious tiers (AUT-443)"
+# An agent shipped four PRs without ever running the tier's local pass and
+# nothing could notice: every other step is gated, this one was prose. A
+# normal or serious body without the row, with a bare n/a, or naming no
+# reviewer is refused; a waiver with a reason, or a reviewer with its result,
+# passes; trivial needs nothing.
+lr_body() {
+  body "## Intent
+real
+
+## Invariants
+- x holds
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+$1
+
+## Review tier
+$2
+
+## Why this tier
+contained"
+}
+lr_body '' normal
+accepts && fail "a normal PR without a Local review row was accepted" || ok "no Local review row is refused on normal"
+lr_body '- Local review: n/a' serious
+accepts && fail "a bare n/a Local review was accepted" || ok "a bare n/a Local review is refused"
+lr_body '- Local review: ran it, looked fine' normal
+accepts && fail "a Local review naming no reviewer was accepted" || ok "a Local review naming no reviewer is refused"
+lr_body '- Local review: codex on 1234567: 3 findings, 2 fixed, 1 routed.' serious
+accepts && ok "a recorded codex pass is accepted" || fail "a recorded codex pass was refused: $(bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/body.md" 2>&1 | tail -3)"
+lr_body '- Local review: n/a — coderabbit CLI is not installed on this machine; recorded waiver.' normal
+accepts && ok "a waiver with a reason is accepted" || fail "a reasoned waiver was refused"
+lr_body '' trivial
+accepts && ok "trivial needs no Local review row" || fail "trivial was refused without a Local review row"
 
 echo "==> Every policy file pins the required workflows at one touchstone-workflows revision"
 # The engine a consumer's required validate runs is whatever the pinned

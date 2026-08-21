@@ -210,10 +210,25 @@ done <<<"$VALIDATION_ROWS"
   || report "a '## Why this tier' section justifying the '$TIER' classification"
 
 # The bar rises with the tier, because the cost of an unreviewed mistake does.
+# The local review pass is the one step of the delivery contract nothing
+# else witnesses (hooks gate commits, this gate the body, review-gate the
+# review): an agent shipped four PRs without running it and nothing could
+# notice (AUT-443). So a normal or serious PR must record it here -- the
+# reviewer the tier routes to and what it found, or an explicit waiver. Shape
+# only, like every other row: the gate cannot see a terminal, but it can
+# refuse silence.
 case "$TIER" in
   normal | serious)
     filled "$(section "Invariants")" \
       || report "a '## Invariants' section (required for tier '$TIER')"
+    if ! local_review="$(row_text "$VALIDATION_SECTION" "Local review")"; then
+      report "the Validation row '- Local review:' present (the tier's local pass: reviewer, head, and finding count -- or n/a with the waiver reason)"
+    elif ! filled "$local_review"; then
+      report "the Validation row '- Local review:' filled in (reviewer, head, and finding count -- or n/a with the waiver reason)"
+    elif ! printf '%s\n' "$local_review" | grep -qiE '(coderabbit|codex)' \
+      && ! printf '%s\n' "$local_review" | grep -qiE '^[[:space:]]*n/a'; then
+      report "the Validation row '- Local review:' naming the reviewer that ran (coderabbit or codex) or starting with 'n/a — <reason>'"
+    fi
     ;;
 esac
 
