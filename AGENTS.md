@@ -17,9 +17,9 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 
 That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar.
 
-**GitHub's effective repository policy is the enforcement authority.** Where the Touchstone policy is installed and verified, the protected validation workflow and required `review-binding` check must pass, every finding must be answered, every thread must be resolved, and native rules reject direct and force pushes and branch deletion; emergency admin bypass is limited to pull requests, where GitHub records it. Local hooks are fast feedback, not the boundary. Do not infer adoption from this document: inspect the repository's effective rules — and a repository without that enforcement still does not authorize a direct push.
+**GitHub's effective repository policy is the enforcement authority.** Where the Touchstone policy is installed and verified, the protected validation workflow and required `review-gate` workflow must pass, every finding must be answered, every thread must be resolved, and native rules reject direct and force pushes and branch deletion; emergency admin bypass is limited to pull requests, where GitHub records it. Local hooks are fast feedback, not the boundary. Do not infer adoption from this document: inspect the repository's effective rules — and a repository without that enforcement still does not authorize a direct push.
 
-**Review is always required.** The AI reviewer reports `COMMENTED`, not `APPROVED`, so approval count does not represent it; `review-binding` binds trusted evidence and answers to the exact head. Where that gate is absent, exact-head review remains mandatory driver procedure — a rollout gap, not permission to skip it.
+**Review is always required.** The AI reviewer reports `COMMENTED`, not `APPROVED`, so approval count does not represent it; `review-gate` binds trusted evidence and answers to the exact head. Where that gate is absent, exact-head review remains mandatory driver procedure — a rollout gap, not permission to skip it.
 
 **A security-review quota notice is never a blocker.** It is provisional, not review evidence. Keep watching, then use bounded stalled-request recovery.
 

@@ -92,15 +92,15 @@ GIT_WORKFLOW_SKILL="$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md"
 assert_contains "$GIT_WORKFLOW_SKILL" "Inspect the repository's effective rules"
 assert_contains "$GIT_WORKFLOW_SKILL" "Where installed and verified as required"
 assert_contains "$GIT_WORKFLOW_SKILL" "missing enforcement as an adoption gap"
-assert_not_contains "$GIT_WORKFLOW_SKILL" 'Review is enforced by `review-binding`.'
+assert_not_contains "$GIT_WORKFLOW_SKILL" 'Review is enforced by `review-gate`.'
 
 GIT_WORKFLOW_GUIDE="$TOUCHSTONE_ROOT/principles/git-workflow.md"
 assert_contains "$GIT_WORKFLOW_GUIDE" \
-  "Where the repository's effective policy requires \`review-binding\`"
+  "Where the repository's effective policy requires \`review-gate\`"
 assert_contains "$GIT_WORKFLOW_GUIDE" \
   "exact-head review remains mandatory driver procedure"
 assert_not_contains "$GIT_WORKFLOW_GUIDE" \
-  '**`review-binding` enforces the review contract.**'
+  '**`review-gate` enforces the review contract.**'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
   "Where it exposes the audited"
 assert_contains "$GIT_WORKFLOW_GUIDE" \
@@ -141,9 +141,9 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   assert_contains "$file" "at least 30 minutes after submission"
   assert_contains "$file" "earliest acceptance signal"
   assert_contains "$file" "immediately before posting"
-  assert_contains "$file" 'wait for its `touchstone/review-request-v1` marker'
-  assert_contains "$file" "marker and live binding"
-  assert_contains "$file" "A missing marker"
+  assert_contains "$file" 're-run the pinned `review-gate`'
+  assert_contains "$file" "still reports no request"
+  assert_not_contains "$file" "touchstone/review-request-v1"
   assert_contains "$file" "non-trigger audit note"
   assert_contains "$file" "fall back to the original marker"
   assert_contains "$file" "exactly one replacement trigger"
@@ -510,7 +510,7 @@ for file in "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$TOUCHSTONE_ROOT/AGENTS.md" \
   assert_contains "$file" "GitHub's effective repository policy is the enforcement authority"
   assert_contains "$file" "every thread must be resolved"
   assert_contains "$file" "inspect the repository's effective rules"
-  assert_contains "$file" 'required `review-binding` check'
+  assert_contains "$file" 'required `review-gate` workflow'
 done
 
 # Touchstone's product strategy must guide this repository without leaking
@@ -570,7 +570,7 @@ echo "==> active architecture names the real review-evidence consumer"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
   "merge helper can verify"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
-  "review-binding"
+  "review-gate"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
   "can evaluate from GitHub"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
@@ -578,7 +578,7 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
   "missing server-side constraints are a rollout gap"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
-  'The required `review-binding` check'
+  'The required `review-gate` workflow'
 
 # Every surface that describes the merge gate must name the server-side review
 # binding now that the previously documented gap is closed.
@@ -595,8 +595,8 @@ $TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md
 echo "==> every gate description names enforced exact-head review binding"
 for file in $GATE_FILES; do
   [ -f "$file" ] || continue
-  if ! grep -Fq 'review-binding' "$file"; then
-    fail "$(basename "$file") describes the merge gate without naming review-binding"
+  if ! grep -Fq 'review-gate' "$file"; then
+    fail "$(basename "$file") describes the merge gate without naming review-gate"
   fi
 done
 

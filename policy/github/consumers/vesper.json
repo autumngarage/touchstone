@@ -1,7 +1,7 @@
 {
   "contractVersion": 1,
   "organization": "autumngarage",
-  "repository": "touchstone",
+  "repository": "vesper",
   "workflowSource": {
     "repository": "touchstone-workflows",
     "branchProtection": {
@@ -14,27 +14,10 @@
   },
   "branch": "main",
   "rollbackPrerequisites": {
-    "repositoryFiles": [
-      {
-        "path": ".github/workflows/validate.yml",
-        "sha": "c2dc082e0702090f3fc9de095d78a85ddde902a5"
-      },
-      {
-        "path": ".github/workflows/review-binding.yml",
-        "sha": "a4c161279b39f0e7c301c46f3d474b83dc4b10d7"
-      },
-      {
-        "path": ".github/workflows/review-evidence-signal.yml",
-        "sha": "3c34d7792afdc9c99c728b76bebe4e527a5db760"
-      },
-      {
-        "path": ".github/review-binding/evaluate.jq",
-        "sha": "0f30e59859b936ca16a8d6f4dd8cb1e8960eb917"
-      }
-    ]
+    "repositoryFiles": []
   },
   "managedRuleset": {
-    "name": "Touchstone policy v1: autumngarage/touchstone@main",
+    "name": "Touchstone policy v1: autumngarage/vesper@main",
     "target": "branch",
     "enforcement": "active",
     "bypass_actors": [
@@ -47,7 +30,7 @@
     "conditions": {
       "repository_name": {
         "include": [
-          "touchstone"
+          "vesper"
         ],
         "exclude": [],
         "protected": false
@@ -109,7 +92,7 @@
     ]
   },
   "managedRepositoryRuleset": {
-    "name": "Touchstone merge queue v1: autumngarage/touchstone@main",
+    "name": "Touchstone merge queue v1: autumngarage/vesper@main",
     "target": "branch",
     "enforcement": "active",
     "bypass_actors": [],

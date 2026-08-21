@@ -45,7 +45,7 @@ Merge Gate
   |
   | ENFORCED by GitHub when the repository's effective policy requires them:
   |   pinned required validation workflow green
-  |   review-binding covers this head and every finding is answered
+  |   review-gate covers this head and every finding is answered
   |   every review thread resolved
   |   no outstanding CHANGES_REQUESTED
   | Until adoption, the same exact-head review remains driver procedure;
@@ -82,7 +82,7 @@ Human user
 - The merge path binds the exact reviewed head. Use a project-documented executable merge boundary when present; otherwise use `gh pr merge --squash --match-head-commit <reviewed-sha>`. Both rely on GitHub refusing a moved head, which prevents an unreviewed commit from slipping behind a passing review.
 - **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.**
   `required_approving_review_count` therefore does not express this review
-  contract. Where the repository's effective policy requires `review-binding`,
+  contract. Where the repository's effective policy requires `review-gate`,
   that check binds trusted review evidence to the exact head and requires every
   finding answered. Until adoption, the same exact-head review remains
   mandatory driver procedure.
@@ -108,7 +108,7 @@ The configured GitHub reviewer is an asynchronous, PR-visible adapter.
 - Review the exact requested head and base revisions.
 - Publish findings where the driver and other maintainers can inspect them.
 - Produce durable authorship, revision, and timestamp evidence that the
-  `review-binding` check can evaluate from GitHub.
+  `review-gate` workflow can evaluate from GitHub.
 - Never mutate the local branch or own merge authority.
 
 ## Agent Swarms And Worktrees
@@ -150,7 +150,7 @@ Rules:
 Where the repository's effective policy contains the Touchstone ruleset, the
 enforcement split is:
 
-1. **GitHub enforces.** The organization ruleset refuses direct and force pushes, requires a PR, runs the pinned validation workflow, requires exact-head `review-binding`, and blocks unresolved threads.
+1. **GitHub enforces.** The organization ruleset refuses direct and force pushes, requires a PR, runs the pinned validation workflow, requires exact-head `review-gate`, and blocks unresolved threads.
 2. **Prose instructs.** `git-workflow.md` carries the full sequence in raw `git` and `gh`, including the head binding at merge and the thread-resolution mutation.
 3. **The driver executes and verifies.** It runs the commands, reads what GitHub actually reports, and does not trust an exit code that is known to lie in both directions.
 

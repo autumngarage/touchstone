@@ -6,6 +6,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SOURCE_SCRIPT="$ROOT/scripts/github-policy.sh"
 SCRIPT="$SOURCE_SCRIPT"
 POLICY="$ROOT/policy/github/touchstone-main.json"
+# The fake source repository serves exactly the pin the checked-in policy
+# names, so bumping the pin never needs a matching edit here.
+WORKFLOWS_PIN="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[].sha] | unique | .[0]' "$POLICY")"
+export WORKFLOWS_PIN
 BASELINE="$ROOT/policy/github/baseline-2026-08-13.json"
 ROLLBACK_VALIDATE="$ROOT/policy/github/rollback/validate.yml"
 POLICY_GUIDE="$ROOT/policy/github/README.md"
@@ -71,10 +75,11 @@ case "$method $endpoint" in
     emit '{"allow_auto_merge":true}'
     ;;
   "GET repos/autumngarage/touchstone-workflows/commits/main")
-    emit '{"sha":"00a0b299b76f3405641aae4b6d0bd92591a5d1f1"}'
+    emit "{\"sha\":\"$WORKFLOWS_PIN\"}"
     ;;
-  "GET repos/autumngarage/touchstone-workflows/contents/.github/workflows/validate.yml?ref=00a0b299b76f3405641aae4b6d0bd92591a5d1f1" | \
-  "GET repos/autumngarage/touchstone-workflows/contents/.github/workflows/review-gate.yml?ref=00a0b299b76f3405641aae4b6d0bd92591a5d1f1")
+  "GET repos/autumngarage/touchstone-workflows/contents/.github/workflows/validate.yml?ref=$WORKFLOWS_PIN" | \
+  "GET repos/autumngarage/touchstone-workflows/contents/.github/workflows/review-gate.yml?ref=$WORKFLOWS_PIN" | \
+  "GET repos/autumngarage/touchstone-workflows/contents/.github/workflows/delivery-evidence.yml?ref=$WORKFLOWS_PIN")
     emit '{"type":"file"}'
     ;;
   "GET repos/autumngarage/touchstone/contents/.github/workflows/validate.yml?ref=main")
@@ -85,7 +90,19 @@ case "$method $endpoint" in
     fi
     emit "{\"type\":\"file\",\"sha\":\"${GH_FAKE_ROLLBACK_FILE_SHA:-c2dc082e0702090f3fc9de095d78a85ddde902a5}\"}"
     ;;
-  "GET repos/autumngarage/touchstone-workflows/compare/00a0b299b76f3405641aae4b6d0bd92591a5d1f1...00a0b299b76f3405641aae4b6d0bd92591a5d1f1")
+  "GET repos/autumngarage/touchstone/contents/.github/workflows/review-binding.yml?ref=main")
+    if [ -f "$state/local-workflow-absent" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+    emit '{"type":"file","sha":"a4c161279b39f0e7c301c46f3d474b83dc4b10d7"}'
+    ;;
+  "GET repos/autumngarage/touchstone/contents/.github/workflows/review-evidence-signal.yml?ref=main")
+    if [ -f "$state/local-workflow-absent" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+    emit '{"type":"file","sha":"3c34d7792afdc9c99c728b76bebe4e527a5db760"}'
+    ;;
+  "GET repos/autumngarage/touchstone/contents/.github/review-binding/evaluate.jq?ref=main")
+    if [ -f "$state/local-workflow-absent" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+    emit '{"type":"file","sha":"0f30e59859b936ca16a8d6f4dd8cb1e8960eb917"}'
+    ;;
+  "GET repos/autumngarage/touchstone-workflows/compare/$WORKFLOWS_PIN...$WORKFLOWS_PIN")
     emit '{"status":"identical"}'
     ;;
   "GET repos/autumngarage/touchstone-workflows/branches/main/protection")
@@ -354,10 +371,12 @@ jq -e '
   and .managedRuleset.name == "Touchstone policy v1: autumngarage/touchstone@main"
   and .workflowSource.repository == "touchstone-workflows"
   and .workflowSource.repository != .repository
-  and .rollbackPrerequisites.repositoryFiles == [{
-    path: ".github/workflows/validate.yml",
-    sha: "c2dc082e0702090f3fc9de095d78a85ddde902a5"
-  }]
+  and .rollbackPrerequisites.repositoryFiles == [
+    {path: ".github/workflows/validate.yml", sha: "c2dc082e0702090f3fc9de095d78a85ddde902a5"},
+    {path: ".github/workflows/review-binding.yml", sha: "a4c161279b39f0e7c301c46f3d474b83dc4b10d7"},
+    {path: ".github/workflows/review-evidence-signal.yml", sha: "3c34d7792afdc9c99c728b76bebe4e527a5db760"},
+    {path: ".github/review-binding/evaluate.jq", sha: "0f30e59859b936ca16a8d6f4dd8cb1e8960eb917"}
+  ]
   and .workflowSource.branchProtection == {
     enforce_admins:true,
     required_pull_request_reviews:true,
@@ -367,7 +386,7 @@ jq -e '
   }
   and (.managedRuleset.bypass_actors == [{actor_id:null,actor_type:"OrganizationAdmin",bypass_mode:"pull_request"}])
   and any(.managedRuleset.rules[]; .type == "pull_request" and .parameters.required_review_thread_resolution == true)
-  and any(.managedRuleset.rules[]; .type == "required_status_checks" and any(.parameters.required_status_checks[]; .context == "review-binding" and .integration_id == 15368))
+  and (any(.managedRuleset.rules[]; .type == "required_status_checks") | not)
   and any(.managedRuleset.rules[]; .type == "workflows" and any(.parameters.workflows[];
     .repository_id == 1333343261
     and .path == ".github/workflows/validate.yml"
@@ -378,15 +397,22 @@ jq -e '
     and .path == ".github/workflows/review-gate.yml"
     and .ref == "refs/heads/main"
     and (.sha | test("^[0-9a-f]{40}$"))))
+  and any(.managedRuleset.rules[]; .type == "workflows" and any(.parameters.workflows[];
+    .repository_id == 1333343261
+    and .path == ".github/workflows/delivery-evidence.yml"
+    and .ref == "refs/heads/main"
+    and (.sha | test("^[0-9a-f]{40}$"))))
+  and ([.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[].sha] | unique | length) == 1
   and any(.managedRuleset.rules[]; .type == "deletion")
   and any(.managedRuleset.rules[]; .type == "non_fast_forward")
 ' "$POLICY" >/dev/null || fail "checked-in ruleset is missing a required invariant"
 # The merged result is validated by the merge queue, not by making every open
-# PR rebase: strict up-to-date is off and the queue rule is on, together. One
-# without the other either serializes every merge (AUT-331) or lands
-# combinations nothing tested.
+# PR rebase: there is no strict up-to-date rule (no status-check rule at all,
+# every gate being a required workflow that runs on merge_group) and the
+# queue rule is on. Reintroducing a strict status rule would serialize every
+# merge again (AUT-331).
 jq -e '
-  any(.managedRuleset.rules[]; .type == "required_status_checks" and .parameters.strict_required_status_checks_policy == false)
+  all(.managedRuleset.rules[]; .type != "required_status_checks" or .parameters.strict_required_status_checks_policy == false)
   and all(.managedRuleset.rules[]; .type != "merge_queue")
   and .managedRepositoryRuleset.name == "Touchstone merge queue v1: autumngarage/touchstone@main"
   and .managedRepositoryRuleset.enforcement == "active"
@@ -400,23 +426,26 @@ jq -e '
     min_entries_to_merge: 1,
     min_entries_to_merge_wait_minutes: 0
   })
-' "$POLICY" >/dev/null || fail "policy must pair a merge queue (in the repository ruleset: GitHub rejects it in an organization ruleset) with non-strict status checks"
+' "$POLICY" >/dev/null || fail "policy must carry the merge queue in the repository ruleset (GitHub rejects it in an organization ruleset) with no strict up-to-date rule"
 # One entry per merge commit: the queue branch names a single PR and the
 # publisher evaluates that PR, so a grouped merge commit would carry one PR's
 # verdict for several. Grouping is re-enabled only with a publisher that
 # aggregates every PR in the group.
-# A queue rule makes the required review-binding context due on the queue's
-# merge commit. This repository's publisher reaches that commit only through
-# the signal workflow's merge_group handoff; a policy that enables the queue
-# before that handoff exists ejects every entry. The order is enforced here,
-# not in a PR description.
-SIGNAL_WORKFLOW="$ROOT/.github/workflows/review-evidence-signal.yml"
-if jq -e 'any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")' "$POLICY" >/dev/null; then
-  grep -Fq 'merge_group:' "$SIGNAL_WORKFLOW" \
-    || fail "policy enables a merge queue but review-evidence-signal.yml does not carry merge_group to the publisher"
-fi
+# Every gate the queue waits on is a pinned required workflow that runs on
+# merge_group itself (asserted in touchstone-workflows); nothing in this
+# repository publishes a check, so there is no status-context rule to keep in
+# step with a publisher.
 [ "$(git hash-object "$ROLLBACK_VALIDATE")" = "c2dc082e0702090f3fc9de095d78a85ddde902a5" ] \
   || fail "durable rollback workflow differs from its recorded prerequisite blob"
+# The legacy seed also requires the review-binding status: its publisher,
+# evaluator, and event signal are retained as exact payloads so a rollback can
+# restore a check something actually produces.
+[ "$(git hash-object "$ROOT/policy/github/rollback/review-binding.yml")" = "a4c161279b39f0e7c301c46f3d474b83dc4b10d7" ] \
+  || fail "retained review-binding publisher differs from its recorded prerequisite blob"
+[ "$(git hash-object "$ROOT/policy/github/rollback/review-evidence-signal.yml")" = "3c34d7792afdc9c99c728b76bebe4e527a5db760" ] \
+  || fail "retained review-evidence-signal differs from its recorded prerequisite blob"
+[ "$(git hash-object "$ROOT/policy/github/rollback/review-binding-evaluate.jq")" = "0f30e59859b936ca16a8d6f4dd8cb1e8960eb917" ] \
+  || fail "retained review-binding evaluator differs from its recorded prerequisite blob"
 grep -Fq 'Policy operations require `gh`, `git`, `jq`, and `diff`.' "$POLICY_GUIDE" \
   || fail "policy guide does not declare its jq runtime dependency"
 grep -Fq 'brew_install_if_missing "jq" "jq"' "$SETUP" \
@@ -513,7 +542,7 @@ ok "self-hosted or unprotected required-workflow sources fail closed"
 # whose file is absent at its pin must be refused.
 jq '(.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows) += [{
   path: ".github/workflows/not-yet-there.yml", ref: "refs/heads/main", repository_id: 1333343261,
-  sha: "00a0b299b76f3405641aae4b6d0bd92591a5d1f1"}]' "$POLICY" >"$TMP_DIR/two-workflows-policy.json"
+  sha: "d8323e2e197fc96ad7adfe1d4adba42e2c8dd6d2"}]' "$POLICY" >"$TMP_DIR/two-workflows-policy.json"
 if run_policy dry-run "$TMP_DIR/two-workflows-policy.json" >/dev/null 2>"$TMP_DIR/two-workflows.err"; then
   fail "a second required workflow missing at its pin was accepted"
 fi
@@ -782,8 +811,8 @@ ok "failed replacement verification leaves the old gate intact"
 echo "==> Failed in-place update restores the prior ruleset"
 init_branch
 run_policy apply "$POLICY" >/dev/null
-jq '.managedRuleset.rules[] |= if .type == "required_status_checks" then
-  (.parameters.required_status_checks += [{context:"new-policy-check",integration_id:15368}]) else . end' \
+jq '.managedRuleset.rules[] |= if .type == "pull_request" then
+  (.parameters.required_approving_review_count = 1) else . end' \
   "$POLICY" >"$TMP_DIR/updated-policy.json"
 : >"$TMP_DIR/state/mutations.log"
 if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_BAD_EFFECTIVE_ONCE=1 \

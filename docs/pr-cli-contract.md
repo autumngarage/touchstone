@@ -31,12 +31,14 @@ taking this document's word for it.
 - `open` proves the local and remote branch heads match, reuses an existing
   open PR for that branch or runs `gh pr create`, re-reads GitHub after the
   mutation, and posts `@codex review` once for the exact head. Its invisible
-  comment marker and the server-side `touchstone/review-request-v1` status make
-  partial reruns idempotent. It reports success only after the status binds the
-  request comment and a fresh PR read still matches the head and base. Raw
-  equivalent: compare `git rev-parse HEAD` with
-  `git ls-remote`, inspect `gh pr list`, create with `gh pr create`, re-read,
-  then inspect comments/status before `gh pr comment --body "@codex review"`.
+  comment marker (`<!-- touchstone:pr-open head=… base=… base_sha=… -->`)
+  is what the pinned `review-gate` reads as the request, and it makes partial
+  reruns idempotent. It reports success only after the gate has been asked to
+  re-run for that head and a fresh PR read still matches the head and base.
+  Raw equivalent: compare `git rev-parse HEAD` with `git ls-remote`, inspect
+  `gh pr list`, create with `gh pr create`, re-read, then inspect comments
+  before `gh pr comment --body "@codex review"`, then re-run the gate's run
+  for the head.
 
   `--expect-branch` binds the caller's intent to the branch the resolved
   project actually has checked out, the way `merge --head` binds the reviewed
@@ -47,15 +49,17 @@ taking this document's word for it.
   different one per directory — which opened two pull requests for the wrong
   branch. The result payload names the branch acted on for the same reason.
 
-  Why not the raw sequence: the required `review-binding` check writes its
-  marker only for a request comment matching its exact grammar, so a driver
-  that posts `@codex review` and moves on can have the provider review the
-  correct head while the check stays red and no marker is ever written
-  (autumngarage/touchstone#833). Reporting success before the binding is
-  confirmed is therefore reporting success for a merge that cannot happen. The
-  invisible marker additionally makes a retry after a timeout reuse the
-  existing request instead of posting a second one.
-
+  Why not the raw sequence: the required `review-gate` workflow derives the
+  request from the driver's comment and its marker grammar; a driver that
+  posts `@codex review` and moves on can have the provider review the correct
+  head while the gate, evaluated before that review landed, stays red
+  (autumngarage/touchstone#833). `open` therefore asks the gate to re-run for
+  the exact head and confirms the coordinates still hold before reporting
+  success. The invisible marker additionally makes a retry after a timeout
+  reuse the existing request instead of posting a second one. Where no pinned
+  gate protects the base, `open` verifies the request comment and
+  coordinates, names the gap on stderr, and leaves exact-head review as
+  driver procedure.
 - `status` is a read-only observation of state, URL, exact head, base ref/base
   SHA, draft state, and GitHub's merge-state observation. Raw equivalent:
   `gh pr view --json number,state,url,headRefOid,baseRefName,baseRefOid,mergeStateStatus,isDraft`.
