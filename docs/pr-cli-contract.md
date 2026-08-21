@@ -109,8 +109,8 @@ taking this document's word for it.
 
 - `policy status` reads the base branch's effective rules once and reports
   `enforcement: applied | partial | none` with what is missing — the three
-  pinned required workflows, the merge queue, and the native pull-request,
-  force-push, and deletion rules. `pr status` carries the same field for the
+  pinned required workflows, the merge queue where the policy declares one,
+  and the native pull-request, force-push, and deletion rules. `pr status` carries the same field for the
   PR's base. Raw equivalent: `gh api repos/O/R/rules/branches/<ref>` and a
   reading of the workflows and rule types.
   Why not the raw sequence: on 2026-08-21 four fresh agents (two Claude, two
@@ -123,9 +123,10 @@ taking this document's word for it.
   otherwise it **fails closed**. The terms: a *pinned gate* is the
   `review-gate` workflow required from the policy's source repository, ref,
   and revision (the tool's own `policy/github/touchstone-main.json`);
-  `applied` means all three pinned workflows, the merge queue, and the native
-  pull-request, force-push, and deletion rules are present; `partial` and
-  `none` name what is missing. The policy consulted is the repository's own where the tool ships one
+  `applied` means all three pinned workflows and the native pull-request,
+  force-push, and deletion rules are present, plus the merge queue where the
+  repository's own policy declares one; `partial` and `none` name what is
+  missing. The policy consulted is the repository's own where the tool ships one
   (`policy/github/consumers/<repo>.json`; a private consumer derived
   `--no-queue` legitimately expects no queue), otherwise the canonical one.
   `applied` → re-run the gate, request the merge — with `--auto` where the
