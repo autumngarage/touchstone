@@ -177,7 +177,7 @@ restore_repo_ruleset() {
 verify_auto_merge_allowed() {
   local allowed
   allowed="$(api "repos/$ORG/$REPOSITORY" --jq '.allow_auto_merge')" || return $?
-  [ "$allowed" = true ] || die "repository setting allow_auto_merge is off; the merge queue cannot admit pull requests"
+  [ "$allowed" = true ] || die "repository setting allow_auto_merge is off; pull requests land through it (the queue admits through it, and without a queue touchstone pr merge arms it)"
 }
 
 auto_merge_setting() {

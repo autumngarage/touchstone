@@ -282,7 +282,12 @@ case "$1 ${2:-}" in
     printf '%s\n' 71
     ;;
   api*)
-    if has 'actions/runs/77/rerun' "$@"; then
+    if has 'repos/autumngarage/current --jq .allow_auto_merge' "$@"; then
+      # The repository's auto-merge setting: on unless the fixture says otherwise.
+      if [ -f "$GH_STATE/auto-merge-off" ]; then printf 'false\n'; else printf 'true\n'; fi
+    elif has 'user --jq .login' "$@"; then
+      printf 'alice\n'
+    elif has 'actions/runs/77/rerun' "$@"; then
       echo "rerun 77" >>"$GH_STATE/gate-reruns"
       # After a re-run the run is in progress until the fake says otherwise.
       [ -f "$GH_STATE/gate-after-rerun" ] || echo 2 >"$GH_STATE/gate-after-rerun"
@@ -630,12 +635,12 @@ EOF
   assert_has "$TMP/out" 'not pinned at the policy revision'
   assert_not_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/stale-pin"
-  # Nothing at all on the branch is "none", not "partial".
+  # Nothing at all -- no rules, auto-merge off -- is "none", not "partial".
   rm -f "$TMP/state/review-gate"
-  touch "$TMP/state/no-rules"
+  touch "$TMP/state/no-rules" "$TMP/state/auto-merge-off"
   run_pr "$TMP/out" policy-status --json
   assert_has "$TMP/out" '"status":"none"'
-  rm -f "$TMP/state/no-rules"
+  rm -f "$TMP/state/no-rules" "$TMP/state/auto-merge-off"
   touch "$TMP/state/review-gate"
   # A consumer derived --no-queue expects no queue: the tool consults the
   # repository's own shipped policy, reports applied without a queue rule,
@@ -645,6 +650,8 @@ EOF
   cp "$ROOT/VERSION" "$TMP/tool2/VERSION"
   cp "$ROOT/policy/github/touchstone-main.json" "$TMP/tool2/policy/github/touchstone-main.json"
   jq '.managedRepositoryRuleset = null | .repository = "current"' "$ROOT/policy/github/touchstone-main.json" >"$TMP/tool2/policy/github/consumers/current.json"
+  # A same-named consumer file for another organization must not be consulted.
+  jq '.organization = "someone-else"' "$TMP/tool2/policy/github/consumers/current.json" >"$TMP/tool2/policy/github/consumers/current.other.json"
   touch "$TMP/state/no-queue-rule"
   set +e
   bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
@@ -662,7 +669,12 @@ EOF
   assert_rc "$RUN_RC" 0
   grep -q '^pr merge.*--auto' "$GH_CALLS" || fail "a queue-less consumer merge did not arm auto-merge: $(grep '^pr merge' "$GH_CALLS")"
   assert_has "$TMP/out" '"status":"auto-merge-enabled"'
-  rm -f "$TMP/state/no-queue-rule"
+  touch "$TMP/state/auto-merge-off"
+  set +e
+  bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
+  set -e
+  assert_has "$TMP/out" '"missing":["auto-merge setting"]'
+  rm -f "$TMP/state/auto-merge-off" "$TMP/state/no-queue-rule"
   run_pr "$TMP/out" status 7 --json
   assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
   run_pr "$TMP/out" status 7

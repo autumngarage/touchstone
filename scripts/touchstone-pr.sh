@@ -420,9 +420,15 @@ read_enforcement() {
   # consumer derived --no-queue legitimately has no queue), else the
   # canonical one; each gate must have exactly one pin there, or the read
   # fails rather than silently expecting nothing.
-  local policy_file="$CANONICAL_POLICY" expect_queue
-  [ "$REPO" = "autumngarage/touchstone" ] || [ ! -f "$TOOL_ROOT/policy/github/consumers/${REPO##*/}.json" ] \
-    || policy_file="$TOOL_ROOT/policy/github/consumers/${REPO##*/}.json"
+  local policy_file="$CANONICAL_POLICY" expect_queue candidate
+  candidate="$TOOL_ROOT/policy/github/consumers/${REPO##*/}.json"
+  # The shipped consumer policy applies only to the repository it names in
+  # full (organization and name); a fork with the same basename gets the
+  # canonical expectations, not another repository's.
+  if [ "$REPO" != "autumngarage/touchstone" ] && [ -f "$candidate" ] \
+    && [ "$(jq -r '"\(.organization)/\(.repository)"' "$candidate")" = "$REPO" ]; then
+    policy_file="$candidate"
+  fi
   [ -f "$policy_file" ] \
     || fail_operation "the tool's policy file is missing: $policy_file" "Reinstall touchstone."
   expected="$(jq -c '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | {path, repository_id, ref, sha}]' "$policy_file")" \
@@ -435,6 +441,13 @@ read_enforcement() {
   expect_queue="$(jq -r 'if .managedRepositoryRuleset == null then "false" else "true" end' "$policy_file")"
   ENFORCEMENT_POLICY_FILE="$policy_file"
   ENFORCEMENT_EXPECTS_QUEUE="$expect_queue"
+  # Pull requests land through auto-merge in both policy shapes (the queue
+  # admits through it; without a queue `merge` arms it), so a repository with
+  # it disabled is not fully enforced either.
+  read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO" --jq '.allow_auto_merge' \
+    || fail_operation "could not read the repository's auto-merge setting: $READ_OUTPUT" "Retry after GitHub recovers."
+  local auto_merge_missing=""
+  [ "$READ_OUTPUT" = true ] || auto_merge_missing="auto-merge setting"
   # Every page: the endpoint pages at 30 rules and `--paginate` emits one
   # array per page, merged here before evaluation.
   read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/rules/branches/$encoded?per_page=100" \
@@ -456,13 +469,18 @@ read_enforcement() {
         (if any(.[]; .type == "deletion") then empty else "deletion protection" end)
       ] | unique | join(",")')" \
     || fail_operation "could not evaluate the effective rules for $base_ref" "Retry after GitHub recovers."
-  # Seven things can be missing; all seven missing is "none". Counted, not
-  # string-compared: jq sorts the names and a name may carry a reason.
-  local missing_count
+  if [ -n "$auto_merge_missing" ]; then
+    ENFORCEMENT_MISSING="${ENFORCEMENT_MISSING:+$ENFORCEMENT_MISSING,}$auto_merge_missing"
+  fi
+  # Everything expected missing is "none": seven items with a queue, six
+  # without, plus the auto-merge setting. Counted, not string-compared: jq
+  # sorts the names and a name may carry a reason.
+  local missing_count expected_count=8
+  [ "$expect_queue" = true ] || expected_count=7
   missing_count="$(printf '%s' "$ENFORCEMENT_MISSING" | awk -F',' 'NF { print NF } !NF { print 0 }')"
   if [ -z "$ENFORCEMENT_MISSING" ]; then
     ENFORCEMENT_STATUS=applied
-  elif [ "$missing_count" -ge 7 ]; then
+  elif [ "$missing_count" -ge "$expected_count" ]; then
     ENFORCEMENT_STATUS=none
   else
     ENFORCEMENT_STATUS=partial

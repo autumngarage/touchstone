@@ -131,9 +131,9 @@ taking this document's word for it.
   a plain merge while the re-run is pending.
   Anything else → refuse with the remedy (apply the consumer policy, then
   close/reopen open PRs), or with `--unguarded` record on the PR — once per
-  head, by marker — that an unguarded merge was requested because the
-  canonical pinned gate is absent (other checks or reviews may still have
-  run), then request the merge. A failed rules read is an operational error
+  head, by marker — that an unguarded merge was requested and exactly what
+  enforcement is missing (a partial policy may still carry the gate; other
+  checks or reviews may still have run), then request the merge. A failed rules read is an operational error
   (exit 1), never a verdict. Rollout: repositories whose policy is not yet
   applied receive the refusal and its remedy; nothing merges differently
   where the policy is applied. Before this, `merge` on an unprotected
