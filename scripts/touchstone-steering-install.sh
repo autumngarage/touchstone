@@ -88,6 +88,9 @@ die() {
 }
 
 [ -n "$HOME_DIR" ] || die "no home directory: set HOME or pass --home"
+case "$HOME_DIR" in
+  *"'"*) die "the home directory contains a single quote, which the rewritten command examples cannot quote safely: $HOME_DIR" ;;
+esac
 # The rendered routes are absolute paths agents follow from wherever they are
 # started. A relative --home would embed routes that resolve only from this
 # command's working directory -- and check would agree, because it renders the
@@ -385,7 +388,7 @@ render_principle() {
   # agent ran the second form verbatim and found no such file in the
   # consumer repository.
   sed -e "s|\`principles/|\`$(sed_replacement "$principles_home")/|g" \
-    -e "s|\([[:space:]]\)principles/\([A-Za-z0-9._-]*\.md\)|\1\"$(sed_replacement "$principles_home")/\2\"|g" "$source" >"$out"
+    -e "s|\([[:space:]]\)principles/\([A-Za-z0-9._-]*\.md\)|\1'$(sed_replacement "$principles_home")/\2'|g" "$source" >"$out"
 }
 
 # Ownership is recorded per entry as `checksum<TAB>name`; match on the name

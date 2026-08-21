@@ -539,7 +539,7 @@ grep -q "GEMINI.md is absent (no block installed)" "$TMP_DIR/hver3.out" && pass 
 # and found no such file in the consumer repository.
 HCMD="$TMP_DIR/hcmd"
 bash "$INSTALL" install --home "$HCMD" >/dev/null 2>&1
-if grep -q -- "-c \"$HCMD/.touchstone/principles/local-review-contract.md\"" "$HCMD/.touchstone/principles/local-review.md"; then
+if grep -q -- "-c '$HCMD/.touchstone/principles/local-review-contract.md'" "$HCMD/.touchstone/principles/local-review.md"; then
   pass "command-line paths in routed documents resolve to the installed copies"
 else
   fail "local-review.md still names principles/local-review-contract.md as a bare path: $(grep -n 'local-review-contract.md' "$HCMD/.touchstone/principles/local-review.md" | head -2 | tr '\n' ' ')"
