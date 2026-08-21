@@ -464,7 +464,7 @@ read_enforcement() {
         gate("review-gate"; ".github/workflows/review-gate.yml"),
         gate("delivery-evidence"; ".github/workflows/delivery-evidence.yml"),
         (if (any(.[]; .type == "merge_queue") or ($expect_queue | not)) then empty else "merge queue" end),
-        (if any(.[]; .type == "pull_request") then empty else "pull-request rule" end),
+        (if any(.[]; .type == "pull_request" and (.parameters.required_review_thread_resolution // false) == true) then empty else "pull-request rule (with thread resolution)" end),
         (if any(.[]; .type == "non_fast_forward") then empty else "force-push protection" end),
         (if any(.[]; .type == "deletion") then empty else "deletion protection" end)
       ] | unique | join(",")')" \

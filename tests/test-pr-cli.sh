@@ -69,16 +69,18 @@ serve_rules() {
   # A real effective-rules document through the caller's real jq: the
   # policy's three pinned workflows plus the queue and the native rules
   # when the gate is "installed", only the native rules otherwise.
+  pr_rule='{"type":"pull_request","parameters":{"required_review_thread_resolution":true}}'
+  [ ! -f "$GH_STATE/pr-rule-no-threads" ] || pr_rule='{"type":"pull_request","parameters":{}}'
   if [ -f "$GH_STATE/review-gate" ]; then
     pin_sha="$GH_POLICY_SHA"
     [ ! -f "$GH_STATE/stale-pin" ] || pin_sha="0000000000000000000000000000000000000000"
     queue_rule=',{"type":"merge_queue"}'
     [ ! -f "$GH_STATE/no-queue-rule" ] || queue_rule=""
-    rules='[{"type":"pull_request"},{"type":"deletion"},{"type":"non_fast_forward"}'"$queue_rule"',{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$GH_POLICY_SHA"'"}]}}]'
+    rules='['"$pr_rule"',{"type":"deletion"},{"type":"non_fast_forward"}'"$queue_rule"',{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$GH_POLICY_SHA"'"}]}}]'
   elif [ -f "$GH_STATE/no-rules" ]; then
     rules='[]'
   else
-    rules='[{"type":"pull_request"},{"type":"deletion"},{"type":"non_fast_forward"}]'
+    rules='[{"type":"pull_request","parameters":{"required_review_thread_resolution":true}},{"type":"deletion"},{"type":"non_fast_forward"}]'
   fi
   # Served as two pages, as --paginate would deliver them: the native
   # rules on one page, the workflows and queue on the next.
@@ -635,6 +637,11 @@ EOF
   assert_has "$TMP/out" 'not pinned at the policy revision'
   assert_not_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/stale-pin"
+  # A pull-request rule without thread resolution is not the policy's rule.
+  touch "$TMP/state/pr-rule-no-threads"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" 'pull-request rule (with thread resolution)'
+  rm -f "$TMP/state/pr-rule-no-threads"
   # Nothing at all -- no rules, auto-merge off -- is "none", not "partial".
   rm -f "$TMP/state/review-gate"
   touch "$TMP/state/no-rules" "$TMP/state/auto-merge-off"
