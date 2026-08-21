@@ -474,6 +474,7 @@ echo "==> Checked-in consumer policies equal their derivation"
 # One contract, many repositories: a consumer policy may differ from the
 # canonical one only in the repository coordinates and the absence of
 # Touchstone's own rollback prerequisites.
+bash "$ROOT/scripts/derive-consumer-policy.sh" vesper --no-queue extra >/dev/null 2>&1 && fail "derive accepted a surplus argument" || ok "derive refuses surplus arguments"
 for consumer in "$ROOT"/policy/github/consumers/*.json; do
   [ -f "$consumer" ] || continue
   name="$(basename "$consumer" .json)"

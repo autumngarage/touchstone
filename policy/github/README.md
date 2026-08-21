@@ -81,7 +81,7 @@ two independently green PRs is validated by the next PR's run, not before
 landing. Regenerate without the flag when the plan or visibility changes.
 
 Every adopted repository's policy is an exact derivation of the canonical
-one — `scripts/derive-consumer-policy.sh REPOSITORY` — checked in under
+one — `scripts/derive-consumer-policy.sh REPOSITORY [--no-queue]` — checked in under
 `policy/github/consumers/` and refused by the test suite if it drifts. Apply
 one with `scripts/github-policy.sh apply policy/github/consumers/REPOSITORY.json`
 only once both hold: the repository has adopted (`touchstone adopt`), and

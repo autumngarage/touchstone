@@ -30,6 +30,10 @@ case "$REPOSITORY" in
     exit 2
     ;;
 esac
+[ "$#" -le 2 ] || {
+  echo "usage: derive-consumer-policy.sh REPOSITORY [--no-queue]" >&2
+  exit 2
+}
 case "${2:-}" in
   "") ;;
   --no-queue) QUEUE=false ;;
