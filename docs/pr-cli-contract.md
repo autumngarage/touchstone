@@ -33,7 +33,12 @@ taking this document's word for it.
 
 - `open` proves the local and remote branch heads match, reuses an existing
   open PR for that branch or runs `gh pr create`, re-reads GitHub after the
-  mutation, and posts `@codex review` once for the exact head. Its invisible
+  mutation, and posts `@codex review` once for the exact head. On a reused
+  PR it applies the `--title` and `--body-file` given now when they differ
+  from the live values (`gh pr edit`, re-read to verify) and reports `body:
+  updated` or `unchanged` — idempotent means "converges on the arguments",
+  not "no-ops": a body silently kept let the required `delivery-evidence`
+  gate fail with no signal from the one command the driver uses (AUT-437). Its invisible
   comment marker (`<!-- touchstone:pr-open head=… base=… base_sha=… -->`)
   is what the pinned `review-gate` reads as the request, and it makes partial
   reruns idempotent. It reports success only after the gate has been asked to
