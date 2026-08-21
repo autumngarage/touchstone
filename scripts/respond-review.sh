@@ -282,6 +282,8 @@ fi
 
 echo "==> Replied and resolved. When every thread is answered, prove it and merge:"
 echo "    touchstone pr answer $PR_NUMBER --all-resolved-check"
-echo "    gh pr merge $PR_NUMBER --squash --match-head-commit \"\$(gh pr view $PR_NUMBER --json headRefOid --jq .headRefOid)\""
+# The captured head, never a live read: a merge hint that resolves the head
+# at run time accepts a commit pushed after this answer, unreviewed.
+echo "    touchstone pr merge $PR_NUMBER --head $HEAD_SHA   # or: gh pr merge $PR_NUMBER --squash --match-head-commit $HEAD_SHA"
 echo "    gh pr view $PR_NUMBER --json state,mergedAt   # the merge exit code lies in both directions"
 echo "    (Pushed new commits instead? The head moved — request one review for the new head.)"

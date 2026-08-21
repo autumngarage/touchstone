@@ -872,6 +872,14 @@ STUB
   grep -qF 'reply id: 71' "$RR/out" && ok "reply id carries no diagnostic text" \
     || fail "reply id was not parsed from stdout alone: $(grep 'reply id' "$RR/out")"
   [ -f "$GH_STATE/resolved" ] && ok "thread resolved" || fail "thread was not resolved"
+  # The merge hint names the head this answer was bound to. A hint that
+  # resolves the head live (`$(gh pr view … headRefOid)`) would accept a
+  # commit pushed after the answer, unreviewed.
+  if grep -qF 'pr merge 7 --head ' "$RR/out" && ! grep -qF '$(gh pr view' "$RR/out"; then
+    ok "merge hint carries the captured head, not a live read"
+  else
+    fail "merge hint does not bind the captured head: $(grep 'pr merge' "$RR/out")"
+  fi
 
   echo "==> a rerun recognises its own reply despite stderr noise on the login read"
   run 7 --comment-id 51 --body-file "$RR/body"
