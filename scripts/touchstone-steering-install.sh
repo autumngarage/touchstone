@@ -622,11 +622,17 @@ for entry in "${TARGETS[@]}"; do
   # every operator edit outside the markers "drift", and comparing against a
   # tail rebuilt from the same file would hide real block drift.
   if [ "$ACTION" = check ]; then
-    if [ -f "$path" ] \
-      && awk -v b="$BEGIN_MARKER_RE" -v e="$END_MARKER" -v plain="$BEGIN_MARKER" \
-        '$0 ~ b { inside = 1; print plain; next } inside { print } $0 == e { inside = 0 }' "$path" \
-      | cmp -s - "$BLOCK"; then
-      printf '  ok: %s carries the current contract\n' "$relative"
+    # The version line is reported, never compared: a release that bumps
+    # VERSION without touching the contract must not read as drift on every
+    # machine. Only the contract text decides.
+    if [ ! -f "$path" ]; then
+      printf '  DRIFT: %s is absent (no block installed); this tool is %s\n' "$relative" "$TOOL_VERSION" >&2
+      DRIFTED=$((DRIFTED + 1))
+    elif awk -v b="$BEGIN_MARKER_RE" -v e="$END_MARKER" -v plain="$BEGIN_MARKER" \
+      '$0 ~ b { inside = 1; print plain; next } inside { print } $0 == e { inside = 0 }' "$path" \
+      | sed -E 's/^<!-- Installed by touchstone [^ .]+(\.[0-9]+)*\. /<!-- Installed by touchstone. /' \
+      | cmp -s - <(sed -E 's/^<!-- Installed by touchstone [^ .]+(\.[0-9]+)*\. /<!-- Installed by touchstone. /' "$BLOCK"); then
+      printf '  ok: %s carries the current contract (block from touchstone %s)\n' "$relative" "$(installed_block_version "$path")"
     else
       printf '  DRIFT: %s carries the block from touchstone %s; this tool is %s\n' \
         "$relative" "$(installed_block_version "$path")" "$TOOL_VERSION" >&2
