@@ -58,7 +58,7 @@ touchstone/
 |------|---------|
 | `TOUCHSTONE.md` | Canonical steering router — drives CLAUDE.md (@-import) and the AGENTS.md/GEMINI.md managed block |
 | `principles/git-workflow.md` | The full delivery sequence in raw `git` + `gh`, including thread resolution |
-| `scripts/respond-review.sh` | Reply to a review finding and resolve its thread in one step (GitHub needs four API calls) |
+| `scripts/respond-review.sh` (`touchstone pr answer`) | Reply to a review finding and resolve its thread in one step (GitHub needs four API calls) |
 | `scripts/touchstone-tracker.sh` | Versioned tracker-neutral verified claim adapter |
 | `scripts/touchstone-pr.sh` | Source entrypoint for three bounded PR operations |
 | `scripts/claim-issue.sh` | GitHub transport used by the tracker adapter |

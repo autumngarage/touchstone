@@ -23,6 +23,8 @@ Usage:
   touchstone tracker claim [arguments]
   touchstone pr open|status|merge [arguments]
   touchstone policy status [--base BRANCH] [--project DIR] [--json]
+  touchstone pr answer PR --comment-id ID --body-file FILE [--fix-commit SHA]
+  touchstone pr answer PR --all-resolved-check
   touchstone version
   touchstone upgrade
   touchstone steering install|check|uninstall [--home DIR] [--dry-run]
@@ -44,6 +46,13 @@ case "$COMMAND" in
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-tracker.sh" "$@"
     ;;
   pr)
+    # `pr answer` is the reply-and-resolve step: it lives in
+    # scripts/respond-review.sh (reply, resolve the thread, re-run the gate)
+    # and was unreachable from the installed tool until it had a name here.
+    if [ "${1:-}" = answer ]; then
+      shift
+      exec bash "$TOUCHSTONE_ROOT/scripts/respond-review.sh" "$@"
+    fi
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" "$@"
     ;;
   policy)

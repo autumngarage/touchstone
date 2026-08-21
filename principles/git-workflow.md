@@ -187,9 +187,18 @@ other installed review app (CodeRabbit, here). Their threads are equal before
 the gate — every unresolved thread blocks merge under conversation
 resolution, whoever opened it — so answer and resolve them all.
 
-Use the stable root comment ID from the complete GitHub review surface. Reply
+Use the stable root comment ID from the complete GitHub review surface, then:
+
+```bash
+touchstone pr answer <n> --comment-id <id> --body-file <reply.md> [--fix-commit <sha>]
+touchstone pr answer <n> --all-resolved-check   # exit 0 only when no thread is unresolved
+```
+
+It posts the reply, resolves the thread, and asks the pinned gate to
+re-evaluate, once; a rerun after a timeout finds its own reply instead of
+posting a second one. Where the CLI is absent, the raw equivalent is a reply
 with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<id>/replies -F
-body=@<file>`, then resolve with the GraphQL mutation:
+body=@<file>`, then the GraphQL mutation:
 
 ```bash
 gh api graphql -f query='
