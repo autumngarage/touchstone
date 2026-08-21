@@ -103,10 +103,12 @@ the steering or the CLI, same pass condition. Three rounds per contract
 version is the cap, as for PR review; what is left after round 3 becomes a
 tracked issue, not a fourth round.
 
-Against that bar, round 2 failed on (3) — stale `gh pr create`,
-`.touchstone-review.toml`, `pr answer` documented before it was installed —
-and on (2) for the Codex cells (read-only `$TMPDIR`). Everything else above
-is logged, not scored.
+Against that bar, round 2 failed on (1) for the vesper cells — the
+generated body asserted release-only tests had run (finding 7, evidence the
+generator did not witness) — on (2) for the Codex cells (read-only
+`$TMPDIR`), and on (3) everywhere — stale `gh pr create`,
+`.touchstone-review.toml`, `pr answer` documented before it was installed.
+Everything else above is logged, not scored.
 
 ## Next round
 
