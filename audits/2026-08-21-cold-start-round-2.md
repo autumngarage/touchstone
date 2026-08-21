@@ -79,9 +79,11 @@ no driver could have fixed from inside the repository.
 
 ## What changed between the rounds
 
-Round 1 → round 2, all four agents moved from "cannot learn what GitHub
-enforces" to "can, but the sandbox will not let me run the read". That is
-progress on the contract and a new, narrower tooling defect (finding 3).
+Round 1 → round 2, all four agents moved past "cannot learn what GitHub
+enforces": the read now exists. The two Codex runs then hit "the read-only
+sandbox will not let me run it" (finding 3); the two Claude runs ran it and
+stopped at the Linear claim and, on vesper, the red required check. That is
+progress on the contract plus one narrower tooling defect.
 
 ## Next round
 
