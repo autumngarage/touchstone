@@ -156,7 +156,8 @@ for required in install.sh hooks/branch-guard.sh; do
   [ -f "$unpacked/$required" ] \
     || die "release $VERSION predates the non-Homebrew install ($required is missing from the archive); wait for the formula to record a release that carries it"
 done
-released="$(head -n 1 "$unpacked/VERSION" 2>/dev/null | tr -d '[:space:]')"
+[ -r "$unpacked/VERSION" ] || die "the release archive has no readable VERSION file"
+released="$(head -n 1 "$unpacked/VERSION" | tr -d '[:space:]')"
 [ "$released" = "$VERSION" ] || die "the archive reports VERSION '$released', not $VERSION"
 
 # Install into place atomically: a failed unpack never leaves a half tree
@@ -186,8 +187,12 @@ fi
 # the one step whose failure must leave the active release intact, and no
 # permission bit stops root from renaming.
 if [ -n "${TOUCHSTONE_INSTALL_FAIL_PUBLISH:-}" ] || ! mv "$staging" "$target"; then
-  [ -z "$previous" ] || mv "$previous" "$target" || true
-  die "could not publish $target; the previous tree was restored"
+  if [ -n "$previous" ]; then
+    mv "$previous" "$target" \
+      || die "could not publish $target AND could not restore the previous tree from $previous; current still names a version, restore $previous to $target by hand"
+    die "could not publish $target; the previous tree was restored"
+  fi
+  die "could not publish $target; nothing was installed at that path before and nothing is now"
 fi
 if [ -n "$previous" ] && ! rm -rf "$previous"; then
   printf 'warning: the set-aside tree %s could not be removed; the new release is published and current will name it\n' "$previous" >&2
