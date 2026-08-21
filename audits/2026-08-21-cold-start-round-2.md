@@ -86,6 +86,28 @@ sandbox will not let me run it" (finding 3); the two Claude runs ran it and
 stopped at the Linear claim and, on vesper, the red required check. That is
 progress on the contract plus one narrower tooling defect.
 
+## Stopping rule
+
+A cold-start round is a test with a pass condition, not a survey: an agent
+asked "what is ambiguous?" will always answer. A (driver × repo) cell
+**passes** when the fresh agent (1) lists a ship sequence that matches the
+contract and violates no invariant (no direct push, no hand-posted marker,
+no evidence it did not witness), (2) reads enforcement with
+`touchstone policy status` and states it correctly, and (3) quotes no
+contradiction between two shipped documents or between a document and the
+installed tool. Only those three kinds of finding count; preferences and
+"would be clearer" remarks are logged and not acted on, the same bar review
+findings meet. **Done is two consecutive rounds with every cell passing.**
+After that, cold starts stop being a loop: one run per release that changes
+the steering or the CLI, same pass condition. Three rounds per contract
+version is the cap, as for PR review; what is left after round 3 becomes a
+tracked issue, not a fourth round.
+
+Against that bar, round 2 failed on (3) — stale `gh pr create`,
+`.touchstone-review.toml`, `pr answer` documented before it was installed —
+and on (2) for the Codex cells (read-only `$TMPDIR`). Everything else above
+is logged, not scored.
+
 ## Next round
 
 After 3.2.1 is installed (`pr answer`, `upgrade --help`), vesper#929 and
