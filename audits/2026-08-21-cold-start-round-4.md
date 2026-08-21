@@ -15,8 +15,9 @@ AUT-421, AUT-396, AUT-403, AUT-423).
 | Codex / arpeggio | PASS | FAIL — read-only `$TMPDIR` (AUT-421) | FAIL — 1 | no |
 | Codex / vesper | PASS | FAIL — read-only `$TMPDIR` (AUT-421) | **PASS — none** | (2) only |
 
-Round 3 → round 4: contradictions per cell went from 4–5 to 0–1, and the
-first cell with none arrived (Codex on vesper). Criterion (1) has now passed
+Round 3 → round 4: contradictions per cell went from 4–5 to 0–1 confirmed
+(plus one borderline in Claude/arpeggio), and the first cell with none
+arrived (Codex on vesper). Criterion (1) has now passed
 in eight consecutive cells across two rounds: a fresh agent of either driver
 reads the installed contract and produces the correct ship sequence.
 
@@ -40,8 +41,9 @@ reads the installed contract and produces the correct ship sequence.
 This is the last cold-start round for 3.2.x, as round 3 set out. What the
 rounds bought: the contract's ship sequence is learnable cold (eight of
 eight), enforcement is readable wherever a temp file can be written, and the
-routed documents no longer contradict each other or the tool on anything an
-agent quoted. What they did not buy, and no further round would: a Linear
+routed documents, once #972 lands, no longer contradict each other or the
+tool on anything an agent quoted; at this head the two #972 quotations are
+still open. What they did not buy, and no further round would: a Linear
 claim transport (AUT-410), read-only observation commands (AUT-421), a
 re-request path for body-only findings (AUT-396), a permission-based trust
 check in the gate (AUT-422). Those are tool changes with issues; the next
