@@ -87,6 +87,19 @@ Schema 1 is a deliberately narrow TOML subset:
 The last restriction is part of the versioned contract, not an incomplete
 parser. Schema 2 demonstrates the rule: it adds syntax without changing what schema 1 means, and a schema-1 file is read exactly as it was before schema 2 existed.
 
+## What the central workflow checks out
+
+The required `validate` workflow runs on `pull_request`, so it checks out
+GitHub's synthetic merge ref (`refs/pull/N/merge`): a merge commit whose
+first parent is the base branch and whose tree is the pull request merged
+into it. A declared command that walks history therefore sees that merge
+commit as `HEAD`, not the branch tip. Per-commit reads must treat a merge
+commit as its diff against the first parent (`git diff-tree -m
+--first-parent`); `git diff-tree` without `-m` prints nothing for a merge,
+which made vesper's release-note walk reject every pull request while the
+same command passed locally (vesper#929, 2026-08-21). Test declared commands
+against a `--no-ff` merge head, not only a linear branch.
+
 ## Verdict semantics
 
 A declaration is a promise. A required command that is missing, cannot start,
