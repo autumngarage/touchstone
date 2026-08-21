@@ -552,7 +552,7 @@ ok "self-hosted or unprotected required-workflow sources fail closed"
 # whose file is absent at its pin must be refused.
 jq '(.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows) += [{
   path: ".github/workflows/not-yet-there.yml", ref: "refs/heads/main", repository_id: 1333343261,
-  sha: "d8323e2e197fc96ad7adfe1d4adba42e2c8dd6d2"}]' "$POLICY" >"$TMP_DIR/two-workflows-policy.json"
+  sha: "4fd9cf7ace51e2029f4f4a334225231cbac20948"}]' "$POLICY" >"$TMP_DIR/two-workflows-policy.json"
 if run_policy dry-run "$TMP_DIR/two-workflows-policy.json" >/dev/null 2>"$TMP_DIR/two-workflows.err"; then
   fail "a second required workflow missing at its pin was accepted"
 fi
