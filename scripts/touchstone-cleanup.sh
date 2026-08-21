@@ -127,21 +127,35 @@ done < <(git status --porcelain --untracked-files=all 2>/dev/null)
 # --- worktrees -------------------------------------------------------------------
 # Porcelain records are NUL-separated with -z, so a path with spaces stays
 # one path; the first record is the main checkout.
+# A worktree whose directory was removed by hand (porcelain marks it
+# "prunable") still owns its branch; it is reported with the prune remedy
+# instead of crashing on a path that is not there.
 MAIN_WORKTREE=""
+WT_PATH=""
+WT_BRANCH=""
+WT_PRUNABLE=false
+emit_worktree() {
+  [ -n "$WT_PATH" ] && [ "$WT_PATH" != "$MAIN_WORKTREE" ] || return 0
+  if [ "$WT_PRUNABLE" = true ]; then
+    finding "worktree" "$WT_PATH [${WT_BRANCH:-(detached)}] directory missing" "git worktree prune (the directory is gone; Git still records it)"
+  else
+    finding "worktree" "$WT_PATH [${WT_BRANCH:-(detached)}]" "git worktree remove '$WT_PATH' once its PR is merged, then git worktree prune"
+  fi
+}
 while IFS= read -r -d '' record; do
   case "$record" in
     "worktree "*)
-      path="${record#worktree }"
-      if [ -z "$MAIN_WORKTREE" ]; then
-        MAIN_WORKTREE="$path"
-        continue
-      fi
-      branch="$(git -C "$path" branch --show-current 2>/dev/null)"
-      [ -n "$branch" ] || branch='(detached)'
-      finding "worktree" "$path [$branch]" "git worktree remove '$path' once its PR is merged, then git worktree prune"
+      emit_worktree
+      WT_PATH="${record#worktree }"
+      WT_BRANCH=""
+      WT_PRUNABLE=false
+      [ -n "$MAIN_WORKTREE" ] || MAIN_WORKTREE="$WT_PATH"
       ;;
+    "branch "*) WT_BRANCH="${record#branch refs/heads/}" ;;
+    prunable*) WT_PRUNABLE=true ;;
   esac
 done < <(git worktree list --porcelain -z)
+emit_worktree
 
 # --- branches whose pull request is finished ------------------------------------
 # A ref is "finished" only when a pull request from THIS repository with
@@ -156,7 +170,7 @@ if [ "$GH_OK" = true ]; then
   finished_for() {
     # $1 branch name, $2 current sha -> prints "#N merged|closed" or nothing
     local rows
-    rows="$(gh pr list --state all --head "$1" --limit 50 \
+    rows="$(gh pr list --state all --head "$1" --limit 1000 \
       --json number,state,headRefOid,headRepository,headRepositoryOwner \
       --jq '.[] | [.number, .state, .headRefOid, ((.headRepositoryOwner.login // "") + "/" + (.headRepository.name // ""))] | @tsv' 2>/dev/null)" || return 2
     # Any OPEN pull request from THIS repository on this head means the
@@ -168,7 +182,13 @@ if [ "$GH_OK" = true ]; then
   # A branch that is still the BASE of an open pull request is a stack's
   # parent: deleting it closes the child PR, which cannot be reopened
   # (principles/git-workflow.md, stacked PRs). Read once.
-  STACK_BASES="$(gh pr list --state open --limit 100 --json number,baseRefName --jq '.[] | [.baseRefName, .number] | @tsv' 2>/dev/null)" || STACK_BASES=""
+  # Every open PR, paginated, so no child is past a window; a failed read
+  # fails closed: no remote-branch deletion is recommended without it.
+  STACK_BASES_OK=true
+  STACK_BASES="$(gh api --paginate "repos/$REPO_FULL/pulls?state=open&per_page=100" --jq '.[] | [.base.ref, .number] | @tsv' 2>/dev/null)" || {
+    STACK_BASES_OK=false
+    finding "github" "open pull-request read failed" "remote-branch findings are withheld: a merged branch may still base an open stacked PR; retry with gh authenticated"
+  }
   bases_open_pr() {
     printf '%s\n' "$STACK_BASES" | awk -F'\t' -v b="$1" '$1 == b { print "#" $2; exit }'
   }
@@ -189,10 +209,21 @@ if [ "$GH_OK" = true ]; then
       *) finding "local-branch" "$branch ($pr)" "its PR was closed without merging: delete the branch if the work is abandoned, or reopen a PR for it" ;;
     esac
   done < <(git for-each-ref --format='%(refname:short)	%(objectname)' refs/heads/)
-  while IFS=$'\t' read -r ref sha; do
-    branch="${ref#refs/remotes/origin/}"
-    # origin/HEAD is a symbolic ref, not a branch.
-    [ -n "$branch" ] && [ "$branch" != "$DEFAULT_BRANCH" ] && [ "$branch" != HEAD ] || continue
+  # Remote branches are judged by their LIVE SHA from one `git ls-remote`,
+  # never by refs/remotes/origin/*: a remote-tracking ref can hold the old
+  # merged SHA while another clone has since pushed new work to that name,
+  # and a recommendation built on the stale ref would delete live work.
+  if [ "$STACK_BASES_OK" = true ]; then
+    if ! REMOTE_HEADS="$(git ls-remote --quiet --heads origin 2>/dev/null)"; then
+      finding "github" "could not list origin's branches (origin unreachable?)" "remote-branch findings are withheld; retry with network access"
+      REMOTE_HEADS=""
+    fi
+  else
+    REMOTE_HEADS=""
+  fi
+  while IFS=$'\t' read -r sha ref; do
+    branch="${ref#refs/heads/}"
+    [ -n "$branch" ] && [ "$branch" != "$DEFAULT_BRANCH" ] || continue
     pr="$(finished_for "$branch" "$sha")" || {
       [ $? -eq 2 ] && read_failed "origin/$branch"
       continue
@@ -207,7 +238,7 @@ if [ "$GH_OK" = true ]; then
       *merged) finding "remote-branch" "origin/$branch ($pr)" "git push origin --delete $branch" ;;
       *) finding "remote-branch" "origin/$branch ($pr)" "its PR was closed without merging: git push origin --delete $branch if the work is abandoned" ;;
     esac
-  done < <(git for-each-ref --format='%(refname)	%(objectname)' refs/remotes/origin/)
+  done < <(printf '%s\n' "$REMOTE_HEADS" | awk 'NF == 2 { print $1 "\t" $2 }')
 fi
 
 # --- report -----------------------------------------------------------------------

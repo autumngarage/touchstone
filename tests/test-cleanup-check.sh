@@ -23,18 +23,18 @@ case "$1 $2" in
     [ -f "$state/gh-down" ] && exit 1
     printf 'autumngarage/current\tmain\n'
     ;;
+  "api --paginate")
+    [ -f "$state/api-down" ] && { echo "gh: HTTP 502" >&2; exit 1; }
+    [ -f "$state/prs" ] || exit 0
+    awk -F'\t' '$3 == "OPEN" { print $6 "\t" $2 }' "$state/prs"
+    ;;
   "pr list")
     # Rows in $state/prs: "head<TAB>number<TAB>state<TAB>sha<TAB>owner/repo<TAB>base"
     [ -f "$state/list-down" ] && { echo "gh: GraphQL: rate limited" >&2; exit 1; }
     head=""; fields=""
     while [ "$#" -gt 0 ]; do [ "$1" = --head ] && head="$2"; [ "$1" = --json ] && fields="$2"; shift; done
     [ -f "$state/prs" ] || exit 0
-    if [ -z "$head" ]; then
-      # the stacked-base read: open PRs as "base<TAB>number"
-      awk -F'\t' '$3 == "OPEN" { print $6 "\t" $2 }' "$state/prs"
-    else
-      awk -F'\t' -v h="$head" '$1 == h { print $2 "\t" $3 "\t" $4 "\t" $5 }' "$state/prs"
-    fi
+    awk -F'\t' -v h="$head" '$1 == h { print $2 "\t" $3 "\t" $4 "\t" $5 }' "$state/prs"
     ;;
   *) echo "unhandled fake gh call: $*" >&2; exit 1 ;;
 esac
@@ -138,6 +138,30 @@ git -C "$TMP/repo" checkout -q feat/done
 run
 grep -q 'checkout.*on branch feat/done' "$TMP/out" && ok "feature checkout reported" || fail "feature checkout missed"
 git -C "$TMP/repo" checkout -q main
+
+echo "==> a remote branch is judged by its live SHA, not a stale remote-tracking ref"
+# origin/feat/done moves (another clone pushed new work) but this checkout
+# has not fetched: the merged PR is at the OLD sha, so the live branch is
+# not finished and must not be recommended for deletion.
+git -C "$TMP/repo" push -q origin "$REUSED_SHA:refs/heads/feat/done"
+run
+grep -E '^  remote-branch.*feat/done' "$TMP/out" >/dev/null && fail "stale remote-tracking ref led to a deletion remedy for live work" || ok "live remote SHA consulted"
+grep -E '^  local-branch.*feat/done \(#41 merged\)' "$TMP/out" >/dev/null && ok "the local ref at the merged SHA is still reported" || fail "local merged ref lost"
+git -C "$TMP/repo" push -q -f origin "$DONE_SHA:refs/heads/feat/done"
+
+echo "==> a failed open-PR read withholds every remote-branch finding"
+touch "$TMP/state/api-down"
+run
+grep -q 'github.*open pull-request read failed' "$TMP/out" && ! grep -qE '^  remote-branch' "$TMP/out" \
+  && ok "no remote deletion recommended without the stack-base read" || fail "remote-branch findings issued despite a failed base read: $(cat "$TMP/out")"
+rm -f "$TMP/state/api-down"
+
+echo "==> a worktree whose directory was removed by hand is reported, not a crash"
+rm -rf "$TMP/repo wt"
+run
+[ "$RC" -eq 1 ] && grep -q 'worktree.*directory missing' "$TMP/out" && grep -q 'git worktree prune' "$TMP/out" \
+  && ok "prunable worktree reported with the prune remedy" || fail "prunable worktree not handled (rc=$RC): $(head -3 "$TMP/out")"
+git -C "$TMP/repo" worktree prune
 
 echo "==> an unreachable origin is a checkout finding, not a clean exit"
 git -C "$TMP/repo" remote set-url origin "$TMP/does-not-exist.git"
