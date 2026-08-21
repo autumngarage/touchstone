@@ -39,10 +39,10 @@ Your unstaged changes carry over. The trigger is *edit time*, not commit time �
 1. `git pull --rebase` on the default branch
 2. Branch (before any edit)
 3. Commit (explicit file paths, concise message, one concern per commit) — deterministic gates and the tier's local pass first (`principles/local-review.md`)
-4. `git push -u origin HEAD`, then `gh pr create` — put the configured close (`Closes #123` or `Fixes AUT-123`) in the PR body, not only a commit
-5. Open through the project's PR-open sequencer, not by hand — it posts the request and confirms the gate bound it. Never put its marker in a comment you write yourself; a bare `@codex review` from a collaborator is valid only for bounded stalled-request recovery
+4. `git push -u origin HEAD`, then `touchstone pr open --expect-branch <branch> --title … --body-file …` — the installed CLI is the sequencer everywhere: it creates or reuses the PR, posts the request, and confirms the gate bound it to the exact head and base. Put the configured close (`Closes #123` or `Fixes AUT-123`) in the PR body, not only a commit
+5. Request review through `pr open`, not by hand; re-run it for any later head (idempotent). Never put its marker in a comment you write yourself; a bare `@codex review` from a collaborator is valid only for bounded stalled-request recovery. Raw `gh pr create` is recovery when the CLI is absent, not the instruction
 6. Inspect GitHub's complete review surface; answer every finding but implement only the high-severity ones (correctness, crashes, data loss, security, broken behaviour, performance, lifecycle) — route the rest. Expect one confirming re-review; exact-head review after any fix commit is never skipped. Follow the raw reply and GraphQL `resolveReviewThread` procedure in `principles/git-workflow.md`
-7. Use the repository's declared merge boundary with `<reviewed-sha>`, or the raw `gh pr merge <n> --squash --match-head-commit <reviewed-sha>` fallback; then confirm `state == MERGED`
+7. `touchstone pr merge <n> --head <reviewed-sha>` (re-runs the gate, merges bound to that head); raw fallback `gh pr merge <n> --squash --match-head-commit <reviewed-sha>`; then confirm `state == MERGED`
 8. Clean up locally (`git branch -d <feature>`, or `-D` after confirming the content landed)
 
 ## Quick rules

@@ -79,11 +79,12 @@ assert_under() {
 # separately described where enforcement lives; they are now one.
 #
 # Derivation: TOUCHSTONE.md is inlined into AGENTS.md as the managed block. At
-# <= 10.5 KiB, AGENTS.md sits near 18.8 KiB against its 24 KiB cap — about
-# 5.7 KiB of project-tail headroom, still comfortably more than any consumer
-# tail measured.
-echo "==> TOUCHSTONE.md size cap (10.5 KiB — lean router)"
-assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 10752
+# <= 10.75 KiB, AGENTS.md sits near 19 KiB against its 24 KiB cap — about
+# 5 KiB of project-tail headroom, still comfortably more than any consumer
+# tail measured. Raised from 10.5 KiB on 2026-08-21 when steps 6 and 8 began
+# naming the concrete CLI commands instead of "the project's sequencer".
+echo "==> TOUCHSTONE.md size cap (10.75 KiB — lean router)"
+assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 11008
 
 echo "==> AGENTS.md size cap (24 KiB — leaves headroom under Codex's 32 KiB default)"
 assert_under "AGENTS.md" "$TOUCHSTONE_ROOT/AGENTS.md" 24576
