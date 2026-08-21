@@ -362,8 +362,12 @@ gh auth status --hostname "$REPO_HOST" >/dev/null 2>&1 \
 
 # The branch is reported, not just used: the operator's only check against
 # acting on the wrong worktree used to be inferring it from the PR URL.
+BODY_APPLIED=""
 emit_open_result() {
   local state="$1" number="$2" url="$3" head="$4" request="$5" branch="$6"
+  # On a reused PR, "body" says whether the title/body given now were applied
+  # (updated) or already matched (unchanged); a created PR carries the body by
+  # construction. Added field: compatible within touchstone.pr/v1.
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"open","status":"%s","pullRequest":%s,"url":' "$OUTPUT_SCHEMA" "$state" "$number"
     json_string "$url"
@@ -373,10 +377,15 @@ emit_open_result() {
     json_string "$head"
     printf ',"reviewRequest":'
     json_string "$request"
+    if [ -n "$BODY_APPLIED" ]; then
+      printf ',"body":'
+      json_string "$BODY_APPLIED"
+    fi
     printf '}\n'
   else
     printf 'PR #%s: %s\n  url: %s\n  branch: %s\n  head: %s\n  review request: %s\n' \
       "$number" "$state" "$url" "$branch" "$head" "$request"
+    [ -z "$BODY_APPLIED" ] || printf '  body: %s\n' "$BODY_APPLIED"
   fi
 }
 
@@ -718,6 +727,34 @@ open_pr() {
     || fail_input "PR base $pr_base does not match requested base $BASE_REF" "Pass the live base or retarget the PR explicitly."
   [ -n "$pr_base_sha" ] \
     || fail_operation "GitHub returned no base SHA for PR #$number" "Retry after GitHub returns the complete PR binding."
+  # Only after the head and base checks above: a PR that would be refused for
+  # drift is not edited first. Idempotent means "converges on the arguments
+  # given", not "no-ops": on a
+  # reused PR the title and body passed now are applied when they differ from
+  # what GitHub holds, and the result says so. Silently keeping the old body
+  # let a PR opened before the evidence sections were written fail the
+  # required delivery-evidence gate with no signal from the one command the
+  # driver is told to use (AUT-437).
+  if [ "$state" = existing ]; then
+    BODY_APPLIED=unchanged
+    read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json title,body --jq '[.title, .body] | @json' \
+      || fail_operation "could not read the existing pull request's title and body: $READ_OUTPUT" "Retry after GitHub recovers."
+    live_title="$(printf '%s' "$READ_OUTPUT" | jq -r '.[0]')"
+    live_body="$(printf '%s' "$READ_OUTPUT" | jq -r '.[1]')"
+    wanted_body="$(cat "$BODY_FILE")"
+    edit_args=()
+    [ "$live_title" = "$TITLE" ] || edit_args+=(--title "$TITLE")
+    [ "$live_body" = "$wanted_body" ] || edit_args+=(--body-file "$BODY_FILE")
+    if [ "${#edit_args[@]}" -gt 0 ]; then
+      edit_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr edit "$number" --repo "$REPO_SPEC" "${edit_args[@]}" 2>&1)" \
+        || fail_operation "could not apply the given title/body to PR #$number: $edit_output" "Inspect the PR on GitHub before retrying."
+      read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json body --jq '.body' \
+        || fail_operation "PR edit could not be reconciled: $READ_OUTPUT" "Inspect GitHub before retrying."
+      [ "$READ_OUTPUT" = "$wanted_body" ] \
+        || fail_operation "PR #$number body differs from --body-file after the edit" "Inspect GitHub before retrying."
+      BODY_APPLIED=updated
+    fi
+  fi
   request_marker="<!-- touchstone:pr-open head=$local_head base=$pr_base base_sha=$pr_base_sha -->"
   request_head_marker="<!-- touchstone:pr-open head=$local_head "
   read_with_retry gh api user --hostname "$REPO_HOST" --jq '.login' \

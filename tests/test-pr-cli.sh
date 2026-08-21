@@ -128,9 +128,16 @@ case "$1 ${2:-}" in
     ;;
   "pr list")
     if [ -f "$GH_STATE/pr-exists" ]; then
+      head="$GH_HEAD"
+      [ "${GH_MODE:-ok}" = list_head_stale ] && head=stale-head-0000000000000000000000000000
       printf '7\thttps://example.test/pr/7\t%s\t%s\t%s\n' \
-        "$GH_HEAD" "${GH_BASE_REF:-main}" "${GH_BASE_SHA:-base-sha}"
+        "$head" "${GH_BASE_REF:-main}" "${GH_BASE_SHA:-base-sha}"
     fi
+    ;;
+  "pr edit")
+    echo "pr edit $*" >>"$GH_STATE/edits"
+    if has --body-file "$@"; then cp "$(value_after --body-file "$@")" "$GH_STATE/pr-body"; fi
+    if has --title "$@"; then printf '%s' "$(value_after --title "$@")" >"$GH_STATE/pr-title"; fi
     ;;
   "pr create")
     case "${GH_MODE:-ok}" in
@@ -178,6 +185,10 @@ case "$1 ${2:-}" in
       else
         printf '%s\t%s\n' "$GH_HEAD" "$GH_BASE_REF"
       fi
+    elif has '--json title,body' "$@"; then
+      title="Test PR"; [ -f "$GH_STATE/pr-title" ] && title="$(cat "$GH_STATE/pr-title")"
+      if [ -f "$GH_STATE/pr-body" ]; then body="$(cat "$GH_STATE/pr-body")"; else body="$(printf '%s\n' 'Change summary.' '' 'Closes #42')"; fi
+      jq -cn --arg t "$title" --arg b "$body" '[$t, $b]'
     elif has '--json body' "$@"; then
       if [ -f "$GH_STATE/pr-body" ]; then
         cat "$GH_STATE/pr-body"
@@ -430,6 +441,46 @@ EOF
   [ "$(grep -c 'actions/runs?head_sha=' "$GH_CALLS")" -ge 2 ] \
     || fail "open did not poll the in-progress gate run"
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns"
+
+  echo "==> open converges a reused PR on the title and body given (AUT-437)"
+  # The PR exists with the original body; a second open with a different
+  # body must apply it and say so, and a third with the same body must not
+  # edit again. Silently keeping the old body let the delivery-evidence gate
+  # fail with no signal from the one command the driver is told to use.
+  rm -f "$TMP/state/edits" "$TMP/state/pr-title"
+  printf 'Original body.\n' >"$TMP/state/pr-body"
+  printf 'Corrected body with ## Review tier\n' >"$TMP/body2"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"body":"updated"'
+  grep -q -- '--body-file' "$TMP/state/edits" && [ "$(cat "$TMP/state/pr-body")" = "$(cat "$TMP/body2")" ] \
+    && ok "changed body applied on reuse" || fail "body not applied on reuse: $(cat "$TMP/state/edits" 2>/dev/null)"
+  grep -q -- '--title' "$TMP/state/edits" && fail "title edited although unchanged" || true
+  rm -f "$TMP/state/edits"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"body":"unchanged"'
+  [ ! -f "$TMP/state/edits" ] && ok "identical body performs no edit" || fail "an identical body was edited again"
+  run_pr "$TMP/out" open --title 'Retitled' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 0
+  grep -q -- '--title Retitled' "$TMP/state/edits" && assert_has "$TMP/out" 'body: updated' && ok "title converges too" || fail "title not applied: $(cat "$TMP/state/edits" 2>/dev/null)"
+  rm -f "$TMP/state/edits" "$TMP/state/pr-title" "$TMP/state/pr-body"
+  # A PR refused for head drift is not edited first: no partial mutation.
+  rm -f "$TMP/state/edits"
+  printf 'Original body.\n' >"$TMP/state/pr-body"
+  touch "$TMP/state/pr-exists"
+  GH_MODE=list_head_stale run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'does not match local/remote head'
+  [ ! -f "$TMP/state/edits" ] && ok "no edit before the head check refuses" || fail "a drifted PR was edited before being refused"
+  rm -f "$TMP/state/pr-body"
+  # A freshly created PR carries the body by construction and says nothing
+  # about applying it.
+  rm -f "$TMP/state/pr-exists"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"opened"'
+  assert_not_has "$TMP/out" '"body":'
 
   echo "==> open refuses head drift and reconciles a lying creation response"
   rm -f "$TMP/state/pr-exists" "$TMP/state/review-request"
