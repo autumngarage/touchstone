@@ -690,7 +690,7 @@ EOF
   echo "==> pr answer is the installed name for respond-review"
   bash "$ROOT/bin/touchstone" pr answer >"$TMP/answer.out" 2>&1 || true
   grep -qE 'respond-review|--comment-id' "$TMP/answer.out" || fail "pr answer did not dispatch to respond-review: $(head -3 "$TMP/answer.out")"
-  grep -q 'scripts/respond-review.sh "$@"' "$ROOT/bin/touchstone" || fail "pr answer does not exec respond-review.sh"
+  grep -q 'respond-review.sh" "$@"' "$ROOT/bin/touchstone" || fail "pr answer does not exec respond-review.sh"
 
   echo "==> merge binds both mutation and reconciliation to the reviewed head"
   rm -f "$TMP/state/merged"
