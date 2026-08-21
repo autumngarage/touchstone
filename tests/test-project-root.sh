@@ -205,10 +205,15 @@ for args in "--check" "--ship" "--in-place" ""; do
 done
 [ "$(ls -A "$SHIM_PROJECT")" = "file.txt" ] && [ "$(cat "$SHIM_PROJECT/file.txt")" = untouched ] \
   || fail "touchstone update wrote to the repository"
-if bash "$REPO_ROOT/bin/touchstone" upgrade >/dev/null 2>&1; then
-  fail "the removed upgrade subcommand is still accepted"
+# `upgrade` upgrades the tool (Homebrew, or an install.sh prefix), never a
+# repository: from a source checkout it names the install kinds and exits 1.
+if bash "$REPO_ROOT/bin/touchstone" upgrade >"$TMP_DIR/upgrade.out" 2>"$TMP_DIR/upgrade.err"; then
+  fail "upgrade from a source checkout succeeded; it must refuse rather than guess an install kind"
 fi
-pass "update succeeds without writing; upgrade stays unknown"
+grep -q "neither a Homebrew install nor an install.sh prefix" "$TMP_DIR/upgrade.err" \
+  || fail "upgrade did not name the install kinds it serves: $(cat "$TMP_DIR/upgrade.err")"
+[ "$(ls -A "$SHIM_PROJECT")" = "file.txt" ] || fail "touchstone upgrade wrote to the repository"
+pass "update succeeds without writing; upgrade serves the tool install, never a repository"
 
 echo "==> pr open binds the branch it will act on"
 # Two pull requests were opened for the wrong branch because open acts on
@@ -298,6 +303,169 @@ case "$out" in
   *"does not accept mutation options"*) pass "status rejects an option that belongs to open" ;;
   *) fail "status accepted --expect-branch: $out" ;;
 esac
+
+# =============================================================================
+# install.sh — the non-Homebrew distribution (Windows Git Bash, Linux), exercised
+# entirely offline: the release archive is built from this checkout and a local
+# formula file stands in for the tap's reviewed record. It lives here because
+# it is the CLI's other entry point: bin/touchstone resolved through the
+# installed wrapper instead of the repository root.
+# =============================================================================
+echo ""
+echo "==> install.sh installs, verifies, and upgrades the recorded release (offline)"
+INSTALL_TMP="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-install-test.XXXXXX")"
+trap 'rm -rf "$TMP_DIR" "$INSTALL_TMP"' EXIT
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+# A release archive in the exact shape GitHub serves for a tag: one top-level
+# directory, VERSION inside. Built from the worktree so install.sh, bin, and
+# hooks under test are the ones in this change.
+make_release() {
+  local version="$1" out="$2" stage
+  stage="$INSTALL_TMP/stage-$version"
+  rm -rf "$stage"
+  mkdir -p "$stage"
+  git -C "$REPO_ROOT" archive --format=tar --prefix="touchstone-$version/" HEAD | tar -xf - -C "$stage"
+  # Uncommitted edits in this checkout must ship too: the archive is the code under test.
+  for f in install.sh bin/touchstone; do cp "$REPO_ROOT/$f" "$stage/touchstone-$version/$f"; done
+  printf '%s\n' "$version" >"$stage/touchstone-$version/VERSION"
+  (cd "$stage" && tar -czf "$out" "touchstone-$version")
+}
+
+make_formula() {
+  local version="$1" sha="$2" out="$3"
+  cat >"$out" <<EOF
+class Touchstone < Formula
+  desc "Delivery baseline"
+  homepage "https://github.com/autumngarage/touchstone"
+  url "https://github.com/autumngarage/touchstone/archive/refs/tags/v$version.tar.gz"
+  sha256 "$sha"
+  license "MIT"
+end
+EOF
+}
+
+# Deliberately not named .touchstone: the install kind is recognised by
+# layout (cli/<version> + current), never by the prefix's name.
+PREFIX="$INSTALL_TMP/home/tools/ts-cli"
+mkdir -p "$INSTALL_TMP/home"
+
+echo "==> A recorded release installs, verifies, and runs through the wrapper"
+make_release 9.9.1 "$INSTALL_TMP/v9.9.1.tar.gz"
+make_formula 9.9.1 "$(sha256_of "$INSTALL_TMP/v9.9.1.tar.gz")" "$INSTALL_TMP/formula-9.9.1.rb"
+if bash "$REPO_ROOT/install.sh" --prefix "$PREFIX" --formula-file "$INSTALL_TMP/formula-9.9.1.rb" --archive-file "$INSTALL_TMP/v9.9.1.tar.gz" >"$INSTALL_TMP/install.out" 2>&1; then
+  pass "install succeeded"
+else
+  fail "install failed: $(cat "$INSTALL_TMP/install.out")"
+fi
+[ -x "$PREFIX/bin/touchstone" ] || fail "wrapper was not created"
+[ "$(cat "$PREFIX/current")" = "9.9.1" ] || fail "current does not name 9.9.1"
+[ -f "$PREFIX/cli/9.9.1/bin/touchstone" ] || fail "release tree is not under cli/9.9.1"
+out="$(bash "$PREFIX/bin/touchstone" version 2>&1)" || fail "wrapper could not run version: $out"
+[ "$out" = "touchstone v9.9.1" ] && pass "wrapper runs the installed version" || fail "wrapper reported '$out'"
+out="$(printf '{"tool_input":{"command":"git status"}}' | bash "$PREFIX/bin/touchstone" hook branch-guard 2>&1)" \
+  && pass "hook subcommand resolves from the installed tree" \
+  || fail "hook branch-guard failed through the wrapper: $out"
+grep -q 'export PATH=' "$INSTALL_TMP/install.out" && pass "PATH instruction printed when the prefix is not on PATH" \
+  || fail "no PATH instruction: $(cat "$INSTALL_TMP/install.out")"
+# The prefix is data inside the wrapper, never shell source: a prefix carrying
+# a command substitution must not run it when the wrapper starts.
+META_PREFIX="$INSTALL_TMP/home/meta \$(touch \"$INSTALL_TMP/sentinel\")"
+mkdir -p "$INSTALL_TMP/home"
+bash "$REPO_ROOT/install.sh" --prefix "$META_PREFIX" --formula-file "$INSTALL_TMP/formula-9.9.1.rb" --archive-file "$INSTALL_TMP/v9.9.1.tar.gz" >"$INSTALL_TMP/meta.out" 2>&1 \
+  || fail "install into a metacharacter prefix failed: $(cat "$INSTALL_TMP/meta.out")"
+out="$(bash "$META_PREFIX/bin/touchstone" version 2>&1)" && [ "$out" = "touchstone v9.9.1" ] \
+  && pass "wrapper runs from a metacharacter prefix" || fail "wrapper failed from a metacharacter prefix: $out"
+[ ! -e "$INSTALL_TMP/sentinel" ] && pass "the prefix was not executed as shell source" || fail "the wrapper executed a command embedded in the prefix"
+
+echo "==> A second run is a no-op"
+bash "$REPO_ROOT/install.sh" --prefix "$PREFIX" --formula-file "$INSTALL_TMP/formula-9.9.1.rb" --archive-file "$INSTALL_TMP/v9.9.1.tar.gz" >"$INSTALL_TMP/again.out" 2>&1 \
+  || fail "re-run failed: $(cat "$INSTALL_TMP/again.out")"
+grep -q "already installed" "$INSTALL_TMP/again.out" && pass "re-run reports already installed" || fail "re-run did not short-circuit: $(cat "$INSTALL_TMP/again.out")"
+
+echo "==> A checksum mismatch is refused and the prior install survives"
+make_release 9.9.2 "$INSTALL_TMP/v9.9.2.tar.gz"
+make_formula 9.9.2 "0000000000000000000000000000000000000000000000000000000000000000" "$INSTALL_TMP/formula-bad.rb"
+if bash "$REPO_ROOT/install.sh" --prefix "$PREFIX" --formula-file "$INSTALL_TMP/formula-bad.rb" --archive-file "$INSTALL_TMP/v9.9.2.tar.gz" >"$INSTALL_TMP/bad.out" 2>&1; then
+  fail "a tarball with the wrong checksum was installed"
+else
+  grep -q "checksum mismatch" "$INSTALL_TMP/bad.out" && pass "mismatch refused with the checksums named" || fail "unexpected refusal: $(cat "$INSTALL_TMP/bad.out")"
+fi
+[ "$(cat "$PREFIX/current")" = "9.9.1" ] && pass "current still names 9.9.1" || fail "a refused install changed current"
+[ ! -e "$PREFIX/cli/9.9.2" ] && pass "no partial 9.9.2 tree" || fail "partial tree left behind"
+
+echo "==> An archive that predates the installer is refused"
+make_release 9.9.0 "$INSTALL_TMP/v9.9.0.tar.gz"
+(cd "$INSTALL_TMP/stage-9.9.0" && rm "touchstone-9.9.0/install.sh" && tar -czf "$INSTALL_TMP/v9.9.0.tar.gz" "touchstone-9.9.0")
+make_formula 9.9.0 "$(sha256_of "$INSTALL_TMP/v9.9.0.tar.gz")" "$INSTALL_TMP/formula-9.9.0.rb"
+if bash "$REPO_ROOT/install.sh" --prefix "$PREFIX" --formula-file "$INSTALL_TMP/formula-9.9.0.rb" --archive-file "$INSTALL_TMP/v9.9.0.tar.gz" >"$INSTALL_TMP/old.out" 2>&1; then
+  fail "an archive without install.sh was installed"
+else
+  grep -q "predates the non-Homebrew install" "$INSTALL_TMP/old.out" && pass "pre-installer release refused" || fail "unexpected: $(cat "$INSTALL_TMP/old.out")"
+fi
+[ "$(cat "$PREFIX/current")" = "9.9.1" ] || fail "a refused old release changed current"
+# The message names the file that is actually missing.
+(cd "$INSTALL_TMP/stage-9.9.0" && cp "$REPO_ROOT/install.sh" "touchstone-9.9.0/install.sh" && rm "touchstone-9.9.0/hooks/branch-guard.sh" && tar -czf "$INSTALL_TMP/v9.9.0b.tar.gz" "touchstone-9.9.0")
+make_formula 9.9.0 "$(sha256_of "$INSTALL_TMP/v9.9.0b.tar.gz")" "$INSTALL_TMP/formula-9.9.0b.rb"
+bash "$REPO_ROOT/install.sh" --prefix "$PREFIX" --formula-file "$INSTALL_TMP/formula-9.9.0b.rb" --archive-file "$INSTALL_TMP/v9.9.0b.tar.gz" >"$INSTALL_TMP/oldb.out" 2>&1 && fail "an archive without the hook was installed"
+grep -q "hooks/branch-guard.sh is missing" "$INSTALL_TMP/oldb.out" && pass "the missing hook is named" || fail "wrong refusal: $(cat "$INSTALL_TMP/oldb.out")"
+
+echo "==> A version the formula does not record is refused"
+if bash "$REPO_ROOT/install.sh" --prefix "$PREFIX" --formula-file "$INSTALL_TMP/formula-9.9.1.rb" --archive-file "$INSTALL_TMP/v9.9.1.tar.gz" --version 1.2.3 >"$INSTALL_TMP/pin.out" 2>&1; then
+  fail "an unrecorded version was accepted"
+else
+  grep -q "only the recorded release can be verified" "$INSTALL_TMP/pin.out" && pass "unrecorded version refused" || fail "unexpected: $(cat "$INSTALL_TMP/pin.out")"
+fi
+
+echo "==> touchstone upgrade on an install.sh prefix re-runs the installer for the recorded release"
+make_formula 9.9.2 "$(sha256_of "$INSTALL_TMP/v9.9.2.tar.gz")" "$INSTALL_TMP/formula-9.9.2.rb"
+if bash "$PREFIX/bin/touchstone" upgrade --formula-file "$INSTALL_TMP/formula-9.9.2.rb" --archive-file "$INSTALL_TMP/v9.9.2.tar.gz" >"$INSTALL_TMP/upgrade.out" 2>&1; then
+  pass "upgrade ran"
+else
+  fail "upgrade failed: $(cat "$INSTALL_TMP/upgrade.out")"
+fi
+[ "$(cat "$PREFIX/current")" = "9.9.2" ] && pass "current now names 9.9.2" || fail "upgrade did not switch current: $(cat "$PREFIX/current")"
+[ "$(bash "$PREFIX/bin/touchstone" version)" = "touchstone v9.9.2" ] && pass "wrapper runs the upgraded version" || fail "wrapper did not follow the upgrade"
+[ -d "$PREFIX/cli/9.9.1" ] && pass "previous release retained for rollback (current can be edited back)" || fail "previous release removed"
+
+echo "==> Overlapping installers are serialised, and a failed publication keeps the active release"
+make_release 9.9.3 "$INSTALL_TMP/v9.9.3.tar.gz"
+make_formula 9.9.3 "$(sha256_of "$INSTALL_TMP/v9.9.3.tar.gz")" "$INSTALL_TMP/formula-9.9.3.rb"
+mkdir "$PREFIX/.install.lock"
+if bash "$REPO_ROOT/install.sh" --prefix "$PREFIX" --formula-file "$INSTALL_TMP/formula-9.9.3.rb" --archive-file "$INSTALL_TMP/v9.9.3.tar.gz" >"$INSTALL_TMP/lock.out" 2>&1; then
+  fail "a second installer ran while the lock was held"
+else
+  grep -q "another installer holds" "$INSTALL_TMP/lock.out" && pass "second installer refused while the lock is held" || fail "unexpected: $(cat "$INSTALL_TMP/lock.out")"
+fi
+rmdir "$PREFIX/.install.lock"
+# Publication failure, injected through the installer's seam (no permission
+# bit stops root from renaming): `current` must still name a tree that runs,
+# and a reinstall's set-aside tree must be restored.
+mkdir -p "$PREFIX/cli/9.9.3" && printf 'stand-in\n' >"$PREFIX/cli/9.9.3/marker"
+TOUCHSTONE_INSTALL_FAIL_PUBLISH=1 bash "$REPO_ROOT/install.sh" --prefix "$PREFIX" --formula-file "$INSTALL_TMP/formula-9.9.3.rb" --archive-file "$INSTALL_TMP/v9.9.3.tar.gz" >"$INSTALL_TMP/pub.out" 2>&1 && fail "an injected publication failure reported success"
+grep -q "the previous tree was restored" "$INSTALL_TMP/pub.out" || fail "publication failure was not reported: $(cat "$INSTALL_TMP/pub.out")"
+[ -f "$PREFIX/cli/9.9.3/marker" ] && pass "the set-aside tree is restored after a failed publication" || fail "the set-aside tree was not restored"
+rm -rf "$PREFIX/cli/9.9.3"
+[ "$(cat "$PREFIX/current")" = "9.9.2" ] || fail "a failed publication changed current: $(cat "$PREFIX/current")"
+[ "$(bash "$PREFIX/bin/touchstone" version)" = "touchstone v9.9.2" ] && pass "the active release still runs after a failed publication" || fail "the wrapper broke after a failed publication"
+[ ! -e "$PREFIX/.install.lock" ] && pass "the lock is released on failure" || fail "the lock was left behind"
+
+echo "==> Input validation"
+bash "$REPO_ROOT/install.sh" --prefix relative/path >/dev/null 2>&1 && fail "relative prefix accepted" || pass "relative prefix refused"
+# A Windows drive path passes the absolute-path grammar. On this machine the
+# run must stop before it creates anything (a relative "C:" directory would
+# otherwise appear), so the formula is pointed at a missing file: the refusal
+# is the fetch, not the prefix.
+bash "$REPO_ROOT/install.sh" --prefix "C:/Users/me/.touchstone" --formula-file "$INSTALL_TMP/does-not-exist.rb" >"$INSTALL_TMP/win.out" 2>&1 || true
+grep -q "must be an absolute path" "$INSTALL_TMP/win.out" && fail "a Windows drive prefix was refused as relative" || pass "Windows drive prefix accepted by the grammar"
+[ ! -e "$REPO_ROOT/C:" ] && [ ! -e "C:" ] || fail "the Windows-prefix probe created a relative C: directory"
+bash "$REPO_ROOT/install.sh" --version nope >/dev/null 2>&1 && fail "malformed version accepted" || pass "malformed version refused"
+bash "$REPO_ROOT/install.sh" --bogus >/dev/null 2>&1 && fail "unknown argument accepted" || pass "unknown argument refused"
+
+echo "==> hook subcommand"
+bash "$REPO_ROOT/bin/touchstone" hook nope >/dev/null 2>&1 && fail "unknown hook accepted" || pass "unknown hook refused"
+grep -q 'branch-guard) exec bash "$TOUCHSTONE_ROOT/hooks/branch-guard.sh"' "$REPO_ROOT/bin/touchstone" && pass "branch-guard resolves from the tool root" || fail "hook does not resolve from the tool root"
 
 if [ "$FAILURES" -ne 0 ]; then
   echo "$FAILURES check(s) failed" >&2
