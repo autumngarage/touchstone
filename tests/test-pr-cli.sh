@@ -815,7 +815,15 @@ case "$1 $2" in
     echo "71"
     ;;
   "pr view")
-    printf 'abcdef0123456789abcdef0123456789abcdef01\tmain\n'
+    # Coordinates (head + base) before the answer; the bare head re-read
+    # after it. A moved_head state makes the re-read return a later push.
+    if value_after --json "$@" | grep -q baseRefName; then
+      printf 'abcdef0123456789abcdef0123456789abcdef01\tmain\n'
+    elif [ -f "$GH_STATE/moved-head" ]; then
+      printf 'feedfacefeedfacefeedfacefeedfacefeedface\n'
+    else
+      printf 'abcdef0123456789abcdef0123456789abcdef01\n'
+    fi
     ;;
   "api --paginate")
     if has 'actions/workflows' "$@"; then
@@ -875,11 +883,20 @@ STUB
   # The merge hint names the head this answer was bound to. A hint that
   # resolves the head live (`$(gh pr view … headRefOid)`) would accept a
   # commit pushed after the answer, unreviewed.
-  if grep -qF 'pr merge 7 --head ' "$RR/out" && ! grep -qF '$(gh pr view' "$RR/out"; then
+  if grep -qF 'pr merge 7 --head abcdef0123456789abcdef0123456789abcdef01' "$RR/out" && ! grep -qF '$(gh pr view' "$RR/out"; then
     ok "merge hint carries the captured head, not a live read"
   else
     fail "merge hint does not bind the captured head: $(grep 'pr merge' "$RR/out")"
   fi
+
+  echo "==> a head that moves while answering is refused before any hint or gate re-run"
+  touch "$GH_STATE/moved-head"
+  run 7 --comment-id 51 --body-file "$RR/body"
+  [ "$RUN_RC" -ne 0 ] && grep -qF 'PR head moved from abcdef0123456789abcdef0123456789abcdef01 to feedface' "$RR/out" \
+    && ok "moved head refused with both SHAs named" \
+    || fail "moved head was not refused (rc=$RUN_RC): $(tail -2 "$RR/out")"
+  grep -qF 'pr merge 7 --head' "$RR/out" && fail "merge hint printed for a moved head" || true
+  rm -f "$GH_STATE/moved-head"
 
   echo "==> a rerun recognises its own reply despite stderr noise on the login read"
   run 7 --comment-id 51 --body-file "$RR/body"

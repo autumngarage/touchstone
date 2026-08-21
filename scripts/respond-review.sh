@@ -173,6 +173,14 @@ if [ -n "$FIX_COMMIT" ]; then
 
 Fixed in $FIX_COMMIT."
 fi
+# The head this answer binds to is captured BEFORE any mutation. Read after
+# the reply, a push landing mid-run would bind the merge hint and the gate
+# re-run to a commit the answer never addressed.
+PR_ROW="$(gh_read pr view "$PR_NUMBER" --json headRefOid,baseRefName --jq '[.headRefOid,.baseRefName] | @tsv')" \
+  || fail "could not read the PR coordinates: $PR_ROW"
+IFS="$(printf '\t')" read -r HEAD_SHA BASE_REF <<<"$PR_ROW"
+[ -n "$HEAD_SHA" ] && [ -n "$BASE_REF" ] || fail "PR $PR_NUMBER has no readable head and base."
+
 # Idempotency marker: reruns after a partial failure (reply posted, resolve
 # failed) must not post a duplicate reply. The marker is invisible in
 # rendered Markdown and detectable on the next run.
@@ -235,9 +243,12 @@ VERIFY="$(graphql_with_retry \
 # a run still in progress is waited for first, because it may have read the
 # evidence before this answer. Where the repository still runs the
 # status-publishing review-gate, its own event handlers pick the answer up.
-PR_ROW="$(gh_read pr view "$PR_NUMBER" --json headRefOid,baseRefName --jq '[.headRefOid,.baseRefName] | @tsv')" \
-  || fail "could not read the PR coordinates to refresh the review gate: $PR_ROW"
-IFS="$(printf '\t')" read -r HEAD_SHA BASE_REF <<<"$PR_ROW"
+# The head must not have moved since capture: the hint below and the gate
+# re-run are bound to the head this answer addressed, never a later push.
+LIVE_HEAD="$(gh_read pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" \
+  || fail "could not re-read the PR head after answering: $LIVE_HEAD"
+[ "$LIVE_HEAD" = "$HEAD_SHA" ] \
+  || fail "PR head moved from $HEAD_SHA to $LIVE_HEAD while answering; the reply and resolution stand, but request review for the new head before merging."
 # Percent-encode one path segment with the base tool surface only: a branch
 # name may carry "/" or other bytes the rules endpoint cannot take raw.
 uri_encode() {
