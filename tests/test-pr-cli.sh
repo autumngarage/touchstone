@@ -687,6 +687,39 @@ EOF
   run_pr "$TMP/out" status 7
   assert_has "$TMP/out" 'enforcement on main: applied'
   rm -f "$TMP/state/review-gate"
+  echo "==> pr answer is the installed name for respond-review and forwards its arguments"
+  # A stand-in script records the argv it received and the directory it ran
+  # in, so the dispatch is asserted by what arrives, not by usage text.
+  mkdir -p "$TMP/tool/bin" "$TMP/tool/scripts" "$TMP/tool/elsewhere"
+  cp "$ROOT/bin/touchstone" "$TMP/tool/bin/touchstone"
+  printf '%s\n' "$(cat "$ROOT/VERSION")" >"$TMP/tool/VERSION"
+  cat >"$TMP/tool/scripts/respond-review.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$PWD" >"$ANSWER_LOG.cwd"
+printf '%s %s\n' "${GH_REPO-unset}" "${GIT_DIR-unset}" >"$ANSWER_LOG.ghrepo"
+printf '%s\n' "$@" >"$ANSWER_LOG"
+STUB
+  ANSWER_LOG="$TMP/answer.argv" bash "$TMP/tool/bin/touchstone" pr answer 7 --comment-id 51 --body-file "$TMP/body" --fix-commit abc123 --project "$TMP/tool/elsewhere"
+  diff -u <(printf '7\n--comment-id\n51\n--body-file\n%s\n--fix-commit\nabc123\n' "$TMP/body") "$TMP/answer.argv" >/dev/null \
+    || fail "pr answer did not forward its arguments intact: $(tr '\n' ' ' <"$TMP/answer.argv")"
+  [ "$(cat "$TMP/answer.argv.cwd")" = "$(cd "$TMP/tool/elsewhere" && pwd)" ] || fail "pr answer did not honour --project"
+  # A relative reply file resolves against the invoking directory, not the
+  # project; an exported GH_REPO cannot redirect a --project answer.
+  (cd "$TMP" && printf 'reply\n' >reply.md && GH_REPO=other/repo GIT_DIR="$TMP/elsewhere.git" ANSWER_LOG="$TMP/answer2.argv" bash "$TMP/tool/bin/touchstone" pr answer 7 --comment-id 51 --body-file reply.md --project "$TMP/tool/elsewhere")
+  grep -qx "$TMP/reply.md" "$TMP/answer2.argv" || fail "a relative --body-file was not resolved against the invoking directory: $(tr '\n' ' ' <"$TMP/answer2.argv")"
+  [ "$(cat "$TMP/answer2.argv.ghrepo")" = "unset unset" ] || fail "GH_REPO or GIT_DIR survived into a --project answer: $(cat "$TMP/answer2.argv.ghrepo")"
+  # A relative --project resolves against the invoking directory even when an
+  # exported CDPATH holds a same-named directory elsewhere.
+  mkdir -p "$TMP/cdtrap/elsewhere" "$TMP/invoke/elsewhere"
+  (cd "$TMP/invoke" && CDPATH="$TMP/cdtrap" ANSWER_LOG="$TMP/answer4.argv" bash "$TMP/tool/bin/touchstone" pr answer 7 --comment-id 51 --body-file "$TMP/body" --project elsewhere)
+  [ "$(cat "$TMP/answer4.argv.cwd")" = "$(cd "$TMP/invoke/elsewhere" && pwd)" ] || fail "a relative --project resolved through CDPATH: $(cat "$TMP/answer4.argv.cwd")"
+  if ANSWER_LOG="$TMP/answer3.argv" bash "$TMP/tool/bin/touchstone" pr answer 7 --comment-id 51 --body-file "$TMP/body" --project "" >"$TMP/answer3.out" 2>&1; then
+    fail "pr answer accepted an empty --project"
+  fi
+  grep -q "non-empty directory" "$TMP/answer3.out" || fail "empty --project was not refused clearly: $(cat "$TMP/answer3.out")"
+  if bash "$ROOT/bin/touchstone" pr answer 7 --json >"$TMP/answer.json.out" 2>&1; then
+    fail "pr answer accepted --json"
+  fi
 
   echo "==> merge binds both mutation and reconciliation to the reviewed head"
   rm -f "$TMP/state/merged"
@@ -787,7 +820,15 @@ case "$1 $2" in
     echo "71"
     ;;
   "pr view")
-    printf 'abcdef0123456789abcdef0123456789abcdef01\tmain\n'
+    # Coordinates (head + base) before the answer; the bare head re-read
+    # after it. A moved_head state makes the re-read return a later push.
+    if value_after --json "$@" | grep -q baseRefName; then
+      printf 'abcdef0123456789abcdef0123456789abcdef01\tmain\n'
+    elif [ -f "$GH_STATE/moved-head" ]; then
+      printf 'feedfacefeedfacefeedfacefeedfacefeedface\n'
+    else
+      printf 'abcdef0123456789abcdef0123456789abcdef01\n'
+    fi
     ;;
   "api --paginate")
     if has 'actions/workflows' "$@"; then
@@ -844,6 +885,23 @@ STUB
   grep -qF 'reply id: 71' "$RR/out" && ok "reply id carries no diagnostic text" \
     || fail "reply id was not parsed from stdout alone: $(grep 'reply id' "$RR/out")"
   [ -f "$GH_STATE/resolved" ] && ok "thread resolved" || fail "thread was not resolved"
+  # The merge hint names the head this answer was bound to. A hint that
+  # resolves the head live (`$(gh pr view … headRefOid)`) would accept a
+  # commit pushed after the answer, unreviewed.
+  if grep -qF 'pr merge 7 --head abcdef0123456789abcdef0123456789abcdef01' "$RR/out" && ! grep -qF '$(gh pr view' "$RR/out"; then
+    ok "merge hint carries the captured head, not a live read"
+  else
+    fail "merge hint does not bind the captured head: $(grep 'pr merge' "$RR/out")"
+  fi
+
+  echo "==> a head that moves while answering is refused before any hint or gate re-run"
+  touch "$GH_STATE/moved-head"
+  run 7 --comment-id 51 --body-file "$RR/body"
+  [ "$RUN_RC" -ne 0 ] && grep -qF 'PR head moved from abcdef0123456789abcdef0123456789abcdef01 to feedface' "$RR/out" \
+    && ok "moved head refused with both SHAs named" \
+    || fail "moved head was not refused (rc=$RUN_RC): $(tail -2 "$RR/out")"
+  grep -qF 'pr merge 7 --head' "$RR/out" && fail "merge hint printed for a moved head" || true
+  rm -f "$GH_STATE/moved-head"
 
   echo "==> a rerun recognises its own reply despite stderr noise on the login read"
   run 7 --comment-id 51 --body-file "$RR/body"

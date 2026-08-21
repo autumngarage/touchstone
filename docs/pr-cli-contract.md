@@ -13,9 +13,11 @@ touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
 touchstone pr status PR
 touchstone pr merge PR --head SHA [--unguarded]
 touchstone policy status [--base BRANCH]
+touchstone pr answer PR --comment-id ID --body-file FILE [--fix-commit SHA]
+touchstone pr answer PR --all-resolved-check
 ```
 
-Every command accepts `--project DIR` and `--json`. JSON has schema
+Every command accepts `--project DIR`; every command except `answer` accepts `--json` (`answer` has no observation to report and refuses it). JSON has schema
 `touchstone.pr/v1`; adding fields is compatible, while changing field meaning
 requires a new schema. Exit 0 means the reported state was verified, exit 1 is
 an operational or transport failure, and exit 2 is invalid or unsafe input. No
@@ -147,6 +149,21 @@ the witness; anything else is `n/a — <source>`. The `delivery-evidence` gate
 checks the shape of the rows, so a generator that asserts "validation ran"
 without running it passes the gate with a claim — the failure the rule
 exists to prevent (vesper `ship-pr.sh`, 2026-08-21).
+- `answer` replies to a review finding by its root comment ID, resolves its
+  thread, and asks the pinned gate to re-evaluate the head once; its
+  `--all-resolved-check` form proves no thread remains. `--fix-commit SHA`
+  appends "Fixed in SHA." to the reply — the SHA is the fix commit the answer
+  claims, recorded as text for the reviewer and the gate, not verified against
+  the branch. Replies carry an invisible marker, so a rerun after a partial
+  failure (reply posted, resolve failed) resolves the existing thread instead
+  of posting again; `--fix-commit` on a rerun does not edit the earlier reply. Raw equivalent:
+  `gh api repos/O/R/pulls/N/comments/ID/replies -F body=@FILE`, the GraphQL
+  `resolveReviewThread` mutation, and `gh api -X POST …/actions/runs/ID/rerun`.
+  Why not the raw sequence: it is four calls with two ID systems (numeric
+  comment IDs and `PRRT_` thread IDs), the reply is a mutation that must not
+  be repeated after a timeout, and on 2026-08-21 three of four fresh agents
+  hand-assembled it because the script that already did this was not
+  reachable from the installed tool.
 
 ## Safety and recovery
 
@@ -176,13 +193,14 @@ while binding both the mutation and reconciliation to the reviewed head.
 
 ## Ownership boundary
 
-The CLI owns three GitHub PR operations: exact-head review request, bounded
-state observation, and exact-head merge reconciliation. Each is justified above
+The CLI owns four GitHub PR operations — exact-head review request, bounded
+state observation, exact-head merge reconciliation, and answering a finding —
+plus the branch enforcement read (`policy status`) they depend on. Each is justified above
 against its raw equivalent, with the failure it prevents named. Any operation
 added here needs the same record — the specific friction, and the failure a
 driver hits without it — or it does not belong. Wrapping `gh` for symmetry is
 how a sequencer becomes a second implementation of the layer beneath it. It does not
 reconstruct review findings, conversation state, tracker state, or the merge
 verdict. Drivers inspect GitHub's review surface directly and use
-`scripts/respond-review.sh` for inline reply-and-resolve semantics. Repository
+`touchstone pr answer` for inline reply-and-resolve semantics. Repository
 rules and the required workflow remain authoritative.

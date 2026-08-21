@@ -9,8 +9,9 @@
 # the whole exchange and fails loudly at every step.
 #
 # Usage:
-#   bash scripts/respond-review.sh <pr-number> --comment-id <id> --body-file <file> [--fix-commit <sha>]
-#   bash scripts/respond-review.sh <pr-number> --all-resolved-check
+#   touchstone pr answer <pr-number> --comment-id <id> --body-file <file> [--fix-commit <sha>]
+#   touchstone pr answer <pr-number> --all-resolved-check
+#   (installed name; from a source checkout: bash scripts/respond-review.sh …)
 #
 # Modes:
 #   --comment-id + --body-file   Reply to the review comment (body read from
@@ -156,7 +157,7 @@ if [ "$ALL_RESOLVED_CHECK" = true ]; then
   printf '%s\n' "$UNRESOLVED" | while IFS=$'\t' read -r _tid cid path; do
     echo "       comment $cid ($path)" >&2
   done
-  echo "       Answer each with: bash scripts/respond-review.sh $PR_NUMBER --comment-id <id> --body-file <file>" >&2
+  echo "       Answer each with: touchstone pr answer $PR_NUMBER --comment-id <id> --body-file <file>" >&2
   exit 1
 fi
 
@@ -172,6 +173,14 @@ if [ -n "$FIX_COMMIT" ]; then
 
 Fixed in $FIX_COMMIT."
 fi
+# The head this answer binds to is captured BEFORE any mutation. Read after
+# the reply, a push landing mid-run would bind the merge hint and the gate
+# re-run to a commit the answer never addressed.
+PR_ROW="$(gh_read pr view "$PR_NUMBER" --json headRefOid,baseRefName --jq '[.headRefOid,.baseRefName] | @tsv')" \
+  || fail "could not read the PR coordinates: $PR_ROW"
+IFS="$(printf '\t')" read -r HEAD_SHA BASE_REF <<<"$PR_ROW"
+[ -n "$HEAD_SHA" ] && [ -n "$BASE_REF" ] || fail "PR $PR_NUMBER has no readable head and base."
+
 # Idempotency marker: reruns after a partial failure (reply posted, resolve
 # failed) must not post a duplicate reply. The marker is invisible in
 # rendered Markdown and detectable on the next run.
@@ -234,9 +243,12 @@ VERIFY="$(graphql_with_retry \
 # a run still in progress is waited for first, because it may have read the
 # evidence before this answer. Where the repository still runs the
 # status-publishing review-gate, its own event handlers pick the answer up.
-PR_ROW="$(gh_read pr view "$PR_NUMBER" --json headRefOid,baseRefName --jq '[.headRefOid,.baseRefName] | @tsv')" \
-  || fail "could not read the PR coordinates to refresh the review gate: $PR_ROW"
-IFS="$(printf '\t')" read -r HEAD_SHA BASE_REF <<<"$PR_ROW"
+# The head must not have moved since capture: the hint below and the gate
+# re-run are bound to the head this answer addressed, never a later push.
+LIVE_HEAD="$(gh_read pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" \
+  || fail "could not re-read the PR head after answering: $LIVE_HEAD"
+[ "$LIVE_HEAD" = "$HEAD_SHA" ] \
+  || fail "PR head moved from $HEAD_SHA to $LIVE_HEAD while answering; the reply and resolution stand, but request review for the new head before merging."
 # Percent-encode one path segment with the base tool surface only: a branch
 # name may carry "/" or other bytes the rules endpoint cannot take raw.
 uri_encode() {
@@ -280,7 +292,9 @@ if [ "$GATE_REQUIRED" = true ]; then
 fi
 
 echo "==> Replied and resolved. When every thread is answered, prove it and merge:"
-echo "    bash scripts/respond-review.sh $PR_NUMBER --all-resolved-check"
-echo "    gh pr merge $PR_NUMBER --squash --match-head-commit \"\$(gh pr view $PR_NUMBER --json headRefOid --jq .headRefOid)\""
+echo "    touchstone pr answer $PR_NUMBER --all-resolved-check"
+# The captured head, never a live read: a merge hint that resolves the head
+# at run time accepts a commit pushed after this answer, unreviewed.
+echo "    touchstone pr merge $PR_NUMBER --head $HEAD_SHA   # or: gh pr merge $PR_NUMBER --squash --match-head-commit $HEAD_SHA"
 echo "    gh pr view $PR_NUMBER --json state,mergedAt   # the merge exit code lies in both directions"
 echo "    (Pushed new commits instead? The head moved — request one review for the new head.)"

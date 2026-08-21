@@ -58,7 +58,7 @@ touchstone/
 |------|---------|
 | `TOUCHSTONE.md` | Canonical steering router — drives CLAUDE.md (@-import) and the AGENTS.md/GEMINI.md managed block |
 | `principles/git-workflow.md` | The full delivery sequence in raw `git` + `gh`, including thread resolution |
-| `scripts/respond-review.sh` | Reply to a review finding and resolve its thread in one step (GitHub needs four API calls) |
+| `scripts/respond-review.sh` (`touchstone pr answer`) | Reply to a review finding and resolve its thread in one step (GitHub needs four API calls) |
 | `scripts/touchstone-tracker.sh` | Versioned tracker-neutral verified claim adapter |
 | `scripts/touchstone-pr.sh` | Source entrypoint for three bounded PR operations |
 | `scripts/claim-issue.sh` | GitHub transport used by the tracker adapter |
@@ -70,8 +70,8 @@ Release history lives in `git log` and `gh release list` — there is no `CHANGE
 ## Delivery
 
 Raw `git` and `gh` remain the active delivery workflow until distribution
-lands. In this source checkout, `bash bin/touchstone pr open|status|merge`
-exercises the three bounded operations; `docs/pr-cli-contract.md` records their stable
+lands. In this source checkout, `bash bin/touchstone pr open|status|merge|answer`
+exercises the four bounded operations (`answer` replies to a finding and resolves its thread); `docs/pr-cli-contract.md` records their stable
 schema and exact raw equivalents. Pass `--expect-branch <branch>` to `open` with the branch name written out:
 it acts on whatever branch the invoking directory has checked out, which
 differs per worktree. Never derive it from `$(git branch --show-current)` —

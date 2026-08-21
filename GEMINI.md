@@ -110,8 +110,8 @@ For deep references on specific topics, read `principles/*.md` files via the rou
 
 ## Delivery
 
-In this source checkout, use `bash bin/touchstone pr open|status|merge` for the
-three bounded PR operations. Pass `--expect-branch <branch>` to `open` with the branch name written out:
+In this source checkout, use `bash bin/touchstone pr open|status|merge|answer` for the
+four bounded PR operations (`answer` replies to a finding and resolves its thread). Pass `--expect-branch <branch>` to `open` with the branch name written out:
 it acts on whatever branch the invoking directory has checked out, which
 differs per worktree. Never derive it from `$(git branch --show-current)` —
 that reads the same checkout the command reads, so it agrees with a wrong

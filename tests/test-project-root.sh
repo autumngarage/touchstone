@@ -215,6 +215,22 @@ grep -q "neither a Homebrew install nor an install.sh prefix" "$TMP_DIR/upgrade.
 [ "$(ls -A "$SHIM_PROJECT")" = "file.txt" ] || fail "touchstone upgrade wrote to the repository"
 pass "update succeeds without writing; upgrade serves the tool install, never a repository"
 
+echo "==> upgrade --help is a read-only probe"
+# Agents probe subcommands with --help before trusting them; on a Homebrew
+# install the router ignored the flag and ran `brew upgrade touchstone`.
+# A fake brew on PATH records any invocation.
+mkdir -p "$TMP_DIR/fakebrew"
+printf '#!/usr/bin/env bash\necho "brew $*" >>"%s/brew.calls"\nexit 0\n' "$TMP_DIR" >"$TMP_DIR/fakebrew/brew"
+chmod +x "$TMP_DIR/fakebrew/brew"
+if PATH="$TMP_DIR/fakebrew:$PATH" bash "$REPO_ROOT/bin/touchstone" upgrade --help >"$TMP_DIR/upgrade-help.out" 2>&1; then
+  grep -q "^Usage: touchstone upgrade" "$TMP_DIR/upgrade-help.out" \
+    || fail "upgrade --help printed no usage: $(cat "$TMP_DIR/upgrade-help.out")"
+else
+  fail "upgrade --help exited nonzero: $(cat "$TMP_DIR/upgrade-help.out")"
+fi
+[ ! -f "$TMP_DIR/brew.calls" ] || fail "upgrade --help invoked brew: $(cat "$TMP_DIR/brew.calls")"
+pass "upgrade --help prints usage and runs nothing"
+
 echo "==> pr open binds the branch it will act on"
 # Two pull requests were opened for the wrong branch because open acts on
 # whatever branch the invoking directory has checked out, and a worktree has a

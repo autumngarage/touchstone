@@ -23,6 +23,8 @@ Usage:
   touchstone tracker claim [arguments]
   touchstone pr open|status|merge [arguments]
   touchstone policy status [--base BRANCH] [--project DIR] [--json]
+  touchstone pr answer PR --comment-id ID --body-file FILE [--fix-commit SHA]
+  touchstone pr answer PR --all-resolved-check
   touchstone version
   touchstone upgrade
   touchstone steering install|check|uninstall [--home DIR] [--dry-run]
@@ -44,6 +46,63 @@ case "$COMMAND" in
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-tracker.sh" "$@"
     ;;
   pr)
+    # `pr answer` is the reply-and-resolve step: it lives in
+    # scripts/respond-review.sh (reply, resolve the thread, re-run the gate)
+    # and was unreachable from the installed tool until it had a name here.
+    if [ "${1:-}" = answer ]; then
+      shift
+      # --project DIR is honoured here (the script resolves the repository
+      # from its working directory through gh); --json is not an output
+      # mode of this operation and is refused by the script's parser.
+      ANSWER_PROJECT=""
+      ANSWER_ARGS=()
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --project)
+            [ "$#" -ge 2 ] && [ -n "$2" ] || {
+              echo "ERROR: --project requires a non-empty directory" >&2
+              exit 2
+            }
+            # Absolute against the invoking directory before any cd: a
+            # relative operand would otherwise resolve through an exported
+            # CDPATH and bind a different checkout.
+            case "$2" in
+              /*) ANSWER_PROJECT="$2" ;;
+              *) ANSWER_PROJECT="$PWD/$2" ;;
+            esac
+            shift 2
+            ;;
+          --body-file)
+            # Resolved against the invoking directory before any cd, so a
+            # relative reply file means what the caller typed.
+            [ "$#" -ge 2 ] || {
+              echo "ERROR: --body-file requires a path" >&2
+              exit 2
+            }
+            case "$2" in
+              /*) ANSWER_ARGS+=("$1" "$2") ;;
+              *) ANSWER_ARGS+=("$1" "$PWD/$2") ;;
+            esac
+            shift 2
+            ;;
+          *)
+            ANSWER_ARGS+=("$1")
+            shift
+            ;;
+        esac
+      done
+      if [ -n "$ANSWER_PROJECT" ]; then
+        cd -- "$ANSWER_PROJECT" || {
+          echo "ERROR: --project directory is not accessible: $ANSWER_PROJECT" >&2
+          exit 2
+        }
+        # --project binds the repository: an exported GH_REPO would override
+        # gh's local-repository resolution, and exported Git selectors
+        # (GIT_DIR, GIT_WORK_TREE, …) would point git at another checkout.
+        unset GH_REPO GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES
+      fi
+      exec bash "$TOUCHSTONE_ROOT/scripts/respond-review.sh" ${ANSWER_ARGS[@]+"${ANSWER_ARGS[@]}"}
+    fi
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" "$@"
     ;;
   policy)
@@ -112,6 +171,15 @@ case "$COMMAND" in
     # lives, never guessed from the platform.
     # An install.sh prefix is recognised by its layout, not its name:
     # <prefix>/cli/<version> is this tree, and <prefix>/current names a version.
+    # A help probe must never upgrade anything: agents probe subcommands
+    # with --help before trusting them (cold-start audit, 2026-08-21).
+    case "${1:-}" in
+      -h | --help | help)
+        echo "Usage: touchstone upgrade"
+        echo "Upgrades this install the way it was installed: brew upgrade for a Homebrew install, install.sh for an install.sh prefix."
+        exit 0
+        ;;
+    esac
     INSTALL_PREFIX=""
     case "$TOUCHSTONE_ROOT" in
       */cli/*) INSTALL_PREFIX="${TOUCHSTONE_ROOT%/cli/*}" ;;
