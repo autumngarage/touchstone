@@ -169,10 +169,11 @@ coderabbit review --agent --uncommitted -c principles/local-review-contract.md
 
 Touchstone 3 carries no per-project review declaration (the 2.x
 `.touchstone-review.toml` is gone). The local reviewer pass is expected
-wherever the `coderabbit` CLI is installed and authenticated; where it is not,
-the tier's local obligation is satisfied by its deterministic checks alone,
-the PR body says so under Validation, and the PR-visible review remains
-unchanged.
+wherever the CLI the tier selects — `coderabbit` for normal, `codex` for
+serious — is installed and authenticated on this machine; where that CLI is
+not, the tier's local obligation is satisfied by its deterministic checks
+alone, the PR body says so under Validation, and the PR-visible review
+remains unchanged.
 
 **Local passes and PR-side reviews can share one metered pool**, depending on
 the provider's plan. A driver that re-runs locally after every edit is then
