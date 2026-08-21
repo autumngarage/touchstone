@@ -58,7 +58,7 @@ touchstone policy status
 
 It reads the default branch's effective rules and reports `enforcement:
 applied`, or names what is missing (the pinned `validate`, `review-gate`, and
-`delivery-evidence` workflows, the merge queue, the native rules). Where it
+`delivery-evidence` workflows, the merge queue where the policy declares one, the native rules). Where it
 is not `applied`, exact-head review and every answered finding remain
 mandatory driver procedure, `touchstone pr merge` refuses without
 `--unguarded`, and the gap is tracked — not inferred from this document.
