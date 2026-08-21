@@ -158,6 +158,10 @@ case "$method $endpoint" in
     emit '{"id":777}'
     ;;
   "DELETE orgs/autumngarage/rulesets/123")
+    if [ "${GH_FAKE_FAIL_ORG_DELETE:-0}" = 1 ]; then
+      echo "gh: Server error (HTTP 500)" >&2
+      exit 1
+    fi
     rm -f "$state/ruleset.json"
     echo "DELETE org-ruleset" >>"$state/mutations.log"
     ;;
@@ -549,6 +553,61 @@ fi
 grep -q "not-yet-there.yml does not exist at pinned SHA" "$TMP_DIR/two-workflows.err" \
   || fail "the missing second workflow was not the stated refusal: $(tail -1 "$TMP_DIR/two-workflows.err")"
 ok "every required workflow is verified at its pin"
+
+echo "==> A repository with no protection at all bootstraps, and a failed bootstrap leaves nothing behind"
+# A fresh consumer has neither a managed ruleset nor legacy branch protection.
+rm -f "$TMP_DIR/state/branch.json" "$TMP_DIR/state/ruleset.json" "$TMP_DIR/state/repo-ruleset.json" "$TMP_DIR/state/auto-merge" "$TMP_DIR/state/bad-effective-used"
+: >"$TMP_DIR/state/mutations.log"
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_BAD_EFFECTIVE_ONCE=1 \
+  "$SCRIPT" apply "$POLICY" >"$TMP_DIR/bootstrap-fail.out" 2>&1; then
+  fail "a bootstrap whose verification failed reported success"
+fi
+grep -q "bootstrap failed; the rulesets it created were removed" "$TMP_DIR/bootstrap-fail.out" \
+  || fail "failed bootstrap did not report its own cleanup: $(tail -1 "$TMP_DIR/bootstrap-fail.out")"
+[ ! -f "$TMP_DIR/state/ruleset.json" ] || fail "failed bootstrap left the organization ruleset behind"
+[ ! -f "$TMP_DIR/state/repo-ruleset.json" ] || fail "failed bootstrap left the repository ruleset behind"
+[ ! -f "$TMP_DIR/state/auto-merge" ] || fail "failed bootstrap left auto-merge enabled"
+ok "failed bootstrap removes what it created"
+# Cleanup attempts every independent step even when one fails, and names it.
+rm -f "$TMP_DIR/state/branch.json" "$TMP_DIR/state/ruleset.json" "$TMP_DIR/state/repo-ruleset.json" "$TMP_DIR/state/auto-merge" "$TMP_DIR/state/bad-effective-used"
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_BAD_EFFECTIVE_ONCE=1 GH_FAKE_FAIL_ORG_DELETE=1 \
+  "$SCRIPT" apply "$POLICY" >"$TMP_DIR/bootstrap-partial.out" 2>&1; then
+  fail "a bootstrap whose cleanup partly failed reported success"
+fi
+grep -q "bootstrap cleanup could not complete: organization-ruleset" "$TMP_DIR/bootstrap-partial.out" \
+  || fail "partial cleanup did not name the failed step: $(tail -2 "$TMP_DIR/bootstrap-partial.out" | tr '\n' ' ')"
+[ ! -f "$TMP_DIR/state/repo-ruleset.json" ] || fail "repository ruleset was not removed after the organization deletion failed"
+[ ! -f "$TMP_DIR/state/auto-merge" ] || fail "auto-merge was not restored after the organization deletion failed"
+ok "partial cleanup still attempts every independent step and names the failure"
+rm -f "$TMP_DIR/state/ruleset.json"
+# A companion ruleset with no organization ruleset is an interrupted adoption, not a bare repository.
+rm -f "$TMP_DIR/state/branch.json" "$TMP_DIR/state/ruleset.json" "$TMP_DIR/state/auto-merge" "$TMP_DIR/state/bad-effective-used"
+jq '.managedRepositoryRuleset + {id:321}' "$POLICY" >"$TMP_DIR/state/repo-ruleset.json"
+if run_policy apply "$POLICY" >"$TMP_DIR/bootstrap-companion.out" 2>&1; then
+  fail "a companion-only repository was bootstrapped over"
+fi
+grep -q "companion repository ruleset already exists" "$TMP_DIR/bootstrap-companion.out" \
+  || fail "companion-only state was not routed to manual recovery: $(tail -1 "$TMP_DIR/bootstrap-companion.out")"
+if [ -f "$TMP_DIR/state/repo-ruleset.json" ]; then
+  ok "companion-only state refused and left untouched"
+else
+  fail "companion ruleset was deleted"
+fi
+rm -f "$TMP_DIR/state/repo-ruleset.json"
+: >"$TMP_DIR/state/mutations.log"
+run_policy apply "$POLICY" >"$TMP_DIR/bootstrap.out" 2>&1 || fail "bootstrap apply failed: $(cat "$TMP_DIR/bootstrap.out")"
+grep -q "installing the policy fresh (bootstrap)" "$TMP_DIR/bootstrap.out" || fail "bootstrap was not announced"
+grep -q "Applied and verified GitHub policy" "$TMP_DIR/bootstrap.out" || fail "bootstrap did not verify"
+if [ -f "$TMP_DIR/state/ruleset.json" ] && [ -f "$TMP_DIR/state/repo-ruleset.json" ] && [ -f "$TMP_DIR/state/auto-merge" ]; then
+  ok "bootstrap installed both rulesets and enabled auto-merge"
+else
+  fail "bootstrap did not install the complete policy state"
+fi
+if grep -q "DELETE" "$TMP_DIR/state/mutations.log"; then
+  fail "bootstrap deleted something on a bare repository"
+else
+  ok "bootstrap deleted nothing"
+fi
 
 echo "==> Ambiguous and failed reads fail closed"
 if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_DUPLICATE_RULESET=1 \
