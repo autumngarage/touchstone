@@ -117,13 +117,22 @@ taking this document's word for it.
   read as the single thing that would have raised their confidence. The
   steering says "inspect the repository's effective rules"; this is the
   inspection.
-- `merge` without a pinned gate on the base **fails closed**. Missing
-  enforcement is a tracked gap, not permission: the refusal names the remedy
-  (apply the consumer policy, then close/reopen open PRs). `--unguarded`
-  merges anyway and first records on the PR that nothing reviewed or
-  validated the head, so the gap is visible where the merge is. Before this,
-  `merge` on an unprotected repository was a push-and-merge button (vesper
-  #928, 2026-08-21).
+- `merge` takes its guarded path only when enforcement is `applied`;
+  otherwise it **fails closed**. The terms: a *pinned gate* is the
+  `review-gate` workflow required from the policy's source repository, ref,
+  and revision (the tool's own `policy/github/touchstone-main.json`);
+  `applied` means all three pinned workflows, the merge queue, and the native
+  pull-request, force-push, and deletion rules are present; `partial` and
+  `none` name what is missing. `applied` → re-run the gate, request the merge.
+  Anything else → refuse with the remedy (apply the consumer policy, then
+  close/reopen open PRs), or with `--unguarded` record on the PR — once per
+  head, by marker — that an unguarded merge was requested because the
+  canonical pinned gate is absent (other checks or reviews may still have
+  run), then request the merge. A failed rules read is an operational error
+  (exit 1), never a verdict. Rollout: repositories whose policy is not yet
+  applied receive the refusal and its remedy; nothing merges differently
+  where the policy is applied. Before this, `merge` on an unprotected
+  repository was a push-and-merge button (vesper #928, 2026-08-21).
 
 ## Generated evidence
 

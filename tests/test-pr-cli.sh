@@ -289,6 +289,8 @@ case "$1 ${2:-}" in
         pin_sha="$GH_POLICY_SHA"
         [ ! -f "$GH_STATE/stale-pin" ] || pin_sha="0000000000000000000000000000000000000000"
         rules='[{"type":"pull_request"},{"type":"deletion"},{"type":"non_fast_forward"},{"type":"merge_queue"},{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$GH_POLICY_SHA"'"}]}}]'
+      elif [ -f "$GH_STATE/no-rules" ]; then
+        rules='[]'
       else
         rules='[{"type":"pull_request"},{"type":"deletion"},{"type":"non_fast_forward"}]'
       fi
@@ -566,7 +568,7 @@ EOF
   : >"$GH_CALLS"
   run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 2
-  assert_has "$TMP/out" 'no pinned review gate protects main'
+  assert_has "$TMP/out" 'enforcement on main of autumngarage/current is partial'
   assert_has "$TMP/out" 'derive a consumer policy first'
   assert_not_has "$GH_CALLS" 'pr merge'
   : >"$GH_CALLS"
@@ -599,14 +601,28 @@ EOF
   touch "$TMP/state/review-gate"
   run_pr "$TMP/out" policy-status --json
   assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
-  # The same paths from a stale revision are not the canonical gates.
+  # The same paths from a stale revision are not the canonical gates, and a
+  # stale gate does not take the guarded merge path either.
   touch "$TMP/state/stale-pin"
   run_pr "$TMP/out" policy-status --json
   assert_has "$TMP/out" '"status":"partial"'
   assert_has "$TMP/out" 'review-gate workflow (present but not pinned at the policy revision)'
   assert_has "$TMP/out" 'validate workflow (present but not pinned at the policy revision)'
   assert_not_has "$TMP/out" 'delivery-evidence workflow'
+  : >"$GH_CALLS"
+  rm -f "$TMP/state/merged"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'not pinned at the policy revision'
+  assert_not_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/stale-pin"
+  # Nothing at all on the branch is "none", not "partial".
+  rm -f "$TMP/state/review-gate"
+  touch "$TMP/state/no-rules"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"status":"none"'
+  rm -f "$TMP/state/no-rules"
+  touch "$TMP/state/review-gate"
   run_pr "$TMP/out" status 7 --json
   assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
   run_pr "$TMP/out" status 7

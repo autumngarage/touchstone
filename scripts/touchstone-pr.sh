@@ -408,7 +408,6 @@ review_gate_required() {
 # by hand to learn whether a merge would be gated.
 ENFORCEMENT_STATUS=""
 ENFORCEMENT_MISSING=""
-ENFORCEMENT_ALL="validate workflow,review-gate workflow,delivery-evidence workflow,merge queue,pull-request rule,force-push protection,deletion protection"
 read_enforcement() {
   local base_ref="$1" encoded expected
   encoded="$(uri_encode "$base_ref")"
@@ -438,9 +437,13 @@ read_enforcement() {
         (if any(.[]; .type == "deletion") then empty else "deletion protection" end)
       ] | unique | join(",")')" \
     || fail_operation "could not evaluate the effective rules for $base_ref" "Retry after GitHub recovers."
+  # Seven things can be missing; all seven missing is "none". Counted, not
+  # string-compared: jq sorts the names and a name may carry a reason.
+  local missing_count
+  missing_count="$(printf '%s' "$ENFORCEMENT_MISSING" | awk -F',' 'NF { print NF } !NF { print 0 }')"
   if [ -z "$ENFORCEMENT_MISSING" ]; then
     ENFORCEMENT_STATUS=applied
-  elif [ "$ENFORCEMENT_MISSING" = "$ENFORCEMENT_ALL" ]; then
+  elif [ "$missing_count" -ge 7 ]; then
     ENFORCEMENT_STATUS=none
   else
     ENFORCEMENT_STATUS=partial
@@ -761,7 +764,12 @@ merge_pr() {
     # Ask it to evaluate what is on the PR now, then ask GitHub to merge:
     # auto-merge arms while the run is pending and the queue admits the PR
     # when it is green. The verdict is GitHub's; this only requests it.
-    if review_gate_required "$base"; then
+    # The guarded path is taken only when enforcement is fully applied --
+    # the gate present at the policy's repository, ref, and revision, with
+    # the queue and native rules beside it. A same-path workflow from
+    # elsewhere or a stale pin is not the gate.
+    read_enforcement "$base"
+    if [ "$ENFORCEMENT_STATUS" = applied ]; then
       rerun_review_gate "$number" "$head"
       # Requesting the re-run can wait for an in-progress run; the head and
       # the base *ref* must still be what the evaluation covers. The base tip
@@ -769,12 +777,12 @@ merge_pr() {
       verify_live_head_and_base_ref "$number" "$head" "$base"
       [ "$JSON_MODE" = true ] || printf 'Review gate re-run requested for run %s; GitHub merges when it passes.\n' "$REVIEW_GATE_RUN_ID" >&2
     else
-      # No pinned gate on this base: merging here is a push-and-merge button.
-      # Missing enforcement is a tracked gap, not permission -- refuse unless
-      # the caller says so explicitly, and then leave the fact on the PR.
-      read_enforcement "$base"
+      # Enforcement is not fully applied on this base: merging here would not
+      # be gated the way the policy intends. Missing enforcement is a tracked
+      # gap, not permission -- refuse unless the caller says so explicitly,
+      # and then leave the fact on the PR.
       [ "$UNGUARDED" = true ] \
-        || fail_input "no pinned review gate protects $base on $REPO (enforcement: $(enforcement_text)); GitHub would not require review of this head" \
+        || fail_input "enforcement on $base of $REPO is $(enforcement_text); GitHub would not gate this merge as the policy intends" \
           "$(enforcement_remedy); or pass --unguarded to merge anyway and record the gap on the PR."
       # Record the observed fact, once per head: what is missing, and that an
       # unguarded merge of this exact head was requested. Whether the merge
@@ -786,7 +794,7 @@ merge_pr() {
         || fail_operation "could not inspect PR #$PR_NUMBER comments for a prior unguarded-merge record: $READ_OUTPUT" "Inspect GitHub before retrying."
       if [ "$READ_OUTPUT" = 0 ]; then
         gh pr comment "$PR_NUMBER" --repo "$REPO_SPEC" --body "$unguarded_marker
-Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarded\`: enforcement on \`$base\` is $(enforcement_text), so GitHub requires no pinned review gate for this merge. Apply the consumer policy to close the gap." >/dev/null \
+Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarded\`: enforcement on \`$base\` is $(enforcement_text) — the canonical pinned review gate is absent, so GitHub does not require it for this merge (other checks or reviews may still have run). Apply the consumer policy to close the gap." >/dev/null \
           || fail_operation "could not record the unguarded merge request on PR #$PR_NUMBER" "Inspect GitHub before retrying."
       fi
       printf 'WARNING: requesting merge of PR #%s without a pinned review gate on %s (recorded on the PR).\n' "$PR_NUMBER" "$base" >&2
