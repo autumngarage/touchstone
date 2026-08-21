@@ -144,6 +144,11 @@ mkdir -p "$tmp/unpack"
 tar -xzf "$tmp/release.tar.gz" -C "$tmp/unpack"
 unpacked="$(find "$tmp/unpack" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
 [ -n "$unpacked" ] && [ -f "$unpacked/bin/touchstone" ] || die "the release archive does not contain bin/touchstone"
+# The first release to carry this installer also carries `upgrade` and
+# `hook`; an older archive (the formula still naming 3.1.0, say) would install
+# a tool that cannot upgrade itself or serve hooks from this prefix.
+[ -f "$unpacked/install.sh" ] && [ -f "$unpacked/hooks/branch-guard.sh" ] \
+  || die "release $VERSION predates the non-Homebrew install (no install.sh in the archive); wait for the formula to record a release that carries it"
 released="$(head -n 1 "$unpacked/VERSION" 2>/dev/null | tr -d '[:space:]')"
 [ "$released" = "$VERSION" ] || die "the archive reports VERSION '$released', not $VERSION"
 

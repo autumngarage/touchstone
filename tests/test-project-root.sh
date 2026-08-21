@@ -395,6 +395,17 @@ fi
 [ "$(cat "$PREFIX/current")" = "9.9.1" ] && pass "current still names 9.9.1" || fail "a refused install changed current"
 [ ! -e "$PREFIX/cli/9.9.2" ] && pass "no partial 9.9.2 tree" || fail "partial tree left behind"
 
+echo "==> An archive that predates the installer is refused"
+make_release 9.9.0 "$INSTALL_TMP/v9.9.0.tar.gz"
+(cd "$INSTALL_TMP/stage-9.9.0" && rm "touchstone-9.9.0/install.sh" && tar -czf "$INSTALL_TMP/v9.9.0.tar.gz" "touchstone-9.9.0")
+make_formula 9.9.0 "$(sha256_of "$INSTALL_TMP/v9.9.0.tar.gz")" "$INSTALL_TMP/formula-9.9.0.rb"
+if bash "$REPO_ROOT/install.sh" --prefix "$PREFIX" --formula-file "$INSTALL_TMP/formula-9.9.0.rb" --archive-file "$INSTALL_TMP/v9.9.0.tar.gz" >"$INSTALL_TMP/old.out" 2>&1; then
+  fail "an archive without install.sh was installed"
+else
+  grep -q "predates the non-Homebrew install" "$INSTALL_TMP/old.out" && pass "pre-installer release refused" || fail "unexpected: $(cat "$INSTALL_TMP/old.out")"
+fi
+[ "$(cat "$PREFIX/current")" = "9.9.1" ] || fail "a refused old release changed current"
+
 echo "==> A version the formula does not record is refused"
 if bash "$REPO_ROOT/install.sh" --prefix "$PREFIX" --formula-file "$INSTALL_TMP/formula-9.9.1.rb" --archive-file "$INSTALL_TMP/v9.9.1.tar.gz" --version 1.2.3 >"$INSTALL_TMP/pin.out" 2>&1; then
   fail "an unrecorded version was accepted"
