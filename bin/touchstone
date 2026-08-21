@@ -23,6 +23,7 @@ Usage:
   touchstone tracker claim [arguments]
   touchstone pr open|status|merge [arguments]
   touchstone policy status [--base BRANCH] [--project DIR] [--json]
+  touchstone cleanup check [--project DIR] [--json]
   touchstone pr answer PR --comment-id ID --body-file FILE [--fix-commit SHA]
   touchstone pr answer PR --all-resolved-check
   touchstone version
@@ -118,6 +119,11 @@ case "$COMMAND" in
         exit 2
         ;;
     esac
+    ;;
+  cleanup)
+    # What a session left behind -- read-only, so "I cleaned up" is a
+    # verified state (step 9) instead of a claim.
+    exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-cleanup.sh" "$@"
     ;;
   version)
     # The formula's test block and consumers reporting which tool they run

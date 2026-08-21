@@ -48,7 +48,7 @@ carry the same numbers and add only the detail the steering leaves out.
 6. **Ship.** Push and open the PR — see "Opening a PR" below.
 7. **Answer every piece of PR feedback before merging.** Reply to each comment and resolve its thread, whoever left it. Where effective policy requires conversation resolution, GitHub blocks unresolved threads; elsewhere resolving them remains mandatory driver procedure.
 8. **Merge**, bound to the head the review actually saw — see "Merging" below.
-9. **Clean up after merge.** Delete the local feature branch once the PR is merged.
+9. **Clean up after merge, and before the session ends** — see "Leaving no mess" below. `touchstone cleanup check` must report nothing.
 
 ## Before trusting any merge: what does GitHub enforce here?
 
@@ -463,6 +463,37 @@ capability; do not resume one-finding-at-a-time expansion. Exact-head review
 still applies to every replacement PR or redesigned head.
 
 AI review supplements deterministic checks; it does not replace lint, type checking, tests, or project-specific validators.
+
+## Leaving no mess
+
+Cleanup is the step a session skips when the merge lands and attention
+moves on. It is what turned one day of agent work into two stale worktrees,
+ten merged local branches, fifty-six merged remote branches, a `__pycache__`
+that refused the next ship as "dirty", and tracker items left In Progress
+(2026-08-21). Before a session ends, every one of these is true, in this
+order — each line is a command, not advice:
+
+```bash
+touchstone cleanup check            # read-only: lists what is left; exit 0 means nothing
+git worktree remove <path>          # every worktree you created; then: git worktree prune
+git branch -D <branch>              # after the merged-head proof under "Periodic branch hygiene"
+git push origin --delete <branch>   # the remote branch of a MERGED PR (a CLOSED one may hold abandoned work: decide, don't reflexively delete)
+git checkout <default> && git pull --rebase
+git status --porcelain --untracked-files=all   # must print nothing: remove test/build residue or ignore it
+```
+
+Then the tracker: the item is in its terminal state with the merge SHA (the
+GitHub tracker closes it from the PR body's `Closes #n`; Linear needs the
+state change by hand until AUT-410). Scratch files under `$TMPDIR` that the
+session created go too.
+
+`touchstone cleanup check` never deletes anything — what is finished is the
+driver's decision, and a tool that pruned branches on its own would be
+adjudicating it. It makes the mess legible: checkout not on the default
+branch or behind origin, linked worktrees, local or remote branches whose PR
+is merged or closed, untracked and dirty files. Run it with `--project <dir>`
+for each repository the session touched, and with `--json` when a script
+consumes it (`touchstone.cleanup/v1`).
 
 ## Periodic branch hygiene
 
