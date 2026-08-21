@@ -22,6 +22,7 @@ Usage:
   touchstone adopt [--check|--dry-run] [arguments]
   touchstone tracker claim [arguments]
   touchstone pr open|status|merge [arguments]
+  touchstone policy status [--base BRANCH] [--project DIR] [--json]
   touchstone version
   touchstone steering install|check|uninstall [--home DIR] [--dry-run]
 EOF
@@ -42,6 +43,20 @@ case "$COMMAND" in
     ;;
   pr)
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" "$@"
+    ;;
+  policy)
+    # What GitHub enforces on a branch, from its effective rules -- the one
+    # read an agent needs before trusting any merge.
+    case "${1:-}" in
+      status)
+        shift
+        exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" policy-status "$@"
+        ;;
+      *)
+        echo "ERROR: unknown policy command '${1:-<none>}'; available: status" >&2
+        exit 2
+        ;;
+    esac
     ;;
   version)
     # The formula's test block and consumers reporting which tool they run

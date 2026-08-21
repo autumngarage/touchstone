@@ -274,7 +274,15 @@ case "$1 ${2:-}" in
     elif has 'actions/workflows?' "$@"; then
       printf '1\n2\n3\n'
     elif has 'rules/branches/' "$@"; then
-      if [ -f "$GH_STATE/review-gate" ]; then printf 'true\n'; else printf 'false\n'; fi
+      # A real effective-rules document through the caller's real jq: the
+      # policy's three pinned workflows plus the queue and the native rules
+      # when the gate is "installed", only the native rules otherwise.
+      if [ -f "$GH_STATE/review-gate" ]; then
+        rules='[{"type":"pull_request"},{"type":"deletion"},{"type":"non_fast_forward"},{"type":"merge_queue"},{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml"},{"path":".github/workflows/review-gate.yml"},{"path":".github/workflows/delivery-evidence.yml"}]}}]'
+      else
+        rules='[{"type":"pull_request"},{"type":"deletion"},{"type":"non_fast_forward"}]'
+      fi
+      printf '%s' "$rules" | jq -r "$(value_after --jq "$@")"
     elif has 'actions/runs?head_sha=' "$@"; then
       # Real selector over a real list: the pinned gate (run 77, unlisted
       # workflow id 999) next to a NEWER repository-local decoy of the same
@@ -516,7 +524,7 @@ EOF
   echo "==> merge asks the pinned gate to re-evaluate, then asks GitHub to merge"
   touch "$TMP/state/review-gate" "$TMP/state/pr-exists"
   rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
-  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 0
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
     || fail "merge did not ask the review gate to re-evaluate before requesting the merge"
@@ -538,6 +546,40 @@ EOF
   assert_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
 
+  echo "==> without a pinned gate, merge fails closed unless --unguarded, which records the gap"
+  rm -f "$TMP/state/review-gate" "$TMP/state/merged"
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'no pinned review gate protects main'
+  assert_has "$TMP/out" 'policy/github/consumers/current.json'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'pr comment'
+  grep -q 'Merged without a pinned review gate' "$GH_CALLS" || fail "unguarded merge did not record the gap on the PR"
+  assert_has "$GH_CALLS" 'pr merge'
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --unguarded --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'applies to merge only'
+
+  echo "==> policy status and pr status report what GitHub enforces"
+  run_pr "$TMP/out" policy-status --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"enforcement":{"status":"partial","missing":["validate workflow","review-gate workflow","delivery-evidence workflow","merge queue"]}'
+  run_pr "$TMP/out" policy-status
+  assert_has "$TMP/out" 'enforcement: partial (missing: validate workflow, review-gate workflow, delivery-evidence workflow, merge queue)'
+  assert_has "$TMP/out" 'remedy: scripts/github-policy.sh apply policy/github/consumers/current.json'
+  touch "$TMP/state/review-gate"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  run_pr "$TMP/out" status 7 --json
+  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  run_pr "$TMP/out" status 7
+  assert_has "$TMP/out" 'enforcement on main: applied'
+  rm -f "$TMP/state/review-gate"
+
   echo "==> merge binds both mutation and reconciliation to the reviewed head"
   rm -f "$TMP/state/merged"
   run_pr "$TMP/out" merge 7 --json
@@ -546,39 +588,39 @@ EOF
   run_pr "$TMP/out" merge 7 --head wrong --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'expected head wrong'
-  GH_MODE=merge_lied run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  GH_MODE=merge_lied run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"merged"'
   assert_has "$GH_CALLS" "--match-head-commit $HEAD_SHA"
-  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"already-merged"'
   assert_not_has "$GH_CALLS" 'pr merge'
 
   rm -f "$TMP/state/merged"
-  GH_MODE=merge_queue run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  GH_MODE=merge_queue run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"queued"'
-  GH_MODE=auto_merge run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  GH_MODE=auto_merge run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"auto-merge-enabled"'
 
   echo "==> merge refuses a success state observed on a moved head"
   rm -f "$TMP/state/merged"
-  GH_MODE=merge_head_moved run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  GH_MODE=merge_head_moved run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" 'moved to moved-head during merge reconciliation'
   assert_not_has "$TMP/out" '"status":"merged"'
 
   echo "==> an unsuccessful mutation never claims a merge"
   rm -f "$TMP/state/merged"
-  GH_MODE=merge_failed run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  GH_MODE=merge_failed run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" 'GitHub did not accept merge'
   assert_not_has "$TMP/out" '"status":"merged"'
 
   echo "==> merge preserves both diagnostics when reconciliation also fails"
-  GH_MODE=merge_reconcile_failed run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  GH_MODE=merge_reconcile_failed run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" 'merge rejected by rules'
   assert_has "$TMP/out" 'GraphQL unavailable'

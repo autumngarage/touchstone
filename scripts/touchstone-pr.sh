@@ -18,6 +18,7 @@ BODY_FILE=""
 BASE_REF=""
 EXPECTED_HEAD=""
 EXPECTED_BRANCH=""
+UNGUARDED=false
 OPERATION="${1:-}"
 PR_NUMBER=""
 CAPTURE_STDERR_TEMP=""
@@ -49,7 +50,8 @@ Usage:
   touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
                      [--expect-branch BRANCH] [--project DIR] [--json]
   touchstone pr status PR [--project DIR] [--json]
-  touchstone pr merge PR --head SHA [--project DIR] [--json]
+  touchstone pr merge PR --head SHA [--unguarded] [--project DIR] [--json]
+  touchstone policy status [--base BRANCH] [--project DIR] [--json]
 EOF
   exit 2
 }
@@ -208,7 +210,7 @@ case "$OPERATION" in
     case "$PR_NUMBER" in "" | *[!0-9]*) usage ;; esac
     shift 2
     ;;
-  open) shift ;;
+  open | policy-status) shift ;;
   *) usage ;;
 esac
 
@@ -248,6 +250,10 @@ while [ "$#" -gt 0 ]; do
       EXPECTED_HEAD="$2"
       shift 2
       ;;
+    --unguarded)
+      UNGUARDED=true
+      shift
+      ;;
     -h | --help) usage ;;
     *) fail_input "unknown argument '$1'" "Run 'touchstone pr $OPERATION --help' for the supported interface." ;;
   esac
@@ -264,9 +270,15 @@ case "$OPERATION" in
     ;;
   merge)
     [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_BRANCH" ] \
-      || fail_input "merge received an option for another operation" "Use only --head."
+      || fail_input "merge received an option for another operation" "Use only --head and --unguarded."
+    ;;
+  policy-status)
+    [ -z "$TITLE$BODY_FILE$EXPECTED_HEAD$EXPECTED_BRANCH" ] && [ "$UNGUARDED" = false ] \
+      || fail_input "policy status accepts only --base" "Pass only --base, --project, and --json."
     ;;
 esac
+[ "$UNGUARDED" = false ] || [ "$OPERATION" = merge ] \
+  || fail_input "--unguarded applies to merge only" "Remove --unguarded."
 
 # Resolve --project to the repository root, matching the implicit path and
 # `touchstone adopt`. Canonicalizing the passed directory alone made
@@ -383,6 +395,75 @@ review_gate_required() {
     --jq '[.[] | select(.type == "workflows") | .parameters.workflows[]?.path] | any(. == ".github/workflows/review-gate.yml")' \
     || fail_operation "could not read the effective rules for $base_ref: $READ_OUTPUT" "Retry after GitHub recovers."
   [ "$READ_OUTPUT" = true ]
+}
+
+# What GitHub enforces on a branch, read once from its effective rules. The
+# policy's gates are three pinned required workflows plus the merge queue;
+# the native rules that refuse direct delivery complete the set. "applied"
+# means all of them; anything less is named, so no agent has to read rulesets
+# by hand to learn whether a merge would be gated.
+ENFORCEMENT_STATUS=""
+ENFORCEMENT_MISSING=""
+read_enforcement() {
+  local base_ref="$1" encoded
+  encoded="$(uri_encode "$base_ref")"
+  read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/rules/branches/$encoded" \
+    --jq '([.[] | select(.type == "workflows") | .parameters.workflows[]?.path]) as $w
+      | [
+          (if ($w | any(. == ".github/workflows/validate.yml")) then empty else "validate workflow" end),
+          (if ($w | any(. == ".github/workflows/review-gate.yml")) then empty else "review-gate workflow" end),
+          (if ($w | any(. == ".github/workflows/delivery-evidence.yml")) then empty else "delivery-evidence workflow" end),
+          (if any(.[]; .type == "merge_queue") then empty else "merge queue" end),
+          (if any(.[]; .type == "pull_request") then empty else "pull-request rule" end),
+          (if any(.[]; .type == "non_fast_forward") then empty else "force-push protection" end),
+          (if any(.[]; .type == "deletion") then empty else "deletion protection" end)
+        ] | join(",")' \
+    || fail_operation "could not read the effective rules for $base_ref: $READ_OUTPUT" "Retry after GitHub recovers."
+  ENFORCEMENT_MISSING="$READ_OUTPUT"
+  if [ -z "$ENFORCEMENT_MISSING" ]; then
+    ENFORCEMENT_STATUS=applied
+  elif [ "$ENFORCEMENT_MISSING" = "validate workflow,review-gate workflow,delivery-evidence workflow,merge queue,pull-request rule,force-push protection,deletion protection" ]; then
+    ENFORCEMENT_STATUS=none
+  else
+    ENFORCEMENT_STATUS=partial
+  fi
+}
+
+enforcement_json() {
+  printf '{"status":"%s","missing":[' "$ENFORCEMENT_STATUS"
+  local first=true item
+  while IFS= read -r item; do
+    [ -n "$item" ] || continue
+    [ "$first" = true ] || printf ','
+    first=false
+    json_string "$item"
+  done <<<"$(printf '%s' "$ENFORCEMENT_MISSING" | tr ',' '\n')"
+  printf ']}'
+}
+
+enforcement_text() {
+  if [ -z "$ENFORCEMENT_MISSING" ]; then
+    printf 'applied'
+  else
+    printf '%s (missing: %s)' "$ENFORCEMENT_STATUS" "$(printf '%s' "$ENFORCEMENT_MISSING" | sed 's/,/, /g')"
+  fi
+}
+
+policy_status() {
+  local base_ref="${BASE_REF:-$DEFAULT_REF}"
+  read_enforcement "$base_ref"
+  if [ "$JSON_MODE" = true ]; then
+    printf '{"schema":"%s","operation":"policy-status","repository":' "$OUTPUT_SCHEMA"
+    json_string "$REPO"
+    printf ',"baseRef":'
+    json_string "$base_ref"
+    printf ',"enforcement":'
+    enforcement_json
+    printf '}\n'
+  else
+    printf 'repository: %s\n  base: %s\n  enforcement: %s\n' "$REPO" "$base_ref" "$(enforcement_text)"
+    [ -z "$ENFORCEMENT_MISSING" ] || printf '  remedy: scripts/github-policy.sh apply policy/github/consumers/%s.json (in the Touchstone checkout), then close/reopen open PRs\n' "${REPO##*/}"
+  fi
 }
 
 wait_for_new_attempt() {
@@ -619,10 +700,14 @@ status_pr() {
     json_string "$base_sha"
     printf ',"mergeState":'
     json_string "$merge_state"
-    printf ',"draft":%s}\n' "$draft"
+    printf ',"draft":%s,"enforcement":' "$draft"
+    read_enforcement "$base"
+    enforcement_json
+    printf '}\n'
   else
-    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  merge state: %s\n  draft: %s\n' \
-      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$merge_state" "$draft"
+    read_enforcement "$base"
+    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  merge state: %s\n  draft: %s\n  enforcement on %s: %s\n' \
+      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$merge_state" "$draft" "$base" "$(enforcement_text)"
   fi
 }
 
@@ -650,6 +735,16 @@ merge_pr() {
       # may advance -- the gate binds by ancestry.
       verify_live_head_and_base_ref "$number" "$head" "$base"
       [ "$JSON_MODE" = true ] || printf 'Review gate re-run requested for run %s; GitHub merges when it passes.\n' "$REVIEW_GATE_RUN_ID" >&2
+    else
+      # No pinned gate on this base: merging here is a push-and-merge button.
+      # Missing enforcement is a tracked gap, not permission -- refuse unless
+      # the caller says so explicitly, and then leave the fact on the PR.
+      [ "$UNGUARDED" = true ] \
+        || fail_input "no pinned review gate protects $base on $REPO; the merge would not be reviewed or validated by GitHub" \
+          "Apply the consumer policy (scripts/github-policy.sh apply policy/github/consumers/${REPO##*/}.json in the Touchstone checkout, then close/reopen open PRs), or pass --unguarded to merge anyway and record the gap on the PR."
+      gh pr comment "$PR_NUMBER" --repo "$REPO_SPEC" --body "Merged without a pinned review gate: no required \`review-gate\` workflow protects \`$base\` on this repository, so GitHub reviewed and validated nothing for head \`$head\`. Recorded by \`touchstone pr merge --unguarded\`; apply the consumer policy to close this gap." >/dev/null \
+        || fail_operation "could not record the unguarded merge on PR #$PR_NUMBER" "Inspect GitHub before retrying."
+      printf 'WARNING: merging PR #%s without a pinned review gate on %s (recorded on the PR).\n' "$PR_NUMBER" "$base" >&2
     fi
     merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash \
       --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
@@ -687,4 +782,5 @@ case "$OPERATION" in
   open) open_pr ;;
   status) status_pr ;;
   merge) merge_pr ;;
+  policy-status) policy_status ;;
 esac

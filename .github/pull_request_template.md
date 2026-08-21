@@ -8,7 +8,7 @@
 <!-- Only real risks introduced by this change, and the blast radius. -->
 
 ## Validation
-<!-- Record what actually ran; a check that does not apply is `n/a — <reason>`. Never claim a build, test, or manual validation happened unless it did. -->
+<!-- Record what actually ran; a check that does not apply is `n/a — <reason>`. Never claim a build, test, or manual validation happened unless it did — a generated body states only what its generator observed or what GitHub's own check witnessed. -->
 - Build:
 - Automated tests:
 - Manual validation:
