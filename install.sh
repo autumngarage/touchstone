@@ -229,7 +229,7 @@ case ":$PATH:" in
   *)
     printf '\nAdd the wrapper to PATH (then open a new shell):\n'
     # shellcheck disable=SC2016 # the literal $PATH is for the reader's shell
-    printf '  export PATH="%s/bin:$PATH"\n' "$PREFIX"
+    printf '  export PATH=%s/bin:"$PATH"\n' "$(printf '%q' "$PREFIX")"
     ;;
 esac
 for tool in git gh jq; do
