@@ -1519,6 +1519,19 @@ bash "$INSTALL" uninstall --home "$HS" >"$TMP_DIR/hs.un" 2>&1 || true
 [ ! -f "$HS/.claude/skills/touchstone-git-workflow/SKILL.md" ] && [ ! -f "$HS/.claude/skills/memory-audit/agents/openai.yaml" ] \
   && pass "uninstall removes the installed skills" || fail "installed skills survived uninstall"
 [ -f "$HS/.claude/skills/touchstone-git-workflow/.SKILL.md.replaced" ] && pass "uninstall leaves the preserved copy" || fail "preserved copy was removed"
+# A regular file where a skill's directory belongs is refused in preflight,
+# before any driver file is written.
+HF="$TMP_DIR/hf"
+mkdir -p "$HF/.claude/skills" "$HF/.codex" "$HF/.gemini"
+printf 'not a directory\n' >"$HF/.claude/skills/touchstone-git-workflow"
+if bash "$INSTALL" install --home "$HF" >"$TMP_DIR/hf.out" 2>&1; then
+  fail "a file where a skill directory belongs was not refused"
+else
+  grep -q 'touchstone-git-workflow exists and is not a directory' "$TMP_DIR/hf.out" \
+    && [ ! -e "$HF/.claude/CLAUDE.md" ] && [ ! -e "$HF/.codex/AGENTS.md" ] \
+    && pass "a file at a skill directory path is refused before any driver file is written" \
+    || fail "wrong refusal or partial install: $(cat "$TMP_DIR/hf.out"); $(ls "$HF/.codex")"
+fi
 # A release that ships no skills installs nothing under ~/.claude/skills.
 RELEASE_NOSKILLS="$TMP_DIR/release-noskills"
 mkdir -p "$RELEASE_NOSKILLS/scripts" "$RELEASE_NOSKILLS/principles"

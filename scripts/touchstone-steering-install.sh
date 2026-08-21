@@ -427,6 +427,18 @@ preflight_principles() {
     if [ -d "$destination/$name" ]; then
       die "$SET_RELATIVE/$name is a directory; move it before installing"
     fi
+    # Every ancestor of a nested document must be a directory or absent: a
+    # regular file where a skill's directory belongs would fail at mkdir
+    # after the driver files were already written, which is the partial
+    # state preflight exists to prevent.
+    local ancestor
+    ancestor="$(dirname "$name")"
+    while [ "$ancestor" != . ]; do
+      if { [ -e "$destination/$ancestor" ] || [ -L "$destination/$ancestor" ]; } && [ ! -d "$destination/$ancestor" ]; then
+        die "$SET_RELATIVE/$ancestor exists and is not a directory; move it before installing"
+      fi
+      ancestor="$(dirname "$ancestor")"
+    done
     # A file we did not install belongs to the operator. Detect it here, before
     # any driver file is written, so the refusal costs nothing. -L as well as
     # -e: a dangling symlink is not `-e`, so a link the operator made to a
