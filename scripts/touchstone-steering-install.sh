@@ -757,7 +757,7 @@ case "$ACTION" in
     fi
     if [ "$DRIFTED" -ne 0 ]; then
       echo "ERROR: $DRIFTED user-level steering file(s) do not carry this tool's contract" >&2
-      echo "Run: touchstone steering install -- it rewrites only the block between the markers (idempotent; everything outside them is untouched). A tool upgrade does not refresh the block by itself." >&2
+      echo "Run: touchstone steering install -- it rewrites only the block between the markers in each driver file and the routed documents it installed under ~/.touchstone/principles (idempotent; everything outside them is untouched). A tool upgrade does not refresh either by itself." >&2
       exit 1
     fi
     echo "==> PASS: every supported driver reads the current contract"
