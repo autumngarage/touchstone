@@ -194,10 +194,43 @@ assert_contains "$TMP_DIR/contract-only.out" "schema-v1 contract is valid"
 [ ! -e "$CONTRACT_ONLY/command-ran" ] || fail "contract check executed a task"
 run_capture "$CONTRACT_ONLY" "$TMP_DIR/contract-only-json.out" --check-contract --json
 [ "$RUN_STATUS" -eq 0 ] || fail "JSON contract-only validation failed"
-[ "$(cat "$TMP_DIR/contract-only-json.out")" = '{"schema":1,"verdict":"valid"}' ] \
+[ "$(cat "$TMP_DIR/contract-only-json.out")" = '{"schema":1,"verdict":"valid","runner":"ubuntu-latest"}' ] \
   || fail "contract-only JSON payload changed"
 [ ! -e "$CONTRACT_ONLY/setup-ran" ] || fail "JSON contract check executed setup"
 [ ! -e "$CONTRACT_ONLY/command-ran" ] || fail "JSON contract check executed a task"
+
+echo "==> contract-only JSON reports the declared schema number"
+V2_REPORT="$TMP_DIR/v2-report"
+write_contract "$V2_REPORT" "true"
+sed 's/^schema = 1$/schema = 2/' "$V2_REPORT/.touchstone.toml" >"$V2_REPORT/v2" && mv "$V2_REPORT/v2" "$V2_REPORT/.touchstone.toml"
+run_capture "$V2_REPORT" "$TMP_DIR/v2-report.out" --check-contract --json
+[ "$RUN_STATUS" -eq 0 ] || fail "schema-2 contract-only validation failed"
+[ "$(cat "$TMP_DIR/v2-report.out")" = '{"schema":2,"verdict":"valid","runner":"ubuntu-latest"}' ] \
+  || fail "schema-2 contract-only JSON did not report schema 2: $(cat "$TMP_DIR/v2-report.out")"
+
+echo "==> a declared runner is reported for the central workflow to schedule on"
+RUNNER_DECL="$TMP_DIR/runner-decl"
+write_contract "$RUNNER_DECL" "true"
+awk '{ print; if ($0 == "runtime = \"bash\"") print "runner = \"macos-15\"" }' \
+  "$RUNNER_DECL/.touchstone.toml" >"$RUNNER_DECL/with-runner"
+mv "$RUNNER_DECL/with-runner" "$RUNNER_DECL/.touchstone.toml"
+run_capture "$RUNNER_DECL" "$TMP_DIR/runner-decl.out" --check-contract --json
+[ "$RUN_STATUS" -eq 0 ] || fail "a declared runner was refused"
+[ "$(cat "$TMP_DIR/runner-decl.out")" = '{"schema":1,"verdict":"valid","runner":"macos-15"}' ] \
+  || fail "declared runner not reported: $(cat "$TMP_DIR/runner-decl.out")"
+run_capture "$RUNNER_DECL" "$TMP_DIR/runner-decl-run.out" --json
+[ "$RUN_STATUS" -eq 0 ] || fail "validation with a declared runner failed locally"
+sed 's/^runner = .*/runner = "not a label!"/' "$RUNNER_DECL/.touchstone.toml" >"$RUNNER_DECL/bad"
+mv "$RUNNER_DECL/bad" "$RUNNER_DECL/.touchstone.toml"
+run_capture "$RUNNER_DECL" "$TMP_DIR/runner-bad.out" --check-contract
+[ "$RUN_STATUS" -ne 0 ] || fail "a malformed runner label was accepted"
+assert_contains "$TMP_DIR/runner-bad.out.err" "runner must be a GitHub-hosted runner label"
+for label in self-hosted "" "linux-large" "ubuntu" "ubuntu-not a label!" "macos-15;id" "windows-" "ubuntu-Latest" "ubuntu-latest/../x"; do
+  sed "s|^runner = .*|runner = \"$label\"|" "$RUNNER_DECL/.touchstone.toml" >"$RUNNER_DECL/bad"
+  mv "$RUNNER_DECL/bad" "$RUNNER_DECL/.touchstone.toml"
+  run_capture "$RUNNER_DECL" "$TMP_DIR/runner-bad2.out" --check-contract
+  [ "$RUN_STATUS" -ne 0 ] || fail "runner label '$label' outside the hosted families was accepted"
+done
 
 echo "==> optional undeclared task skips visibly"
 cat >>"$SMALL/.touchstone.toml" <<'EOF'

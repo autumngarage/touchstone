@@ -66,8 +66,15 @@ it would let a consumer believe it declared a guard that runs nowhere.
 Schema 1 is a deliberately narrow TOML subset:
 
 - `schema = 1` at the root (or `schema = 2`, which adds only `stage`);
-- one `[validation]` table with `runtime = "bash"` and an optional, non-empty
-  `setup` command;
+- one `[validation]` table with `runtime = "bash"`, an optional, non-empty
+  `setup` command, and an optional `runner` — the GitHub-hosted runner label
+  the central workflow executes the declaration on (`ubuntu-latest` when
+  absent; a project whose checks need another OS declares, for example,
+  `macos-15`). The engine validates and reports the label through
+  `--check-contract --json`; it never schedules anything itself. The label
+  takes effect only once the pinned central workflow reads it (a
+  `touchstone-workflows` revision bump in the policy); until then every
+  declaration runs on `ubuntu-latest` regardless;
 - one or more `[[validation.targets]]` tables, each with a unique `name` and a
   project-relative `path` that cannot escape the repository;
 - one or more `[[validation.tasks]]` tables, each with a unique `name`, an

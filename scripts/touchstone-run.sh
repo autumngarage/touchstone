@@ -132,6 +132,11 @@ EXIT_STATUS=0
 SCHEMA_VERSION=""
 RUNTIME=""
 SETUP_COMMAND=""
+# The GitHub-hosted runner label the central validation workflow executes the
+# declaration on. Default ubuntu; a project whose checks need another OS
+# (vesper: swift build needs macOS) declares it. The engine only reports it --
+# the workflow reads it from --check-contract --json and schedules accordingly.
+RUNNER="ubuntu-latest"
 VALIDATION_SEEN=false
 
 trim() {
@@ -348,6 +353,18 @@ while IFS= read -r line || [ -n "$line" ]; do
       parse_string "$raw_value" || config_error "runtime must be a single-line basic string at line $LINE_NUMBER"
       RUNTIME="$PARSED_VALUE"
       ;;
+    validation:runner)
+      parse_string "$raw_value" || config_error "runner must be a single-line basic string at line $LINE_NUMBER"
+      RUNNER="$PARSED_VALUE"
+      # Only GitHub-hosted label families: the central workflow schedules on
+      # this value, and a self-hosted or arbitrary label would route the
+      # required check -- and the declaration's commands -- somewhere else.
+      # The whole label is checked, not just its prefix: a glob suffix like
+      # `ubuntu-*` would accept spaces and shell metacharacters after the
+      # family. LC_ALL=C keeps the ranges literal under every locale.
+      LC_ALL=C awk 'BEGIN { exit !(ARGV[1] ~ /^(ubuntu|macos|windows)-[a-z0-9][a-z0-9.-]*$/) }' "$RUNNER" \
+        || config_error "runner must be a GitHub-hosted runner label (ubuntu-*, macos-*, windows-*), got '$RUNNER' at line $LINE_NUMBER"
+      ;;
     validation:setup)
       parse_string "$raw_value" || config_error "setup must be a single-line basic string at line $LINE_NUMBER"
       SETUP_COMMAND="$PARSED_VALUE"
@@ -461,7 +478,7 @@ fi
 
 if [ "$CHECK_CONTRACT" = true ]; then
   if [ "$JSON_MODE" = true ]; then
-    printf '{"schema":1,"verdict":"valid"}\n'
+    printf '{"schema":%s,"verdict":"valid","runner":"%s"}\n' "$SCHEMA_VERSION" "$RUNNER"
   else
     printf 'schema-v%s contract is valid\n' "$SCHEMA_VERSION"
   fi
