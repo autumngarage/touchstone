@@ -80,8 +80,15 @@ native rules still apply, and the merge is not queued — the combination of
 two independently green PRs is validated by the next PR's run, not before
 landing. Regenerate without the flag when the plan or visibility changes.
 
+A consumer whose own workflow publishes a merge-blocking status the contract
+does not know about (convoy's `convoy/delivery-protocol` PR-body check) keeps
+it required with `--require-status CONTEXT` (repeatable): the derivation adds
+one `required_status_checks` rule naming those contexts and changes nothing
+else, so applying the policy never silently drops a gate the project relied
+on. The canonical rules are only ever joined, never removed or weakened.
+
 Every adopted repository's policy is an exact derivation of the canonical
-one — `scripts/derive-consumer-policy.sh REPOSITORY [--no-queue]` — checked in under
+one — `scripts/derive-consumer-policy.sh REPOSITORY [--no-queue] [--require-status CONTEXT]...` — checked in under
 `policy/github/consumers/` and refused by the test suite if it drifts. Apply
 one with `scripts/github-policy.sh apply policy/github/consumers/REPOSITORY.json`
 only once both hold: the repository has adopted (`touchstone adopt`), and

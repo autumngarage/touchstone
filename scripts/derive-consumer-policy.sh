@@ -4,7 +4,7 @@
 # policy from the canonical Touchstone policy.
 #
 # Usage:
-#   bash scripts/derive-consumer-policy.sh REPOSITORY [--no-queue] > policy/github/consumers/REPOSITORY.json
+#   bash scripts/derive-consumer-policy.sh REPOSITORY [--no-queue] [--require-status CONTEXT]... > policy/github/consumers/REPOSITORY.json
 #
 # A consumer's policy is the canonical policy with the repository name
 # substituted everywhere it appears as an ownership coordinate, and without
@@ -20,33 +20,65 @@
 # thread resolution, and the native rules still apply. The queue returns to
 # such a consumer the day the plan or the visibility changes, by regenerating
 # without the flag.
+#
+# --require-status CONTEXT (repeatable) adds one repository-owned required
+# status check to the consumer's ruleset, on top of the pinned workflows. It
+# exists for a consumer whose own workflow publishes a merge-blocking status
+# the contract does not know about (convoy's `convoy/delivery-protocol` PR
+# body check); without it, applying the derived policy would silently stop
+# requiring a gate the project relies on. It is the only per-consumer
+# variation besides the queue: the canonical rules are never removed or
+# weakened, only joined by a context the consumer names and owns.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-REPOSITORY="${1:-}"
-QUEUE=true
-case "$REPOSITORY" in
-  "" | *[!A-Za-z0-9._-]*)
-    echo "usage: derive-consumer-policy.sh REPOSITORY [--no-queue]" >&2
-    exit 2
-    ;;
-esac
-[ "$#" -le 2 ] || {
-  echo "usage: derive-consumer-policy.sh REPOSITORY [--no-queue]" >&2
+usage() {
+  echo "usage: derive-consumer-policy.sh REPOSITORY [--no-queue] [--require-status CONTEXT]..." >&2
   exit 2
 }
-case "${2:-}" in
-  "") ;;
-  --no-queue) QUEUE=false ;;
-  *)
-    echo "usage: derive-consumer-policy.sh REPOSITORY [--no-queue]" >&2
-    exit 2
-    ;;
+REPOSITORY="${1:-}"
+case "$REPOSITORY" in
+  "" | *[!A-Za-z0-9._-]*) usage ;;
 esac
-jq --arg repo "$REPOSITORY" --argjson queue "$QUEUE" '
+shift
+QUEUE=true
+STATUS_CONTEXTS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --no-queue)
+      QUEUE=false
+      shift
+      ;;
+    --require-status)
+      [ "$#" -ge 2 ] || usage
+      case "$2" in
+        "" | *[[:space:]]* | *[!A-Za-z0-9._/-]*) usage ;;
+      esac
+      STATUS_CONTEXTS+=("$2")
+      shift 2
+      ;;
+    *) usage ;;
+  esac
+done
+if [ "${#STATUS_CONTEXTS[@]}" -gt 0 ]; then
+  contexts_json="$(printf '%s\n' "${STATUS_CONTEXTS[@]}" | jq -R . | jq -s 'unique')"
+else
+  contexts_json='[]'
+fi
+jq --arg repo "$REPOSITORY" --argjson queue "$QUEUE" --argjson contexts "$contexts_json" '
   .repository = $repo
   | .rollbackPrerequisites.repositoryFiles = []
   | .managedRuleset.name = "Touchstone policy v\(.contractVersion): \(.organization)/\($repo)@\(.branch)"
   | .managedRuleset.conditions.repository_name.include = [$repo]
+  | if ($contexts | length) > 0 then
+      .managedRuleset.rules += [{
+        type: "required_status_checks",
+        parameters: {
+          strict_required_status_checks_policy: false,
+          do_not_enforce_on_create: false,
+          required_status_checks: [$contexts[] | {context: .}]
+        }
+      }]
+    else . end
   | if $queue then
       .managedRepositoryRuleset.name = "Touchstone merge queue v\(.contractVersion): \(.organization)/\($repo)@\(.branch)"
     else
