@@ -49,13 +49,26 @@ policy contains the Touchstone ruleset, the server rejects direct pushes.
 
 ```bash
 git push -u origin HEAD
-gh pr create --title "<type>: <what changed>" --body-file <(cat <<'EOF'
+touchstone pr open --expect-branch "<branch>" --title "<type>: <what changed>" --body-file <(cat <<'EOF'
 <what and why>
 
 <configured closing reference, for example: Fixes AUT-123>
 EOF
 )
 ```
+
+The installed CLI is the PR-open sequencer on every machine: it creates or
+reuses the PR for the branch, posts the review request once for the exact
+head, and reports success only after the pinned `review-gate` has been asked
+to evaluate that head and the coordinates still hold. `--expect-branch` is
+written out, never derived from `git branch --show-current` — that reads the
+same checkout the command reads and would agree with a wrong worktree. Where
+the CLI is absent, the raw equivalent is `gh pr create --title … --body-file …`,
+a bare `@codex review` comment, and then — because a required workflow runs
+only on pull-request and merge-group events and may already have evaluated
+before the comment existed — a re-run of the pinned gate's run for this head:
+`gh api -X POST repos/<owner>/<repo>/actions/runs/<review-gate run id>/rerun`.
+`docs/pr-cli-contract.md` records this as recovery, not as the instruction.
 
 **The configured closing reference must be in the PR body.** A GitHub
 `Closes #123` or Linear `Fixes AUT-123` only in a commit body may disappear
@@ -73,10 +86,10 @@ Set `expected` to the exact tracker item being reconciled, using the grammar
 declared by `.touchstone-tracker.toml`; a generic GitHub-or-Linear pattern can
 accept the wrong tracker or Linear team key.
 
-**Request review through the sequencer, not by hand** — open through the
-project's PR-open command, which posts the request and confirms the gate bound
-it to the exact head and base. Raw `gh pr create` alone posts no request, so a
-PR opened that way waits on a gate with nothing to evaluate.
+**Request review through `touchstone pr open`, not by hand** — it posts the
+request and confirms the gate bound it to the exact head and base. Raw
+`gh pr create` alone posts no request, so a PR opened that way waits on a gate
+with nothing to evaluate.
 
 A bare `@codex review` from an OWNER, MEMBER, or COLLABORATOR is separately
 valid: `review-gate` binds it to the head that was current when it was posted
@@ -172,12 +185,25 @@ Thread IDs and their numeric root review comment IDs come from the mapped
 
 ## Merging
 
-Use a repository-specific executable merge boundary when project guidance
-names one, passing the exact reviewed head. Otherwise run the raw equivalent:
+```bash
+touchstone pr merge <n> --head <reviewed-sha>
+```
+
+It re-runs the pinned gate for that head, asks GitHub to merge bound to it,
+and reports merged, queued, or auto-merge-enabled only while the head still
+equals the reviewed one. Where the CLI is absent, the raw equivalent is: re-run
+the pinned gate's run for the reviewed head (`gh api -X POST
+repos/<owner>/<repo>/actions/runs/<id>/rerun`), then
 
 ```bash
-gh pr merge <n> --squash --match-head-commit "$(gh pr view <n> --json headRefOid --jq .headRefOid)"
+gh pr merge <n> --squash --match-head-commit <reviewed-sha>
 ```
+
+(`<reviewed-sha>` is the head the review covered, written out — never the
+live `headRefOid`, which would bind the merge to whatever was pushed last),
+then re-read `state`, `headRefOid`, merge-queue and auto-merge state: merged,
+queued, or auto-merge-enabled count only while `headRefOid` still equals the
+reviewed head, and only `state == MERGED` proves the merge.
 
 **`--match-head-commit` is the head binding.** It refuses the merge if the PR head moved since you checked the gate — which is exactly the race that lets an unreviewed commit slip in behind a passing review.
 
