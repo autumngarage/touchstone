@@ -2010,4 +2010,22 @@ if [ "$(id -u)" -ne 0 ]; then
   ok "an existing but unreadable body fails closed"
 fi
 
+echo "==> Every policy file pins the required workflows at one touchstone-workflows revision"
+# The engine a consumer's required validate runs is whatever the pinned
+# validate.yml fetches; a stale pin failed every schema-2 consumer for eight
+# days (AUT-417). Offline, this suite cannot read touchstone-workflows, so
+# the invariant it can hold is: canonical and every consumer policy name the
+# same revision for all three workflows, and that revision is the one the
+# suite's own fixtures are written against -- so a revert or a partial bump
+# is a visible, reviewed change here, never a silent divergence.
+PINNED_WORKFLOWS_REVISION="4fd9cf7ace51e2029f4f4a334225231cbac20948"
+for policy_file in "$ROOT"/policy/github/touchstone-main.json "$ROOT"/policy/github/consumers/*.json; do
+  pins="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | .sha] | unique | join(" ")' "$policy_file")"
+  [ "$pins" = "$PINNED_WORKFLOWS_REVISION" ] \
+    || fail "$(basename "$policy_file") pins required workflows at '$pins', expected $PINNED_WORKFLOWS_REVISION"
+  count="$(jq '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]] | length' "$policy_file")"
+  [ "$count" -eq 3 ] || fail "$(basename "$policy_file") declares $count required workflows, expected 3"
+done
+ok "canonical and consumer policies agree on the required-workflow revision"
+
 echo "==> PASS: audited GitHub policy lifecycle is safe and deterministic"
