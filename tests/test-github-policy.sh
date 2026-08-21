@@ -588,16 +588,26 @@ if run_policy apply "$POLICY" >"$TMP_DIR/bootstrap-companion.out" 2>&1; then
 fi
 grep -q "companion repository ruleset already exists" "$TMP_DIR/bootstrap-companion.out" \
   || fail "companion-only state was not routed to manual recovery: $(tail -1 "$TMP_DIR/bootstrap-companion.out")"
-[ -f "$TMP_DIR/state/repo-ruleset.json" ] && ok "companion-only state refused and left untouched" || fail "companion ruleset was deleted"
+if [ -f "$TMP_DIR/state/repo-ruleset.json" ]; then
+  ok "companion-only state refused and left untouched"
+else
+  fail "companion ruleset was deleted"
+fi
 rm -f "$TMP_DIR/state/repo-ruleset.json"
 : >"$TMP_DIR/state/mutations.log"
 run_policy apply "$POLICY" >"$TMP_DIR/bootstrap.out" 2>&1 || fail "bootstrap apply failed: $(cat "$TMP_DIR/bootstrap.out")"
 grep -q "installing the policy fresh (bootstrap)" "$TMP_DIR/bootstrap.out" || fail "bootstrap was not announced"
 grep -q "Applied and verified GitHub policy" "$TMP_DIR/bootstrap.out" || fail "bootstrap did not verify"
-[ -f "$TMP_DIR/state/ruleset.json" ] && [ -f "$TMP_DIR/state/repo-ruleset.json" ] && [ -f "$TMP_DIR/state/auto-merge" ] \
-  && ok "bootstrap installed both rulesets and enabled auto-merge" \
-  || fail "bootstrap did not install the complete policy state"
-grep -q "DELETE" "$TMP_DIR/state/mutations.log" && fail "bootstrap deleted something on a bare repository" || ok "bootstrap deleted nothing"
+if [ -f "$TMP_DIR/state/ruleset.json" ] && [ -f "$TMP_DIR/state/repo-ruleset.json" ] && [ -f "$TMP_DIR/state/auto-merge" ]; then
+  ok "bootstrap installed both rulesets and enabled auto-merge"
+else
+  fail "bootstrap did not install the complete policy state"
+fi
+if grep -q "DELETE" "$TMP_DIR/state/mutations.log"; then
+  fail "bootstrap deleted something on a bare repository"
+else
+  ok "bootstrap deleted nothing"
+fi
 
 echo "==> Ambiguous and failed reads fail closed"
 if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_DUPLICATE_RULESET=1 \
