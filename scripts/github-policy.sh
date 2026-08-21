@@ -409,18 +409,27 @@ restore_branch_protection() {
 
 # Undo a bootstrap: delete the managed organization and repository rulesets
 # this run created and put the auto-merge setting back. Nothing else existed.
+# Every step is attempted even when an earlier one fails: the three are
+# independent, and stopping at the first error would leave the rest behind
+# with no report. Failures are named and the function returns nonzero once.
 remove_bootstrapped_state() {
-  local prior_auto_merge="$1" current current_repo
-  current="$(managed_ruleset_json)" || return $?
-  if [ "$current" != null ]; then
-    api --method DELETE "orgs/$ORG/rulesets/$(jq -r .id <<<"$current")" || return $?
+  local prior_auto_merge="$1" current current_repo failed=""
+  if current="$(managed_ruleset_json)" && [ "$current" != null ]; then
+    api --method DELETE "orgs/$ORG/rulesets/$(jq -r .id <<<"$current")" || failed="$failed organization-ruleset"
+  elif [ -z "$current" ]; then
+    failed="$failed organization-ruleset(read)"
   fi
-  current_repo="$(managed_repo_ruleset_json)" || return $?
-  if [ "$current_repo" != null ]; then
-    api --method DELETE "repos/$ORG/$REPOSITORY/rulesets/$(jq -r .id <<<"$current_repo")" || return $?
+  if current_repo="$(managed_repo_ruleset_json)" && [ "$current_repo" != null ]; then
+    api --method DELETE "repos/$ORG/$REPOSITORY/rulesets/$(jq -r .id <<<"$current_repo")" || failed="$failed repository-ruleset"
+  elif [ -z "$current_repo" ]; then
+    failed="$failed repository-ruleset(read)"
   fi
   if [ -n "$prior_auto_merge" ]; then
-    set_auto_merge "$prior_auto_merge" || return $?
+    set_auto_merge "$prior_auto_merge" || failed="$failed auto-merge"
+  fi
+  if [ -n "$failed" ]; then
+    echo "ERROR: bootstrap cleanup could not complete:$failed" >&2
+    return 1
   fi
 }
 
@@ -579,6 +588,12 @@ case "$COMMAND" in
     # which restore_policy_state rightly refuses for a replacement.
     bootstrap=false
     if [ "$source_ruleset" = null ] && [ "$source_protection" = null ]; then
+      # A companion repository ruleset with no organization ruleset is an
+      # interrupted earlier adoption, not a bare repository: bootstrapping
+      # over it would make a later failure delete state this run did not
+      # create. Route it to manual recovery instead of guessing.
+      [ "$source_repo_ruleset" = null ] \
+        || die "no organization ruleset or branch protection, but the companion repository ruleset already exists; remove it or restore the organization ruleset from a backup (rollback) before applying"
       bootstrap=true
       echo "No prior protection on $ORG/$REPOSITORY@$BRANCH: installing the policy fresh (bootstrap)."
     fi
