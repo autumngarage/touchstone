@@ -90,6 +90,18 @@ case "$method $endpoint" in
     fi
     emit "{\"type\":\"file\",\"sha\":\"${GH_FAKE_ROLLBACK_FILE_SHA:-c2dc082e0702090f3fc9de095d78a85ddde902a5}\"}"
     ;;
+  "GET repos/autumngarage/touchstone/contents/.github/workflows/review-binding.yml?ref=main")
+    if [ -f "$state/local-workflow-absent" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+    emit '{"type":"file","sha":"a4c161279b39f0e7c301c46f3d474b83dc4b10d7"}'
+    ;;
+  "GET repos/autumngarage/touchstone/contents/.github/workflows/review-evidence-signal.yml?ref=main")
+    if [ -f "$state/local-workflow-absent" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+    emit '{"type":"file","sha":"3c34d7792afdc9c99c728b76bebe4e527a5db760"}'
+    ;;
+  "GET repos/autumngarage/touchstone/contents/.github/review-binding/evaluate.jq?ref=main")
+    if [ -f "$state/local-workflow-absent" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+    emit '{"type":"file","sha":"0f30e59859b936ca16a8d6f4dd8cb1e8960eb917"}'
+    ;;
   "GET repos/autumngarage/touchstone-workflows/compare/$WORKFLOWS_PIN...$WORKFLOWS_PIN")
     emit '{"status":"identical"}'
     ;;
@@ -359,10 +371,12 @@ jq -e '
   and .managedRuleset.name == "Touchstone policy v1: autumngarage/touchstone@main"
   and .workflowSource.repository == "touchstone-workflows"
   and .workflowSource.repository != .repository
-  and .rollbackPrerequisites.repositoryFiles == [{
-    path: ".github/workflows/validate.yml",
-    sha: "c2dc082e0702090f3fc9de095d78a85ddde902a5"
-  }]
+  and .rollbackPrerequisites.repositoryFiles == [
+    {path: ".github/workflows/validate.yml", sha: "c2dc082e0702090f3fc9de095d78a85ddde902a5"},
+    {path: ".github/workflows/review-binding.yml", sha: "a4c161279b39f0e7c301c46f3d474b83dc4b10d7"},
+    {path: ".github/workflows/review-evidence-signal.yml", sha: "3c34d7792afdc9c99c728b76bebe4e527a5db760"},
+    {path: ".github/review-binding/evaluate.jq", sha: "0f30e59859b936ca16a8d6f4dd8cb1e8960eb917"}
+  ]
   and .workflowSource.branchProtection == {
     enforce_admins:true,
     required_pull_request_reviews:true,
@@ -423,6 +437,15 @@ jq -e '
 # step with a publisher.
 [ "$(git hash-object "$ROLLBACK_VALIDATE")" = "c2dc082e0702090f3fc9de095d78a85ddde902a5" ] \
   || fail "durable rollback workflow differs from its recorded prerequisite blob"
+# The legacy seed also requires the review-binding status: its publisher,
+# evaluator, and event signal are retained as exact payloads so a rollback can
+# restore a check something actually produces.
+[ "$(git hash-object "$ROOT/policy/github/rollback/review-binding.yml")" = "a4c161279b39f0e7c301c46f3d474b83dc4b10d7" ] \
+  || fail "retained review-binding publisher differs from its recorded prerequisite blob"
+[ "$(git hash-object "$ROOT/policy/github/rollback/review-evidence-signal.yml")" = "3c34d7792afdc9c99c728b76bebe4e527a5db760" ] \
+  || fail "retained review-evidence-signal differs from its recorded prerequisite blob"
+[ "$(git hash-object "$ROOT/policy/github/rollback/review-binding-evaluate.jq")" = "0f30e59859b936ca16a8d6f4dd8cb1e8960eb917" ] \
+  || fail "retained review-binding evaluator differs from its recorded prerequisite blob"
 grep -Fq 'Policy operations require `gh`, `git`, `jq`, and `diff`.' "$POLICY_GUIDE" \
   || fail "policy guide does not declare its jq runtime dependency"
 grep -Fq 'brew_install_if_missing "jq" "jq"' "$SETUP" \

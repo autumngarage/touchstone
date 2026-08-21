@@ -31,12 +31,14 @@ taking this document's word for it.
 - `open` proves the local and remote branch heads match, reuses an existing
   open PR for that branch or runs `gh pr create`, re-reads GitHub after the
   mutation, and posts `@codex review` once for the exact head. Its invisible
-  comment marker and the server-side `touchstone/review-request-v1` status make
-  partial reruns idempotent. It reports success only after the status binds the
-  request comment and a fresh PR read still matches the head and base. Raw
-  equivalent: compare `git rev-parse HEAD` with
-  `git ls-remote`, inspect `gh pr list`, create with `gh pr create`, re-read,
-  then inspect comments/status before `gh pr comment --body "@codex review"`.
+  comment marker (`<!-- touchstone:pr-open head=… base=… base_sha=… -->`)
+  is what the pinned `review-gate` reads as the request, and it makes partial
+  reruns idempotent. It reports success only after the gate has been asked to
+  re-run for that head and a fresh PR read still matches the head and base.
+  Raw equivalent: compare `git rev-parse HEAD` with `git ls-remote`, inspect
+  `gh pr list`, create with `gh pr create`, re-read, then inspect comments
+  before `gh pr comment --body "@codex review"`, then re-run the gate's run
+  for the head.
 
   `--expect-branch` binds the caller's intent to the branch the resolved
   project actually has checked out, the way `merge --head` binds the reviewed

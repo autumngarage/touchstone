@@ -31,11 +31,13 @@ fails until those files are absent from `main`. A repeated apply is a no-op.
 managed ruleset, so neither direction introduces an unprotected interval.
 
 The checked-in pre-migration seed requires the historical local validation
-workflow. Its exact, non-running recovery payload is retained at
-`policy/github/rollback/validate.yml`. To use that seed after migration, copy
-the payload to `.github/workflows/validate.yml` and merge that restoration
-through a reviewed PR while the organization ruleset still protects the
-repository. Then run `rollback`.
+workflow and the `review-binding` status its publisher produced. Their exact,
+non-running recovery payloads are retained under `policy/github/rollback/`:
+`validate.yml`, `review-binding.yml`, `review-evidence-signal.yml`, and
+`review-binding-evaluate.jq` (restored to `.github/review-binding/evaluate.jq`).
+To use that seed after migration, copy each payload to its recorded path and
+merge that restoration through a reviewed PR while the organization ruleset
+still protects the repository. Then run `rollback`.
 Rollback verifies every recorded prerequisite on `main` before changing GitHub
 policy, so it cannot install a required status context that no workflow can
 produce. While legacy branch protection exists, `backup` copies these

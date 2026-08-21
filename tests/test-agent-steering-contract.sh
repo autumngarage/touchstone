@@ -141,9 +141,9 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   assert_contains "$file" "at least 30 minutes after submission"
   assert_contains "$file" "earliest acceptance signal"
   assert_contains "$file" "immediately before posting"
-  assert_contains "$file" 'wait for its `touchstone/review-request-v1` marker'
-  assert_contains "$file" "marker and live binding"
-  assert_contains "$file" "A missing marker"
+  assert_contains "$file" 're-run the pinned `review-gate`'
+  assert_contains "$file" "still reports no request"
+  assert_not_contains "$file" "touchstone/review-request-v1"
   assert_contains "$file" "non-trigger audit note"
   assert_contains "$file" "fall back to the original marker"
   assert_contains "$file" "exactly one replacement trigger"

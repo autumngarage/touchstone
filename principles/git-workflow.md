@@ -290,12 +290,13 @@ CLI may post exactly one replacement trigger on the unchanged binding after it:
   stops if the original request completed or explicitly failed; and
 - identifies the new comment as the sole replacement for that unchanged binding.
 
-After posting, wait for its `touchstone/review-request-v1` marker whose target
-URL names the replacement comment. Re-fetch the live head and base, then prove
-the marker and live binding both equal the pre-post head, base ref, and base
-SHA. A missing marker is a blocked upstream failure, not permission to retry.
-If either binding drifted during posting, edit the replacement into a
-non-trigger audit note and follow the base-change rule below.
+After posting, re-fetch the live head and base and prove they still equal the
+pre-post head, base ref, and base SHA; then re-run the pinned `review-gate` for
+that head (`touchstone pr open` does both) so the gate derives the replacement
+request from the comment. A gate that still reports no request is a blocked
+upstream failure, not permission to retry. If either binding drifted during
+posting, edit the replacement into a non-trigger audit note and follow the
+base-change rule below.
 
 There is one other final posting race: the original can complete after the
 last evidence check but before the replacement comment exists. Capture the
