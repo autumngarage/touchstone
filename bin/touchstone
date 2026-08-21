@@ -165,6 +165,15 @@ case "$COMMAND" in
     # lives, never guessed from the platform.
     # An install.sh prefix is recognised by its layout, not its name:
     # <prefix>/cli/<version> is this tree, and <prefix>/current names a version.
+    # A help probe must never upgrade anything: agents probe subcommands
+    # with --help before trusting them (cold-start audit, 2026-08-21).
+    case "${1:-}" in
+      -h | --help | help)
+        echo "Usage: touchstone upgrade"
+        echo "Upgrades this install the way it was installed: brew upgrade for a Homebrew install, install.sh for an install.sh prefix."
+        exit 0
+        ;;
+    esac
     INSTALL_PREFIX=""
     case "$TOUCHSTONE_ROOT" in
       */cli/*) INSTALL_PREFIX="${TOUCHSTONE_ROOT%/cli/*}" ;;
