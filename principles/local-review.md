@@ -182,7 +182,7 @@ spending the budget the merge gate depends on — a second reason the rules
 above allow one pass per coherent slice and no confirming re-run. When a
 quota is exhausted, the tier's local obligation is **satisfied by its
 deterministic checks plus recording the exhaustion** in the validation block
-— the same rule as a project with no local reviewer configured. Do not wait
+— the same rule as a machine where the tier's reviewer CLI is not installed or not authenticated. Do not wait
 for quota to run an initiated pass; the PR-visible review is the authority
 either way.
 
