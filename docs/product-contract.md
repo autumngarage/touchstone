@@ -79,8 +79,8 @@ explain that owner's decision; they may not recompute it.
 | --- | --- | --- | --- |
 | Prevent direct or bypassed default-branch delivery | GitHub repository ruleset | Audited ruleset definition | Direct-push and owner-bypass canaries are rejected |
 | Require deterministic project validation | GitHub organization ruleset required workflow | Ruleset-selected source repository, path, and full commit SHA | A PR cannot replace its own gate; passing, failing, missing, and canceled canaries produce the expected merge state |
-| Require review of the exact PR head | GitHub required `review-binding` check | Check name and versioned evidence contract | No-review, stale-head, moved-base, and API-failure fixtures fail closed; a quota notice remains provisional non-evidence while the driver continues waiting |
-| Require every review finding to be answered | GitHub required `review-binding` check | Versioned answer-evidence contract and check output | An unanswered inline or body-only finding blocks; a qualifying answer after the finding passes |
+| Require review of the exact PR head | GitHub required `review-gate` workflow | Check name and versioned evidence contract | No-review, stale-head, moved-base, and API-failure fixtures fail closed; a quota notice remains provisional non-evidence while the driver continues waiting |
+| Require every review finding to be answered | GitHub required `review-gate` workflow | Versioned answer-evidence contract and check output | An unanswered inline or body-only finding blocks; a qualifying answer after the finding passes |
 | Require inline review threads to be resolved | GitHub conversation resolution | GitHub review thread state | An unresolved thread blocks even after a reply; resolution alone cannot satisfy the separate answer check |
 | Bind merge to the reviewed head | GitHub merge API | Expected head passed to the merge mutation | Moving the head before merge is rejected |
 | Claim work | Configured tracker adapter | Tracker-neutral claim contract | GitHub- and Linear-backed fixtures distinguish verified from unavailable transport |

@@ -464,7 +464,7 @@ verify_live_coordinates() {
 
 wait_for_request_binding() {
   local number="$1" head="$2" base_ref="$3" base_sha="$4" request_url="$5"
-  local comment_id base_ref_hash description attempt=1 live_comment live_row live_head live_base live_base_sha marker
+  local comment_id live_comment
   if review_gate_required "$base_ref"; then
     rerun_review_gate "$number" "$head"
     verify_live_coordinates "$number" "$head" "$base_ref" "$base_sha"
@@ -473,38 +473,21 @@ wait_for_request_binding() {
   fi
   comment_id="${request_url##*issuecomment-}"
   case "$comment_id" in '' | *[!0-9]*) fail_operation "review request URL has no stable comment ID: $request_url" "Inspect the surviving request comment." ;; esac
-  base_ref_hash="$(printf '%s' "$base_ref" | git hash-object --stdin)" \
-    || fail_operation "could not hash the review base ref" "Repair the local Git installation."
-  description="v1 p=$number r=$base_ref_hash b=$base_sha c=$comment_id"
-  while :; do
-    read_with_retry gh api --paginate --hostname "$REPO_HOST" \
-      "repos/$REPO/commits/$head/statuses?per_page=100" \
-      --jq ".[] | select(.context == \"touchstone/review-request-v1\" and .state == \"success\" and (.creator.login // \"\") == \"github-actions[bot]\" and .description == \"$description\") | .id" \
-      || fail_operation "could not inspect the review-request binding: $READ_OUTPUT" "Retry after GitHub recovers."
-    marker="$READ_OUTPUT"
-    if [ -n "$marker" ]; then
-      read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/issues/comments/$comment_id" \
-        --jq 'select(((.author_association // "") == "OWNER" or (.author_association // "") == "MEMBER" or (.author_association // "") == "COLLABORATOR") and ((.body // "") | test("^[[:space:]]*@codex[[:space:]]+review([[:space:]]|$)"; "i"))) | .id' \
-        || fail_operation "could not re-read review request comment $comment_id: $READ_OUTPUT" "Inspect GitHub before retrying."
-      live_comment="$READ_OUTPUT"
-      [ "$live_comment" = "$comment_id" ] \
-        || fail_operation "review request comment $comment_id is no longer a valid driver request" "Post a fresh exact-head review request."
-      read_with_retry gh pr view "$number" --repo "$REPO_SPEC" \
-        --json headRefOid,baseRefName,baseRefOid \
-        --jq '[.headRefOid,.baseRefName,.baseRefOid] | @tsv' \
-        || fail_operation "could not re-read review coordinates: $READ_OUTPUT" "Inspect GitHub before retrying."
-      live_row="$READ_OUTPUT"
-      IFS="$(printf '\t')" read -r live_head live_base live_base_sha <<<"$live_row"
-      [ "$live_head" = "$head" ] && [ "$live_base" = "$base_ref" ] && [ "$live_base_sha" = "$base_sha" ] \
-        || fail_input "PR coordinates moved before the review request was bound" "Push or integrate the live head/base, then request review once for that binding."
-      return 0
-    fi
-    [ "$attempt" -lt "$REQUEST_ATTEMPTS" ] \
-      || fail_operation "review request comment $comment_id has no matching server binding" "Inspect the review-binding workflow before retrying."
-    [ "$JSON_MODE" = true ] || printf 'Review binding pending; retrying in %ss.\n' "$RETRY_DELAY" >&2
-    attempt=$((attempt + 1))
-    sleep "$RETRY_DELAY"
-  done
+  # No pinned review gate on this base: nothing server-side binds the request,
+  # so the most this command can prove is that the request comment survived
+  # as a valid driver request and that the coordinates it was posted for are
+  # still live. Exact-head review stays mandatory driver procedure here; the
+  # missing gate is a rollout gap the driver reports, not permission.
+  read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/issues/comments/$comment_id" \
+    --jq 'select(((.author_association // "") == "OWNER" or (.author_association // "") == "MEMBER" or (.author_association // "") == "COLLABORATOR") and ((.body // "") | test("^[[:space:]]*@codex[[:space:]]+review([[:space:]]|$)"; "i"))) | .id' \
+    || fail_operation "could not re-read review request comment $comment_id: $READ_OUTPUT" "Inspect GitHub before retrying."
+  live_comment="$READ_OUTPUT"
+  [ "$live_comment" = "$comment_id" ] \
+    || fail_operation "review request comment $comment_id is no longer a valid driver request" "Post a fresh exact-head review request."
+  verify_live_coordinates "$number" "$head" "$base_ref" "$base_sha"
+  # Stderr in both modes: JSON stdout stays data, and the gap must be visible.
+  printf 'No pinned review gate protects %s here; the request is posted but nothing binds it server-side. Track the policy gap.\n' "$base_ref" >&2
+  return 0
 }
 
 open_pr() {

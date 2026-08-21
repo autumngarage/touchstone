@@ -233,7 +233,7 @@ VERIFY="$(graphql_with_retry \
 # branch requires that workflow, ask GitHub to re-run its run for this head;
 # a run still in progress is waited for first, because it may have read the
 # evidence before this answer. Where the repository still runs the
-# status-publishing review-binding, its own event handlers pick the answer up.
+# status-publishing review-gate, its own event handlers pick the answer up.
 PR_ROW="$(gh_read pr view "$PR_NUMBER" --json headRefOid,baseRefName --jq '[.headRefOid,.baseRefName] | @tsv')" \
   || fail "could not read the PR coordinates to refresh the review gate: $PR_ROW"
 IFS="$(printf '\t')" read -r HEAD_SHA BASE_REF <<<"$PR_ROW"

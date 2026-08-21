@@ -1,7 +1,7 @@
 {
   "contractVersion": 1,
   "organization": "autumngarage",
-  "repository": "convoy",
+  "repository": "vesper",
   "workflowSource": {
     "repository": "touchstone-workflows",
     "branchProtection": {
@@ -17,7 +17,7 @@
     "repositoryFiles": []
   },
   "managedRuleset": {
-    "name": "Touchstone policy v1: autumngarage/convoy@main",
+    "name": "Touchstone policy v1: autumngarage/vesper@main",
     "target": "branch",
     "enforcement": "active",
     "bypass_actors": [
@@ -30,7 +30,7 @@
     "conditions": {
       "repository_name": {
         "include": [
-          "convoy"
+          "vesper"
         ],
         "exclude": [],
         "protected": false
@@ -92,7 +92,7 @@
     ]
   },
   "managedRepositoryRuleset": {
-    "name": "Touchstone merge queue v1: autumngarage/convoy@main",
+    "name": "Touchstone merge queue v1: autumngarage/vesper@main",
     "target": "branch",
     "enforcement": "active",
     "bypass_actors": [],

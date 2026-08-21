@@ -68,12 +68,13 @@ Every adopted repository's policy is an exact derivation of the canonical
 one — `scripts/derive-consumer-policy.sh REPOSITORY` — checked in under
 `policy/github/consumers/` and refused by the test suite if it drifts. Apply
 one with `scripts/github-policy.sh apply policy/github/consumers/REPOSITORY.json`
-only once all three hold: the repository has adopted (`touchstone adopt`);
-the canonical policy no longer lists the `review-binding` status context
-(the consumer has no publisher for it — the pinned `review-gate` workflow is
-its replacement); and its `validate` runs on `merge_group`. Applying earlier
-requires a check nothing there can produce and blocks every merge and queue
-entry.
+only once both hold: the repository has adopted (`touchstone adopt`), and
+its declaration runs on a bare hosted runner, because the pinned `validate`
+workflow executes it there on every pull request and queue commit. The
+policy's gates are all pinned required workflows (`validate`, `review-gate`,
+`delivery-evidence`) from `touchstone-workflows`, so nothing in the consumer
+repository has to publish a check. Applying to a repository whose
+declaration cannot run centrally blocks every merge and queue entry.
 
 ## After an apply that adds a required workflow
 

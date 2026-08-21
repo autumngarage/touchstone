@@ -79,7 +79,7 @@ it to the exact head and base. Raw `gh pr create` alone posts no request, so a
 PR opened that way waits on a gate with nothing to evaluate.
 
 A bare `@codex review` from an OWNER, MEMBER, or COLLABORATOR is separately
-valid: `review-binding` derives the live head and base itself and publishes the
+valid: `review-gate` derives the live head and base itself and publishes the
 trusted marker. That is what bounded stalled-request recovery below depends on.
 What must never be hand-written is a comment carrying the *sequencer's* marker —
 the sequencer reads it as a request for other coordinates and refuses to repair
@@ -146,7 +146,7 @@ accepts the root finding ID. A zero exit proves no unresolved thread remains.
 
 **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.** GitHub's review API can support approval for authorized integrations, but that is not this adapter's observed contract. Do not expect an approval here or treat its absence as a stalled review.
 
-**Where the repository's effective policy requires `review-binding`, it enforces
+**Where the repository's effective policy requires `review-gate`, it enforces
 the review contract.** It fails unless trusted review evidence covers the exact
 current head after the bound request and every inline or body-only finding has
 a qualifying later answer. Until that check is installed and verified as
@@ -456,7 +456,7 @@ SHA you decided to replace.
 
 **The cost is the reviewed head, and it is the reason to think first.** A
 rewrite changes the head SHA, so every piece of evidence bound to the old head
-stops applying: `review-binding`, answered findings, and resolved threads all
+stops applying: `review-gate`, answered findings, and resolved threads all
 go outdated, and the change needs review again for the new head. That expense
 — not a prohibition — is what should make a driver pause. Budget a review round
 before rewriting, not after.

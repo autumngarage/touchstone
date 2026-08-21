@@ -64,34 +64,27 @@
         }
       },
       {
-        "type": "required_status_checks",
-        "parameters": {
-          "do_not_enforce_on_create": false,
-          "required_status_checks": [
-            {
-              "context": "review-binding",
-              "integration_id": 15368
-            }
-          ],
-          "strict_required_status_checks_policy": false
-        }
-      },
-      {
         "type": "workflows",
         "parameters": {
           "do_not_enforce_on_create": false,
           "workflows": [
             {
+              "path": ".github/workflows/delivery-evidence.yml",
+              "ref": "refs/heads/main",
+              "repository_id": 1333343261,
+              "sha": "d8323e2e197fc96ad7adfe1d4adba42e2c8dd6d2"
+            },
+            {
               "path": ".github/workflows/review-gate.yml",
               "ref": "refs/heads/main",
               "repository_id": 1333343261,
-              "sha": "00a0b299b76f3405641aae4b6d0bd92591a5d1f1"
+              "sha": "d8323e2e197fc96ad7adfe1d4adba42e2c8dd6d2"
             },
             {
               "path": ".github/workflows/validate.yml",
               "ref": "refs/heads/main",
               "repository_id": 1333343261,
-              "sha": "00a0b299b76f3405641aae4b6d0bd92591a5d1f1"
+              "sha": "d8323e2e197fc96ad7adfe1d4adba42e2c8dd6d2"
             }
           ]
         }

@@ -47,15 +47,17 @@ taking this document's word for it.
   different one per directory — which opened two pull requests for the wrong
   branch. The result payload names the branch acted on for the same reason.
 
-  Why not the raw sequence: the required `review-binding` check writes its
-  marker only for a request comment matching its exact grammar, so a driver
-  that posts `@codex review` and moves on can have the provider review the
-  correct head while the check stays red and no marker is ever written
-  (autumngarage/touchstone#833). Reporting success before the binding is
-  confirmed is therefore reporting success for a merge that cannot happen. The
-  invisible marker additionally makes a retry after a timeout reuse the
-  existing request instead of posting a second one.
-
+  Why not the raw sequence: the required `review-gate` workflow derives the
+  request from the driver's comment and its marker grammar; a driver that
+  posts `@codex review` and moves on can have the provider review the correct
+  head while the gate, evaluated before that review landed, stays red
+  (autumngarage/touchstone#833). `open` therefore asks the gate to re-run for
+  the exact head and confirms the coordinates still hold before reporting
+  success. The invisible marker additionally makes a retry after a timeout
+  reuse the existing request instead of posting a second one. Where no pinned
+  gate protects the base, `open` verifies the request comment and
+  coordinates, names the gap on stderr, and leaves exact-head review as
+  driver procedure.
 - `status` is a read-only observation of state, URL, exact head, base ref/base
   SHA, draft state, and GitHub's merge-state observation. Raw equivalent:
   `gh pr view --json number,state,url,headRefOid,baseRefName,baseRefOid,mergeStateStatus,isDraft`.
