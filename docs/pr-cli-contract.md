@@ -123,7 +123,12 @@ taking this document's word for it.
   and revision (the tool's own `policy/github/touchstone-main.json`);
   `applied` means all three pinned workflows, the merge queue, and the native
   pull-request, force-push, and deletion rules are present; `partial` and
-  `none` name what is missing. `applied` → re-run the gate, request the merge.
+  `none` name what is missing. The policy consulted is the repository's own where the tool ships one
+  (`policy/github/consumers/<repo>.json`; a private consumer derived
+  `--no-queue` legitimately expects no queue), otherwise the canonical one.
+  `applied` → re-run the gate, request the merge — with `--auto` where the
+  policy carries no queue, since there is nothing to enter and GitHub refuses
+  a plain merge while the re-run is pending.
   Anything else → refuse with the remedy (apply the consumer policy, then
   close/reopen open PRs), or with `--unguarded` record on the PR — once per
   head, by marker — that an unguarded merge was requested because the

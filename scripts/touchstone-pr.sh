@@ -408,21 +408,38 @@ review_gate_required() {
 # by hand to learn whether a merge would be gated.
 ENFORCEMENT_STATUS=""
 ENFORCEMENT_MISSING=""
+ENFORCEMENT_POLICY_FILE=""
+ENFORCEMENT_EXPECTS_QUEUE=true
 read_enforcement() {
   local base_ref="$1" encoded expected
   encoded="$(uri_encode "$base_ref")"
   # The expected pins travel with the tool: a workflow at the right path but
   # from another repository, another ref, or a stale revision is not the
-  # canonical gate and is reported as missing with the reason.
-  [ -f "$CANONICAL_POLICY" ] \
-    || fail_operation "the tool's policy file is missing: $CANONICAL_POLICY" "Reinstall touchstone."
-  expected="$(jq -c '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | {path, repository_id, ref, sha}]' "$CANONICAL_POLICY")" \
-    || fail_operation "could not read the expected workflow pins from $CANONICAL_POLICY" "Reinstall touchstone."
+  # canonical gate and is reported as missing with the reason. The policy
+  # consulted is the repository's own where the tool ships one (a private
+  # consumer derived --no-queue legitimately has no queue), else the
+  # canonical one; each gate must have exactly one pin there, or the read
+  # fails rather than silently expecting nothing.
+  local policy_file="$CANONICAL_POLICY" expect_queue
+  [ "$REPO" = "autumngarage/touchstone" ] || [ ! -f "$TOOL_ROOT/policy/github/consumers/${REPO##*/}.json" ] \
+    || policy_file="$TOOL_ROOT/policy/github/consumers/${REPO##*/}.json"
+  [ -f "$policy_file" ] \
+    || fail_operation "the tool's policy file is missing: $policy_file" "Reinstall touchstone."
+  expected="$(jq -c '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | {path, repository_id, ref, sha}]' "$policy_file")" \
+    || fail_operation "could not read the expected workflow pins from $policy_file" "Reinstall touchstone."
+  local gate_path
+  for gate_path in .github/workflows/validate.yml .github/workflows/review-gate.yml .github/workflows/delivery-evidence.yml; do
+    [ "$(printf '%s' "$expected" | jq --arg p "$gate_path" '[.[] | select(.path == $p)] | length')" = 1 ] \
+      || fail_operation "$policy_file does not pin exactly one $gate_path" "Reinstall touchstone; the policy file is corrupt or incomplete."
+  done
+  expect_queue="$(jq -r 'if .managedRepositoryRuleset == null then "false" else "true" end' "$policy_file")"
+  ENFORCEMENT_POLICY_FILE="$policy_file"
+  ENFORCEMENT_EXPECTS_QUEUE="$expect_queue"
   # Every page: the endpoint pages at 30 rules and `--paginate` emits one
   # array per page, merged here before evaluation.
   read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/rules/branches/$encoded?per_page=100" \
     || fail_operation "could not read the effective rules for $base_ref: $READ_OUTPUT" "Retry after GitHub recovers."
-  ENFORCEMENT_MISSING="$(printf '%s' "$READ_OUTPUT" | jq -s 'add // []' | jq -r --argjson expected "$expected" '
+  ENFORCEMENT_MISSING="$(printf '%s' "$READ_OUTPUT" | jq -s 'add // []' | jq -r --argjson expected "$expected" --argjson expect_queue "$expect_queue" '
       ([.[] | select(.type == "workflows") | .parameters.workflows[]?]) as $w
       | def gate($name; $path):
           ($expected[] | select(.path == $path)) as $e
@@ -433,7 +450,7 @@ read_enforcement() {
         gate("validate"; ".github/workflows/validate.yml"),
         gate("review-gate"; ".github/workflows/review-gate.yml"),
         gate("delivery-evidence"; ".github/workflows/delivery-evidence.yml"),
-        (if any(.[]; .type == "merge_queue") then empty else "merge queue" end),
+        (if (any(.[]; .type == "merge_queue") or ($expect_queue | not)) then empty else "merge queue" end),
         (if any(.[]; .type == "pull_request") then empty else "pull-request rule" end),
         (if any(.[]; .type == "non_fast_forward") then empty else "force-push protection" end),
         (if any(.[]; .type == "deletion") then empty else "deletion protection" end)
@@ -494,11 +511,13 @@ policy_status() {
     json_string "$REPO"
     printf ',"baseRef":'
     json_string "$base_ref"
+    printf ',"policy":'
+    json_string "${ENFORCEMENT_POLICY_FILE#"$TOOL_ROOT"/}"
     printf ',"enforcement":'
     enforcement_json
     printf '}\n'
   else
-    printf 'repository: %s\n  base: %s\n  enforcement: %s\n' "$REPO" "$base_ref" "$(enforcement_text)"
+    printf 'repository: %s\n  base: %s\n  policy: %s\n  enforcement: %s\n' "$REPO" "$base_ref" "${ENFORCEMENT_POLICY_FILE#"$TOOL_ROOT"/}" "$(enforcement_text)"
     [ -z "$ENFORCEMENT_MISSING" ] || printf '  remedy: %s\n' "$(enforcement_remedy)"
   fi
 }
@@ -751,7 +770,7 @@ status_pr() {
 
 merge_pr() {
   local number state url head base base_sha merge_state draft merge_output merge_status=0
-  local merge_diagnostic final_state final_row final_head auto_merge queue_state unguarded_marker prior_records
+  local merge_diagnostic final_state final_row final_head auto_merge queue_state unguarded_marker prior_records record_author merge_auto
   [ -n "$EXPECTED_HEAD" ] \
     || fail_input "merge requires --head SHA" "Pass the exact reviewed head from GitHub."
   read_pr_row
@@ -791,8 +810,12 @@ merge_pr() {
       # lands is GitHub's verdict, read below, not claimed here. A rerun
       # reuses the existing marker instead of posting again.
       unguarded_marker="<!-- touchstone:unguarded-merge head=$head -->"
+      # Only a record this identity wrote counts; anyone can type the marker.
+      read_with_retry gh api --hostname "$REPO_HOST" user --jq '.login' \
+        || fail_operation "could not read the authenticated login: $READ_OUTPUT" "Retry after GitHub recovers."
+      record_author="$READ_OUTPUT"
       read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
-        --jq "[.[] | select((.body // \"\") | contains(\"$unguarded_marker\"))] | length" \
+        --jq "[.[] | select((.user.login // \"\") == \"$record_author\" and ((.body // \"\") | contains(\"$unguarded_marker\")))] | length" \
         || fail_operation "could not inspect PR #$PR_NUMBER comments for a prior unguarded-merge record: $READ_OUTPUT" "Inspect GitHub before retrying."
       # One count per page: sum them, so a PR past 100 comments cannot turn
       # "0\n0" into a skipped record.
@@ -802,9 +825,16 @@ merge_pr() {
 Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarded\`: enforcement on \`$base\` is $(enforcement_text) — the canonical pinned review gate is absent, so GitHub does not require it for this merge (other checks or reviews may still have run). Apply the consumer policy to close the gap." >/dev/null \
           || fail_operation "could not record the unguarded merge request on PR #$PR_NUMBER" "Inspect GitHub before retrying."
       fi
+      # The base inspected and recorded must be the base merged into.
+      verify_live_head_and_base_ref "$number" "$head" "$base"
       printf 'WARNING: requesting merge of PR #%s without a pinned review gate on %s (recorded on the PR).\n' "$PR_NUMBER" "$base" >&2
     fi
-    merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash \
+    # Without a merge queue there is nothing to enter: GitHub refuses a plain
+    # merge while required checks are still running, so arm auto-merge and
+    # let it land when they pass (the state `auto-merge-enabled` below).
+    merge_auto=()
+    [ "$ENFORCEMENT_EXPECTS_QUEUE" = true ] || merge_auto=(--auto)
+    merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash ${merge_auto[@]+"${merge_auto[@]}"} \
       --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
     merge_diagnostic="$(clean_diagnostic "$merge_output")"
     read_with_retry gh api graphql --hostname "$REPO_HOST" \

@@ -72,7 +72,9 @@ serve_rules() {
   if [ -f "$GH_STATE/review-gate" ]; then
     pin_sha="$GH_POLICY_SHA"
     [ ! -f "$GH_STATE/stale-pin" ] || pin_sha="0000000000000000000000000000000000000000"
-    rules='[{"type":"pull_request"},{"type":"deletion"},{"type":"non_fast_forward"},{"type":"merge_queue"},{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$GH_POLICY_SHA"'"}]}}]'
+    queue_rule=',{"type":"merge_queue"}'
+    [ ! -f "$GH_STATE/no-queue-rule" ] || queue_rule=""
+    rules='[{"type":"pull_request"},{"type":"deletion"},{"type":"non_fast_forward"}'"$queue_rule"',{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$GH_POLICY_SHA"'"}]}}]'
   elif [ -f "$GH_STATE/no-rules" ]; then
     rules='[]'
   else
@@ -635,6 +637,32 @@ EOF
   assert_has "$TMP/out" '"status":"none"'
   rm -f "$TMP/state/no-rules"
   touch "$TMP/state/review-gate"
+  # A consumer derived --no-queue expects no queue: the tool consults the
+  # repository's own shipped policy, reports applied without a queue rule,
+  # and merges by arming auto-merge (there is no queue to enter).
+  mkdir -p "$TMP/tool2/policy/github/consumers"
+  cp -R "$ROOT/bin" "$ROOT/scripts" "$TMP/tool2/"
+  cp "$ROOT/VERSION" "$TMP/tool2/VERSION"
+  cp "$ROOT/policy/github/touchstone-main.json" "$TMP/tool2/policy/github/touchstone-main.json"
+  jq '.managedRepositoryRuleset = null | .repository = "current"' "$ROOT/policy/github/touchstone-main.json" >"$TMP/tool2/policy/github/consumers/current.json"
+  touch "$TMP/state/no-queue-rule"
+  set +e
+  bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
+  RUN_RC=$?
+  set -e
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"policy":"policy/github/consumers/current.json"'
+  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  : >"$GH_CALLS"
+  rm -f "$TMP/state/merged" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
+  set +e
+  GH_MODE=auto_merge bash "$TMP/tool2/bin/touchstone" pr merge 7 --head "$HEAD_SHA" --project "$TMP/project" --json >"$TMP/out" 2>&1
+  RUN_RC=$?
+  set -e
+  assert_rc "$RUN_RC" 0
+  grep -q '^pr merge.*--auto' "$GH_CALLS" || fail "a queue-less consumer merge did not arm auto-merge: $(grep '^pr merge' "$GH_CALLS")"
+  assert_has "$TMP/out" '"status":"auto-merge-enabled"'
+  rm -f "$TMP/state/no-queue-rule"
   run_pr "$TMP/out" status 7 --json
   assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
   run_pr "$TMP/out" status 7
