@@ -79,8 +79,9 @@ it to the exact head and base. Raw `gh pr create` alone posts no request, so a
 PR opened that way waits on a gate with nothing to evaluate.
 
 A bare `@codex review` from an OWNER, MEMBER, or COLLABORATOR is separately
-valid: `review-gate` derives the live head and base itself and publishes the
-trusted marker. That is what bounded stalled-request recovery below depends on.
+valid: `review-gate` binds it to the head that was current when it was posted
+and to the base at that time, deriving both itself. That is what bounded
+stalled-request recovery below depends on.
 What must never be hand-written is a comment carrying the *sequencer's* marker —
 the sequencer reads it as a request for other coordinates and refuses to repair
 anything, wedging the pull request until the comment is deleted.
