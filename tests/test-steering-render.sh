@@ -532,7 +532,37 @@ fi
 # An absent driver file is reported as absent, not as a legacy block.
 rm -f "$HVER/.gemini/GEMINI.md"
 bash "$INSTALL" check --home "$HVER" >"$TMP_DIR/hver3.out" 2>&1 || true
-grep -q "GEMINI.md is absent (no block installed)" "$TMP_DIR/hver3.out" && pass "an absent driver file is named as absent" || fail "absent file misreported: $(grep GEMINI "$TMP_DIR/hver3.out" | head -1)"
+if grep -q "GEMINI.md is absent (no block installed)" "$TMP_DIR/hver3.out"; then
+  pass "an absent driver file is named as absent"
+else
+  fail "absent file misreported: $(grep GEMINI "$TMP_DIR/hver3.out" | head -1)"
+fi
+
+# Command-line paths inside routed documents are rewritten too: a fresh agent
+# ran `-c principles/local-review-contract.md` verbatim from local-review.md
+# and found no such file in the consumer repository.
+HCMD="$TMP_DIR/hcmd"
+bash "$INSTALL" install --home "$HCMD" >/dev/null 2>&1
+if grep -q -- "-c '$HCMD/.touchstone/principles/local-review-contract.md'" "$HCMD/.touchstone/principles/local-review.md" \
+  && ! grep -q -- "-c principles/local-review-contract.md" "$HCMD/.touchstone/principles/local-review.md"; then
+  pass "command-line paths in routed documents resolve to the installed copies"
+else
+  fail "local-review.md still names principles/local-review-contract.md as a bare path: $(grep -n 'local-review-contract.md' "$HCMD/.touchstone/principles/local-review.md" | head -2 | tr '\n' ' ')"
+fi
+
+# A home containing a single quote cannot be rendered into a pasteable
+# single-quoted command, so install refuses it by its canonical path.
+HQ="$TMP_DIR/it's home"
+if bash "$INSTALL" install --home "$HQ" >"$TMP_DIR/hq.out" 2>&1; then
+  fail "install accepted a home containing a single quote"
+else
+  if grep -q "contains a single quote" "$TMP_DIR/hq.out"; then
+    pass "a home with a single quote is refused by name"
+  else
+    fail "unexpected refusal: $(cat "$TMP_DIR/hq.out")"
+  fi
+fi
+[ ! -e "$HQ/.claude/CLAUDE.md" ] || fail "install wrote into a refused home"
 
 # A later release changes what the tool *ships*, not the copy on disk. Build a
 # second checkout with a modified source document and reinstall from it: the

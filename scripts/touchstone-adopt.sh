@@ -190,7 +190,7 @@ plan_base="${TMPDIR:-/tmp}"
 resolved_plan_base="$(cd "$plan_base" 2>/dev/null && pwd -P)" || resolved_plan_base=/tmp
 case "$resolved_plan_base" in "$PROJECT_ROOT" | "$PROJECT_ROOT"/*) plan_base=/tmp ;; esac
 PLAN_ROOT="$(mktemp -d "$plan_base/touchstone-adopt.XXXXXX")" \
-  || operational_failure "could not create adoption workspace"
+  || operational_failure "could not create the adoption workspace under $plan_base: adopt --check modifies no repository file but needs a writable temporary directory (set TMPDIR)"
 TARGETS_FILE="$PLAN_ROOT/targets"
 TASKS_FILE="$PLAN_ROOT/tasks"
 SETUPS_FILE="$PLAN_ROOT/setups"

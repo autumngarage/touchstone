@@ -110,7 +110,7 @@ assert_not_contains "$GIT_WORKFLOW_GUIDE" \
 assert_not_contains "$GIT_WORKFLOW_GUIDE" \
   'Direct pushes to `main` are rejected by the server even for organization admins.'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
-  'bash scripts/touchstone-tracker.sh claim <reference>'
+  'touchstone tracker claim <reference>'
 assert_not_contains "$GIT_WORKFLOW_GUIDE" \
   'gh issue edit <n> --add-assignee'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
