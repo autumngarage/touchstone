@@ -450,8 +450,15 @@ preflight_principles() {
     # copies found there predate management -- install preserves them as
     # `.SKILL.md.replaced` and takes over, rather than refusing forever.
     if { [ -e "$destination/$name" ] || [ -L "$destination/$name" ]; } \
-      && ! principles_owned "$name" && [ "$SET_NAME" != skills ]; then
-      die "$SET_RELATIVE/$name exists and was not installed by touchstone; move it before installing"
+      && ! principles_owned "$name"; then
+      # A dangling link cannot be written through (install resolves the
+      # link and moves the rendered file onto its referent, whose parent is
+      # missing); refuse it in every set, before any driver file is written.
+      if [ -L "$destination/$name" ] && [ ! -e "$destination/$name" ]; then
+        die "$SET_RELATIVE/$name is a dangling symlink; move it before installing"
+      fi
+      [ "$SET_NAME" = skills ] \
+        || die "$SET_RELATIVE/$name exists and was not installed by touchstone; move it before installing"
     fi
   done < <(set_documents)
 }

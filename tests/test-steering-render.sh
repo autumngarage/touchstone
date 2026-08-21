@@ -1532,6 +1532,19 @@ else
     && pass "a file at a skill directory path is refused before any driver file is written" \
     || fail "wrong refusal or partial install: $(cat "$TMP_DIR/hf.out"); $(ls "$HF/.codex")"
 fi
+# A dangling symlink at a skill leaf is refused in preflight, not discovered
+# at mv time after the driver files were written.
+HD="$TMP_DIR/hd"
+mkdir -p "$HD/.claude/skills/touchstone-pre-impl" "$HD/.codex" "$HD/.gemini"
+ln -s "$HD/nowhere/SKILL.md" "$HD/.claude/skills/touchstone-pre-impl/SKILL.md"
+if bash "$INSTALL" install --home "$HD" >"$TMP_DIR/hd.out" 2>&1; then
+  fail "a dangling skill symlink was not refused"
+else
+  grep -q 'touchstone-pre-impl/SKILL.md is a dangling symlink' "$TMP_DIR/hd.out" \
+    && [ ! -e "$HD/.codex/AGENTS.md" ] \
+    && pass "a dangling skill symlink is refused before any driver file is written" \
+    || fail "wrong refusal or partial install: $(cat "$TMP_DIR/hd.out")"
+fi
 # A release that ships no skills installs nothing under ~/.claude/skills.
 RELEASE_NOSKILLS="$TMP_DIR/release-noskills"
 mkdir -p "$RELEASE_NOSKILLS/scripts" "$RELEASE_NOSKILLS/principles"
