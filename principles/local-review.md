@@ -30,9 +30,10 @@ review rules belong there, not in per-run prompts. (Its CLI accepts either
 `--base` or a custom prompt, not both, which makes `AGENTS.md` the only
 reliable channel for standing instructions.)
 
-Swapping a vendor changes this table, the project's review declaration, and
-the provider-specific recovery procedure in `principles/git-workflow.md` —
-three places, listed so a swap is done completely rather than half-done.
+Swapping a vendor changes this table, the trusted-reviewer set the pinned
+`review-gate` workflow evaluates, and the provider-specific recovery
+procedure in `principles/git-workflow.md` — three places, listed so a swap is
+done completely rather than half-done.
 
 ## Work slicing
 

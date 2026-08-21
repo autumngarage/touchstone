@@ -96,7 +96,7 @@ The driver AI is Claude Code, Codex, Gemini CLI, or another AGENTS.md-native cod
 - run focused checks during implementation
 - stage explicit file paths
 - commit coherent changes
-- ship with `git push` + `touchstone pr open --expect-branch <branch> --title "<type>: <what>" --body-file <file>`, which requests review on the exact head (raw recovery: `gh pr create`, then a bare `@codex review`)
+- ship with `git push` + `touchstone pr open --expect-branch <branch> --title "<type>: <what>" --body-file <file>`, which requests review on the exact head (raw recovery: `gh pr create`, a bare `@codex review`, then re-run the pinned `review-gate` run for the head — the full sequence is in `principles/git-workflow.md`)
 - answer every piece of PR feedback and resolve its thread
 - commit fixes for actionable feedback and ship again
 - explain the outcome to the user

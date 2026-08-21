@@ -550,7 +550,7 @@ a `--force` that clobbered someone else's push may not be.
 
 ## Stacked PRs (and how they merge)
 
-A stacked PR is a PR whose base branch is another open PR's branch instead of the default branch. The goal: split a large change into a chain where each step is reviewable on its own. Open one with `touchstone pr open --base <parent-branch> --expect-branch <child> …` (raw: `gh pr create --base <parent-branch>`).
+A stacked PR is a PR whose base branch is another open PR's branch instead of the default branch. The goal: split a large change into a chain where each step is reviewable on its own. Open one with `touchstone pr open --base <parent-branch> --expect-branch <child> --title … --body-file …`; the CLI-absent raw sequence is the same one as for any PR (above: verify the head, `gh pr create --base <parent-branch>`, bare `@codex review`, re-run the gate).
 
 **Exact-head review makes moving stacks multiply work.** Every parent update
 changes or invalidates each descendant's reviewed head. Do not open dependent
