@@ -63,9 +63,12 @@ head, and reports success only after the pinned `review-gate` has been asked
 to evaluate that head and the coordinates still hold. `--expect-branch` is
 written out, never derived from `git branch --show-current` — that reads the
 same checkout the command reads and would agree with a wrong worktree. Where
-the CLI is absent, the raw equivalent is `gh pr create --title … --body-file …`
-followed by a bare `@codex review` comment; `docs/pr-cli-contract.md` records
-it as recovery, not as the instruction.
+the CLI is absent, the raw equivalent is `gh pr create --title … --body-file …`,
+a bare `@codex review` comment, and then — because a required workflow runs
+only on pull-request and merge-group events and may already have evaluated
+before the comment existed — a re-run of the pinned gate's run for this head:
+`gh api -X POST repos/<owner>/<repo>/actions/runs/<review-gate run id>/rerun`.
+`docs/pr-cli-contract.md` records this as recovery, not as the instruction.
 
 **The configured closing reference must be in the PR body.** A GitHub
 `Closes #123` or Linear `Fixes AUT-123` only in a commit body may disappear
@@ -188,11 +191,17 @@ touchstone pr merge <n> --head <reviewed-sha>
 
 It re-runs the pinned gate for that head, asks GitHub to merge bound to it,
 and reports merged, queued, or auto-merge-enabled only while the head still
-equals the reviewed one. Where the CLI is absent, the raw equivalent is:
+equals the reviewed one. Where the CLI is absent, the raw equivalent is: re-run
+the pinned gate's run for the reviewed head (`gh api -X POST
+repos/<owner>/<repo>/actions/runs/<id>/rerun`), then
 
 ```bash
 gh pr merge <n> --squash --match-head-commit "$(gh pr view <n> --json headRefOid --jq .headRefOid)"
 ```
+
+then re-read `state`, `headRefOid`, merge-queue and auto-merge state: merged,
+queued, or auto-merge-enabled count only while `headRefOid` still equals the
+reviewed head, and only `state == MERGED` proves the merge.
 
 **`--match-head-commit` is the head binding.** It refuses the merge if the PR head moved since you checked the gate — which is exactly the race that lets an unreviewed commit slip in behind a passing review.
 
