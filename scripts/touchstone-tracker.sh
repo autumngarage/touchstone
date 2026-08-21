@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# scripts/touchstone-tracker.sh — tracker-neutral claim adapter.
+# touchstone tracker claim — tracker-neutral claim adapter (scripts/touchstone-tracker.sh).
 #
 # Usage:
-#   bash scripts/touchstone-tracker.sh claim <issue> [--project DIR] [--json]
+#   touchstone tracker claim <issue> [--project DIR] [--json]
 
 set -euo pipefail
 

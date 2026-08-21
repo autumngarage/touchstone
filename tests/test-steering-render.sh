@@ -534,6 +534,17 @@ rm -f "$HVER/.gemini/GEMINI.md"
 bash "$INSTALL" check --home "$HVER" >"$TMP_DIR/hver3.out" 2>&1 || true
 grep -q "GEMINI.md is absent (no block installed)" "$TMP_DIR/hver3.out" && pass "an absent driver file is named as absent" || fail "absent file misreported: $(grep GEMINI "$TMP_DIR/hver3.out" | head -1)"
 
+# Command-line paths inside routed documents are rewritten too: a fresh agent
+# ran `-c principles/local-review-contract.md` verbatim from local-review.md
+# and found no such file in the consumer repository.
+HCMD="$TMP_DIR/hcmd"
+bash "$INSTALL" install --home "$HCMD" >/dev/null 2>&1
+if grep -q -- "-c $HCMD/.touchstone/principles/local-review-contract.md" "$HCMD/.touchstone/principles/local-review.md"; then
+  pass "command-line paths in routed documents resolve to the installed copies"
+else
+  fail "local-review.md still names principles/local-review-contract.md as a bare path: $(grep -n 'local-review-contract.md' "$HCMD/.touchstone/principles/local-review.md" | head -2 | tr '\n' ' ')"
+fi
+
 # A later release changes what the tool *ships*, not the copy on disk. Build a
 # second checkout with a modified source document and reinstall from it: the
 # installed copy still matches what the manifest recorded, so it is still

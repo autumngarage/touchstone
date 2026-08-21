@@ -128,7 +128,7 @@ capture_command() {
   local output diagnostic status=0
   CAPTURE_STDERR_TEMP="$(mktemp "${TMPDIR:-/tmp}/touchstone-pr-read.XXXXXX")" || {
     CAPTURE_OUTPUT=""
-    CAPTURE_ERROR="could not create a temporary file for command diagnostics"
+    CAPTURE_ERROR="could not create a scratch file under ${TMPDIR:-/tmp}: this command modifies no repository file but needs a writable temporary directory (set TMPDIR)"
     return 1
   }
   set +e

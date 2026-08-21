@@ -182,6 +182,11 @@ conversation resolution separately requires every inline thread closed.
 
 ## Answering findings
 
+More than one reviewer may post: the configured AI reviewer (Codex) and any
+other installed review app (CodeRabbit, here). Their threads are equal before
+the gate — every unresolved thread blocks merge under conversation
+resolution, whoever opened it — so answer and resolve them all.
+
 Use the stable root comment ID from the complete GitHub review surface. Reply
 with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<id>/replies -F
 body=@<file>`, then resolve with the GraphQL mutation:
@@ -448,13 +453,15 @@ git branch --merged main                    # ancestor-merged: safe to delete
 git branch -d <branch>                      # git refuses unmerged work
 ```
 
-Squash-merged branches are the common case, and their commits are *not* ancestors of the default branch even though their changes are applied. `git branch -d` will refuse them. Confirm the content actually landed before forcing:
+Squash-merged branches are the common case, and their commits are *not* ancestors of the default branch even though their changes are applied, so `git branch -d` refuses them — and `git diff main...<branch>` stays non-empty after a squash (it compares against the merge base, not the squash commit), so it proves nothing either. The proof that the content landed is GitHub's: the PR is `MERGED` at the head you reviewed. Then force-delete that branch and only that branch:
 
 ```bash
-git diff --quiet main...<branch> && git branch -D <branch>
+gh pr view <n> --json state,mergeCommit,headRefOid --jq '[.state, .mergeCommit.oid, .headRefOid] | @tsv'   # MERGED, a merge commit, your reviewed head
+git checkout main && git pull --rebase
+git branch -D <branch>
 ```
 
-That compares the branch against the merge-base with main: an empty diff means every change the branch made is already present. Never `git branch -D` without that check — it is the difference between deleting merged work and losing unmerged work.
+Never `git branch -D` without that read — it is the difference between deleting merged work and losing unmerged work.
 
 Never delete a branch that serves as an open PR's base or head; that is what orphans a stack (see below).
 
@@ -577,10 +584,10 @@ through the tracker declared in `.touchstone-tracker.toml`. Verify sole ownershi
 a one-line dispatch comment only after the claim is stable, then spawn the
 agent.
 
-Start with the repository's verified claim adapter:
+Start with the installed claim adapter:
 
 ```bash
-bash scripts/touchstone-tracker.sh claim <reference>
+touchstone tracker claim <reference>
 ```
 
 For GitHub, the adapter performs the race-safe mutation and re-read. For Linear,

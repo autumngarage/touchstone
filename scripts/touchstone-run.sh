@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# scripts/touchstone-run.sh — execute schema-v1 .touchstone.toml declarations.
+# scripts/touchstone-run.sh — execute .touchstone.toml declarations (schema 1 and 2).
 #
 # Usage:
 #   bash scripts/touchstone-run.sh validate [--stage STAGE] [--check-contract] [--json] [--project DIR] [--config FILE]
@@ -77,7 +77,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$ACTION" != validate ]; then
-  echo "ERROR: schema-v1 supports only 'validate'; tasks come from .touchstone.toml" >&2
+  echo "ERROR: the engine supports only 'validate'; tasks come from .touchstone.toml" >&2
   exit 2
 fi
 
@@ -302,7 +302,7 @@ finalize_block() {
 
 if [ ! -f "$CONFIG_FILE" ]; then
   if [ "$CONFIG_ARG" = .touchstone.toml ] && [ -f "$PROJECT_ROOT/.touchstone-config" ]; then
-    config_error "legacy .touchstone-config is not a schema-v1 declaration; create .touchstone.toml from the validation contract"
+    config_error "legacy .touchstone-config is not a .touchstone.toml declaration; create .touchstone.toml from the validation contract"
   fi
   config_error "validation contract not found: $CONFIG_FILE"
 fi

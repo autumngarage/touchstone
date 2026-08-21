@@ -115,7 +115,8 @@ if awk -v m="$BEGIN_MARKER_ANY" '$0 ~ m { found = 1 } END { exit !found }' "$SOU
   die "canonical steering contains a managed marker line; document markers only in inline code"
 fi
 
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-steering-install.XXXXXX")" || die "could not create workspace"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-steering-install.XXXXXX")" \
+  || die "could not create a workspace under ${TMPDIR:-/tmp}: steering check modifies nothing but needs a writable temporary directory (set TMPDIR)"
 # Staging files are created in the destination directory, not the workspace,
 # so removing TMP_DIR does not reach them. Any die between staging a file and
 # committing it would otherwise leave an orphan in the operator's ~/.claude.
@@ -378,7 +379,13 @@ preflight_principles() {
 # carry no Touchstone files.
 render_principle() {
   local source="$1" out="$2" principles_home="$HOME_DIR/$PRINCIPLES_RELATIVE"
-  sed "s|\`principles/|\`$(sed_replacement "$principles_home")/|g" "$source" >"$out"
+  # Two spellings route to the installed copies: inline code (`principles/…`)
+  # and a bare path inside a command line (` principles/…`, as in
+  # `coderabbit review … -c principles/local-review-contract.md`). A fresh
+  # agent ran the second form verbatim and found no such file in the
+  # consumer repository.
+  sed -e "s|\`principles/|\`$(sed_replacement "$principles_home")/|g" \
+    -e "s|\([[:space:]]\)principles/\([A-Za-z0-9._-]*\.md\)|\1$(sed_replacement "$principles_home")/\2|g" "$source" >"$out"
 }
 
 # Ownership is recorded per entry as `checksum<TAB>name`; match on the name
