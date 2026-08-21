@@ -30,9 +30,10 @@ review rules belong there, not in per-run prompts. (Its CLI accepts either
 `--base` or a custom prompt, not both, which makes `AGENTS.md` the only
 reliable channel for standing instructions.)
 
-Swapping a vendor changes this table, the project's review declaration, and
-the provider-specific recovery procedure in `principles/git-workflow.md` —
-three places, listed so a swap is done completely rather than half-done.
+Swapping a vendor changes this table, the trusted-reviewer set the pinned
+`review-gate` workflow evaluates, and the provider-specific recovery
+procedure in `principles/git-workflow.md` — three places, listed so a swap is
+done completely rather than half-done.
 
 ## Work slicing
 
@@ -167,10 +168,13 @@ Invoke it against the slice, passing the contract as additional instructions:
 coderabbit review --agent --uncommitted -c principles/local-review-contract.md
 ```
 
-A project declares whether this pass is expected in its review declaration
-(`.touchstone-review.toml`). Where a project does not configure a local
-reviewer, the tier's local obligation is satisfied by its deterministic
-checks alone, and the PR-visible review remains unchanged.
+Touchstone 3 carries no per-project review declaration (the 2.x
+`.touchstone-review.toml` is gone). The local reviewer pass is expected
+wherever the CLI the tier selects — `coderabbit` for normal, `codex` for
+serious — is installed and authenticated on this machine; where that CLI is
+not, the tier's local obligation is satisfied by its deterministic checks
+alone, the PR body says so under Validation, and the PR-visible review
+remains unchanged.
 
 **Local passes and PR-side reviews can share one metered pool**, depending on
 the provider's plan. A driver that re-runs locally after every edit is then
@@ -178,7 +182,7 @@ spending the budget the merge gate depends on — a second reason the rules
 above allow one pass per coherent slice and no confirming re-run. When a
 quota is exhausted, the tier's local obligation is **satisfied by its
 deterministic checks plus recording the exhaustion** in the validation block
-— the same rule as a project with no local reviewer configured. Do not wait
+— the same rule as a machine where the tier's reviewer CLI is not installed or not authenticated. Do not wait
 for quota to run an initiated pass; the PR-visible review is the authority
 either way.
 
@@ -224,8 +228,9 @@ is met:
 
 - **trivial** — no initiated review; deterministic checks alone complete it.
 - **normal** — one local pass has run and its findings are triaged, **or**
-  the recorded waiver applies (no local reviewer configured, or quota
-  exhausted and recorded in the validation block).
+  the recorded waiver applies (the tier's reviewer CLI is not installed or
+  not authenticated on this machine, or its quota is exhausted — either way
+  recorded in the validation block).
 - **serious** — the pre-push local pass ran or the same recorded waiver
   applies, and the PR-side review evidence covers the head that merges (the
   gate enforces the latter).
