@@ -240,9 +240,12 @@ the PR body's Validation block carries
 - Local review: n/a — coderabbit CLI is not installed on this machine.
 ```
 
-and `delivery-evidence` refuses a normal or serious PR whose row is missing,
+The row *begins* with `<reviewer> on <target>: <n> findings` — prose and
+dispositions go after the count; backticks around a SHA are fine — and
+`delivery-evidence` refuses a normal or serious PR whose row is missing,
 a bare `n/a`, names the wrong reviewer for its tier (normal → CodeRabbit;
 serious → Codex, with the revision it reviewed), or waives without a reason.
+When the row is present but unreadable it says so and quotes the line.
 The gate checks shape, not truth — it cannot see a terminal — but it can
 refuse silence, and silence was the failure. A waiver is only the reviewer
 CLI being absent, unauthenticated, or out of quota, and it says which.

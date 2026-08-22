@@ -2132,6 +2132,36 @@ lr_body '    - Local review: codex on 1234567: 0 findings.' serious
 accepts && fail "an indented-code example row was accepted as evidence" || ok "an indented-code example row is not a record"
 lr_body '- Local review: n/approved' serious
 accepts && fail "'n/approved' was read as an n/a waiver" || ok "the n/a waiver token is bounded"
+lr_body '- Local review: codex on `0bd1b934`: 1 finding, fixed in `34973a19`.' serious
+accepts && ok "a backticked revision is the same record (AUT-468)" || fail "a backticked revision was refused"
+lr_body '- Local review: **coderabbit** on the staged slice: 0 findings.' normal
+accepts && ok "a bold reviewer name is the same record" || fail "a bold reviewer name was refused"
+lr_body '- Local review: code*x on 1234567: 0 findings.' serious
+accepts && fail "a marker inside a token was read as decoration" || ok "a marker inside a token is not a boundary: code*x is not codex"
+lr_body '- Local review: codex on dead*beef: 0 findings.' serious
+accepts && fail "a marker inside a token was read as decoration" || ok "a marker inside a token is not a boundary: dead*beef is not a revision"
+lr_body '- Local review: *codex* on `1234567`: 0 findings.' serious
+accepts && ok "emphasis and code-span decoration around a field is accepted" || fail "a balanced-wrapper row was refused"
+lr_body '- Local review: **codex **on 1234567: 0 findings.' serious
+accepts && fail "a marker run that does not bound the reviewer was accepted" || ok "a marker must bound the field: '**codex **on' names no reviewer"
+lr_body '- Local review: ** codex**on 1234567: 0 findings.' serious
+accepts && fail "a marker run that does not bound the reviewer was accepted" || ok "a marker must bound the field: '** codex**on' names no reviewer"
+# Decoration the gate deliberately accepts: a mismatched backtick run is not
+# a valid CommonMark code span, but the row still names codex and 1234567
+# unambiguously. The gate reads identity, not rendering -- refusing a legible
+# record would recreate the AUT-468 failure it exists to fix.
+lr_body '- Local review: codex on ``1234567````: 0 findings.' serious
+accepts && ok "decoration that leaves the record unambiguous is accepted" || fail "a legible record was refused over invalid Markdown"
+lr_body '- Local review: ran `codex review --base main` (serious), pre-push at 0bd1b934 — 3 findings' serious
+if accepts; then fail "a row that does not begin with the run record was accepted"; else
+  # Read the whole report first: under pipefail a -q grep that closes the
+  # pipe early would fail the evaluator with SIGPIPE.
+  unread_report="$(bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/body.md" 2>&1 || true)"
+  case "$unread_report" in
+    *"  unreadable: the Validation row '- Local review:' is present but not in the shape"*"got: 'ran "*) ok "an unreadable row is reported as present and quoted, not missing" ;;
+    *) fail "an unreadable row was not quoted back: $unread_report" ;;
+  esac
+fi
 lr_body '' trivial
 accepts && ok "trivial needs no Local review row" || fail "trivial was refused without a Local review row"
 

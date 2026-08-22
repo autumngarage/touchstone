@@ -203,6 +203,12 @@ report() {
   printf '  missing: %s\n' "$*" >&2
   FAILURES=$((FAILURES + 1))
 }
+# For a row that is present but not in the shape the gate reads: "missing"
+# would send the author hunting for an absent row (AUT-468).
+report_unreadable() {
+  printf '  unreadable: %s\n' "$*" >&2
+  FAILURES=$((FAILURES + 1))
+}
 
 TIER_RAW="$(section "Review tier")"
 # Edge-trim and lowercase only: deleting internal whitespace would normalize
@@ -254,12 +260,29 @@ case "$TIER" in
       # not installed, not authenticated, or out of quota. "codex" alone,
       # "codex not run", or "n/a — skipped" is silence with a reviewer's
       # name on it.
+      # Markdown is the input format: a revision written as `abc1234` or
+      # **codex** is the same record (AUT-468). The row is never rewritten to
+      # read it -- rewriting is what let a typo become evidence, because a
+      # substitution that deletes markers can join what they separated
+      # (`code*x` -> a reviewer, `dead*beef` -> a revision). Instead a marker
+      # run is allowed only where a field begins or ends, so a marker can
+      # never bridge into a token: what the gate reads is what the row says.
+      #
+      # The line that matters is identity, not rendering. Decoration that
+      # leaves the reviewer and the revision unambiguous is accepted however
+      # CommonMark would render it (a mismatched backtick run still names
+      # `codex` and `1234567`); decoration that would change which reviewer
+      # or which revision is named is refused. Refusing a legible record for
+      # invalid Markdown would recreate the AUT-468 failure -- an author
+      # hunting for a row that is plainly there.
       lr_norm="$(printf '%s\n' "$local_review" | tr '[:upper:]' '[:lower:]')"
-      if printf '%s\n' "$lr_norm" | grep -qE '^[[:space:]]*n/a([^[:alnum:]]|$)'; then
+      # A run of code/emphasis markers, permitted only at a field boundary.
+      lr_mark='[`*]*'
+      if printf '%s\n' "$lr_norm" | grep -qE "^[[:space:]]*${lr_mark}n/a([^[:alnum:]]|$)"; then
         # A waiver needs a reason; the threat model is omission, not forgery,
         # so any stated reason is accepted -- the words are the author's.
         # An unedited "<reason>" is the template's words, not the author's.
-        if ! printf '%s\n' "$lr_norm" | grep -qE '^[[:space:]]*n/a[^[:alnum:]<]*[[:alnum:]]' \
+        if ! printf '%s\n' "$lr_norm" | grep -qE "^[[:space:]]*${lr_mark}n/a[^[:alnum:]<]*[[:alnum:]]" \
           || printf '%s\n' "$lr_norm" | grep -q '<'; then
           report "the Validation row '- Local review:' waiver stating why (reviewer CLI not installed, not authenticated, or out of quota)"
         fi
@@ -280,11 +303,14 @@ case "$TIER" in
         # sit between the target and the count, so "codex on abc: not run;
         # 0 findings" is refused as neither a pass nor a waiver.
         case "$TIER" in
-          normal) lr_prefix="^[[:space:]]*$lr_tool on [^:]+:" ;;
-          serious) lr_prefix="^[[:space:]]*$lr_tool on [0-9a-f]{7,40}:" ;;
+          normal) lr_prefix="^[[:space:]]*${lr_mark}${lr_tool}${lr_mark} on [^:]+:" ;;
+          serious) lr_prefix="^[[:space:]]*${lr_mark}${lr_tool}${lr_mark} on ${lr_mark}[0-9a-f]{7,40}${lr_mark}:" ;;
         esac
         if ! printf '%s\n' "$lr_norm" | grep -qE "${lr_prefix}[[:space:]]*[0-9]+[[:space:]]*finding"; then
-          report "the Validation row '- Local review:' recording the $TIER tier's pass as '$lr_tool on <$([ "$TIER" = serious ] && echo revision || echo staged slice)>: <n> findings, <disposition>'"
+          # The row is present: say that, show what was read, and name the
+          # shape it must begin with -- "missing" sends the author hunting
+          # for an absent row, or weakening a true claim (AUT-468).
+          report_unreadable "the Validation row '- Local review:' is present but not in the shape the gate reads: it must begin with '$lr_tool on <$([ "$TIER" = serious ] && echo revision || echo staged slice)>: <n> findings, <disposition>' (the $TIER tier's reviewer; backticks are fine) -- got: '$local_review'"
         fi
       fi
     fi
