@@ -517,6 +517,29 @@ for consumer in "$ROOT"/policy/github/consumers/*.json; do
 done
 ok "consumer policies are exact derivations of the canonical policy"
 
+# The derivation loop above infers --no-queue from the checked-in file, so it
+# cannot notice a consumer losing its queue: regenerating with --no-queue would
+# satisfy it silently. Name the expectation instead. A consumer eligible for the
+# queue (Enterprise Cloud, or public) must declare one; convoy must not, until
+# its repository-owned required checks report on a merge group -- without that,
+# a queue there ejects every entry at the timeout.
+echo "==> Queue-eligible consumers declare a merge queue"
+jq -e 'any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")' \
+  "$ROOT/policy/github/consumers/arpeggio.json" >/dev/null \
+  && ok "arpeggio declares a merge queue" \
+  || fail "arpeggio lost its merge queue; regenerate it without --no-queue"
+# Two consumers hold their queue, for unrelated reasons. vesper's own team owns
+# its queue: a second ruleset declaring merge_queue on the same branch is the
+# same rule at two layers. convoy's repository-owned required checks
+# (convoy/delivery-protocol, powershell-tests) have no merge_group trigger, so a
+# queue there would eject every entry at the timeout.
+jq -e '.managedRepositoryRuleset == null' "$ROOT/policy/github/consumers/vesper.json" >/dev/null \
+  && ok "vesper leaves its queue to the repository's own team" \
+  || fail "vesper declared a merge queue Touchstone does not own; its team manages that queue"
+jq -e '.managedRepositoryRuleset == null' "$ROOT/policy/github/consumers/convoy.json" >/dev/null \
+  && ok "convoy holds its queue until its own required checks run on a merge group" \
+  || fail "convoy declared a merge queue while convoy/delivery-protocol and powershell-tests still have no merge_group trigger"
+
 echo "==> Read-only diff and dry-run"
 init_branch
 run_policy dry-run "$POLICY" >"$TMP_DIR/dry-run.txt"
