@@ -2090,6 +2090,14 @@ lr_body '- Local review: codex on 1234567: 3 findings, 2 fixed, 1 routed.' serio
 accepts && ok "a recorded codex pass is accepted" || fail "a recorded codex pass was refused: $(bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/body.md" 2>&1 | tail -3)"
 lr_body '- Local review: n/a — coderabbit CLI is not installed on this machine; recorded waiver.' normal
 accepts && ok "a waiver with a reason is accepted" || fail "a reasoned waiver was refused"
+lr_body '- Local review: n/a — skipped' normal
+accepts && fail "a waiver without a documented reason was accepted" || ok "a waiver without a documented reason is refused"
+lr_body '- Local review: codex' serious
+accepts && fail "a reviewer name with no result was accepted" || ok "a reviewer name with no result is refused"
+lr_body '- Local review: codex not run' serious
+accepts && fail "'codex not run' was accepted" || ok "'codex not run' is refused"
+lr_body '- Local review: CodeRabbit on the staged slice: 0 findings.' normal
+accepts && ok "a zero-finding record is accepted" || fail "a zero-finding record was refused"
 lr_body '' trivial
 accepts && ok "trivial needs no Local review row" || fail "trivial was refused without a Local review row"
 

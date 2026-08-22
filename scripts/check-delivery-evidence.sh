@@ -225,9 +225,24 @@ case "$TIER" in
       report "the Validation row '- Local review:' present (the tier's local pass: reviewer, head, and finding count -- or n/a with the waiver reason)"
     elif ! filled "$local_review"; then
       report "the Validation row '- Local review:' filled in (reviewer, head, and finding count -- or n/a with the waiver reason)"
-    elif ! printf '%s\n' "$local_review" | grep -qiE '(coderabbit|codex)' \
-      && ! printf '%s\n' "$local_review" | grep -qiE '^[[:space:]]*n/a'; then
-      report "the Validation row '- Local review:' naming the reviewer that ran (coderabbit or codex) or starting with 'n/a — <reason>'"
+    else
+      # Two documented shapes. A run: the reviewer, the head it saw, and a
+      # finding count ("codex on abc1234: 3 findings, 2 fixed, 1 routed").
+      # A waiver: n/a with one of the three documented reasons -- the CLI
+      # not installed, not authenticated, or out of quota. "codex" alone,
+      # "codex not run", or "n/a — skipped" is silence with a reviewer's
+      # name on it.
+      lr_norm="$(printf '%s\n' "$local_review" | sed 's/\xe2\x80\x93\|\xe2\x80\x94/-/g' | tr '[:upper:]' '[:lower:]')"
+      if printf '%s\n' "$lr_norm" | grep -qE '^[[:space:]]*n/a'; then
+        printf '%s\n' "$lr_norm" | grep -qE 'not installed|unauthenticated|not authenticated|no auth|quota' \
+          || report "the Validation row '- Local review:' waiver naming why (reviewer CLI not installed, not authenticated, or out of quota)"
+      else
+        if ! printf '%s\n' "$lr_norm" | grep -qE '(coderabbit|codex)' \
+          || ! printf '%s\n' "$lr_norm" | grep -qE '[0-9]+[[:space:]]*finding' \
+          || printf '%s\n' "$lr_norm" | grep -qE 'not run|skipped|did not run'; then
+          report "the Validation row '- Local review:' recording the reviewer that ran and its finding count (e.g. 'codex on abc1234: 3 findings, 2 fixed, 1 routed')"
+        fi
+      fi
     fi
     ;;
 esac

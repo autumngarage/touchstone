@@ -281,9 +281,11 @@ echo "==> Lifecycle parity: git-workflow.md enumerates the steering's steps, no 
 # invariant: the same count, the same numbers, and each step's leading word
 # (the verb the steering bolds) in the same position.
 steering_steps="$(sed -n '/^## Required Delivery Workflow/,/^## /p' "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
-  | sed -nE 's/^([1-9])\. \*\*([A-Za-z]+)[^*]*\*\*.*/\1 \2/p')"
+  | sed -nE 's/^([0-9]+)\. \*\*([A-Za-z]+)[^*]*\*\*.*/\1 \2/p')"
 workflow_steps="$(sed -n '/^## The lifecycle/,/^## /p' "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
-  | sed -nE 's/^([1-9])\. \*\*([A-Za-z]+)[^*]*\*\*.*/\1 \2/p')"
+  | sed -nE 's/^([0-9]+)\. \*\*([A-Za-z]+)[^*]*\*\*.*/\1 \2/p')"
+[ "$(printf '%s\n' "$steering_steps" | wc -l | tr -d ' ')" -eq 10 ] \
+  || fail "the Required Delivery Workflow should have ten steps, parsed $(printf '%s\n' "$steering_steps" | wc -l | tr -d ' ')"
 if [ -z "$steering_steps" ]; then
   fail "could not read the numbered steps of TOUCHSTONE.md's Required Delivery Workflow"
 elif [ "$steering_steps" != "$workflow_steps" ]; then
