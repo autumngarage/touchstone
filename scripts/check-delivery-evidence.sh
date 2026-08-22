@@ -203,6 +203,12 @@ report() {
   printf '  missing: %s\n' "$*" >&2
   FAILURES=$((FAILURES + 1))
 }
+# For a row that is present but not in the shape the gate reads: "missing"
+# would send the author hunting for an absent row (AUT-468).
+report_unreadable() {
+  printf '  unreadable: %s\n' "$*" >&2
+  FAILURES=$((FAILURES + 1))
+}
 
 TIER_RAW="$(section "Review tier")"
 # Edge-trim and lowercase only: deleting internal whitespace would normalize
@@ -290,7 +296,7 @@ case "$TIER" in
           # The row is present: say that, show what was read, and name the
           # shape it must begin with -- "missing" sends the author hunting
           # for an absent row, or weakening a true claim (AUT-468).
-          report "the Validation row '- Local review:' in the shape the gate reads: it must begin with '$lr_tool on <$([ "$TIER" = serious ] && echo revision || echo staged slice)>: <n> findings, <disposition>' (the $TIER tier's reviewer; backticks are fine) -- found the row but could not read it: '$local_review'"
+          report_unreadable "the Validation row '- Local review:' is present but not in the shape the gate reads: it must begin with '$lr_tool on <$([ "$TIER" = serious ] && echo revision || echo staged slice)>: <n> findings, <disposition>' (the $TIER tier's reviewer; backticks are fine) -- got: '$local_review'"
         fi
       fi
     fi

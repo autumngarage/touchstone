@@ -2142,7 +2142,7 @@ if accepts; then fail "a row that does not begin with the run record was accepte
   # pipe early would fail the evaluator with SIGPIPE.
   unread_report="$(bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/body.md" 2>&1 || true)"
   case "$unread_report" in
-    *"found the row but could not read it: 'ran "*) ok "an unreadable row is reported as present and quoted, not missing" ;;
+    *"  unreadable: the Validation row '- Local review:' is present but not in the shape"*"got: 'ran "*) ok "an unreadable row is reported as present and quoted, not missing" ;;
     *) fail "an unreadable row was not quoted back: $unread_report" ;;
   esac
 fi
