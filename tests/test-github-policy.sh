@@ -2112,6 +2112,10 @@ lr_body '- Local review: codex on 1234567: 0 findings; coderabbit CLI was unavai
 accepts && fail "a codex run mentioning coderabbit was accepted on normal" || ok "the reviewer must open the run record, a mention elsewhere does not count"
 lr_body '- Local review: coderabbit on the staged slice: 1 finding (tests not run), fixed.' normal
 accepts && ok "a finding disposition may say 'not run' without being read as a skipped pass" || fail "a real pass was refused for a finding's wording"
+lr_body '- Local review: coderabbit not run: 0 findings.' normal
+accepts && fail "a skipped pass with a count was accepted" || ok "the run record must read '<reviewer> on <target>:'"
+lr_body '- Local review: codex on the branch head: 1 finding, fixed in 9decc0c9.' serious
+accepts && fail "a serious row sourcing its SHA from a disposition was accepted" || ok "a serious revision binds to the run target, not to a later SHA"
 lr_body '' trivial
 accepts && ok "trivial needs no Local review row" || fail "trivial was refused without a Local review row"
 

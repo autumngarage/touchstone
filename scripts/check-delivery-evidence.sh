@@ -247,11 +247,16 @@ case "$TIER" in
           normal) lr_tool=coderabbit ;;
           serious) lr_tool=codex ;;
         esac
-        if ! printf '%s\n' "$lr_norm" | grep -qE "^[[:space:]]*$lr_tool([^[:alnum:]]|$)" \
+        # The run record is the documented prefix "<reviewer> on <target>:";
+        # a serious target is the reviewed revision, so the SHA binds to the
+        # prefix rather than to any hex string later in the row.
+        case "$TIER" in
+          normal) lr_prefix="^[[:space:]]*$lr_tool on [^:]+:" ;;
+          serious) lr_prefix="^[[:space:]]*$lr_tool on [^:]*[0-9a-f]{7,40}[^:]*:" ;;
+        esac
+        if ! printf '%s\n' "$lr_norm" | grep -qE "$lr_prefix" \
           || ! printf '%s\n' "$lr_norm" | grep -qE '[0-9]+[[:space:]]*finding'; then
-          report "the Validation row '- Local review:' recording the $TIER tier's reviewer ($lr_tool) and its finding count (e.g. '$lr_tool on abc1234: 3 findings, 2 fixed, 1 routed')"
-        elif [ "$TIER" = serious ] && ! printf '%s\n' "$lr_norm" | grep -qE '[0-9a-f]{7,40}'; then
-          report "the Validation row '- Local review:' naming the revision the serious-tier codex pass reviewed (e.g. 'codex on abc1234: …')"
+          report "the Validation row '- Local review:' recording the $TIER tier's pass as '$lr_tool on <$([ "$TIER" = serious ] && echo revision || echo staged slice)>: <n> findings, <disposition>'"
         fi
       fi
     fi
