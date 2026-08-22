@@ -295,7 +295,10 @@ case "$1 ${2:-}" in
     printf '%s\n' 71
     ;;
   api*)
-    if has 'repos/autumngarage/current --jq .allow_auto_merge' "$@"; then
+    if has 'actions/permissions --jq .enabled' "$@"; then
+      # Repository Actions: on unless the fixture says otherwise.
+      if [ -f "$GH_STATE/actions-disabled" ]; then printf 'false\n'; else printf 'true\n'; fi
+    elif has 'repos/autumngarage/current --jq .allow_auto_merge' "$@"; then
       # The repository's auto-merge setting: on unless the fixture says otherwise.
       if [ -f "$GH_STATE/auto-merge-off" ]; then printf 'false\n'; else printf 'true\n'; fi
     elif has 'user --jq .login' "$@"; then
@@ -712,6 +715,23 @@ EOF
   assert_has "$TMP/out" '"status":"none"'
   rm -f "$TMP/state/no-rules" "$TMP/state/auto-merge-off"
   touch "$TMP/state/review-gate"
+  # Disabled repository Actions void every required workflow at once: the
+  # status is "none" with the gap named first, whatever the rules say, and
+  # open refuses before it pushes anything (AUT-467).
+  touch "$TMP/state/actions-disabled"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"status":"none"'
+  assert_has "$TMP/out" '"missing":["repository Actions (disabled: no required workflow can run; enable them: gh api -X PUT repos/autumngarage/current/actions/permissions -F enabled=true -f allowed_actions=all)"'
+  run_pr "$TMP/out" policy-status
+  assert_has "$TMP/out" 'enforcement: none (missing: repository Actions (disabled'
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-branch feat/test --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'repository Actions are disabled for autumngarage/current'
+  assert_has "$TMP/out" 'Enable them: gh api -X PUT repos/autumngarage/current/actions/permissions'
+  assert_not_has "$GH_CALLS" 'pr create'
+  assert_not_has "$GH_CALLS" 'pr comment'
+  rm -f "$TMP/state/actions-disabled"
   # A consumer derived --no-queue expects no queue: the tool consults the
   # repository's own shipped policy, reports applied without a queue rule,
   # and merges by arming auto-merge (there is no queue to enter).
