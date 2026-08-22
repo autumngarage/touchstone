@@ -2108,6 +2108,10 @@ lr_body '- Local review: n/a — the codex executable is missing from this runne
 accepts && ok "a waiver with any stated reason is accepted" || fail "a waiver stating a reason in its own words was refused"
 lr_body '- Local review: n/a —' serious
 accepts && fail "a waiver with an empty reason was accepted" || ok "a waiver with an empty reason is refused"
+lr_body '- Local review: codex on 1234567: 0 findings; coderabbit CLI was unavailable.' normal
+accepts && fail "a codex run mentioning coderabbit was accepted on normal" || ok "the reviewer must open the run record, a mention elsewhere does not count"
+lr_body '- Local review: coderabbit on the staged slice: 1 finding (tests not run), fixed.' normal
+accepts && ok "a finding disposition may say 'not run' without being read as a skipped pass" || fail "a real pass was refused for a finding's wording"
 lr_body '' trivial
 accepts && ok "trivial needs no Local review row" || fail "trivial was refused without a Local review row"
 

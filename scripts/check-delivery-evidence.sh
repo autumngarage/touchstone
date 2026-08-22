@@ -238,17 +238,16 @@ case "$TIER" in
         # so any stated reason is accepted -- the words are the author's.
         printf '%s\n' "$lr_norm" | grep -qE '^[[:space:]]*n/a[^[:alnum:]]*[[:alnum:]]' \
           || report "the Validation row '- Local review:' waiver stating why (reviewer CLI not installed, not authenticated, or out of quota)"
-      elif printf '%s\n' "$lr_norm" | grep -qE 'not run|skipped|did not run'; then
-        report "the Validation row '- Local review:' recording a pass that ran, or n/a with the waiver reason"
       else
-        # The tier routes the reviewer, deterministically; the row must name
-        # that reviewer and a finding count, and a serious pass names the
-        # revision it reviewed.
+        # The tier routes the reviewer, deterministically; the row opens with
+        # that reviewer (a mention elsewhere is not the run record) and states
+        # a finding count, and a serious pass names the revision it reviewed.
+        # "codex not run" carries no count and is refused by the same check.
         case "$TIER" in
           normal) lr_tool=coderabbit ;;
           serious) lr_tool=codex ;;
         esac
-        if ! printf '%s\n' "$lr_norm" | grep -qE "$lr_tool" \
+        if ! printf '%s\n' "$lr_norm" | grep -qE "^[[:space:]]*$lr_tool([^[:alnum:]]|$)" \
           || ! printf '%s\n' "$lr_norm" | grep -qE '[0-9]+[[:space:]]*finding'; then
           report "the Validation row '- Local review:' recording the $TIER tier's reviewer ($lr_tool) and its finding count (e.g. '$lr_tool on abc1234: 3 findings, 2 fixed, 1 routed')"
         elif [ "$TIER" = serious ] && ! printf '%s\n' "$lr_norm" | grep -qE '[0-9a-f]{7,40}'; then
