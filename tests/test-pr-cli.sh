@@ -732,6 +732,8 @@ EOF
   assert_has "$TMP/out" '"missing":["repository Actions (disabled: no required workflow can run; enable them: gh api --hostname github.com -X PUT repos/autumngarage/current/actions/permissions -F enabled=true)"'
   run_pr "$TMP/out" policy-status
   assert_has "$TMP/out" 'enforcement: none (missing: repository Actions (disabled'
+  assert_has "$TMP/out" 'remedy: enable them: gh api --hostname github.com -X PUT repos/autumngarage/current/actions/permissions -F enabled=true, then re-run this command'
+  assert_not_has "$TMP/out" 'github-policy.sh apply'
   : >"$GH_CALLS"
   run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-branch feat/test --json
   assert_rc "$RUN_RC" 2

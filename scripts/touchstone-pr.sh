@@ -514,7 +514,9 @@ read_enforcement() {
   # Disabled Actions void every required workflow at once, however the rules
   # read: the gap is named first and the status is "none" regardless of what
   # else is present, because nothing listed can run.
+  ENFORCEMENT_ACTIONS_DISABLED=false
   if ! actions_enabled; then
+    ENFORCEMENT_ACTIONS_DISABLED=true
     ENFORCEMENT_MISSING="repository Actions (disabled: no required workflow can run; $(actions_disabled_remedy))${ENFORCEMENT_MISSING:+,$ENFORCEMENT_MISSING}"
     ENFORCEMENT_STATUS=none
     return 0
@@ -537,8 +539,15 @@ read_enforcement() {
 # The remedy names a file that exists: the canonical policy for Touchstone
 # itself, the checked-in consumer policy where one is shipped, otherwise the
 # derivation step that creates one for review.
+ENFORCEMENT_ACTIONS_DISABLED=false
 enforcement_remedy() {
   local name="${REPO##*/}"
+  # Applying policy cannot fix a repository whose Actions are off: the
+  # setting comes first, and the rules are re-assessed once it is on.
+  if [ "$ENFORCEMENT_ACTIONS_DISABLED" = true ]; then
+    printf '%s, then re-run this command to assess the rules' "$(actions_disabled_remedy)"
+    return 0
+  fi
   if [ "$REPO" = "autumngarage/touchstone" ]; then
     printf 'scripts/github-policy.sh apply policy/github/touchstone-main.json (in the Touchstone checkout), then close/reopen open PRs'
   elif [ -f "$TOOL_ROOT/policy/github/consumers/$name.json" ] \
