@@ -2118,6 +2118,8 @@ lr_body '- Local review: codex on the branch head: 1 finding, fixed in 9decc0c9.
 accepts && fail "a serious row sourcing its SHA from a disposition was accepted" || ok "a serious revision binds to the run target, not to a later SHA"
 lr_body '- Local review: codex on 1234567 0 findings: not run' serious
 accepts && fail "a finding count inside the target was accepted" || ok "the finding count is read from the result after the target"
+lr_body '- Local review: codex on 1234567: not run; 0 findings' serious
+accepts && fail "a skip stated before the count was accepted" || ok "the finding count must open the result immediately after the target"
 lr_body '' trivial
 accepts && ok "trivial needs no Local review row" || fail "trivial was refused without a Local review row"
 
