@@ -175,7 +175,8 @@ Manual validation"
 # a tilde fence has no such rule).
 row_text() {
   printf '%s\n' "$1" | awk -v label="$2" '
-    BEGIN { pattern = "^[[:space:]]*[-*+][[:space:]]+" label ":" }
+    # Four or more leading spaces is indented code (CommonMark), not a row.
+    BEGIN { pattern = "^ {0,3}[-*+][[:space:]]+" label ":" }
     in_fence {
       if (match($0, /^ {0,3}(`{3,}|~{3,})[[:space:]]*$/)) {
         seg = $0
