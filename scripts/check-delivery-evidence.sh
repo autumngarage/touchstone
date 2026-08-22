@@ -254,7 +254,10 @@ case "$TIER" in
       # not installed, not authenticated, or out of quota. "codex" alone,
       # "codex not run", or "n/a — skipped" is silence with a reviewer's
       # name on it.
-      lr_norm="$(printf '%s\n' "$local_review" | tr '[:upper:]' '[:lower:]')"
+      # Markdown is the input format: a revision written as `abc1234` or
+      # **codex** is the same record, so code and bold markers are dropped
+      # before the shape is read (AUT-468).
+      lr_norm="$(printf '%s\n' "$local_review" | tr '[:upper:]' '[:lower:]' | sed 's/[`*]//g')"
       if printf '%s\n' "$lr_norm" | grep -qE '^[[:space:]]*n/a([^[:alnum:]]|$)'; then
         # A waiver needs a reason; the threat model is omission, not forgery,
         # so any stated reason is accepted -- the words are the author's.
@@ -284,7 +287,10 @@ case "$TIER" in
           serious) lr_prefix="^[[:space:]]*$lr_tool on [0-9a-f]{7,40}:" ;;
         esac
         if ! printf '%s\n' "$lr_norm" | grep -qE "${lr_prefix}[[:space:]]*[0-9]+[[:space:]]*finding"; then
-          report "the Validation row '- Local review:' recording the $TIER tier's pass as '$lr_tool on <$([ "$TIER" = serious ] && echo revision || echo staged slice)>: <n> findings, <disposition>'"
+          # The row is present: say that, show what was read, and name the
+          # shape it must begin with -- "missing" sends the author hunting
+          # for an absent row, or weakening a true claim (AUT-468).
+          report "the Validation row '- Local review:' in the shape the gate reads: it must begin with '$lr_tool on <$([ "$TIER" = serious ] && echo revision || echo staged slice)>: <n> findings, <disposition>' (the $TIER tier's reviewer; backticks are fine) -- found the row but could not read it: '$local_review'"
         fi
       fi
     fi

@@ -2132,6 +2132,20 @@ lr_body '    - Local review: codex on 1234567: 0 findings.' serious
 accepts && fail "an indented-code example row was accepted as evidence" || ok "an indented-code example row is not a record"
 lr_body '- Local review: n/approved' serious
 accepts && fail "'n/approved' was read as an n/a waiver" || ok "the n/a waiver token is bounded"
+lr_body '- Local review: codex on `0bd1b934`: 1 finding, fixed in `34973a19`.' serious
+accepts && ok "a backticked revision is the same record (AUT-468)" || fail "a backticked revision was refused"
+lr_body '- Local review: **coderabbit** on the staged slice: 0 findings.' normal
+accepts && ok "bold markers are dropped before the shape is read" || fail "a bold reviewer name was refused"
+lr_body '- Local review: ran `codex review --base main` (serious), pre-push at 0bd1b934 — 3 findings' serious
+if accepts; then fail "a row that does not begin with the run record was accepted"; else
+  # Read the whole report first: under pipefail a -q grep that closes the
+  # pipe early would fail the evaluator with SIGPIPE.
+  unread_report="$(bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/body.md" 2>&1 || true)"
+  case "$unread_report" in
+    *"found the row but could not read it: 'ran "*) ok "an unreadable row is reported as present and quoted, not missing" ;;
+    *) fail "an unreadable row was not quoted back: $unread_report" ;;
+  esac
+fi
 lr_body '' trivial
 accepts && ok "trivial needs no Local review row" || fail "trivial was refused without a Local review row"
 
