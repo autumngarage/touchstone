@@ -421,6 +421,25 @@ review_gate_required() {
   [ "$READ_OUTPUT" = true ]
 }
 
+# Whether GitHub Actions can run in this repository at all. A required
+# workflow that cannot run reports nothing -- not queued, not failed, absent
+# -- and a ruleset that requires it then blocks every merge while looking,
+# from the rules alone, fully enforced (AUT-467). Disabled Actions is the
+# largest enforcement gap there is, so every assessment reads this first.
+actions_enabled() {
+  # Reading this setting needs repository administration (read) on the
+  # token; a token that cannot read it cannot verify enforcement, and an
+  # unverifiable gate is reported as such rather than assumed present.
+  read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/permissions" --jq '.enabled' \
+    || fail_operation "could not read whether Actions are enabled for $REPO (needs repository administration read on the token): $READ_OUTPUT" "Use a credential that can read repos/$REPO/actions/permissions, or retry after GitHub recovers."
+  [ "$READ_OUTPUT" = true ]
+}
+# The remedy flips only the enabled flag: the repository's configured
+# allow-list of actions is its own decision and is left as it was.
+actions_disabled_remedy() {
+  printf 'enable them: gh api --hostname %s -X PUT repos/%s/actions/permissions -F enabled=true' "$REPO_HOST" "$REPO"
+}
+
 # What GitHub enforces on a branch, read once from its effective rules. The
 # policy's gates are three pinned required workflows plus the merge queue;
 # the native rules that refuse direct delivery complete the set. "applied"
@@ -492,6 +511,16 @@ read_enforcement() {
   if [ -n "$auto_merge_missing" ]; then
     ENFORCEMENT_MISSING="${ENFORCEMENT_MISSING:+$ENFORCEMENT_MISSING,}$auto_merge_missing"
   fi
+  # Disabled Actions void every required workflow at once, however the rules
+  # read: the gap is named first and the status is "none" regardless of what
+  # else is present, because nothing listed can run.
+  ENFORCEMENT_ACTIONS_DISABLED=false
+  if ! actions_enabled; then
+    ENFORCEMENT_ACTIONS_DISABLED=true
+    ENFORCEMENT_MISSING="repository Actions (disabled: no required workflow can run; $(actions_disabled_remedy))${ENFORCEMENT_MISSING:+,$ENFORCEMENT_MISSING}"
+    ENFORCEMENT_STATUS=none
+    return 0
+  fi
   # Everything expected missing is "none": seven items with a queue, six
   # without, plus the auto-merge setting. Counted, not string-compared: jq
   # sorts the names and a name may carry a reason.
@@ -510,8 +539,15 @@ read_enforcement() {
 # The remedy names a file that exists: the canonical policy for Touchstone
 # itself, the checked-in consumer policy where one is shipped, otherwise the
 # derivation step that creates one for review.
+ENFORCEMENT_ACTIONS_DISABLED=false
 enforcement_remedy() {
   local name="${REPO##*/}"
+  # Applying policy cannot fix a repository whose Actions are off: the
+  # setting comes first, and the rules are re-assessed once it is on.
+  if [ "$ENFORCEMENT_ACTIONS_DISABLED" = true ]; then
+    printf '%s, then re-run this command to assess the rules' "$(actions_disabled_remedy)"
+    return 0
+  fi
   if [ "$REPO" = "autumngarage/touchstone" ]; then
     printf 'scripts/github-policy.sh apply policy/github/touchstone-main.json (in the Touchstone checkout), then close/reopen open PRs'
   elif [ -f "$TOOL_ROOT/policy/github/consumers/$name.json" ] \
@@ -610,8 +646,15 @@ rerun_review_gate() {
       wait_for_new_attempt "$run_id" "$prior_attempt"
       return 0
     fi
-    [ "$attempt" -lt "$GATE_ATTEMPTS" ] \
-      || fail_operation "review-gate run for $head did not reach a re-runnable state within $((GATE_ATTEMPTS * GATE_RETRY_DELAY))s (last: ${run_id:-none} ${status:-absent})" "Wait for the gate run to finish, then re-run this command."
+    if [ "$attempt" -ge "$GATE_ATTEMPTS" ]; then
+      # No run at all is a different failure from a slow one: when Actions
+      # are disabled, waiting cannot produce a run, and the remedy is the
+      # setting, not patience.
+      if [ -z "$run_id" ] && ! actions_enabled; then
+        fail_operation "no review-gate run can exist for $head: repository Actions are disabled for $REPO" "$(actions_disabled_remedy | sed 's/^enable them: /Enable them: /'), then re-run this command."
+      fi
+      fail_operation "review-gate run for $head did not reach a re-runnable state within $((GATE_ATTEMPTS * GATE_RETRY_DELAY))s (last: ${run_id:-none} ${status:-absent})" "Wait for the gate run to finish, then re-run this command."
+    fi
     [ "$JSON_MODE" = true ] || printf 'Review gate run %s; retrying in %ss.\n' "${status:-not yet present}" "$GATE_RETRY_DELAY" >&2
     attempt=$((attempt + 1))
     sleep "$GATE_RETRY_DELAY"
@@ -697,6 +740,12 @@ open_pr() {
   if [ -z "$BASE_REF" ]; then
     BASE_REF="$DEFAULT_REF"
   fi
+  # Checked before anything is pushed or posted: with Actions disabled the
+  # request would be accepted and then bind to a gate run that can never
+  # exist, and the later timeout would read as a dispatch delay.
+  actions_enabled \
+    || fail_input "repository Actions are disabled for $REPO, so no required workflow can run and nothing would gate this pull request" \
+      "$(actions_disabled_remedy | sed 's/^enable them: /Enable them: /'), then retry."
 
   read_with_retry gh pr list --repo "$REPO_SPEC" --state open --head "$branch" --limit 100 \
     --json number,url,headRefOid,baseRefName,baseRefOid \

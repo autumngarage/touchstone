@@ -295,7 +295,18 @@ case "$1 ${2:-}" in
     printf '%s\n' 71
     ;;
   api*)
-    if has 'repos/autumngarage/current --jq .allow_auto_merge' "$@"; then
+    if has 'actions/permissions --jq .enabled' "$@"; then
+      # Repository Actions: on unless the fixture says otherwise. The
+      # "-after-preflight" shape answers true once (open's up-front check)
+      # and false from then on: Actions switched off while the gate waited.
+      if [ -f "$GH_STATE/actions-disabled" ]; then
+        printf 'false\n'
+      elif [ -f "$GH_STATE/actions-disabled-after-preflight" ]; then
+        if [ -f "$GH_STATE/actions-preflight-seen" ]; then printf 'false\n'; else touch "$GH_STATE/actions-preflight-seen"; printf 'true\n'; fi
+      else
+        printf 'true\n'
+      fi
+    elif has 'repos/autumngarage/current --jq .allow_auto_merge' "$@"; then
       # The repository's auto-merge setting: on unless the fixture says otherwise.
       if [ -f "$GH_STATE/auto-merge-off" ]; then printf 'false\n'; else printf 'true\n'; fi
     elif has 'user --jq .login' "$@"; then
@@ -336,7 +347,7 @@ case "$1 ${2:-}" in
       # workflow id 999) next to a NEWER repository-local decoy of the same
       # name (run 78, listed workflow id 2) and another PR's run (79). Only
       # the jq the CLI passes decides which one it sees.
-      if [ -f "$GH_STATE/review-gate" ]; then
+      if [ -f "$GH_STATE/review-gate" ] && [ ! -f "$GH_STATE/gate-never-runs" ]; then
         if [ -f "$GH_STATE/gate-in-progress" ]; then
           left="$(cat "$GH_STATE/gate-in-progress")"
           if [ "$left" -le 1 ]; then rm -f "$GH_STATE/gate-in-progress"; else echo $((left - 1)) >"$GH_STATE/gate-in-progress"; fi
@@ -711,6 +722,36 @@ EOF
   run_pr "$TMP/out" policy-status --json
   assert_has "$TMP/out" '"status":"none"'
   rm -f "$TMP/state/no-rules" "$TMP/state/auto-merge-off"
+  touch "$TMP/state/review-gate"
+  # Disabled repository Actions void every required workflow at once: the
+  # status is "none" with the gap named first, whatever the rules say, and
+  # open refuses before it pushes anything (AUT-467).
+  touch "$TMP/state/actions-disabled"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"status":"none"'
+  assert_has "$TMP/out" '"missing":["repository Actions (disabled: no required workflow can run; enable them: gh api --hostname github.com -X PUT repos/autumngarage/current/actions/permissions -F enabled=true)"'
+  run_pr "$TMP/out" policy-status
+  assert_has "$TMP/out" 'enforcement: none (missing: repository Actions (disabled'
+  assert_has "$TMP/out" 'remedy: enable them: gh api --hostname github.com -X PUT repos/autumngarage/current/actions/permissions -F enabled=true, then re-run this command'
+  assert_not_has "$TMP/out" 'github-policy.sh apply'
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-branch feat/test --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'repository Actions are disabled for autumngarage/current'
+  assert_has "$TMP/out" 'Enable them: gh api --hostname github.com -X PUT repos/autumngarage/current/actions/permissions -F enabled=true, then retry.'
+  assert_not_has "$GH_CALLS" 'pr create'
+  assert_not_has "$GH_CALLS" 'pr comment'
+  rm -f "$TMP/state/actions-disabled"
+  # Actions switched off after open's preflight, with a required gate that
+  # never produces a run: the timeout names the setting, not a slow run.
+  rm -f "$TMP/state/review-request" "$TMP/state/pr-exists"
+  touch "$TMP/state/review-gate" "$TMP/state/gate-never-runs" "$TMP/state/actions-disabled-after-preflight"
+  TOUCHSTONE_GATE_ATTEMPTS=2 run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-branch feat/test --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'no review-gate run can exist for'
+  assert_has "$TMP/out" 'repository Actions are disabled for autumngarage/current'
+  assert_not_has "$TMP/out" 'Wait for the gate run to finish'
+  rm -f "$TMP/state/review-gate" "$TMP/state/gate-never-runs" "$TMP/state/actions-disabled-after-preflight" "$TMP/state/actions-preflight-seen" "$TMP/state/review-request"
   touch "$TMP/state/review-gate"
   # A consumer derived --no-queue expects no queue: the tool consults the
   # repository's own shipped policy, reports applied without a queue rule,
