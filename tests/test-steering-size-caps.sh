@@ -84,9 +84,13 @@ assert_under() {
 # tail measured. Raised from 10.5 KiB on 2026-08-21 when steps 6 and 8 began
 # naming the concrete CLI commands instead of "the project's sequencer", and
 # to 11 KiB the same day when step 9 became the cleanup checklist (AUT-431)
-# instead of "delete the local branch if it persists".
-echo "==> TOUCHSTONE.md size cap (11 KiB — lean router)"
-assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 11264
+# instead of "delete the local branch if it persists", and to 11.5 KiB when
+# the local review pass became its own step with required evidence
+# (AUT-443: four PRs shipped without it and no gate could notice). Three
+# raises in one day is the signal AUT-438 (composite routing) answers if it
+# recurs; each raise here names the observed failure that earned it.
+echo "==> TOUCHSTONE.md size cap (11.5 KiB — lean router)"
+assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 11776
 
 echo "==> AGENTS.md size cap (24 KiB — leaves headroom under Codex's 32 KiB default)"
 assert_under "AGENTS.md" "$TOUCHSTONE_ROOT/AGENTS.md" 24576
@@ -277,9 +281,11 @@ echo "==> Lifecycle parity: git-workflow.md enumerates the steering's steps, no 
 # invariant: the same count, the same numbers, and each step's leading word
 # (the verb the steering bolds) in the same position.
 steering_steps="$(sed -n '/^## Required Delivery Workflow/,/^## /p' "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
-  | sed -nE 's/^([1-9])\. \*\*([A-Za-z]+)[^*]*\*\*.*/\1 \2/p')"
+  | sed -nE 's/^([0-9]+)\. \*\*([A-Za-z]+)[^*]*\*\*.*/\1 \2/p')"
 workflow_steps="$(sed -n '/^## The lifecycle/,/^## /p' "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
-  | sed -nE 's/^([1-9])\. \*\*([A-Za-z]+)[^*]*\*\*.*/\1 \2/p')"
+  | sed -nE 's/^([0-9]+)\. \*\*([A-Za-z]+)[^*]*\*\*.*/\1 \2/p')"
+[ "$(printf '%s\n' "$steering_steps" | wc -l | tr -d ' ')" -eq 10 ] \
+  || fail "the Required Delivery Workflow should have ten steps, parsed $(printf '%s\n' "$steering_steps" | wc -l | tr -d ' ')"
 if [ -z "$steering_steps" ]; then
   fail "could not read the numbered steps of TOUCHSTONE.md's Required Delivery Workflow"
 elif [ "$steering_steps" != "$workflow_steps" ]; then

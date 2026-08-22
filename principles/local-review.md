@@ -65,7 +65,10 @@ together.
 
 ## Required PR context
 
-Write this before committing or opening the PR:
+Write the context before committing. The `Local review` row is the one
+field that cannot be truthful yet: fill it after the tier's pass has run
+(normal: before the commit; serious: after it, before the push) and before
+the PR is opened.
 
 ```markdown
 ## Intent
@@ -81,6 +84,7 @@ Write this before committing or opening the PR:
 - Build: <exact command and result>
 - Automated tests: <exact command and result>
 - Manual validation: <specific scenario and result>
+- Local review: <reviewer on <head>: <n> findings, <disposition> — or n/a — <reason>>
 
 ## Out of scope
 <intentionally excluded related work>
@@ -218,6 +222,30 @@ on PR open regardless of tier, and their findings are answered under
 `principles/git-workflow.md` — classified against the severity bar, fixed or
 routed, threads resolved. A trivial tier is not an exemption from the merge
 gate; it only means you request nothing extra.
+
+## Evidence
+
+The local pass is the one step of the delivery contract that no gate
+witnesses on its own: hooks gate commits, `delivery-evidence` gates the PR
+body, `review-gate` gates the PR review, the ruleset gates thread
+resolution. On 2026-08-21 an agent shipped four PRs with the tier declared
+in each body and never ran the pass; when it finally did, `codex review
+--base main` returned seven findings the PR-side reviewer had missed across
+three rounds (AUT-443). So the pass leaves evidence where the gate reads:
+the PR body's Validation block carries
+
+```markdown
+- Local review: codex on abc1234: 3 findings, 2 fixed, 1 routed to AUT-n.
+- Local review: coderabbit on the staged slice: 0 findings.
+- Local review: n/a — coderabbit CLI is not installed on this machine.
+```
+
+and `delivery-evidence` refuses a normal or serious PR whose row is missing,
+a bare `n/a`, names the wrong reviewer for its tier (normal → CodeRabbit;
+serious → Codex, with the revision it reviewed), or waives without a reason.
+The gate checks shape, not truth — it cannot see a terminal — but it can
+refuse silence, and silence was the failure. A waiver is only the reviewer
+CLI being absent, unauthenticated, or out of quota, and it says which.
 
 ## Stop conditions
 
