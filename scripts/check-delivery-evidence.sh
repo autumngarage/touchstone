@@ -169,9 +169,30 @@ filled() {
 VALIDATION_ROWS="Build
 Automated tests
 Manual validation"
+# A row inside a fenced block is an example, not a record: section() keeps
+# fenced text for filled() to judge, so the fence is tracked again here with
+# the same CommonMark rule (a backtick info string may not contain a backtick;
+# a tilde fence has no such rule).
 row_text() {
   printf '%s\n' "$1" | awk -v label="$2" '
     BEGIN { pattern = "^[[:space:]]*[-*+][[:space:]]+" label ":" }
+    in_fence {
+      if (match($0, /^ {0,3}(`{3,}|~{3,})[[:space:]]*$/)) {
+        seg = $0
+        gsub(/[[:space:]]/, "", seg)
+        if (substr(seg, 1, 1) == fence_char && length(seg) >= fence_len) in_fence = 0
+      }
+      next
+    }
+    match($0, /^ {0,3}(`{3,}|~{3,})/) {
+      seg = substr($0, RSTART, RLENGTH)
+      gsub(/[[:space:]]/, "", seg)
+      info = substr($0, RSTART + RLENGTH)
+      if (!(substr(seg, 1, 1) == "`" && index(info, "`") > 0)) {
+        fence_char = substr(seg, 1, 1); fence_len = length(seg); in_fence = 1
+        next
+      }
+    }
     $0 ~ pattern { row = $0; sub(pattern "[[:space:]]*", "", row); print row; found = 1; exit }
     END { if (!found) exit 1 }'
 }
@@ -236,8 +257,11 @@ case "$TIER" in
       if printf '%s\n' "$lr_norm" | grep -qE '^[[:space:]]*n/a'; then
         # A waiver needs a reason; the threat model is omission, not forgery,
         # so any stated reason is accepted -- the words are the author's.
-        printf '%s\n' "$lr_norm" | grep -qE '^[[:space:]]*n/a[^[:alnum:]]*[[:alnum:]]' \
-          || report "the Validation row '- Local review:' waiver stating why (reviewer CLI not installed, not authenticated, or out of quota)"
+        # An unedited "<reason>" is the template's words, not the author's.
+        if ! printf '%s\n' "$lr_norm" | grep -qE '^[[:space:]]*n/a[^[:alnum:]<]*[[:alnum:]]' \
+          || printf '%s\n' "$lr_norm" | grep -q '<'; then
+          report "the Validation row '- Local review:' waiver stating why (reviewer CLI not installed, not authenticated, or out of quota)"
+        fi
       else
         # The tier routes the reviewer, deterministically; the row opens with
         # that reviewer (a mention elsewhere is not the run record) and states
@@ -248,14 +272,15 @@ case "$TIER" in
           serious) lr_tool=codex ;;
         esac
         # The run record is the documented prefix "<reviewer> on <target>:";
-        # a serious target is the reviewed revision, so the SHA binds to the
-        # prefix rather than to any hex string later in the row, and the
+        # a serious target is the bare reviewed revision, nothing decorated
+        # around it, so the SHA binds to the prefix and not to any hex string
+        # elsewhere in the row, and the
         # finding count opens the result immediately after it -- nothing may
         # sit between the target and the count, so "codex on abc: not run;
         # 0 findings" is refused as neither a pass nor a waiver.
         case "$TIER" in
           normal) lr_prefix="^[[:space:]]*$lr_tool on [^:]+:" ;;
-          serious) lr_prefix="^[[:space:]]*$lr_tool on [^:]*[0-9a-f]{7,40}[^:]*:" ;;
+          serious) lr_prefix="^[[:space:]]*$lr_tool on [0-9a-f]{7,40}:" ;;
         esac
         if ! printf '%s\n' "$lr_norm" | grep -qE "${lr_prefix}[[:space:]]*[0-9]+[[:space:]]*finding"; then
           report "the Validation row '- Local review:' recording the $TIER tier's pass as '$lr_tool on <$([ "$TIER" = serious ] && echo revision || echo staged slice)>: <n> findings, <disposition>'"
