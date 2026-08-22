@@ -249,13 +249,13 @@ case "$TIER" in
         esac
         # The run record is the documented prefix "<reviewer> on <target>:";
         # a serious target is the reviewed revision, so the SHA binds to the
-        # prefix rather than to any hex string later in the row.
+        # prefix rather than to any hex string later in the row, and the
+        # finding count is read from the result after it, not from the target.
         case "$TIER" in
           normal) lr_prefix="^[[:space:]]*$lr_tool on [^:]+:" ;;
           serious) lr_prefix="^[[:space:]]*$lr_tool on [^:]*[0-9a-f]{7,40}[^:]*:" ;;
         esac
-        if ! printf '%s\n' "$lr_norm" | grep -qE "$lr_prefix" \
-          || ! printf '%s\n' "$lr_norm" | grep -qE '[0-9]+[[:space:]]*finding'; then
+        if ! printf '%s\n' "$lr_norm" | grep -qE "${lr_prefix}.*[0-9]+[[:space:]]*finding"; then
           report "the Validation row '- Local review:' recording the $TIER tier's pass as '$lr_tool on <$([ "$TIER" = serious ] && echo revision || echo staged slice)>: <n> findings, <disposition>'"
         fi
       fi

@@ -65,7 +65,10 @@ together.
 
 ## Required PR context
 
-Write this before committing or opening the PR:
+Write the context before committing. The `Local review` row is the one
+field that cannot be truthful yet: fill it after the tier's pass has run
+(normal: before the commit; serious: after it, before the push) and before
+the PR is opened.
 
 ```markdown
 ## Intent
