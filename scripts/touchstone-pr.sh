@@ -426,14 +426,18 @@ review_gate_required() {
 # -- and a ruleset that requires it then blocks every merge while looking,
 # from the rules alone, fully enforced (AUT-467). Disabled Actions is the
 # largest enforcement gap there is, so every assessment reads this first.
-ACTIONS_DISABLED_REMEDY="enable them: gh api -X PUT repos/OWNER/REPO/actions/permissions -F enabled=true -f allowed_actions=all"
 actions_enabled() {
+  # Reading this setting needs repository administration (read) on the
+  # token; a token that cannot read it cannot verify enforcement, and an
+  # unverifiable gate is reported as such rather than assumed present.
   read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/permissions" --jq '.enabled' \
-    || fail_operation "could not read whether Actions are enabled for $REPO: $READ_OUTPUT" "Retry after GitHub recovers."
+    || fail_operation "could not read whether Actions are enabled for $REPO (needs repository administration read on the token): $READ_OUTPUT" "Use a credential that can read repos/$REPO/actions/permissions, or retry after GitHub recovers."
   [ "$READ_OUTPUT" = true ]
 }
+# The remedy flips only the enabled flag: the repository's configured
+# allow-list of actions is its own decision and is left as it was.
 actions_disabled_remedy() {
-  printf '%s' "${ACTIONS_DISABLED_REMEDY/OWNER\/REPO/$REPO}"
+  printf 'enable them: gh api --hostname %s -X PUT repos/%s/actions/permissions -F enabled=true' "$REPO_HOST" "$REPO"
 }
 
 # What GitHub enforces on a branch, read once from its effective rules. The

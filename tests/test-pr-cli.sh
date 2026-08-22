@@ -721,14 +721,14 @@ EOF
   touch "$TMP/state/actions-disabled"
   run_pr "$TMP/out" policy-status --json
   assert_has "$TMP/out" '"status":"none"'
-  assert_has "$TMP/out" '"missing":["repository Actions (disabled: no required workflow can run; enable them: gh api -X PUT repos/autumngarage/current/actions/permissions -F enabled=true -f allowed_actions=all)"'
+  assert_has "$TMP/out" '"missing":["repository Actions (disabled: no required workflow can run; enable them: gh api --hostname github.com -X PUT repos/autumngarage/current/actions/permissions -F enabled=true)"'
   run_pr "$TMP/out" policy-status
   assert_has "$TMP/out" 'enforcement: none (missing: repository Actions (disabled'
   : >"$GH_CALLS"
   run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-branch feat/test --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'repository Actions are disabled for autumngarage/current'
-  assert_has "$TMP/out" 'Enable them: gh api -X PUT repos/autumngarage/current/actions/permissions'
+  assert_has "$TMP/out" 'Enable them: gh api --hostname github.com -X PUT repos/autumngarage/current/actions/permissions -F enabled=true, then retry.'
   assert_not_has "$GH_CALLS" 'pr create'
   assert_not_has "$GH_CALLS" 'pr comment'
   rm -f "$TMP/state/actions-disabled"

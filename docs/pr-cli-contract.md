@@ -119,8 +119,9 @@ taking this document's word for it.
   repository Actions are enabled at all — disabled Actions is reported first
   and forces `none`, since no required workflow can then run (AUT-467);
   `pr open` refuses up front in that state. `pr status` carries the same field for the
-  PR's base. Raw equivalent: `gh api repos/O/R/rules/branches/<ref>` and a
-  reading of the workflows and rule types.
+  PR's base. Raw equivalent: `gh api repos/O/R/actions/permissions --jq .enabled`,
+  `gh api repos/O/R/rules/branches/<ref>`, `gh api repos/O/R --jq .allow_auto_merge`,
+  and a reading of the workflows and rule types.
   Why not the raw sequence: on 2026-08-21 four fresh agents (two Claude, two
   Codex) each needed four API calls and a workflow comment to learn that
   nothing protected `main` on a consumer, and every one of them named this
