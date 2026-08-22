@@ -81,6 +81,7 @@ Write this before committing or opening the PR:
 - Build: <exact command and result>
 - Automated tests: <exact command and result>
 - Manual validation: <specific scenario and result>
+- Local review: <reviewer on <head>: <n> findings, <disposition> — or n/a — <reason>>
 
 ## Out of scope
 <intentionally excluded related work>
@@ -237,10 +238,11 @@ the PR body's Validation block carries
 ```
 
 and `delivery-evidence` refuses a normal or serious PR whose row is missing,
-a bare `n/a`, or names no reviewer. The gate checks shape, not truth — it
-cannot see a terminal — but it can refuse silence, and silence was the
-failure. A waiver is only the reviewer CLI being absent, unauthenticated,
-or out of quota, and it says which.
+a bare `n/a`, names the wrong reviewer for its tier (normal → CodeRabbit;
+serious → Codex, with the revision it reviewed), or waives without a reason.
+The gate checks shape, not truth — it cannot see a terminal — but it can
+refuse silence, and silence was the failure. A waiver is only the reviewer
+CLI being absent, unauthenticated, or out of quota, and it says which.
 
 ## Stop conditions
 

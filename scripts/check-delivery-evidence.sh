@@ -232,15 +232,27 @@ case "$TIER" in
       # not installed, not authenticated, or out of quota. "codex" alone,
       # "codex not run", or "n/a — skipped" is silence with a reviewer's
       # name on it.
-      lr_norm="$(printf '%s\n' "$local_review" | sed 's/\xe2\x80\x93\|\xe2\x80\x94/-/g' | tr '[:upper:]' '[:lower:]')"
+      lr_norm="$(printf '%s\n' "$local_review" | tr '[:upper:]' '[:lower:]')"
       if printf '%s\n' "$lr_norm" | grep -qE '^[[:space:]]*n/a'; then
-        printf '%s\n' "$lr_norm" | grep -qE 'not installed|unauthenticated|not authenticated|no auth|quota' \
-          || report "the Validation row '- Local review:' waiver naming why (reviewer CLI not installed, not authenticated, or out of quota)"
+        # A waiver needs a reason; the threat model is omission, not forgery,
+        # so any stated reason is accepted -- the words are the author's.
+        printf '%s\n' "$lr_norm" | grep -qE '^[[:space:]]*n/a[^[:alnum:]]*[[:alnum:]]' \
+          || report "the Validation row '- Local review:' waiver stating why (reviewer CLI not installed, not authenticated, or out of quota)"
+      elif printf '%s\n' "$lr_norm" | grep -qE 'not run|skipped|did not run'; then
+        report "the Validation row '- Local review:' recording a pass that ran, or n/a with the waiver reason"
       else
-        if ! printf '%s\n' "$lr_norm" | grep -qE '(coderabbit|codex)' \
-          || ! printf '%s\n' "$lr_norm" | grep -qE '[0-9]+[[:space:]]*finding' \
-          || printf '%s\n' "$lr_norm" | grep -qE 'not run|skipped|did not run'; then
-          report "the Validation row '- Local review:' recording the reviewer that ran and its finding count (e.g. 'codex on abc1234: 3 findings, 2 fixed, 1 routed')"
+        # The tier routes the reviewer, deterministically; the row must name
+        # that reviewer and a finding count, and a serious pass names the
+        # revision it reviewed.
+        case "$TIER" in
+          normal) lr_tool=coderabbit ;;
+          serious) lr_tool=codex ;;
+        esac
+        if ! printf '%s\n' "$lr_norm" | grep -qE "$lr_tool" \
+          || ! printf '%s\n' "$lr_norm" | grep -qE '[0-9]+[[:space:]]*finding'; then
+          report "the Validation row '- Local review:' recording the $TIER tier's reviewer ($lr_tool) and its finding count (e.g. '$lr_tool on abc1234: 3 findings, 2 fixed, 1 routed')"
+        elif [ "$TIER" = serious ] && ! printf '%s\n' "$lr_norm" | grep -qE '[0-9a-f]{7,40}'; then
+          report "the Validation row '- Local review:' naming the revision the serious-tier codex pass reviewed (e.g. 'codex on abc1234: …')"
         fi
       fi
     fi

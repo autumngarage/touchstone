@@ -1017,7 +1017,7 @@ Bind the branch a PR is opened for.
 - Build: n/a — shell
 - Automated tests: full suite, pass.
 - Manual validation: opened a PR from a worktree; the request bound the expected branch.
-- Local review: codex on the branch head: 0 findings.
+- Local review: codex on 0123abc: 0 findings.
 
 ## Review tier
 serious
@@ -1123,7 +1123,7 @@ Change how merges bind.
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 
 ## Review tier
 normal
@@ -1196,7 +1196,7 @@ Fix prose.
 - Build: n/a — documentation only, no build step
 - Automated tests: full suite, pass
 - Manual validation: n/a — rendered blocks are asserted by the suite
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 
 ## Review tier
 normal
@@ -1307,7 +1307,7 @@ real
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 ## Review tier
 normal
 ## Why this tier
@@ -1390,7 +1390,7 @@ Support the literal `<!--` token in templates.
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 
 ## Review tier
 normal
@@ -1417,7 +1417,7 @@ real
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 
 ## Review tier
 normal
@@ -1460,7 +1460,7 @@ real
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 ## Review tier
 normal
 ## Why this tier
@@ -1485,7 +1485,7 @@ real
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 ## Review tier
 normal
 ## Why this tier
@@ -1509,7 +1509,7 @@ real
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 ## Review tier
 normal
 ## Why this tier
@@ -1533,7 +1533,7 @@ Support the ``<!--`` token in templates.
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 
 ## Review tier
 normal
@@ -1582,7 +1582,7 @@ real
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 ## Review tier
 normal
 ## Why this tier
@@ -1606,7 +1606,7 @@ Example:
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 
 ## Review tier
 normal
@@ -1630,7 +1630,7 @@ See ```inline`code``` here.
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 
 ## Review tier
 normal
@@ -1654,7 +1654,7 @@ The literal token is \<!-- in the rendered body.
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 
 ## Review tier
 normal
@@ -1723,7 +1723,7 @@ token` across a line break, and `<!-- -->` inline, and > quoted `    <!--`.
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 
 ## Review tier
 normal
@@ -1857,7 +1857,7 @@ body '## Intent
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 
 ## Review tier
 normal
@@ -1880,7 +1880,7 @@ body '## Intent
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 
 ## Review tier
 normal
@@ -1943,7 +1943,7 @@ real intent inside a fence
 - Build: n/a — shell
 - Automated tests: pass
 - Manual validation: n/a — none
-- Local review: codex on the branch head: 0 findings.
+- Local review: coderabbit on the staged slice: 0 findings.
 
 ## Review tier
 normal
@@ -2091,13 +2091,23 @@ accepts && ok "a recorded codex pass is accepted" || fail "a recorded codex pass
 lr_body '- Local review: n/a — coderabbit CLI is not installed on this machine; recorded waiver.' normal
 accepts && ok "a waiver with a reason is accepted" || fail "a reasoned waiver was refused"
 lr_body '- Local review: n/a — skipped' normal
-accepts && fail "a waiver without a documented reason was accepted" || ok "a waiver without a documented reason is refused"
+accepts && ok "a waiver's reason is the author's words, not a keyword list" || fail "a waiver with a stated reason was refused"
 lr_body '- Local review: codex' serious
 accepts && fail "a reviewer name with no result was accepted" || ok "a reviewer name with no result is refused"
 lr_body '- Local review: codex not run' serious
 accepts && fail "'codex not run' was accepted" || ok "'codex not run' is refused"
 lr_body '- Local review: CodeRabbit on the staged slice: 0 findings.' normal
 accepts && ok "a zero-finding record is accepted" || fail "a zero-finding record was refused"
+lr_body '- Local review: codex on 1234567: 0 findings.' normal
+accepts && fail "a normal PR recording codex (the serious reviewer) was accepted" || ok "the wrong reviewer for the tier is refused (normal wants coderabbit)"
+lr_body '- Local review: coderabbit on the staged slice: 0 findings.' serious
+accepts && fail "a serious PR recording coderabbit was accepted" || ok "the wrong reviewer for the tier is refused (serious wants codex)"
+lr_body '- Local review: codex on the branch head: 0 findings.' serious
+accepts && fail "a serious codex pass naming no revision was accepted" || ok "a serious codex pass must name the revision it reviewed"
+lr_body '- Local review: n/a — the codex executable is missing from this runner.' serious
+accepts && ok "a waiver with any stated reason is accepted" || fail "a waiver stating a reason in its own words was refused"
+lr_body '- Local review: n/a —' serious
+accepts && fail "a waiver with an empty reason was accepted" || ok "a waiver with an empty reason is refused"
 lr_body '' trivial
 accepts && ok "trivial needs no Local review row" || fail "trivial was refused without a Local review row"
 
