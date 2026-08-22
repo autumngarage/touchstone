@@ -255,7 +255,7 @@ case "$TIER" in
       # "codex not run", or "n/a — skipped" is silence with a reviewer's
       # name on it.
       lr_norm="$(printf '%s\n' "$local_review" | tr '[:upper:]' '[:lower:]')"
-      if printf '%s\n' "$lr_norm" | grep -qE '^[[:space:]]*n/a'; then
+      if printf '%s\n' "$lr_norm" | grep -qE '^[[:space:]]*n/a([^[:alnum:]]|$)'; then
         # A waiver needs a reason; the threat model is omission, not forgery,
         # so any stated reason is accepted -- the words are the author's.
         # An unedited "<reason>" is the template's words, not the author's.

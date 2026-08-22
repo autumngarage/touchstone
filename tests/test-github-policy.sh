@@ -2130,6 +2130,8 @@ lr_body '```
 accepts && fail "a fenced example row was accepted as evidence" || ok "a fenced example row is not a record"
 lr_body '    - Local review: codex on 1234567: 0 findings.' serious
 accepts && fail "an indented-code example row was accepted as evidence" || ok "an indented-code example row is not a record"
+lr_body '- Local review: n/approved' serious
+accepts && fail "'n/approved' was read as an n/a waiver" || ok "the n/a waiver token is bounded"
 lr_body '' trivial
 accepts && ok "trivial needs no Local review row" || fail "trivial was refused without a Local review row"
 
