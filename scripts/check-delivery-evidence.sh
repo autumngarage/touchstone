@@ -261,9 +261,13 @@ case "$TIER" in
       # "codex not run", or "n/a — skipped" is silence with a reviewer's
       # name on it.
       # Markdown is the input format: a revision written as `abc1234` or
-      # **codex** is the same record, so code and bold markers are dropped
-      # before the shape is read (AUT-468).
-      lr_norm="$(printf '%s\n' "$local_review" | tr '[:upper:]' '[:lower:]' | sed 's/[`*]//g')"
+      # **codex** is the same record, so code and emphasis wrappers are
+      # unwrapped before the shape is read (AUT-468). Only balanced pairs are
+      # unwrapped: deleting every marker would rewrite `code*x` into a valid
+      # reviewer name and `dead*beef` into a bare revision, so a typo would
+      # pass the gate that promises to refuse a row naming the wrong reviewer.
+      lr_norm="$(printf '%s\n' "$local_review" | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/`([^`*]*)`/\1/g; s/\*\*([^`*]*)\*\*/\1/g; s/\*([^`*]*)\*/\1/g')"
       if printf '%s\n' "$lr_norm" | grep -qE '^[[:space:]]*n/a([^[:alnum:]]|$)'; then
         # A waiver needs a reason; the threat model is omission, not forgery,
         # so any stated reason is accepted -- the words are the author's.

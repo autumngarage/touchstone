@@ -2136,6 +2136,12 @@ lr_body '- Local review: codex on `0bd1b934`: 1 finding, fixed in `34973a19`.' s
 accepts && ok "a backticked revision is the same record (AUT-468)" || fail "a backticked revision was refused"
 lr_body '- Local review: **coderabbit** on the staged slice: 0 findings.' normal
 accepts && ok "bold markers are dropped before the shape is read" || fail "a bold reviewer name was refused"
+lr_body '- Local review: code*x on 1234567: 0 findings.' serious
+accepts && fail "an unbalanced marker was deleted into a valid reviewer name" || ok "only balanced wrappers are unwrapped: code*x is not codex"
+lr_body '- Local review: codex on dead*beef: 0 findings.' serious
+accepts && fail "an unbalanced marker was deleted into a bare revision" || ok "only balanced wrappers are unwrapped: dead*beef is not a revision"
+lr_body '- Local review: *codex* on `1234567`: 0 findings.' serious
+accepts && ok "balanced emphasis and code spans still unwrap" || fail "a balanced-wrapper row was refused"
 lr_body '- Local review: ran `codex review --base main` (serious), pre-push at 0bd1b934 — 3 findings' serious
 if accepts; then fail "a row that does not begin with the run record was accepted"; else
   # Read the whole report first: under pipefail a -q grep that closes the
