@@ -63,7 +63,17 @@ def answers_body_finding($id):
 . as $root
 | ($root.trustedAuthors // []) as $trusted
 | (($root.authorPermissions // {}) | if type == "object" then . else {} end) as $permissions
-| ([($root.issueComments[]?, $root.reviewComments[]?) | .user.login // empty] | unique) as $comment_authors
+| (([
+      $root.issueComments[]?
+      | select(
+          review_request
+          or ((.body // "") | test("<!--[[:space:]]*touchstone:review-answer id=[0-9]+[[:space:]]*-->")))
+      | .user.login // empty
+    ] + [
+      $root.reviewComments[]?
+      | select(.in_reply_to_id != null)
+      | .user.login // empty
+    ]) | unique) as $driver_authors
 | ($root.pr.headSha // "") as $head
 | ($root.pr.baseSha // "") as $base
 | ($root.pr.number // 0) as $number
@@ -193,8 +203,8 @@ def answers_body_finding($id):
     if ($root.contractVersion // 0) != 3 then "unsupported or missing evidence contract version" else empty end,
     if ($root.complete // false) != true then "GitHub evidence collection was incomplete" else empty end,
     if ($root.authorPermissions | type) != "object"
-      or any($comment_authors[]; . as $author | ($permissions | has($author) | not))
-      then "effective permission evidence is missing for one or more comment authors" else empty end,
+      or any($driver_authors[]; . as $author | ($permissions | has($author) | not))
+      then "effective permission evidence is missing for one or more driver comment authors" else empty end,
     if ($root.pr.state // "") != "open" then "pull request is not open" else empty end,
     if ($head | test("^[0-9a-fA-F]{40}$") | not) then "current head SHA is missing or invalid" else empty end,
     if ($base | test("^[0-9a-fA-F]{40}$") | not) then "current base SHA is missing or invalid" else empty end,

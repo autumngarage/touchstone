@@ -18,7 +18,7 @@ HEAD_SHA="1111111111111111111111111111111111111111"
 BASE_SHA="2222222222222222222222222222222222222222"
 cat >"$TMP_DIR/base.json" <<EOF2
 {"contractVersion":3,"complete":true,"trustedAuthors":["chatgpt-codex-connector[bot]"],
- "authorPermissions":{"henry":"admin","chatgpt-codex-connector[bot]":"none"},
+ "authorPermissions":{"henry":"admin"},
  "pr":{"number":42,"state":"open","headSha":"$HEAD_SHA","baseRef":"main","baseSha":"$BASE_SHA","acceptableBaseShas":["$BASE_SHA"],"headCurrentSince":"2026-08-20T10:00:00Z","openHeadPulls":[42]},
  "issueComments":[
   {"id":100,"created_at":"2026-08-20T10:05:00Z","author_association":"NONE","user":{"login":"henry"},"body":"@codex review\n\n<!-- touchstone:pr-open head=$HEAD_SHA base=main base_sha=$BASE_SHA -->"},
@@ -64,6 +64,11 @@ run_case "no repository permission cannot request" '.authorPermissions.henry = "
 run_case "unknown permission cannot request" '.authorPermissions.henry = "owner"' failure "no trusted review request"
 run_case "missing permission fails closed" 'del(.authorPermissions.henry)' failure "permission evidence is missing"
 run_case "author association is not an authorization fast path" 'del(.authorPermissions.henry) | .issueComments[0].author_association = "OWNER"' failure "permission evidence is missing"
+run_case "unrelated commenters need no permission lookup" '
+  .issueComments += [{"id":102,"created_at":"2026-08-20T10:25:00Z","user":{"login":"reader"},"body":"Unrelated discussion"}]
+  | .reviewComments += [{"id":11,"in_reply_to_id":null,"created_at":"2026-08-20T10:25:00Z","user":{"login":"reviewer"},"body":"Unrelated top-level comment"}]' success
+run_case "every potential reply author needs permission evidence" '
+  .reviewComments += [{"id":11,"in_reply_to_id":9,"created_at":"2026-08-20T10:25:00Z","user":{"login":"reader"},"body":"A possible answer"}]' failure "permission evidence is missing"
 run_case "the result must postdate the request" '.issueComments[1].created_at = "2026-08-20T10:01:00Z"' failure "no trusted exact-head"
 run_case "moved head invalidates evidence" '.pr.headSha = "3333333333333333333333333333333333333333"' failure "no trusted exact-head"
 run_case "contract version is enforced" '.contractVersion = 2' failure "contract version"
