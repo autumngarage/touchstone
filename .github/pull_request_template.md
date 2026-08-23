@@ -13,7 +13,7 @@
 - Automated tests:
 - Manual validation:
 - Local review:
-<!-- The tier's one local pass, recorded as it ran: normal → `coderabbit review --agent --uncommitted -c principles/local-review-contract.md` on the staged slice before the commit; serious → `codex review --base <default>` on the committed branch before the push. The row must begin with `<reviewer> on <target>: <n> findings, <disposition>` — e.g. "codex on abc1234: 2 findings, both fixed" (backticks around the SHA are fine; anything else goes after the count). Required for normal and serious; `n/a — <reason>` only when the reviewer CLI is not installed/authenticated or its quota is exhausted. -->
+<!-- The tier's one Codex pass, recorded as it ran: normal → readable `${CODEX_HOME:-$HOME/.codex}/review-normal.config.toml`, then `codex -p review-normal review --uncommitted` on the isolated staged slice before commit; serious → `codex review --base <default>` on the committed branch before push. Begin with `codex on <target>: <n> findings, <disposition>` — normal target example: "the staged slice (review-normal)"; serious target: the reviewed SHA. Normal may waive for profile/pass or Codex unavailability; serious may waive only when Codex is unavailable. -->
 
 ## Out of scope
 <!-- Intentionally excluded related work, and where it is tracked. -->

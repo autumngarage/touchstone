@@ -88,6 +88,38 @@ for file in \
   assert_not_contains "$file" "Review is an enforced gate."
 done
 
+echo "==> one Codex harness is routed by tier without provider knowledge"
+for file in \
+  "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
+  "$TOUCHSTONE_ROOT/AGENTS.md" \
+  "$TOUCHSTONE_ROOT/GEMINI.md" \
+  "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md" \
+  "$TOUCHSTONE_ROOT/.github/pull_request_template.md"; do
+  assert_contains "$file" 'review-normal.config.toml'
+  assert_contains "$file" 'codex -p review-normal review --uncommitted'
+  assert_contains "$file" 'codex review --base <default>'
+  assert_contains "$file" 'may waive only when Codex is unavailable'
+  assert_not_contains "$file" 'coderabbit review --agent --uncommitted'
+done
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  'test -r "${CODEX_HOME:-$HOME/.codex}/review-normal.config.toml"'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  'back silently when a named profile file is absent'
+assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  '## The deep review pass'
+assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'OpenRouter'
+assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'Gemini'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  'A normal-profile failure never waives this pass.'
+assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  'or the same recorded waiver'
+[ ! -e "$TOUCHSTONE_ROOT/.touchstone-review.toml" ] \
+  || fail "retired project-level review declaration still exists"
+[ ! -e "$TOUCHSTONE_ROOT/principles/local-review-contract.md" ] \
+  || fail "retired CodeRabbit prompt contract still exists"
+
 GIT_WORKFLOW_SKILL="$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md"
 assert_contains "$GIT_WORKFLOW_SKILL" "Inspect the repository's effective rules"
 assert_contains "$GIT_WORKFLOW_SKILL" "Where installed and verified as required"

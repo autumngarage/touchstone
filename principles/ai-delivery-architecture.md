@@ -75,7 +75,7 @@ Human user
 - A draft PR is a review-free coordination surface. It does not emit semantic-review intent or consume an exact-head review until final shipping explicitly marks it ready.
 - The exact commit merged has passed the pinned deterministic validation workflow after its last mutation.
 - The exact commit merged has no unresolved blocking review comments, requested changes, or failing required checks.
-- Touchstone invokes no model router. The bounded local review pass in `principles/local-review.md` is driver-initiated and tier-routed; it informs the driver and never gates a merge — GitHub's PR-visible review remains the only semantic authority.
+- Touchstone invokes no model router. The bounded local pass in `principles/local-review.md` uses Codex for both review tiers; the normal tier selects a user-side profile while Touchstone stays provider- and model-agnostic. It informs the driver and never gates a merge — GitHub's PR-visible review remains the only semantic authority.
 - PR creation is the review coordination surface. It should happen early enough for CI and any PR-visible agentic reviewers to work against visible PR state.
 - Feature-branch push is not the merge gate. By default it preserves cheap local guardrails without running full test suites or LLM review; the serious tier's local pass runs at pre-push, and a project may declare its full validation there and say so in its driver file — a deliberate per-project cost, not the contract's default. GitHub's required checks remain the gate either way.
 - Merge is allowed only after PR-visible review and check approval: required checks green, a review bound to the current head with every thread answered, and no active `CHANGES_REQUESTED`.

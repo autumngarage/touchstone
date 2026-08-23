@@ -9,31 +9,25 @@ bounded local review. The GitHub side — answering findings, thread resolution,
 the round budget, merge — lives in `principles/git-workflow.md` and is not
 restated here.
 
-**The tier routes the tool — deterministically.** Classify the change, and
-the classification picks the reviewer; no judgment is left in the loop:
+**The tier routes the Codex invocation — deterministically.** Classify the
+change, and the classification picks the review shape; no judgment is left in
+the loop:
 
-| Tier | Local pass before commit | Command |
+| Tier | Local pass | Command |
 |---|---|---|
 | trivial | none | — |
-| normal | one CodeRabbit pass of the staged slice | `coderabbit review --agent --uncommitted` |
+| normal | one Codex pass of the staged slice, through the user-side `review-normal` profile | `codex -p review-normal review --uncommitted` |
 | serious | one Codex review of the branch, pre-push | `codex review --base <default>` |
 
-Never run both locally on one slice: measured on 2026-08-19, the two invert
-cleanly — Codex found 71 of 81 code findings on a 6k-line shell PR while
-CodeRabbit led 13 to 5 on a docs-only PR — so the second local pass buys
-duplication, not coverage. The PR-side reviewers run on open regardless and
-remain the merge authority.
+One harness keeps the procedure stable; the normal profile is driver-side
+configuration, not a Touchstone model or provider choice. The PR-side reviewer
+runs on open regardless and remains the merge authority.
 
 Local Codex reads `AGENTS.md` and applies its rules as review authority —
 observed citing this repository's own rule lines in findings — so durable
 review rules belong there, not in per-run prompts. (Its CLI accepts either
 `--base` or a custom prompt, not both, which makes `AGENTS.md` the only
 reliable channel for standing instructions.)
-
-Swapping a vendor changes this table, the trusted-reviewer set the pinned
-`review-gate` workflow evaluates, and the provider-specific recovery
-procedure in `principles/git-workflow.md` — three places, listed so a swap is
-done completely rather than half-done.
 
 ## Work slicing
 
@@ -84,7 +78,7 @@ the PR is opened.
 - Build: <exact command and result>
 - Automated tests: <exact command and result>
 - Manual validation: <specific scenario and result>
-- Local review: <reviewer on <head>: <n> findings, <disposition> — or n/a — <reason>>
+- Local review: <codex on <target>: <n> findings, <disposition> — or n/a — <reason>>
 
 ## Out of scope
 <intentionally excluded related work>
@@ -117,8 +111,9 @@ they change, never as trivial.
 **Normal** — ordinary contained work: small bug fixes, isolated application
 logic, localized implementation changes, safe refactors preserving a clearly
 testable behavior, anything with a focused validation path and no serious
-trigger. Path: deterministic checks, then **one** local-reviewer pass once the
-change is coherent, one bounded fix pass, commit, open the PR.
+trigger. Path: deterministic checks, the readable-profile preflight, then
+**one** local Codex pass once the change is coherent, one bounded fix pass,
+commit, open the PR.
 
 **Serious** — any of: networked or distributed state (RPCs, replication,
 client/server authority, prediction); concurrency (async handoff, scheduling,
@@ -155,30 +150,25 @@ claiming a check ran is not, and the two must never be confused.
 Once per coherent normal change, after deterministic checks pass. Stage only
 the intended slice; exclude unrelated files, accidental formatting, and any
 generated artifact that is not required to land with this change. State the
-intent and risks.
+intent and risks. Codex's `--uncommitted` mode sees staged, unstaged, and
+untracked changes, so isolate the slice before running it; do not let unrelated
+dirty state ride along.
 
-The review contract is the tracked file `principles/local-review-contract.md`
-— bounded findings, severity priorities, the exact no-defects sentence — so
-the invocation below is executable as written, and machine-level consumers
-receive the same file beside this document.
-
-Invoke it against the slice, passing the contract as additional instructions:
+The normal profile is a user-side Codex file. Touchstone names its stable
+profile name and preflight path, never its model, provider, endpoint, or
+credential source. Check the file before invocation because Codex 0.149 falls
+back silently when a named profile file is absent (AUT-500):
 
 ```bash
-# The normal-tier pass runs before the commit exists, so it reviews the
-# staged slice. The serious tier's branch-level pre-push review is
-# `codex review --base <default>` (its CLI has no --committed flag; --base
-# alone selects the branch diff, and it cannot combine with a prompt).
-coderabbit review --agent --uncommitted -c principles/local-review-contract.md
+test -r "${CODEX_HOME:-$HOME/.codex}/review-normal.config.toml"
+codex -p review-normal review --uncommitted
 ```
 
-Touchstone 3 carries no per-project review declaration (the 2.x
-`.touchstone-review.toml` is gone). The local reviewer pass is expected
-wherever the CLI the tier selects — `coderabbit` for normal, `codex` for
-serious — is installed and authenticated on this machine; where that CLI is
-not, the tier's local obligation is satisfied by its deterministic checks
-alone, the PR body says so under Validation, and the PR-visible review
-remains unchanged.
+If the file is not readable, do not invoke Codex: record a reasoned `n/a`
+waiver naming that failed preflight. If the configured-profile command exits
+nonzero, record its concise cause as the waiver and stop; do not retry, inspect
+credentials, or add provider routing. The serious pass remains
+`codex review --base <default>` after the branch is committed.
 
 **Local passes and PR-side reviews can share one metered pool**, depending on
 the provider's plan. A driver that re-runs locally after every edit is then
@@ -186,34 +176,14 @@ spending the budget the merge gate depends on — a second reason the rules
 above allow one pass per coherent slice and no confirming re-run. When a
 quota is exhausted, the tier's local obligation is **satisfied by its
 deterministic checks plus recording the exhaustion** in the validation block
-— the same rule as a machine where the tier's reviewer CLI is not installed or not authenticated. Do not wait
-for quota to run an initiated pass; the PR-visible review is the authority
-either way.
+— the same rule as a machine where Codex is unavailable. Do not wait for quota
+to run an initiated pass; the PR-visible review is the authority either way.
 
 Afterwards: triage each finding as valid, false positive, duplicate, or out of
 scope; apply valid **high-severity** fixes and answer-and-route valid findings
 below the bar, exactly as the delivery contract does on the PR side; do not
 re-run the pass to confirm the reviewer is now quiet; never expand the slice
 to address adjacent or pre-existing findings.
-
-## The deep review pass
-
-Only for a stable serious PR — never while the implementation is still moving.
-Give the reviewer the full PR context block above. Use this contract:
-
-> You are the final reviewer for this serious pull request. Report at most 3
-> high-confidence, merge-blocking findings introduced by this PR that violate
-> its stated intent or invariants. Prioritize crashes, corruption, data loss,
-> irreversible bad state, incorrect distributed-state behavior, concurrency
-> races, invalid lifetimes, serialization or compatibility breakage, security
-> failures, public-contract breaks, and hot-path performance regressions. For
-> every finding: exact location, the concrete execution or state-transition
-> failure path, why this PR caused it, and the minimal fix. Do not report
-> style, refactors, architectural alternatives, pre-existing defects, or
-> low-confidence concerns; report a missing test only when the changed
-> behavior cannot be safely validated without it and you can name the concrete
-> failure it would catch. If there are no merge-blocking issues, respond
-> exactly: "No merge-blocking findings."
 
 ## Repository policy still runs
 
@@ -236,19 +206,22 @@ the PR body's Validation block carries
 
 ```markdown
 - Local review: codex on abc1234: 3 findings, 2 fixed, 1 routed to AUT-n.
-- Local review: coderabbit on the staged slice: 0 findings.
-- Local review: n/a — coderabbit CLI is not installed on this machine.
+- Local review: codex on the staged slice (review-normal): 0 findings.
+- Local review: n/a — review-normal.config.toml is not readable at the preflight path.
 ```
 
-The row *begins* with `<reviewer> on <target>: <n> findings` — prose and
+The row *begins* with `codex on <target>: <n> findings` — prose and
 dispositions go after the count; backticks around a SHA are fine — and
-`delivery-evidence` refuses a normal or serious PR whose row is missing,
-a bare `n/a`, names the wrong reviewer for its tier (normal → CodeRabbit;
-serious → Codex, with the revision it reviewed), or waives without a reason.
+`delivery-evidence` refuses a normal or serious PR whose row is missing, a bare
+`n/a`, a serious reviewer other than Codex, a serious target without the
+reviewed revision, a normal target that is a bare revision, or a waiver without
+a reason.
 When the row is present but unreadable it says so and quotes the line.
 The gate checks shape, not truth — it cannot see a terminal — but it can
-refuse silence, and silence was the failure. A waiver is only the reviewer
-CLI being absent, unauthenticated, or out of quota, and it says which.
+refuse silence, and silence was the failure. For normal, a waiver is only the
+profile being unreadable, its configured run exiting nonzero, or Codex being
+absent, unauthenticated, or out of quota. Serious may waive only when Codex is unavailable.
+Unavailable means absent, unauthenticated, or out of quota; either waiver says which.
 
 ## Stop conditions
 
@@ -259,12 +232,12 @@ is met:
 
 - **trivial** — no initiated review; deterministic checks alone complete it.
 - **normal** — one local pass has run and its findings are triaged, **or**
-  the recorded waiver applies (the tier's reviewer CLI is not installed or
-  not authenticated on this machine, or its quota is exhausted — either way
-  recorded in the validation block).
-- **serious** — the pre-push local pass ran or the same recorded waiver
-  applies, and the PR-side review evidence covers the head that merges (the
-  gate enforces the latter).
+  the recorded waiver applies (the normal profile is unreadable, its configured
+  pass exits nonzero, or Codex is unavailable — recorded in the validation
+  block).
+- **serious** — the pre-push local pass ran or its Codex-unavailable waiver is
+  recorded, and the PR-side review evidence covers the head that merges (the
+  gate enforces the latter). A normal-profile failure never waives this pass.
 
 After a bounded pass, fix the valid findings, **re-run every applicable
 deterministic check and the intended validation scenario** — a valid fix can
