@@ -287,13 +287,21 @@ case "$TIER" in
           report "the Validation row '- Local review:' waiver stating why (reviewer CLI not installed, not authenticated, or out of quota)"
         fi
       else
-        # The tier routes the reviewer, deterministically; the row opens with
-        # that reviewer (a mention elsewhere is not the run record) and states
-        # a finding count, and a serious pass names the revision it reviewed.
-        # "codex not run" carries no count and is refused by the same check.
+        # During the normal-tier transition either documented reviewer may
+        # open the run record; serious remains codex-only. The target shape is
+        # what preserves the tier boundary: normal names a staged slice, while
+        # serious names the bare revision it reviewed. A mention elsewhere is
+        # not the run record, and "codex not run" carries no count, so both are
+        # refused by the same check.
         case "$TIER" in
-          normal) lr_tool=coderabbit ;;
-          serious) lr_tool=codex ;;
+          normal)
+            lr_tool='codex or coderabbit'
+            lr_reviewer="${lr_mark}(codex|coderabbit)${lr_mark}"
+            ;;
+          serious)
+            lr_tool=codex
+            lr_reviewer="${lr_mark}codex${lr_mark}"
+            ;;
         esac
         # The run record is the documented prefix "<reviewer> on <target>:";
         # a serious target is the bare reviewed revision, nothing decorated
@@ -303,10 +311,17 @@ case "$TIER" in
         # sit between the target and the count, so "codex on abc: not run;
         # 0 findings" is refused as neither a pass nor a waiver.
         case "$TIER" in
-          normal) lr_prefix="^[[:space:]]*${lr_mark}${lr_tool}${lr_mark} on [^:]+:" ;;
-          serious) lr_prefix="^[[:space:]]*${lr_mark}${lr_tool}${lr_mark} on ${lr_mark}[0-9a-f]{7,40}${lr_mark}:" ;;
+          normal)
+            lr_prefix="^[[:space:]]*${lr_reviewer} on [^:]*[^[:space:]:][[:space:]]*:"
+            lr_wrong_target="^[[:space:]]*${lr_reviewer} on[[:space:]]+${lr_mark}[[:space:]]*[0-9a-f]{7,40}[[:space:]]*${lr_mark}[[:space:]]*:"
+            ;;
+          serious)
+            lr_prefix="^[[:space:]]*${lr_reviewer} on ${lr_mark}[0-9a-f]{7,40}${lr_mark}:"
+            lr_wrong_target=
+            ;;
         esac
-        if ! printf '%s\n' "$lr_norm" | grep -qE "${lr_prefix}[[:space:]]*[0-9]+[[:space:]]*finding"; then
+        if ! printf '%s\n' "$lr_norm" | grep -qE "${lr_prefix}[[:space:]]*[0-9]+[[:space:]]*finding" \
+          || { [ -n "$lr_wrong_target" ] && printf '%s\n' "$lr_norm" | grep -qE "$lr_wrong_target"; }; then
           # The row is present: say that, show what was read, and name the
           # shape it must begin with -- "missing" sends the author hunting
           # for an absent row, or weakening a true claim (AUT-468).
