@@ -72,19 +72,19 @@
               "path": ".github/workflows/delivery-evidence.yml",
               "ref": "refs/heads/main",
               "repository_id": 1333343261,
-              "sha": "4f93a259be6e8c83449c254d19e337ba50f3ff7a"
+              "sha": "7fe990be20926eaa5721f7c0d9e5949de0ab5570"
             },
             {
               "path": ".github/workflows/review-gate.yml",
               "ref": "refs/heads/main",
               "repository_id": 1333343261,
-              "sha": "4f93a259be6e8c83449c254d19e337ba50f3ff7a"
+              "sha": "7fe990be20926eaa5721f7c0d9e5949de0ab5570"
             },
             {
               "path": ".github/workflows/validate.yml",
               "ref": "refs/heads/main",
               "repository_id": 1333343261,
-              "sha": "4f93a259be6e8c83449c254d19e337ba50f3ff7a"
+              "sha": "7fe990be20926eaa5721f7c0d9e5949de0ab5570"
             }
           ]
         }
