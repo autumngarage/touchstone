@@ -122,27 +122,31 @@ case "$method $endpoint" in
     }'
     ;;
   "GET repos/autumngarage/touchstone-workflows/contents/.touchstone-source-contract.json?ref=main")
-    jq -n --arg context "${GH_FAKE_SOURCE_STATUS_CONTEXT:-source contract}" '{
+    jq -n --arg context "${GH_FAKE_SOURCE_STATUS_CONTEXT:-source contract}" \
+      --arg nested "${GH_FAKE_SOURCE_NESTED_WORKFLOW:-}" '{
       contractVersion: 1,
       requiredStatusCheck: $context,
       sourceRepository: "autumngarage/touchstone-workflows",
       statusJob: "source-contract",
       statusPublisher: ".github/workflows/validate.yml",
-      workflowPaths: [
+      workflowPaths: ([
         ".github/workflows/delivery-evidence.yml",
         ".github/workflows/review-gate.yml",
         ".github/workflows/validate.yml"
-      ]
+      ] + (if $nested == "" then [] else [$nested] end))
     }'
     ;;
   "GET repos/autumngarage/touchstone-workflows/git/trees/main?recursive=1")
-    jq -n --arg extra "${GH_FAKE_SOURCE_EXTRA_WORKFLOW:-}" '{
+    jq -n --arg extra "${GH_FAKE_SOURCE_EXTRA_WORKFLOW:-}" \
+      --arg nested "${GH_FAKE_SOURCE_NESTED_WORKFLOW:-}" '{
       truncated: false,
       tree: ([
         {path: ".github/workflows/delivery-evidence.yml", type: "blob"},
         {path: ".github/workflows/review-gate.yml", type: "blob"},
         {path: ".github/workflows/validate.yml", type: "blob"}
-      ] + (if $extra == "" then [] else [{path: $extra, type: "blob"}] end))
+      ]
+      + (if $extra == "" then [] else [{path: $extra, type: "blob"}] end)
+      + (if $nested == "" then [] else [{path: $nested, type: "blob"}] end))
     }'
     ;;
   "GET repos/autumngarage/touchstone-workflows/compare/$WORKFLOWS_PIN...$WORKFLOWS_PIN")
@@ -595,6 +599,9 @@ GH_FAKE_SOURCE_STATUS_CONTEXT="renamed source contract" \
 GH_FAKE_SOURCE_EXTRA_WORKFLOW=".github/workflows/undeclared.yaml" \
   run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null 2>&1 \
   && fail "workflow source policy accepted a live workflow omitted from its manifest"
+GH_FAKE_SOURCE_NESTED_WORKFLOW=".github/workflows/archive/validate.yml" \
+  run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null 2>&1 \
+  && fail "workflow source policy accepted a nested workflow path GitHub does not discover"
 jq '.repository = "unlisted-source"
   | .managedRuleset.name = "Touchstone policy v1: autumngarage/unlisted-source@main"
   | .managedRuleset.conditions.repository_name.include = ["unlisted-source"]

@@ -429,8 +429,7 @@ verify_workflow_source_contract() {
     and ($contract.workflowPaths | index($contract.statusPublisher) != null)
     and all(.workflowPaths[];
       type == "string"
-      and startswith(".github/workflows/")
-      and (endswith(".yml") or endswith(".yaml")))
+      and test("^\\.github/workflows/[^/]+\\.ya?ml$"))
   ' <<<"$manifest" >/dev/null || die "workflow source contract manifest is malformed: $manifest_path"
   source_tree="$(api "repos/$ORG/$REPOSITORY/git/trees/$BRANCH?recursive=1")" \
     || die "could not enumerate workflow source repository tree at $BRANCH"
@@ -441,7 +440,7 @@ verify_workflow_source_contract() {
     .tree[]
     | select(.type == "blob")
     | .path
-    | select(test("^\\.github/workflows/.*\\.ya?ml$"))
+    | select(test("^\\.github/workflows/[^/]+\\.ya?ml$"))
   ] | sort' <<<"$source_tree")"
   [ "$live_workflows" = "$declared_workflows" ] \
     || die "workflow source live inventory differs from its manifest (live: $live_workflows; declared: $declared_workflows)"
