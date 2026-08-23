@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SOURCE_SCRIPT="$ROOT/scripts/github-policy.sh"
 SCRIPT="$SOURCE_SCRIPT"
 POLICY="$ROOT/policy/github/touchstone-main.json"
+SOURCE_POLICY="$ROOT/policy/github/workflow-sources/touchstone-workflows.json"
 # The fake source repository serves exactly the pin the checked-in policy
 # names, so bumping the pin never needs a matching edit here.
 WORKFLOWS_PIN="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[].sha] | unique | .[0]' "$POLICY")"
@@ -61,7 +62,11 @@ emit() {
 
 case "$method $endpoint" in
   "GET repos/autumngarage/touchstone-workflows")
-    emit '{"id":1333343261}'
+    if [ -f "$state/source-auto-merge" ]; then
+      emit '{"id":1333343261,"allow_auto_merge":true}'
+    else
+      emit '{"id":1333343261,"allow_auto_merge":false}'
+    fi
     ;;
   "GET repos/autumngarage/touchstone")
     if [ -f "$state/auto-merge" ]; then emit '{"allow_auto_merge":true}'; else emit '{"allow_auto_merge":false}'; fi
@@ -102,25 +107,80 @@ case "$method $endpoint" in
     if [ -f "$state/local-workflow-absent" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
     emit '{"type":"file","sha":"0f30e59859b936ca16a8d6f4dd8cb1e8960eb917"}'
     ;;
+  "GET repos/autumngarage/touchstone/contents/.touchstone-source-contract.json?ref=main")
+    jq -n --arg context "${GH_FAKE_SOURCE_STATUS_CONTEXT:-source contract}" '{
+      contractVersion: 1,
+      requiredStatusCheck: $context,
+      sourceRepository: "autumngarage/touchstone-workflows",
+      statusJob: "source-contract",
+      statusPublisher: ".github/workflows/validate.yml",
+      workflowPaths: [
+        ".github/workflows/delivery-evidence.yml",
+        ".github/workflows/review-gate.yml",
+        ".github/workflows/validate.yml"
+      ]
+    }'
+    ;;
+  "GET repos/autumngarage/touchstone-workflows/contents/.touchstone-source-contract.json?ref=main")
+    jq -n --arg context "${GH_FAKE_SOURCE_STATUS_CONTEXT:-source contract}" \
+      --arg nested "${GH_FAKE_SOURCE_NESTED_WORKFLOW:-}" '{
+      contractVersion: 1,
+      requiredStatusCheck: $context,
+      sourceRepository: "autumngarage/touchstone-workflows",
+      statusJob: "source-contract",
+      statusPublisher: ".github/workflows/validate.yml",
+      workflowPaths: ([
+        ".github/workflows/delivery-evidence.yml",
+        ".github/workflows/review-gate.yml",
+        ".github/workflows/validate.yml"
+      ] + (if $nested == "" then [] else [$nested] end))
+    }'
+    ;;
+  "GET repos/autumngarage/touchstone-workflows/git/trees/main?recursive=1")
+    jq -n --arg extra "${GH_FAKE_SOURCE_EXTRA_WORKFLOW:-}" \
+      --arg nested "${GH_FAKE_SOURCE_NESTED_WORKFLOW:-}" '{
+      truncated: false,
+      tree: ([
+        {path: ".github/workflows/delivery-evidence.yml", type: "blob"},
+        {path: ".github/workflows/review-gate.yml", type: "blob"},
+        {path: ".github/workflows/validate.yml", type: "blob"}
+      ]
+      + (if $extra == "" then [] else [{path: $extra, type: "blob"}] end)
+      + (if $nested == "" then [] else [{path: $nested, type: "blob"}] end))
+    }'
+    ;;
   "GET repos/autumngarage/touchstone-workflows/compare/$WORKFLOWS_PIN...$WORKFLOWS_PIN")
     emit '{"status":"identical"}'
     ;;
   "GET repos/autumngarage/touchstone-workflows/branches/main/protection")
-    if [ "${GH_FAKE_SOURCE_UNPROTECTED:-0}" = 1 ]; then
+    if [ -f "$state/source-ruleset.json" ]; then
+      echo "gh: Branch not protected (HTTP 404)" >&2
+      exit 1
+    elif [ "${GH_FAKE_SOURCE_UNPROTECTED:-0}" = 1 ]; then
       emit '{"enforce_admins":{"enabled":false},"required_pull_request_reviews":null,"required_conversation_resolution":{"enabled":false},"allow_force_pushes":{"enabled":true},"allow_deletions":{"enabled":true}}'
     else
       emit '{"enforce_admins":{"enabled":true},"required_pull_request_reviews":{},"required_conversation_resolution":{"enabled":true},"allow_force_pushes":{"enabled":false},"allow_deletions":{"enabled":false}}'
     fi
     ;;
   "GET orgs/autumngarage/rulesets")
-    if [ "${GH_FAKE_DUPLICATE_RULESET:-0}" = 1 ]; then
+    if [ "${GH_FAKE_SOURCE_RULESET_READ_ERROR:-0}" = 1 ] \
+      && [ ! -f "$state/source-ruleset-read-error-used" ]; then
+      touch "$state/source-ruleset-read-error-used"
+      echo "gh: API unavailable (HTTP 503)" >&2
+      exit 1
+    elif [ "${GH_FAKE_DUPLICATE_RULESET:-0}" = 1 ]; then
       emit '[{"id":123,"name":"Touchstone policy v1: autumngarage/touchstone@main"},{"id":124,"name":"Touchstone policy v1: autumngarage/touchstone@main"}]'
     elif [ "${GH_FAKE_UNRELATED_NAME_COLLISION:-0}" = 1 ]; then
       emit '[{"id":777,"name":"Touchstone main delivery"}]'
-    elif [ -f "$state/ruleset.json" ]; then
-      emit "$(jq '[{id:.id,name:.name}]' "$state/ruleset.json")"
     else
-      emit '[]'
+      rulesets='[]'
+      if [ -f "$state/ruleset.json" ]; then
+        rulesets="$(jq --argjson current "$rulesets" '$current + [{id:.id,name:.name}]' "$state/ruleset.json")"
+      fi
+      if [ -f "$state/source-ruleset.json" ]; then
+        rulesets="$(jq --argjson current "$rulesets" '$current + [{id:.id,name:.name}]' "$state/source-ruleset.json")"
+      fi
+      emit "$rulesets"
     fi
     ;;
   "GET orgs/autumngarage/rulesets/123")
@@ -128,6 +188,9 @@ case "$method $endpoint" in
     ;;
   "GET orgs/autumngarage/rulesets/777")
     emit '{"id":777,"name":"Touchstone main delivery","target":"branch","enforcement":"active","bypass_actors":[],"conditions":{"repository_name":{"include":["other-repository"],"exclude":[],"protected":false},"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[{"type":"deletion"}]}'
+    ;;
+  "GET orgs/autumngarage/rulesets/456")
+    cat "$state/source-ruleset.json"
     ;;
   "POST orgs/autumngarage/rulesets")
     # GitHub fills in defaults the caller omitted: required_reviewers, and
@@ -287,8 +350,19 @@ case "$method $endpoint" in
       emit '[]'
     fi
     ;;
+  "GET repos/autumngarage/touchstone-workflows/rulesets?includes_parents=false" | \
+  "GET repos/autumngarage/touchstone-workflows/rulesets?includes_parents=true")
+    if [ -f "$state/source-repo-ruleset.json" ]; then
+      emit "$(jq '[{id:.id,name:.name}]' "$state/source-repo-ruleset.json")"
+    else
+      emit '[]'
+    fi
+    ;;
   "GET repos/autumngarage/touchstone/rulesets/321")
     cat "$state/repo-ruleset.json"
+    ;;
+  "GET repos/autumngarage/touchstone-workflows/rulesets/654")
+    cat "$state/source-repo-ruleset.json"
     ;;
   "POST repos/autumngarage/touchstone/rulesets")
     jq '. + {id:321}' >"$state/repo-ruleset.json"
@@ -322,6 +396,13 @@ case "$method $endpoint" in
         || jq '[.rules[]]' "$state/ruleset.json"
     fi
     ;;
+  "GET repos/autumngarage/touchstone-workflows/rules/branches/main")
+    if [ -f "$state/source-ruleset.json" ] && [ -f "$state/source-repo-ruleset.json" ]; then
+      jq -s 'map(.rules) | add' "$state/source-ruleset.json" "$state/source-repo-ruleset.json"
+    else
+      emit '[]'
+    fi
+    ;;
   *)
     echo "unhandled fake gh call: $method $endpoint" >&2
     exit 2
@@ -334,11 +415,13 @@ chmod +x "$TMP_DIR/bin/gh"
 # from a clean temporary repository so local development edits do not weaken
 # that production precondition or prevent the lifecycle fixtures from running.
 RUNNER_REPO="$TMP_DIR/policy-runner"
-mkdir -p "$RUNNER_REPO/scripts"
+RUNNER_SOURCE_POLICY="$RUNNER_REPO/policy/github/workflow-sources/touchstone-workflows.json"
+mkdir -p "$RUNNER_REPO/scripts" "$(dirname "$RUNNER_SOURCE_POLICY")"
 cp "$SOURCE_SCRIPT" "$RUNNER_REPO/scripts/github-policy.sh"
+cp "$SOURCE_POLICY" "$RUNNER_SOURCE_POLICY"
 git -C "$RUNNER_REPO" init -q
 git -C "$RUNNER_REPO" symbolic-ref HEAD refs/heads/main
-git -C "$RUNNER_REPO" add scripts/github-policy.sh
+git -C "$RUNNER_REPO" add scripts/github-policy.sh policy/github/workflow-sources/touchstone-workflows.json
 git -C "$RUNNER_REPO" -c user.name=Touchstone -c user.email=touchstone@example.invalid \
   commit -qm "policy test runner"
 SCRIPT="$RUNNER_REPO/scripts/github-policy.sh"
@@ -362,7 +445,9 @@ init_branch() {
   rm -f "$TMP_DIR/state/ruleset.json" "$TMP_DIR/state/bad-effective-used" \
     "$TMP_DIR/state/branch-calls" "$TMP_DIR/state/org-mutation-failed" \
     "$TMP_DIR/state/branch-put-failed" "$TMP_DIR/state/local-workflow-absent" \
-    "$TMP_DIR/state/repo-ruleset.json" "$TMP_DIR/state/auto-merge"
+    "$TMP_DIR/state/repo-ruleset.json" "$TMP_DIR/state/auto-merge" \
+    "$TMP_DIR/state/source-ruleset.json" "$TMP_DIR/state/source-repo-ruleset.json" \
+    "$TMP_DIR/state/source-auto-merge"
 }
 
 run_policy() {
@@ -469,6 +554,76 @@ jq -e '
   and .managedRepositoryRuleset.name == "Touchstone merge queue v1: autumngarage/touchstone-policy-canary@main"
 ' <<<"$derived" >/dev/null || fail "consumer derivation does not rewrite every ownership coordinate"
 ok "ruleset expresses PR-only audited bypass and every native gate"
+
+echo "==> Workflow source policy has a distinct fail-closed shape"
+jq -e '
+  .contractVersion == 1
+  and .policyType == "workflow-source"
+  and .repository == "touchstone-workflows"
+  and (has("workflowSource") | not)
+  and .sourceContract == {manifestPath: ".touchstone-source-contract.json"}
+  and .rollbackPrerequisites.repositoryFiles == []
+  and any(.managedRuleset.rules[]; .type == "deletion")
+  and any(.managedRuleset.rules[]; .type == "non_fast_forward")
+  and any(.managedRuleset.rules[];
+    .type == "pull_request"
+    and .parameters.require_code_owner_review == false
+    and .parameters.required_approving_review_count == 0
+    and .parameters.required_review_thread_resolution == true)
+  and any(.managedRuleset.rules[];
+    .type == "required_status_checks"
+    and .parameters.strict_required_status_checks_policy == false
+    and .parameters.required_status_checks == [{context: "source contract"}])
+  and (any(.managedRuleset.rules[]; .type == "workflows") | not)
+  and any(.managedRepositoryRuleset.rules[]; .type == "merge_queue")
+' "$SOURCE_POLICY" >/dev/null || fail "checked-in workflow source policy is missing a required invariant"
+
+# Exercise the checked-in source inventory through the same policy runner used
+# by the lifecycle suite. Mutations replace that runner's inventory entry so
+# each structural guard is tested before restoring the reviewed fixture.
+run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null \
+  || fail "valid workflow source policy was refused"
+
+jq 'del(.managedRuleset.rules[] | select(.type == "required_status_checks"))' \
+  "$SOURCE_POLICY" >"$RUNNER_SOURCE_POLICY"
+run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null 2>&1 \
+  && fail "workflow source policy without its manifest status was accepted"
+jq '(.managedRuleset.rules[] | select(.type == "pull_request") | .parameters.required_review_thread_resolution) = false' \
+  "$SOURCE_POLICY" >"$RUNNER_SOURCE_POLICY"
+run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null 2>&1 \
+  && fail "workflow source policy without review-thread resolution was accepted"
+jq '.managedRuleset.rules += [{type:"workflows",parameters:{workflows:[{
+  path:".github/workflows/validate.yml",ref:"refs/heads/main",repository_id:1,
+  sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}]' \
+  "$SOURCE_POLICY" >"$RUNNER_SOURCE_POLICY"
+run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null 2>&1 \
+  && fail "workflow source policy accepted a self-referential required workflow"
+cp "$SOURCE_POLICY" "$RUNNER_SOURCE_POLICY"
+GH_FAKE_SOURCE_STATUS_CONTEXT="renamed source contract" \
+  run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null 2>&1 \
+  && fail "workflow source policy accepted a status context that drifted from its manifest"
+GH_FAKE_SOURCE_EXTRA_WORKFLOW=".github/workflows/undeclared.yaml" \
+  run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null 2>&1 \
+  && fail "workflow source policy accepted a live workflow omitted from its manifest"
+GH_FAKE_SOURCE_NESTED_WORKFLOW=".github/workflows/archive/validate.yml" \
+  run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null 2>&1 \
+  && fail "workflow source policy accepted a nested workflow path GitHub does not discover"
+jq '.repository = "unlisted-source"
+  | .managedRuleset.name = "Touchstone policy v1: autumngarage/unlisted-source@main"
+  | .managedRuleset.conditions.repository_name.include = ["unlisted-source"]
+  | .managedRepositoryRuleset.name = "Touchstone merge queue v1: autumngarage/unlisted-source@main"' \
+  "$SOURCE_POLICY" >"$TMP_DIR/unlisted-source-policy.json"
+run_policy dry-run "$TMP_DIR/unlisted-source-policy.json" >/dev/null 2>&1 \
+  && fail "workflow source policy accepted a target absent from the checked-in inventory"
+cp "$RUNNER_SOURCE_POLICY" "$(dirname "$RUNNER_SOURCE_POLICY")/duplicate.json"
+run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null 2>&1 \
+  && fail "workflow source policy accepted ambiguous duplicate inventory entries"
+rm "$(dirname "$RUNNER_SOURCE_POLICY")/duplicate.json"
+jq 'del(.managedRuleset.rules[] | select(.type == "workflows"))' \
+  "$POLICY" >"$TMP_DIR/consumer-policy-no-workflows.json"
+run_policy dry-run "$TMP_DIR/consumer-policy-no-workflows.json" >/dev/null 2>&1 \
+  && fail "consumer policy without a required workflow was accepted"
+ok "workflow source uses its manifest status while consumers still require external workflows"
 
 echo "==> Checked-in consumer policies equal their derivation"
 # One contract, many repositories: a consumer policy may differ from the
@@ -596,7 +751,24 @@ if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_SOURCE_UNPRO
   "$SCRIPT" dry-run "$POLICY" >/dev/null 2>&1; then
   fail "policy accepted an unprotected required-workflow source branch"
 fi
-ok "self-hosted or unprotected required-workflow sources fail closed"
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_SOURCE_RULESET_READ_ERROR=1 \
+  "$SCRIPT" dry-run "$POLICY" >/dev/null 2>&1; then
+  fail "consumer policy hid a workflow-source ruleset read failure behind legacy protection"
+fi
+jq '.managedRuleset + {id:456}' "$SOURCE_POLICY" >"$TMP_DIR/state/source-ruleset.json"
+if run_policy dry-run "$POLICY" >/dev/null 2>&1; then
+  fail "consumer policy accepted a partially installed workflow-source ruleset policy"
+fi
+jq '.managedRepositoryRuleset + {id:654}' "$SOURCE_POLICY" >"$TMP_DIR/state/source-repo-ruleset.json"
+if run_policy dry-run "$POLICY" >/dev/null 2>&1; then
+  fail "consumer policy accepted workflow-source rulesets with auto-merge disabled"
+fi
+touch "$TMP_DIR/state/source-auto-merge"
+run_policy dry-run "$POLICY" >/dev/null \
+  || fail "consumer policy rejected the complete workflow-source ruleset policy"
+rm "$TMP_DIR/state/source-ruleset.json" "$TMP_DIR/state/source-repo-ruleset.json" \
+  "$TMP_DIR/state/source-auto-merge"
+ok "consumer verification accepts the complete source rulesets and rejects self-hosted, partial, or unprotected sources"
 # Every required workflow is verified, not only the first: a second entry
 # whose file is absent at its pin must be refused.
 jq '(.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows) += [{
