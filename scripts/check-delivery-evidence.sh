@@ -312,7 +312,7 @@ case "$TIER" in
         # 0 findings" is refused as neither a pass nor a waiver.
         case "$TIER" in
           normal)
-            lr_prefix="^[[:space:]]*${lr_reviewer} on [^:]+:"
+            lr_prefix="^[[:space:]]*${lr_reviewer} on [^:]*[^[:space:]:][[:space:]]*:"
             lr_wrong_target="^[[:space:]]*${lr_reviewer} on[[:space:]]+${lr_mark}[[:space:]]*[0-9a-f]{7,40}[[:space:]]*${lr_mark}[[:space:]]*:"
             ;;
           serious)

@@ -2295,6 +2295,8 @@ lr_body '- Local review: CodeRabbit on the staged slice: 0 findings.' normal
 accepts && ok "the transition still accepts a coderabbit normal pass" || fail "a coderabbit normal pass was refused during the transition"
 lr_body '- Local review: codex on the staged slice (review-normal): 0 findings.' normal
 accepts && ok "the transition accepts a codex normal pass" || fail "a codex normal pass was refused during the transition"
+lr_body '- Local review: codex on    : 0 findings.' normal
+accepts && fail "a normal pass naming only whitespace as its target was accepted" || ok "a normal target contains non-whitespace text"
 lr_body '- Local review: codex on 1234567: 0 findings.' normal
 accepts && fail "a normal pass naming a bare revision was accepted" || ok "a normal target is not a bare revision"
 lr_body '- Local review: codex on `1234567`: 0 findings.' normal
