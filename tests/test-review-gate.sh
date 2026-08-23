@@ -90,6 +90,26 @@ run_case "a standard review body edited two seconds after its last attachment is
   .reviews = [{"id":7,"body":"'"$STANDARD_BODY"'","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:03Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
   | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
                        {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed."}]' failure "body-only finding"
+for permission in write maintain admin; do
+  run_case "$permission permission can answer a review-body finding" '
+    .authorPermissions.henry = "'"$permission"'"
+    | .reviews = [{"id":7,"body":"P1 body finding","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+    | .issueComments += [{"id":102,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer id=7 -->"}]' success
+done
+run_case "read permission cannot answer a review-body finding" '
+  .authorPermissions.henry = "read"
+  | .reviews = [{"id":7,"body":"P1 body finding","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .issueComments += [{"id":102,"created_at":"2026-08-20T10:30:00Z","author_association":"OWNER","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer id=7 -->"}]' failure "body-only finding"
+for permission in write maintain admin; do
+  run_case "$permission permission can answer a result-comment finding" '
+    .authorPermissions.henry = "'"$permission"'"
+    | .issueComments[1].body = "Codex Review: P1 result finding\n\n**Reviewed commit:** `1111111111`"
+    | .issueComments += [{"id":102,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer id=101 -->"}]' success
+done
+run_case "read permission cannot answer a result-comment finding" '
+  .authorPermissions.henry = "read"
+  | .issueComments[1].body = "Codex Review: P1 result finding\n\n**Reviewed commit:** `1111111111`"
+  | .issueComments += [{"id":102,"created_at":"2026-08-20T10:30:00Z","author_association":"OWNER","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer id=101 -->"}]' failure "body-only finding"
 [ "$ERRORS" -eq 0 ] || {
   echo "==> FAIL: $ERRORS review-gate assertion(s) failed" >&2
   exit 1
