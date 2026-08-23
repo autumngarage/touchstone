@@ -220,8 +220,8 @@ When the row is present but unreadable it says so and quotes the line.
 The gate checks shape, not truth — it cannot see a terminal — but it can
 refuse silence, and silence was the failure. For normal, a waiver is only the
 profile being unreadable, its configured run exiting nonzero, or Codex being
-absent, unauthenticated, or out of quota. For serious, a waiver is only Codex
-being absent, unauthenticated, or out of quota. Either waiver says which.
+absent, unauthenticated, or out of quota. Serious may waive only when Codex is unavailable.
+Unavailable means absent, unauthenticated, or out of quota; either waiver says which.
 
 ## Stop conditions
 

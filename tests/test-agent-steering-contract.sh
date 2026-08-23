@@ -100,6 +100,7 @@ for file in \
   assert_contains "$file" 'review-normal.config.toml'
   assert_contains "$file" 'codex -p review-normal review --uncommitted'
   assert_contains "$file" 'codex review --base <default>'
+  assert_contains "$file" 'may waive only when Codex is unavailable'
   assert_not_contains "$file" 'coderabbit review --agent --uncommitted'
 done
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
@@ -110,8 +111,6 @@ assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   '## The deep review pass'
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'OpenRouter'
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'Gemini'
-assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  'For serious, a waiver is only Codex'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'A normal-profile failure never waives this pass.'
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
