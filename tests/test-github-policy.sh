@@ -62,7 +62,7 @@ emit() {
 
 case "$method $endpoint" in
   "GET repos/autumngarage/touchstone-workflows")
-    if [ -f "$state/source-ruleset.json" ] || [ -f "$state/auto-merge" ]; then
+    if [ -f "$state/source-auto-merge" ]; then
       emit '{"id":1333343261,"allow_auto_merge":true}'
     else
       emit '{"id":1333343261,"allow_auto_merge":false}'
@@ -446,7 +446,8 @@ init_branch() {
     "$TMP_DIR/state/branch-calls" "$TMP_DIR/state/org-mutation-failed" \
     "$TMP_DIR/state/branch-put-failed" "$TMP_DIR/state/local-workflow-absent" \
     "$TMP_DIR/state/repo-ruleset.json" "$TMP_DIR/state/auto-merge" \
-    "$TMP_DIR/state/source-ruleset.json" "$TMP_DIR/state/source-repo-ruleset.json"
+    "$TMP_DIR/state/source-ruleset.json" "$TMP_DIR/state/source-repo-ruleset.json" \
+    "$TMP_DIR/state/source-auto-merge"
 }
 
 run_policy() {
@@ -759,9 +760,14 @@ if run_policy dry-run "$POLICY" >/dev/null 2>&1; then
   fail "consumer policy accepted a partially installed workflow-source ruleset policy"
 fi
 jq '.managedRepositoryRuleset + {id:654}' "$SOURCE_POLICY" >"$TMP_DIR/state/source-repo-ruleset.json"
+if run_policy dry-run "$POLICY" >/dev/null 2>&1; then
+  fail "consumer policy accepted workflow-source rulesets with auto-merge disabled"
+fi
+touch "$TMP_DIR/state/source-auto-merge"
 run_policy dry-run "$POLICY" >/dev/null \
   || fail "consumer policy rejected the complete workflow-source ruleset policy"
-rm "$TMP_DIR/state/source-ruleset.json" "$TMP_DIR/state/source-repo-ruleset.json"
+rm "$TMP_DIR/state/source-ruleset.json" "$TMP_DIR/state/source-repo-ruleset.json" \
+  "$TMP_DIR/state/source-auto-merge"
 ok "consumer verification accepts the complete source rulesets and rejects self-hosted, partial, or unprotected sources"
 # Every required workflow is verified, not only the first: a second entry
 # whose file is absent at its pin must be refused.
