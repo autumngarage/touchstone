@@ -36,6 +36,11 @@ api() {
     -H "X-GitHub-Api-Version:$API_VERSION" "$@"
 }
 
+api_raw() {
+  gh api -H "Accept:application/vnd.github.raw+json" \
+    -H "X-GitHub-Api-Version:$API_VERSION" "$@"
+}
+
 policy_value() {
   jq -er "$1" "$POLICY"
 }
@@ -257,7 +262,7 @@ branch_protection_json() {
   }' <<<"$raw"
 }
 
-verify_source() {
+verify_required_workflow_source() {
   local workflow repository_id path ref sha actual_id actual_sha desired_protection actual_protection count
   count="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]] | length' "$POLICY")"
   [ "$count" -ge 1 ] || die "policy requires at least one required workflow"
@@ -291,6 +296,86 @@ verify_source() {
     diff -u <(printf '%s\n' "$desired_protection") <(printf '%s\n' "$actual_protection") >/dev/null \
       || die "required workflow source branch is not protected as checked in"
   done < <(jq -c '.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]' "$POLICY")
+}
+
+verify_workflow_source_contract() {
+  local candidate canonical_policy="" source_policy_count=0 manifest_path manifest context workflow_count status_context_count
+  for candidate in "$ROOT"/policy/github/workflow-sources/*.json; do
+    [ -f "$candidate" ] || continue
+    if jq -e --arg org "$ORG" --arg repo "$REPOSITORY" --arg branch "$BRANCH" '
+      .policyType == "workflow-source"
+      and .organization == $org
+      and .repository == $repo
+      and .branch == $branch
+    ' "$candidate" >/dev/null; then
+      canonical_policy="$candidate"
+      source_policy_count=$((source_policy_count + 1))
+    fi
+  done
+  [ "$source_policy_count" -eq 1 ] \
+    || die "workflow-source target must have exactly one checked-in policy inventory entry: $ORG/$REPOSITORY@$BRANCH"
+  diff -q <(jq -S . "$canonical_policy") <(jq -S . "$POLICY") >/dev/null \
+    || die "workflow-source policy differs from its checked-in inventory entry: $canonical_policy"
+
+  manifest_path="$(policy_value .sourceContract.manifestPath)"
+  jq -e '
+    .policyType == "workflow-source"
+    and (.sourceContract | keys == ["manifestPath"])
+    and (.sourceContract.manifestPath
+      | type == "string"
+      and test("^[A-Za-z0-9._/-]+$")
+      and startswith("/") == false
+      and (split("/") | index("..") == null))
+  ' "$POLICY" >/dev/null || die "workflow-source policy has an invalid source contract declaration"
+
+  workflow_count="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]?] | length' "$POLICY")"
+  [ "$workflow_count" -eq 0 ] \
+    || die "workflow-source policy must not require a workflow from its own repository"
+
+  jq -e '
+    any(.managedRuleset.rules[]; .type == "deletion")
+    and any(.managedRuleset.rules[]; .type == "non_fast_forward")
+    and any(.managedRuleset.rules[];
+      .type == "pull_request"
+      and .parameters.required_review_thread_resolution == true)
+    and any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")
+  ' "$POLICY" >/dev/null \
+    || die "workflow-source policy requires deletion, non-fast-forward, pull-request thread resolution, and merge queue rules"
+
+  manifest="$(api_raw "repos/$ORG/$REPOSITORY/contents/$manifest_path?ref=$BRANCH")" \
+    || die "could not read workflow source contract manifest: $manifest_path"
+  jq -e --arg repository "$ORG/$REPOSITORY" '
+    . as $contract
+    | .contractVersion == 1
+    and (.requiredStatusCheck | type == "string" and length > 0)
+    and .sourceRepository == $repository
+    and (.statusJob | type == "string" and test("^[A-Za-z_][A-Za-z0-9_-]*$"))
+    and (.statusPublisher | type == "string")
+    and (.workflowPaths | type == "array" and length > 0 and length == (unique | length))
+    and ($contract.workflowPaths | index($contract.statusPublisher) != null)
+    and all(.workflowPaths[];
+      type == "string"
+      and startswith(".github/workflows/")
+      and (endswith(".yml") or endswith(".yaml")))
+  ' <<<"$manifest" >/dev/null || die "workflow source contract manifest is malformed: $manifest_path"
+  context="$(jq -er .requiredStatusCheck <<<"$manifest")"
+  status_context_count="$(jq -r --arg context "$context" '
+    [.managedRuleset.rules[]
+      | select(.type == "required_status_checks")
+      | .parameters.required_status_checks[]
+      | select(.context == $context)]
+    | length
+  ' "$POLICY")"
+  [ "$status_context_count" -eq 1 ] \
+    || die "workflow-source policy must require the manifest status context exactly once: $context"
+}
+
+verify_source() {
+  case "$POLICY_TYPE" in
+    consumer) verify_required_workflow_source ;;
+    workflow-source) verify_workflow_source_contract ;;
+    *) die "unsupported policy type: $POLICY_TYPE" ;;
+  esac
 }
 
 verify_ruleset_against() {
@@ -496,7 +581,12 @@ need diff
 jq -e '.contractVersion == 1' "$POLICY" >/dev/null || die "unsupported policy contract"
 ORG="$(policy_value .organization)"
 REPOSITORY="$(policy_value .repository)"
-WORKFLOW_SOURCE_REPOSITORY="$(policy_value .workflowSource.repository)"
+POLICY_TYPE="$(jq -er '.policyType // "consumer"' "$POLICY")"
+case "$POLICY_TYPE" in
+  consumer) WORKFLOW_SOURCE_REPOSITORY="$(policy_value .workflowSource.repository)" ;;
+  workflow-source) WORKFLOW_SOURCE_REPOSITORY="" ;;
+  *) die "unsupported policy type: $POLICY_TYPE" ;;
+esac
 BRANCH="$(policy_value .branch)"
 CONTRACT_VERSION="$(policy_value .contractVersion)"
 RULESET_NAME="$(policy_value .managedRuleset.name)"

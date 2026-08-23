@@ -1,7 +1,9 @@
 # GitHub Policy
 
 This directory owns Touchstone's audited GitHub enforcement policy.
-`touchstone-main.json` is desired state. `baseline-2026-08-13.json` is the
+`touchstone-main.json` is the canonical consumer desired state;
+`workflow-sources/` holds the distinct desired state for repositories that
+publish those required workflows. `baseline-2026-08-13.json` is the
 pre-migration state and rollback seed; do not rewrite it after migration.
 
 ## Operations
@@ -103,6 +105,50 @@ policy's gates are all pinned required workflows (`validate`, `review-gate`,
 `delivery-evidence`) from `touchstone-workflows`, so nothing in the consumer
 repository has to publish a check. Applying to a repository whose
 declaration cannot run centrally blocks every merge and queue entry.
+
+## Workflow source policy
+
+GitHub does not run a required workflow against the repository that publishes
+it, so a workflow source cannot use the consumer policy shape. It is not an
+exception that weakens the consumer contract: a checked-in `policyType` of
+`workflow-source` selects a separate fail-closed shape with native deletion and
+non-fast-forward protection, pull requests, resolved review threads, a
+repository-published required status, and a merge queue. A consumer
+still requires at least one externally pinned workflow, and a self-referential
+workflow rule is still refused.
+
+The workflow repository owns the publisher name in its checked-in
+`.touchstone-source-contract.json`. Its tests bind every `.yml` or `.yaml` file
+under `.github/workflows/` to that manifest. Before any dry run, apply, or
+verify, `github-policy.sh` reads the manifest from the target branch and
+requires the policy's status rule to name the same context exactly once. This
+is the compatibility boundary for a job rename: change the workflow, manifest,
+and desired policy in a reviewable sequence; a partial change fails closed.
+
+The current source desired state is
+`workflow-sources/touchstone-workflows.json`. Apply it only after the manifest,
+workflow inventory test, and CODEOWNERS file are reviewed on the source
+repository's default branch:
+
+```bash
+bash scripts/github-policy.sh dry-run \
+  policy/github/workflow-sources/touchstone-workflows.json
+bash scripts/github-policy.sh backup <new-backup.json> \
+  policy/github/workflow-sources/touchstone-workflows.json
+bash scripts/github-policy.sh apply \
+  policy/github/workflow-sources/touchstone-workflows.json
+bash scripts/github-policy.sh verify \
+  policy/github/workflow-sources/touchstone-workflows.json
+```
+
+The apply transaction installs and verifies the organization and repository
+rulesets before deleting legacy branch protection, and restores the captured
+state if replacement fails. CODEOWNERS makes ownership of itself, the manifest,
+the workflow directory, and its contract test explicit. This solo-member
+repository cannot require an approving review without deadlocking every PR (an
+author cannot approve their own change), so exact-head semantic review remains
+mandatory driver procedure at this root-of-trust boundary; the ruleset does not
+claim to enforce that part.
 
 ## After an apply that adds a required workflow
 
