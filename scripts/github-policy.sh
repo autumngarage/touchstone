@@ -297,7 +297,7 @@ verify_installed_workflow_source_policy() {
   source_policy="$(workflow_source_policy_path "$repository" "$branch")" || policy_status=$?
   case "$policy_status" in
     0) ;;
-    1) return 1 ;;
+    1) return 3 ;;
     *) die "could not resolve checked-in workflow-source policy: $ORG/$repository@$branch" ;;
   esac
   expected_org="$(jq -c .managedRuleset "$source_policy")" || return $?
@@ -305,7 +305,7 @@ verify_installed_workflow_source_policy() {
   actual_org="$(organization_ruleset_named "$(jq -r .name <<<"$expected_org")")" || return $?
   actual_repo="$(repository_ruleset_named "$repository" "$(jq -r .name <<<"$expected_repo")")" || return $?
   if [ "$actual_org" = null ] && [ "$actual_repo" = null ]; then
-    return 1
+    return 3
   fi
   [ "$actual_org" != null ] && [ "$actual_repo" != null ] \
     || die "workflow source has only part of its checked-in ruleset policy installed: $ORG/$repository@$branch"
@@ -327,10 +327,13 @@ verify_installed_workflow_source_policy() {
 }
 
 verify_required_workflow_source_protection() {
-  local repository="$1" branch="$2" desired_protection actual_protection error status=0
-  if verify_installed_workflow_source_policy "$repository" "$branch"; then
-    return 0
-  fi
+  local repository="$1" branch="$2" desired_protection actual_protection error status=0 ruleset_status=0
+  verify_installed_workflow_source_policy "$repository" "$branch" || ruleset_status=$?
+  case "$ruleset_status" in
+    0) return 0 ;;
+    3) ;;
+    *) die "could not verify workflow source ruleset policy: $ORG/$repository@$branch" ;;
+  esac
   error="$(mktemp)" || return $?
   actual_protection="$(api "repos/$ORG/$repository/branches/$branch/protection" 2>"$error")" || status=$?
   if [ "$status" -ne 0 ]; then

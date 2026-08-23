@@ -163,7 +163,10 @@ case "$method $endpoint" in
     fi
     ;;
   "GET orgs/autumngarage/rulesets")
-    if [ "${GH_FAKE_DUPLICATE_RULESET:-0}" = 1 ]; then
+    if [ "${GH_FAKE_SOURCE_RULESET_READ_ERROR:-0}" = 1 ]; then
+      echo "gh: API unavailable (HTTP 503)" >&2
+      exit 1
+    elif [ "${GH_FAKE_DUPLICATE_RULESET:-0}" = 1 ]; then
       emit '[{"id":123,"name":"Touchstone policy v1: autumngarage/touchstone@main"},{"id":124,"name":"Touchstone policy v1: autumngarage/touchstone@main"}]'
     elif [ "${GH_FAKE_UNRELATED_NAME_COLLISION:-0}" = 1 ]; then
       emit '[{"id":777,"name":"Touchstone main delivery"}]'
@@ -744,6 +747,10 @@ fi
 if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_SOURCE_UNPROTECTED=1 \
   "$SCRIPT" dry-run "$POLICY" >/dev/null 2>&1; then
   fail "policy accepted an unprotected required-workflow source branch"
+fi
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_SOURCE_RULESET_READ_ERROR=1 \
+  "$SCRIPT" dry-run "$POLICY" >/dev/null 2>&1; then
+  fail "consumer policy hid a workflow-source ruleset read failure behind legacy protection"
 fi
 jq '.managedRuleset + {id:456}' "$SOURCE_POLICY" >"$TMP_DIR/state/source-ruleset.json"
 if run_policy dry-run "$POLICY" >/dev/null 2>&1; then
