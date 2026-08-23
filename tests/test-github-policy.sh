@@ -163,7 +163,9 @@ case "$method $endpoint" in
     fi
     ;;
   "GET orgs/autumngarage/rulesets")
-    if [ "${GH_FAKE_SOURCE_RULESET_READ_ERROR:-0}" = 1 ]; then
+    if [ "${GH_FAKE_SOURCE_RULESET_READ_ERROR:-0}" = 1 ] \
+      && [ ! -f "$state/source-ruleset-read-error-used" ]; then
+      touch "$state/source-ruleset-read-error-used"
       echo "gh: API unavailable (HTTP 503)" >&2
       exit 1
     elif [ "${GH_FAKE_DUPLICATE_RULESET:-0}" = 1 ]; then
