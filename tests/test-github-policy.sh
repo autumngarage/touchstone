@@ -2292,9 +2292,15 @@ accepts && fail "a reviewer name with no result was accepted" || ok "a reviewer 
 lr_body '- Local review: codex not run' serious
 accepts && fail "'codex not run' was accepted" || ok "'codex not run' is refused"
 lr_body '- Local review: CodeRabbit on the staged slice: 0 findings.' normal
-accepts && ok "a zero-finding record is accepted" || fail "a zero-finding record was refused"
+accepts && ok "the transition still accepts a coderabbit normal pass" || fail "a coderabbit normal pass was refused during the transition"
+lr_body '- Local review: codex on the staged slice (review-normal): 0 findings.' normal
+accepts && ok "the transition accepts a codex normal pass" || fail "a codex normal pass was refused during the transition"
 lr_body '- Local review: codex on 1234567: 0 findings.' normal
-accepts && fail "a normal PR recording codex (the serious reviewer) was accepted" || ok "the wrong reviewer for the tier is refused (normal wants coderabbit)"
+accepts && fail "a normal pass naming a bare revision was accepted" || ok "a normal target is not a bare revision"
+lr_body '- Local review: codex on `1234567`: 0 findings.' normal
+accepts && fail "a normal pass naming a decorated bare revision was accepted" || ok "normal target decoration cannot disguise a bare revision"
+lr_body '- Local review: coderabbit on 1234567: 0 findings.' normal
+accepts && fail "a normal coderabbit pass naming a bare revision was accepted" || ok "the normal target rule applies to both transition reviewers"
 lr_body '- Local review: coderabbit on the staged slice: 0 findings.' serious
 accepts && fail "a serious PR recording coderabbit was accepted" || ok "the wrong reviewer for the tier is refused (serious wants codex)"
 lr_body '- Local review: codex on the branch head: 0 findings.' serious
