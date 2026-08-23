@@ -313,7 +313,7 @@ case "$TIER" in
         case "$TIER" in
           normal)
             lr_prefix="^[[:space:]]*${lr_reviewer} on [^:]+:"
-            lr_wrong_target="^[[:space:]]*${lr_reviewer} on ${lr_mark}[0-9a-f]{7,40}${lr_mark}:"
+            lr_wrong_target="^[[:space:]]*${lr_reviewer} on[[:space:]]+${lr_mark}[[:space:]]*[0-9a-f]{7,40}[[:space:]]*${lr_mark}[[:space:]]*:"
             ;;
           serious)
             lr_prefix="^[[:space:]]*${lr_reviewer} on ${lr_mark}[0-9a-f]{7,40}${lr_mark}:"

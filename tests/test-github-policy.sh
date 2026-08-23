@@ -2299,6 +2299,12 @@ lr_body '- Local review: codex on 1234567: 0 findings.' normal
 accepts && fail "a normal pass naming a bare revision was accepted" || ok "a normal target is not a bare revision"
 lr_body '- Local review: codex on `1234567`: 0 findings.' normal
 accepts && fail "a normal pass naming a decorated bare revision was accepted" || ok "normal target decoration cannot disguise a bare revision"
+lr_body '- Local review: codex on 1234567 : 0 findings.' normal
+accepts && fail "a normal pass naming a space-padded bare revision was accepted" || ok "normal target whitespace cannot disguise a bare revision"
+lr_body '- Local review: codex on  1234567: 0 findings.' normal
+accepts && fail "a normal pass naming a leading-padded bare revision was accepted" || ok "leading target whitespace cannot disguise a bare revision"
+lr_body '- Local review: codex on `1234567 `: 0 findings.' normal
+accepts && fail "a normal pass naming an inner-padded bare revision was accepted" || ok "whitespace inside target decoration cannot disguise a bare revision"
 lr_body '- Local review: coderabbit on 1234567: 0 findings.' normal
 accepts && fail "a normal coderabbit pass naming a bare revision was accepted" || ok "the normal target rule applies to both transition reviewers"
 lr_body '- Local review: coderabbit on the staged slice: 0 findings.' serious
