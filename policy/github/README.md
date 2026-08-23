@@ -150,6 +150,12 @@ author cannot approve their own change), so exact-head semantic review remains
 mandatory driver procedure at this root-of-trust boundary; the ruleset does not
 claim to enforce that part.
 
+Consumer policy operations accept the declared legacy branch protection until
+this migration runs. Afterward they require both workflow-source rulesets to
+match this checked-in desired state, require every declared rule to be effective,
+and require auto-merge to remain enabled. A partial source-policy install is not
+treated as the legacy fallback.
+
 ## After an apply that adds a required workflow
 
 GitHub runs a required workflow only on `pull_request` opened / synchronize /

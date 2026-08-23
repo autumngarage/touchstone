@@ -62,7 +62,7 @@ emit() {
 
 case "$method $endpoint" in
   "GET repos/autumngarage/touchstone-workflows")
-    if [ -f "$state/auto-merge" ]; then
+    if [ -f "$state/source-ruleset.json" ] || [ -f "$state/auto-merge" ]; then
       emit '{"id":1333343261,"allow_auto_merge":true}'
     else
       emit '{"id":1333343261,"allow_auto_merge":false}'
@@ -149,7 +149,10 @@ case "$method $endpoint" in
     emit '{"status":"identical"}'
     ;;
   "GET repos/autumngarage/touchstone-workflows/branches/main/protection")
-    if [ "${GH_FAKE_SOURCE_UNPROTECTED:-0}" = 1 ]; then
+    if [ -f "$state/source-ruleset.json" ]; then
+      echo "gh: Branch not protected (HTTP 404)" >&2
+      exit 1
+    elif [ "${GH_FAKE_SOURCE_UNPROTECTED:-0}" = 1 ]; then
       emit '{"enforce_admins":{"enabled":false},"required_pull_request_reviews":null,"required_conversation_resolution":{"enabled":false},"allow_force_pushes":{"enabled":true},"allow_deletions":{"enabled":true}}'
     else
       emit '{"enforce_admins":{"enabled":true},"required_pull_request_reviews":{},"required_conversation_resolution":{"enabled":true},"allow_force_pushes":{"enabled":false},"allow_deletions":{"enabled":false}}'
@@ -160,10 +163,15 @@ case "$method $endpoint" in
       emit '[{"id":123,"name":"Touchstone policy v1: autumngarage/touchstone@main"},{"id":124,"name":"Touchstone policy v1: autumngarage/touchstone@main"}]'
     elif [ "${GH_FAKE_UNRELATED_NAME_COLLISION:-0}" = 1 ]; then
       emit '[{"id":777,"name":"Touchstone main delivery"}]'
-    elif [ -f "$state/ruleset.json" ]; then
-      emit "$(jq '[{id:.id,name:.name}]' "$state/ruleset.json")"
     else
-      emit '[]'
+      rulesets='[]'
+      if [ -f "$state/ruleset.json" ]; then
+        rulesets="$(jq --argjson current "$rulesets" '$current + [{id:.id,name:.name}]' "$state/ruleset.json")"
+      fi
+      if [ -f "$state/source-ruleset.json" ]; then
+        rulesets="$(jq --argjson current "$rulesets" '$current + [{id:.id,name:.name}]' "$state/source-ruleset.json")"
+      fi
+      emit "$rulesets"
     fi
     ;;
   "GET orgs/autumngarage/rulesets/123")
@@ -171,6 +179,9 @@ case "$method $endpoint" in
     ;;
   "GET orgs/autumngarage/rulesets/777")
     emit '{"id":777,"name":"Touchstone main delivery","target":"branch","enforcement":"active","bypass_actors":[],"conditions":{"repository_name":{"include":["other-repository"],"exclude":[],"protected":false},"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[{"type":"deletion"}]}'
+    ;;
+  "GET orgs/autumngarage/rulesets/456")
+    cat "$state/source-ruleset.json"
     ;;
   "POST orgs/autumngarage/rulesets")
     # GitHub fills in defaults the caller omitted: required_reviewers, and
@@ -323,17 +334,26 @@ case "$method $endpoint" in
     echo "DELETE branch-protection" >>"$state/mutations.log"
     ;;
   "GET repos/autumngarage/touchstone/rulesets?includes_parents=false" | \
-  "GET repos/autumngarage/touchstone/rulesets?includes_parents=true" | \
-  "GET repos/autumngarage/touchstone-workflows/rulesets?includes_parents=false" | \
-  "GET repos/autumngarage/touchstone-workflows/rulesets?includes_parents=true")
+  "GET repos/autumngarage/touchstone/rulesets?includes_parents=true")
     if [ -f "$state/repo-ruleset.json" ]; then
       emit "$(jq '[{id:.id,name:.name}]' "$state/repo-ruleset.json")"
     else
       emit '[]'
     fi
     ;;
+  "GET repos/autumngarage/touchstone-workflows/rulesets?includes_parents=false" | \
+  "GET repos/autumngarage/touchstone-workflows/rulesets?includes_parents=true")
+    if [ -f "$state/source-repo-ruleset.json" ]; then
+      emit "$(jq '[{id:.id,name:.name}]' "$state/source-repo-ruleset.json")"
+    else
+      emit '[]'
+    fi
+    ;;
   "GET repos/autumngarage/touchstone/rulesets/321")
     cat "$state/repo-ruleset.json"
+    ;;
+  "GET repos/autumngarage/touchstone-workflows/rulesets/654")
+    cat "$state/source-repo-ruleset.json"
     ;;
   "POST repos/autumngarage/touchstone/rulesets")
     jq '. + {id:321}' >"$state/repo-ruleset.json"
@@ -365,6 +385,13 @@ case "$method $endpoint" in
     else
       jq -s 'map(.rules) | add' "$state/ruleset.json" "$state/repo-ruleset.json" 2>/dev/null \
         || jq '[.rules[]]' "$state/ruleset.json"
+    fi
+    ;;
+  "GET repos/autumngarage/touchstone-workflows/rules/branches/main")
+    if [ -f "$state/source-ruleset.json" ] && [ -f "$state/source-repo-ruleset.json" ]; then
+      jq -s 'map(.rules) | add' "$state/source-ruleset.json" "$state/source-repo-ruleset.json"
+    else
+      emit '[]'
     fi
     ;;
   *)
@@ -409,7 +436,8 @@ init_branch() {
   rm -f "$TMP_DIR/state/ruleset.json" "$TMP_DIR/state/bad-effective-used" \
     "$TMP_DIR/state/branch-calls" "$TMP_DIR/state/org-mutation-failed" \
     "$TMP_DIR/state/branch-put-failed" "$TMP_DIR/state/local-workflow-absent" \
-    "$TMP_DIR/state/repo-ruleset.json" "$TMP_DIR/state/auto-merge"
+    "$TMP_DIR/state/repo-ruleset.json" "$TMP_DIR/state/auto-merge" \
+    "$TMP_DIR/state/source-ruleset.json" "$TMP_DIR/state/source-repo-ruleset.json"
 }
 
 run_policy() {
@@ -710,7 +738,15 @@ if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_SOURCE_UNPRO
   "$SCRIPT" dry-run "$POLICY" >/dev/null 2>&1; then
   fail "policy accepted an unprotected required-workflow source branch"
 fi
-ok "self-hosted or unprotected required-workflow sources fail closed"
+jq '.managedRuleset + {id:456}' "$SOURCE_POLICY" >"$TMP_DIR/state/source-ruleset.json"
+if run_policy dry-run "$POLICY" >/dev/null 2>&1; then
+  fail "consumer policy accepted a partially installed workflow-source ruleset policy"
+fi
+jq '.managedRepositoryRuleset + {id:654}' "$SOURCE_POLICY" >"$TMP_DIR/state/source-repo-ruleset.json"
+run_policy dry-run "$POLICY" >/dev/null \
+  || fail "consumer policy rejected the complete workflow-source ruleset policy"
+rm "$TMP_DIR/state/source-ruleset.json" "$TMP_DIR/state/source-repo-ruleset.json"
+ok "consumer verification accepts the complete source rulesets and rejects self-hosted, partial, or unprotected sources"
 # Every required workflow is verified, not only the first: a second entry
 # whose file is absent at its pin must be refused.
 jq '(.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows) += [{
