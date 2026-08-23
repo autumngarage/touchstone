@@ -1,21 +1,24 @@
-# review-gate evidence contract, version 2.
+# review-gate evidence contract, version 3.
 #
 # This is a pure evaluator. The required workflow owns GitHub API collection
 # and passes one complete document here; missing or partial inputs fail
-# closed. Version 2 derives review requests from the driver's own comments --
+# closed. Version 2 derived review requests from the driver's own comments --
 # the `touchstone:pr-open` marker, or a bare request posted after the head
 # was pushed -- instead of a commit status a publisher had to mint, so it can
-# run from a pinned source in any repository with a read-only token.
+# run from a pinned source in any repository with a read-only token. Version 3
+# authorizes driver requests and answers through effective repository
+# permission supplied by that workflow, not GitHub's contribution association.
 
 def trusted($authors):
   (.user.login // "") as $login
   | any($authors[]; . == $login);
 
-def driver_answer:
-  (.author_association // "") as $association
-  | $association == "OWNER"
-    or $association == "MEMBER"
-    or $association == "COLLABORATOR";
+def driver_action_authorized($permissions):
+  (.user.login // "") as $login
+  | ($permissions[$login] // "") as $permission
+  | $permission == "write"
+    or $permission == "maintain"
+    or $permission == "admin";
 
 def review_request:
   (.body // "") | test("^[[:space:]]*@codex[[:space:]]+review([[:space:]]|$)"; "i");
@@ -59,6 +62,8 @@ def answers_body_finding($id):
 
 . as $root
 | ($root.trustedAuthors // []) as $trusted
+| (($root.authorPermissions // {}) | if type == "object" then . else {} end) as $permissions
+| ([($root.issueComments[]?, $root.reviewComments[]?) | .user.login // empty] | unique) as $comment_authors
 | ($root.pr.headSha // "") as $head
 | ($root.pr.baseSha // "") as $base
 | ($root.pr.number // 0) as $number
@@ -74,7 +79,7 @@ def answers_body_finding($id):
 | ($root.pr.baseRetargetedAt // "") as $base_retargeted_at
 | [
     $root.issueComments[]?
-    | select(driver_answer and review_request)
+    | select(driver_action_authorized($permissions) and review_request)
     | . as $comment
     | ((.body // "") | capture("<!-- touchstone:pr-open head=(?<head>[0-9a-fA-F]{40}) base=(?<ref>[^ ]+) base_sha=(?<base>[0-9a-fA-F]{40}) -->")? // null) as $marker
     # A comment that names the sequencer but carries no well-formed marker is
@@ -125,7 +130,7 @@ def answers_body_finding($id):
         answered: any($root.reviewComments[]?;
           ((.in_reply_to_id // 0) | tostring) == ($finding.id | tostring)
           and (.created_at // "") > $finding_at
-          and driver_answer)
+          and driver_action_authorized($permissions))
       }
   ] | unique_by(.id) as $inline_findings
 | [
@@ -147,7 +152,7 @@ def answers_body_finding($id):
         answered: (
           any($root.issueComments[]?;
             (.created_at // "") > $finding_at
-            and driver_answer
+            and driver_action_authorized($permissions)
             and answers_body_finding($finding.id))
           or any($reviews[]?;
             (.submitted_at // "") > $finding_at)
@@ -174,7 +179,7 @@ def answers_body_finding($id):
         answered: (
           any($root.issueComments[]?;
             (.created_at // "") > $finding_at
-            and driver_answer
+            and driver_action_authorized($permissions)
             and answers_body_finding($finding.id))
           or any($reviews[]?;
             (.submitted_at // "") > $finding_at)
@@ -185,8 +190,11 @@ def answers_body_finding($id):
   ] as $comment_body_findings
 | ($review_body_findings + $comment_body_findings) as $body_findings
 | [
-    if ($root.contractVersion // 0) != 2 then "unsupported or missing evidence contract version" else empty end,
+    if ($root.contractVersion // 0) != 3 then "unsupported or missing evidence contract version" else empty end,
     if ($root.complete // false) != true then "GitHub evidence collection was incomplete" else empty end,
+    if ($root.authorPermissions | type) != "object"
+      or any($comment_authors[]; . as $author | ($permissions | has($author) | not))
+      then "effective permission evidence is missing for one or more comment authors" else empty end,
     if ($root.pr.state // "") != "open" then "pull request is not open" else empty end,
     if ($head | test("^[0-9a-fA-F]{40}$") | not) then "current head SHA is missing or invalid" else empty end,
     if ($base | test("^[0-9a-fA-F]{40}$") | not) then "current base SHA is missing or invalid" else empty end,
@@ -216,7 +224,7 @@ def answers_body_finding($id):
     else empty end
   ] as $reasons
 | {
-    contractVersion: 2,
+    contractVersion: 3,
     conclusion: (if ($reasons | length) == 0 then "success" else "failure" end),
     title: (if ($reasons | length) == 0
       then "Exact head reviewed; every finding answered"
