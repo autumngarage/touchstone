@@ -470,10 +470,8 @@ preflight_principles() {
 render_principle() {
   local source="$1" out="$2" principles_home="$HOME_DIR/$PRINCIPLES_RELATIVE"
   # Two spellings route to the installed copies: inline code (`principles/…`)
-  # and a bare path inside a command line (` principles/…`, as in
-  # `coderabbit review … -c principles/local-review-contract.md`). A fresh
-  # agent ran the second form verbatim and found no such file in the
-  # consumer repository.
+  # and a bare ` principles/…` path inside a command line. Both must resolve
+  # beside the installed steering block, not inside a consumer repository.
   sed -e "s|\`principles/|\`$(sed_replacement "$principles_home")/|g" \
     -e "s|\([[:space:]]\)principles/\([A-Za-z0-9._-]*\.md\)|\1'$(sed_replacement "$principles_home")/\2'|g" "$source" >"$out"
 }

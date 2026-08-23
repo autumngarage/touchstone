@@ -115,6 +115,10 @@ assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'A normal-profile failure never waives this pass.'
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'or the same recorded waiver'
+[ ! -e "$TOUCHSTONE_ROOT/.touchstone-review.toml" ] \
+  || fail "retired project-level review declaration still exists"
+[ ! -e "$TOUCHSTONE_ROOT/principles/local-review-contract.md" ] \
+  || fail "retired CodeRabbit prompt contract still exists"
 
 GIT_WORKFLOW_SKILL="$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md"
 assert_contains "$GIT_WORKFLOW_SKILL" "Inspect the repository's effective rules"
