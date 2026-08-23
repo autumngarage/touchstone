@@ -538,16 +538,16 @@ else
   fail "absent file misreported: $(grep GEMINI "$TMP_DIR/hver3.out" | head -1)"
 fi
 
-# Command-line paths inside routed documents are rewritten too: a fresh agent
-# ran `-c principles/local-review-contract.md` verbatim from local-review.md
-# and found no such file in the consumer repository.
+# The installed review procedure keeps the user-side profile path and one
+# supported Codex invocation; it must not revive the retired CodeRabbit command.
 HCMD="$TMP_DIR/hcmd"
 bash "$INSTALL" install --home "$HCMD" >/dev/null 2>&1
-if grep -q -- "-c '$HCMD/.touchstone/principles/local-review-contract.md'" "$HCMD/.touchstone/principles/local-review.md" \
-  && ! grep -q -- "-c principles/local-review-contract.md" "$HCMD/.touchstone/principles/local-review.md"; then
-  pass "command-line paths in routed documents resolve to the installed copies"
+if grep -qF -- '${CODEX_HOME:-$HOME/.codex}/review-normal.config.toml' "$HCMD/.touchstone/principles/local-review.md" \
+  && grep -qF -- 'codex -p review-normal review --uncommitted' "$HCMD/.touchstone/principles/local-review.md" \
+  && ! grep -qF -- 'coderabbit review --agent --uncommitted' "$HCMD/.touchstone/principles/local-review.md"; then
+  pass "installed local review uses the user-side Codex profile"
 else
-  fail "local-review.md still names principles/local-review-contract.md as a bare path: $(grep -n 'local-review-contract.md' "$HCMD/.touchstone/principles/local-review.md" | head -2 | tr '\n' ' ')"
+  fail "installed local-review.md does not carry the Codex profile contract"
 fi
 
 # A home containing a single quote cannot be rendered into a pasteable
