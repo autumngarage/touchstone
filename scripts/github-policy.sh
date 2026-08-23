@@ -358,6 +358,19 @@ verify_workflow_source_contract() {
       and startswith(".github/workflows/")
       and (endswith(".yml") or endswith(".yaml")))
   ' <<<"$manifest" >/dev/null || die "workflow source contract manifest is malformed: $manifest_path"
+  source_tree="$(api "repos/$ORG/$REPOSITORY/git/trees/$BRANCH?recursive=1")" \
+    || die "could not enumerate workflow source repository tree at $BRANCH"
+  jq -e '.truncated == false and (.tree | type == "array")' <<<"$source_tree" >/dev/null \
+    || die "workflow source repository tree is incomplete at $BRANCH"
+  declared_workflows="$(jq -c '.workflowPaths | sort' <<<"$manifest")"
+  live_workflows="$(jq -c '[
+    .tree[]
+    | select(.type == "blob")
+    | .path
+    | select(test("^\\.github/workflows/.*\\.ya?ml$"))
+  ] | sort' <<<"$source_tree")"
+  [ "$live_workflows" = "$declared_workflows" ] \
+    || die "workflow source live inventory differs from its manifest (live: $live_workflows; declared: $declared_workflows)"
   context="$(jq -er .requiredStatusCheck <<<"$manifest")"
   status_context_count="$(jq -r --arg context "$context" '
     [.managedRuleset.rules[]

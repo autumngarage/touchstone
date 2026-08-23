@@ -135,6 +135,16 @@ case "$method $endpoint" in
       ]
     }'
     ;;
+  "GET repos/autumngarage/touchstone-workflows/git/trees/main?recursive=1")
+    jq -n --arg extra "${GH_FAKE_SOURCE_EXTRA_WORKFLOW:-}" '{
+      truncated: false,
+      tree: ([
+        {path: ".github/workflows/delivery-evidence.yml", type: "blob"},
+        {path: ".github/workflows/review-gate.yml", type: "blob"},
+        {path: ".github/workflows/validate.yml", type: "blob"}
+      ] + (if $extra == "" then [] else [{path: $extra, type: "blob"}] end))
+    }'
+    ;;
   "GET repos/autumngarage/touchstone-workflows/compare/$WORKFLOWS_PIN...$WORKFLOWS_PIN")
     emit '{"status":"identical"}'
     ;;
@@ -554,6 +564,9 @@ cp "$SOURCE_POLICY" "$RUNNER_SOURCE_POLICY"
 GH_FAKE_SOURCE_STATUS_CONTEXT="renamed source contract" \
   run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null 2>&1 \
   && fail "workflow source policy accepted a status context that drifted from its manifest"
+GH_FAKE_SOURCE_EXTRA_WORKFLOW=".github/workflows/undeclared.yaml" \
+  run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null 2>&1 \
+  && fail "workflow source policy accepted a live workflow omitted from its manifest"
 jq '.repository = "unlisted-source"
   | .managedRuleset.name = "Touchstone policy v1: autumngarage/unlisted-source@main"
   | .managedRuleset.conditions.repository_name.include = ["unlisted-source"]
