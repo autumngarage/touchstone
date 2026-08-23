@@ -130,8 +130,18 @@ taking this document's word for it.
   inspection.
 - `merge` takes its guarded path only when enforcement is `applied`;
   otherwise it **fails closed**. The terms: a *pinned gate* is the
-  `review-gate` workflow required from the policy's source repository, ref,
-  and revision (the tool's own `policy/github/touchstone-main.json`);
+  `review-gate` workflow required from the policy's source repository and ref,
+  at the revision the tool's own policy carries
+  (`policy/github/touchstone-main.json`) **or a descendant of it published on
+  that ref**. The revision is a floor, not an identity: the policy file
+  travels with the release while the ruleset is applied from a checkout that
+  moves ahead of it, so demanding equality reported every repository pinned at
+  a newer workflow revision as unguarded and blocked every merge until the
+  next release (AUT-559). Lineage is read from the source repository — the
+  repository resolved by the id the pin carries, its branch head as the
+  ceiling — never assumed from the SHA. A revision behind, diverged, off that
+  branch, or from another source is missing, and a lineage that cannot be
+  resolved at all is reported as unverified and stays closed.
   `applied` means all three pinned workflows and the native pull-request,
   force-push, and deletion rules are present, plus the merge queue where the
   repository's own policy declares one; `partial` and `none` name what is

@@ -440,6 +440,103 @@ actions_disabled_remedy() {
   printf 'enable them: gh api --hostname %s -X PUT repos/%s/actions/permissions -F enabled=true' "$REPO_HOST" "$REPO"
 }
 
+# Whether the revision GitHub actually pins is at least the revision this
+# tool knows. The tool's policy file travels with the release; the ruleset is
+# applied from a checkout that moves ahead of it, so comparing the two SHAs
+# for equality reported every repository pinned at a *newer* workflow
+# revision as unpinned and failed every merge closed (AUT-559). The tool's
+# revision is a floor, not an identity: the pinned revision must descend from
+# it, and it must also be published on the branch the policy pins, read from
+# the source repository itself rather than trusted as a bare SHA. Anything
+# that cannot be resolved is "unverified" and still fails closed.
+PIN_LINEAGE_VERDICT=""
+PIN_LINEAGE_REASON=""
+resolve_pin_lineage() {
+  local repository_id="$1" ref="$2" expected_sha="$3" actual_shas="$4"
+  local source_repo branch head_sha sha status
+  local unverified=false unverified_reason=""
+  local -a candidates=()
+  PIN_LINEAGE_VERDICT=off-lineage
+  PIN_LINEAGE_REASON=""
+  case "$ref" in
+    refs/heads/*) branch="${ref#refs/heads/}" ;;
+    *)
+      PIN_LINEAGE_VERDICT=unverified
+      PIN_LINEAGE_REASON="the policy pins the non-branch ref $ref"
+      return 0
+      ;;
+  esac
+  # The pin carries a repository id, so the source repository is resolved by
+  # the id GitHub enforces -- never by a name the policy file writes down.
+  if ! read_with_retry gh api --hostname "$REPO_HOST" "repositories/$repository_id" --jq '.full_name'; then
+    PIN_LINEAGE_VERDICT=unverified
+    PIN_LINEAGE_REASON="workflow source repository $repository_id could not be read"
+    return 0
+  fi
+  source_repo="$READ_OUTPUT"
+  case "$source_repo" in */*) ;;
+  *)
+    PIN_LINEAGE_VERDICT=unverified
+    PIN_LINEAGE_REASON="workflow source repository $repository_id has no readable name"
+    return 0
+    ;;
+  esac
+  # The ceiling. A branch with a slash is routed by GitHub unencoded; the
+  # same read `scripts/github-policy.sh` makes when it applies a policy.
+  if ! read_with_retry gh api --hostname "$REPO_HOST" "repos/$source_repo/commits/$branch" --jq '.sha'; then
+    PIN_LINEAGE_VERDICT=unverified
+    PIN_LINEAGE_REASON="the head of $ref in $source_repo could not be read"
+    return 0
+  fi
+  head_sha="$READ_OUTPUT"
+  read -r -a candidates <<<"$actual_shas"
+  for sha in "${candidates[@]}"; do
+    [ -n "$sha" ] || continue
+    if ! read_with_retry gh api --hostname "$REPO_HOST" "repos/$source_repo/compare/$expected_sha...$sha" --jq '.status'; then
+      unverified=true
+      unverified_reason="$sha could not be compared with the policy revision in $source_repo"
+      continue
+    fi
+    # "ahead" is GitHub's word for: the pinned revision descends from the
+    # tool's. "behind" and "diverged" are the genuine gaps this guard exists
+    # for and stay closed.
+    status="$READ_OUTPUT"
+    case "$status" in ahead | identical) ;; *) continue ;; esac
+    if [ "$sha" != "$head_sha" ]; then
+      if ! read_with_retry gh api --hostname "$REPO_HOST" "repos/$source_repo/compare/$sha...$head_sha" --jq '.status'; then
+        unverified=true
+        unverified_reason="$sha could not be located on $ref in $source_repo"
+        continue
+      fi
+      case "$READ_OUTPUT" in ahead | identical) ;; *) continue ;; esac
+    fi
+    PIN_LINEAGE_VERDICT=at-or-ahead
+    PIN_LINEAGE_REASON=""
+    return 0
+  done
+  if [ "$unverified" = true ]; then
+    PIN_LINEAGE_VERDICT=unverified
+    PIN_LINEAGE_REASON="$unverified_reason"
+  fi
+  return 0
+}
+
+# The three gates normally carry one identical pin, so the source repository,
+# its branch head, and the comparison are resolved once per distinct pin
+# rather than once per gate.
+PIN_LINEAGE_CACHE=""
+pin_lineage() {
+  local key="$1|$2|$3|$4" cached
+  cached="$(printf '%s' "$PIN_LINEAGE_CACHE" | awk -F'\t' -v key="$key" '$1 == key { print $2 "\t" $3; exit }')"
+  if [ -n "$cached" ]; then
+    IFS=$'\t' read -r PIN_LINEAGE_VERDICT PIN_LINEAGE_REASON <<<"$cached"
+    return 0
+  fi
+  resolve_pin_lineage "$@"
+  PIN_LINEAGE_CACHE="$PIN_LINEAGE_CACHE$(printf '%s\t%s\t%s' "$key" "$PIN_LINEAGE_VERDICT" "$PIN_LINEAGE_REASON")
+"
+}
+
 # What GitHub enforces on a branch, read once from its effective rules. The
 # policy's gates are three pinned required workflows plus the merge queue;
 # the native rules that refuse direct delivery complete the set. "applied"
@@ -491,25 +588,67 @@ read_enforcement() {
   # array per page, merged here before evaluation.
   read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/rules/branches/$encoded?per_page=100" \
     || fail_operation "could not read the effective rules for $base_ref: $READ_OUTPUT" "Retry after GitHub recovers."
-  ENFORCEMENT_MISSING="$(printf '%s' "$READ_OUTPUT" | jq -s 'add // []' | jq -r --argjson expected "$expected" --argjson expect_queue "$expect_queue" '
+  # jq classifies each gate against the policy's pin and names the rules that
+  # are simply absent; only a gate present at some *other* revision of the
+  # same source and ref needs GitHub asked about lineage, so the rules
+  # document is turned into verdicts here and resolved below.
+  local gate_report
+  gate_report="$(printf '%s' "$READ_OUTPUT" | jq -s 'add // []' | jq -r --argjson expected "$expected" --argjson expect_queue "$expect_queue" '
       ([.[] | select(.type == "workflows") | .parameters.workflows[]?]) as $w
       | def gate($name; $path):
           ($expected[] | select(.path == $path)) as $e
-          | if ($w | map(select(.path == $path)) | length) == 0 then "\($name) workflow"
-            elif any($w[]; .path == $path and .repository_id == $e.repository_id and .ref == $e.ref and (.sha | ascii_downcase) == ($e.sha | ascii_downcase)) then empty
-            else "\($name) workflow (present but not pinned at the policy revision)" end;
+          | ($w | map(select(.path == $path))) as $found
+          | ($found | map(select(.repository_id == $e.repository_id and .ref == $e.ref))) as $same
+          | if ($found | length) == 0 then ["gate", $name, "absent", "", "", "", ""]
+            elif any($same[]; ((.sha // "") | ascii_downcase) == ($e.sha | ascii_downcase)) then ["gate", $name, "pinned", "", "", "", ""]
+            elif ($same | length) == 0 then ["gate", $name, "other-source", "", "", "", ""]
+            else ["gate", $name, "other-revision", ($e.repository_id | tostring), $e.ref, ($e.sha | ascii_downcase),
+                  ([$same[] | (.sha // "") | ascii_downcase | select(. != "")] | unique | join(" "))] end;
       [
         gate("validate"; ".github/workflows/validate.yml"),
         gate("review-gate"; ".github/workflows/review-gate.yml"),
         gate("delivery-evidence"; ".github/workflows/delivery-evidence.yml"),
-        (if (any(.[]; .type == "merge_queue") or ($expect_queue | not)) then empty else "merge queue" end),
-        (if any(.[]; .type == "pull_request" and (.parameters.required_review_thread_resolution // false) == true) then empty else "pull-request rule (with thread resolution)" end),
-        (if any(.[]; .type == "non_fast_forward") then empty else "force-push protection" end),
-        (if any(.[]; .type == "deletion") then empty else "deletion protection" end)
-      ] | unique | join(",")')" \
+        (if (any(.[]; .type == "merge_queue") or ($expect_queue | not)) then empty else ["rule", "merge queue"] end),
+        (if any(.[]; .type == "pull_request" and (.parameters.required_review_thread_resolution // false) == true) then empty else ["rule", "pull-request rule (with thread resolution)"] end),
+        (if any(.[]; .type == "non_fast_forward") then empty else ["rule", "force-push protection"] end),
+        (if any(.[]; .type == "deletion") then empty else ["rule", "deletion protection"] end)
+      ] | .[] | @tsv')" \
     || fail_operation "could not evaluate the effective rules for $base_ref" "Retry after GitHub recovers."
+  local -a missing_names=()
+  local kind name verdict pin_repository_id pin_ref pin_expected pin_actual
+  while IFS=$'\t' read -r kind name verdict pin_repository_id pin_ref pin_expected pin_actual; do
+    case "$kind" in
+      rule)
+        missing_names+=("$name")
+        continue
+        ;;
+      gate) ;;
+      *) continue ;;
+    esac
+    case "$verdict" in
+      pinned) ;;
+      absent) missing_names+=("$name workflow") ;;
+      other-revision)
+        pin_lineage "$pin_repository_id" "$pin_ref" "$pin_expected" "$pin_actual"
+        case "$PIN_LINEAGE_VERDICT" in
+          # A revision on the policy's own lineage, at or ahead of the one
+          # the tool carries, enforces at least what the tool expects.
+          at-or-ahead) ;;
+          unverified)
+            missing_names+=("$name workflow (present but pinned at a revision this tool could not verify: $(printf '%s' "$PIN_LINEAGE_REASON" | tr ',' ';'))")
+            ;;
+          *) missing_names+=("$name workflow (present but not pinned at the policy revision)") ;;
+        esac
+        ;;
+      *) missing_names+=("$name workflow (present but not pinned at the policy revision)") ;;
+    esac
+  done <<<"$gate_report"
   if [ -n "$auto_merge_missing" ]; then
-    ENFORCEMENT_MISSING="${ENFORCEMENT_MISSING:+$ENFORCEMENT_MISSING,}$auto_merge_missing"
+    missing_names+=("$auto_merge_missing")
+  fi
+  ENFORCEMENT_MISSING=""
+  if [ "${#missing_names[@]}" -gt 0 ]; then
+    ENFORCEMENT_MISSING="$(printf '%s\n' "${missing_names[@]}" | LC_ALL=C sort -u | tr '\n' ',' | sed 's/,$//')"
   fi
   # Disabled Actions void every required workflow at once, however the rules
   # read: the gap is named first and the status is "none" regardless of what
@@ -522,8 +661,8 @@ read_enforcement() {
     return 0
   fi
   # Everything expected missing is "none": seven items with a queue, six
-  # without, plus the auto-merge setting. Counted, not string-compared: jq
-  # sorts the names and a name may carry a reason.
+  # without, plus the auto-merge setting. Counted, not string-compared: the
+  # names are sorted and a name may carry a reason.
   local missing_count expected_count=8
   [ "$expect_queue" = true ] || expected_count=7
   missing_count="$(printf '%s' "$ENFORCEMENT_MISSING" | awk -F',' 'NF { print NF } !NF { print 0 }')"
@@ -904,9 +1043,11 @@ merge_pr() {
     # auto-merge arms while the run is pending and the queue admits the PR
     # when it is green. The verdict is GitHub's; this only requests it.
     # The guarded path is taken only when enforcement is fully applied --
-    # the gate present at the policy's repository, ref, and revision, with
-    # the queue and native rules beside it. A same-path workflow from
-    # elsewhere or a stale pin is not the gate.
+    # the gate present at the policy's repository and ref, at the policy's
+    # revision or a descendant of it published there, with the queue and
+    # native rules beside it. A same-path workflow from elsewhere, a pin
+    # behind or off that lineage, and a lineage that cannot be resolved are
+    # all not the gate.
     read_enforcement "$base"
     if [ "$ENFORCEMENT_STATUS" = applied ]; then
       rerun_review_gate "$number" "$head"

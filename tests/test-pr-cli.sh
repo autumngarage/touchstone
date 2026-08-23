@@ -72,11 +72,25 @@ serve_rules() {
   pr_rule='{"type":"pull_request","parameters":{"required_review_thread_resolution":true}}'
   [ ! -f "$GH_STATE/pr-rule-no-threads" ] || pr_rule='{"type":"pull_request","parameters":{}}'
   if [ -f "$GH_STATE/review-gate" ]; then
+    # validate and review-gate carry the fixture's variant pin; delivery-evidence
+    # stays at the policy revision, so a variant names exactly two gates.
     pin_sha="$GH_POLICY_SHA"
-    [ ! -f "$GH_STATE/stale-pin" ] || pin_sha="0000000000000000000000000000000000000000"
+    evidence_sha="$GH_POLICY_SHA"
+    source_id=1333343261
+    [ ! -f "$GH_STATE/stale-pin" ] || pin_sha="$GH_DIVERGED_SHA"
+    [ ! -f "$GH_STATE/behind-pin" ] || pin_sha="$GH_BEHIND_SHA"
+    [ ! -f "$GH_STATE/offref-pin" ] || pin_sha="$GH_OFFREF_SHA"
+    [ ! -f "$GH_STATE/unknown-pin" ] || pin_sha="$GH_UNKNOWN_SHA"
+    [ ! -f "$GH_STATE/other-source-pin" ] || source_id=424242
+    # The AUT-559 shape: the deployed ruleset pins the source branch head,
+    # several revisions ahead of the policy the installed tool carries.
+    if [ -f "$GH_STATE/ahead-pin" ]; then
+      pin_sha="$GH_AHEAD_SHA"
+      evidence_sha="$GH_AHEAD_SHA"
+    fi
     queue_rule=',{"type":"merge_queue"}'
     [ ! -f "$GH_STATE/no-queue-rule" ] || queue_rule=""
-    rules='['"$pr_rule"',{"type":"deletion"},{"type":"non_fast_forward"}'"$queue_rule"',{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$GH_POLICY_SHA"'"}]}}]'
+    rules='['"$pr_rule"',{"type":"deletion"},{"type":"non_fast_forward"}'"$queue_rule"',{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":'"$source_id"',"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":'"$source_id"',"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$evidence_sha"'"}]}}]'
   elif [ -f "$GH_STATE/no-rules" ]; then
     rules='[]'
   else
@@ -309,6 +323,57 @@ case "$1 ${2:-}" in
     elif has 'repos/autumngarage/current --jq .allow_auto_merge' "$@"; then
       # The repository's auto-merge setting: on unless the fixture says otherwise.
       if [ -f "$GH_STATE/auto-merge-off" ]; then printf 'false\n'; else printf 'true\n'; fi
+    elif has 'repositories/1333343261' "$@"; then
+      # The workflow source repository, resolved by the id the pin carries.
+      printf '%s' '{"full_name":"autumngarage/touchstone-workflows"}' | jq -r "$(value_after --jq "$@")"
+    elif has 'repositories/' "$@"; then
+      # Any other id is a repository this token cannot see.
+      printf 'Not Found\n' >&2
+      exit 1
+    elif has 'touchstone-workflows/commits/main' "$@"; then
+      [ ! -f "$GH_STATE/source-head-unreadable" ] || { printf 'Not Found\n' >&2; exit 1; }
+      printf '%s' "{\"sha\":\"$GH_SOURCE_HEAD\"}" | jq -r "$(value_after --jq "$@")"
+    elif has 'touchstone-workflows/compare/' "$@"; then
+      # A real ancestry graph, answered the way GitHub answers it. The fixture
+      # commits, oldest first: BEHIND -> POLICY -> AHEAD (= the branch head),
+      # with OFFREF descended from POLICY but never merged into the branch and
+      # DIVERGED on a lineage of its own.
+      spec="$(printf '%s\n' "$@" | tr ' ' '\n' | grep -F '/compare/' | head -1)"
+      spec="${spec##*/compare/}"
+      base="${spec%%...*}"
+      head="${spec##*...}"
+      for sha in "$base" "$head"; do
+        case "$sha" in
+          "$GH_BEHIND_SHA" | "$GH_POLICY_SHA" | "$GH_AHEAD_SHA" | "$GH_OFFREF_SHA" | "$GH_DIVERGED_SHA") ;;
+          *)
+            printf 'No common ancestor between %s and %s.\n' "$base" "$head" >&2
+            exit 1
+            ;;
+        esac
+      done
+      rank_of() {
+        case "$1" in
+          "$GH_BEHIND_SHA") printf '1\n' ;;
+          "$GH_POLICY_SHA") printf '2\n' ;;
+          "$GH_AHEAD_SHA") printf '3\n' ;;
+          *) printf '0\n' ;;
+        esac
+      }
+      base_rank="$(rank_of "$base")"
+      head_rank="$(rank_of "$head")"
+      if [ "$base" = "$head" ]; then
+        status=identical
+      elif [ "$base_rank" -gt 0 ] && [ "$head_rank" -gt 0 ]; then
+        if [ "$head_rank" -gt "$base_rank" ]; then status=ahead; else status=behind; fi
+      elif [ "$head" = "$GH_OFFREF_SHA" ] && [ "$base_rank" -gt 0 ] && [ "$base_rank" -le 2 ]; then
+        # OFFREF descends from POLICY (and from BEHIND before it).
+        status=ahead
+      elif [ "$base" = "$GH_OFFREF_SHA" ] && [ "$head_rank" -gt 0 ] && [ "$head_rank" -le 2 ]; then
+        status=behind
+      else
+        status=diverged
+      fi
+      printf '%s' "{\"status\":\"$status\"}" | jq -r "$(value_after --jq "$@")"
     elif has 'user --jq .login' "$@"; then
       printf 'alice\n'
     elif has 'actions/runs/77/rerun' "$@"; then
@@ -378,7 +443,19 @@ esac
 EOF
   chmod +x "$TMP/bin/gh"
   GH_POLICY_SHA="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[].sha] | unique | .[0]' "$ROOT/policy/github/touchstone-main.json")"
+  # The workflow-source lineage the fake serves, relative to the revision the
+  # tool's own policy file carries (GH_POLICY_SHA):
+  #   BEHIND -> POLICY -> AHEAD, with AHEAD the branch head.
+  # OFFREF descends from POLICY but is not on the branch; DIVERGED shares no
+  # lineage; UNKNOWN is not a commit in the source repository at all.
+  GH_BEHIND_SHA=7c2e48d21b8031df4e607a3f0935cc37f363fcd5
+  GH_AHEAD_SHA=9ab13f0c5d2e47bb8c6a1f30d94e7c2b5a08d613
+  GH_OFFREF_SHA=3d5c7e91b02a4f68d17c9ae5b436f0c82d197ae4
+  GH_DIVERGED_SHA=1f0b9d4c8e37a25610cd9f8b47e3a05c6d21f9b8
+  GH_UNKNOWN_SHA=0000000000000000000000000000000000000000
+  GH_SOURCE_HEAD="$GH_AHEAD_SHA"
   export PATH="$TMP/bin:$PATH" GH_CALLS="$TMP/calls" GH_STATE="$TMP/state" GH_HEAD="$HEAD_SHA" GH_POLICY_SHA
+  export GH_BEHIND_SHA GH_AHEAD_SHA GH_OFFREF_SHA GH_DIVERGED_SHA GH_UNKNOWN_SHA GH_SOURCE_HEAD
   export GH_BASE_REF=main GH_BASE_SHA=base-sha
   export TOUCHSTONE_READ_ATTEMPTS=2 TOUCHSTONE_REQUEST_ATTEMPTS=2 TOUCHSTONE_RETRY_DELAY=0 TOUCHSTONE_GATE_RETRY_DELAY=0
 
@@ -711,6 +788,80 @@ EOF
   assert_has "$TMP/out" 'not pinned at the policy revision'
   assert_not_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/stale-pin"
+
+  echo "==> a pin ahead of the tool's own revision on the same lineage is enforcement (AUT-559)"
+  # The tool's policy file travels with the release; the ruleset is applied
+  # from a checkout that moves ahead of it. A gate pinned at a descendant of
+  # the tool's revision, published on the branch the policy pins, enforces at
+  # least what the tool expects -- reporting it as unpinned made every
+  # consumer PR unmergeable until the next release.
+  touch "$TMP/state/ahead-pin"
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" policy-status --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  # The source repository is resolved by the id the pin carries, and the
+  # lineage is read from GitHub -- not assumed from the bundled SHA.
+  assert_has "$GH_CALLS" 'repositories/1333343261'
+  assert_has "$GH_CALLS" "repos/autumngarage/touchstone-workflows/compare/$GH_POLICY_SHA...$GH_AHEAD_SHA"
+  # Three gates carry one pin between them: it is resolved once, not thrice.
+  [ "$(grep -c 'repositories/1333343261' "$GH_CALLS")" -eq 1 ] \
+    || fail "the workflow source was resolved once per gate instead of once per pin"
+  : >"$GH_CALLS"
+  rm -f "$TMP/state/merged" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'pr merge'
+  rm -f "$TMP/state/ahead-pin" "$TMP/state/merged" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
+
+  echo "==> a pin behind, off the branch, from another source, or unreadable still fails closed"
+  # Behind the tool's revision: the repository is enforcing less than the
+  # policy, which is the gap the guard exists for.
+  touch "$TMP/state/behind-pin"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"status":"partial"'
+  assert_has "$TMP/out" 'review-gate workflow (present but not pinned at the policy revision)'
+  rm -f "$TMP/state/behind-pin"
+  # Descended from the tool's revision but never published on the branch the
+  # policy pins: a floor alone would admit it; the branch head is the ceiling.
+  touch "$TMP/state/offref-pin"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"status":"partial"'
+  assert_has "$TMP/out" 'validate workflow (present but not pinned at the policy revision)'
+  : >"$GH_CALLS"
+  rm -f "$TMP/state/merged"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_not_has "$GH_CALLS" 'pr merge'
+  rm -f "$TMP/state/offref-pin"
+  # The right path and revision from the wrong repository is not the gate,
+  # and lineage is never asked about across repositories.
+  touch "$TMP/state/other-source-pin"
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"status":"partial"'
+  assert_has "$TMP/out" 'review-gate workflow (present but not pinned at the policy revision)'
+  assert_not_has "$GH_CALLS" '/compare/'
+  rm -f "$TMP/state/other-source-pin"
+  # Indeterminate is not permission: a revision the source repository does
+  # not carry, and a branch head that cannot be read, both stay closed and
+  # say so rather than being reported as the policy revision.
+  touch "$TMP/state/unknown-pin"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"status":"partial"'
+  assert_has "$TMP/out" 'review-gate workflow (present but pinned at a revision this tool could not verify:'
+  : >"$GH_CALLS"
+  rm -f "$TMP/state/merged"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'could not verify'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  rm -f "$TMP/state/unknown-pin"
+  touch "$TMP/state/ahead-pin" "$TMP/state/source-head-unreadable"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"status":"partial"'
+  assert_has "$TMP/out" 'could not verify'
+  rm -f "$TMP/state/ahead-pin" "$TMP/state/source-head-unreadable"
   # A pull-request rule without thread resolution is not the policy's rule.
   touch "$TMP/state/pr-rule-no-threads"
   run_pr "$TMP/out" policy-status --json
