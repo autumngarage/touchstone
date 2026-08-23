@@ -110,6 +110,12 @@ assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   '## The deep review pass'
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'OpenRouter'
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'Gemini'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  'For serious, a waiver is only Codex'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  'A normal-profile failure never waives this pass.'
+assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  'or the same recorded waiver'
 
 GIT_WORKFLOW_SKILL="$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md"
 assert_contains "$GIT_WORKFLOW_SKILL" "Inspect the repository's effective rules"

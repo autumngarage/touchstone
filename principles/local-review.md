@@ -218,9 +218,10 @@ reviewed revision, a normal target that is a bare revision, or a waiver without
 a reason.
 When the row is present but unreadable it says so and quotes the line.
 The gate checks shape, not truth — it cannot see a terminal — but it can
-refuse silence, and silence was the failure. A waiver is only the reviewer
+refuse silence, and silence was the failure. For normal, a waiver is only the
 profile being unreadable, its configured run exiting nonzero, or Codex being
-absent, unauthenticated, or out of quota, and it says which.
+absent, unauthenticated, or out of quota. For serious, a waiver is only Codex
+being absent, unauthenticated, or out of quota. Either waiver says which.
 
 ## Stop conditions
 
@@ -234,9 +235,9 @@ is met:
   the recorded waiver applies (the normal profile is unreadable, its configured
   pass exits nonzero, or Codex is unavailable — recorded in the validation
   block).
-- **serious** — the pre-push local pass ran or the same recorded waiver
-  applies, and the PR-side review evidence covers the head that merges (the
-  gate enforces the latter).
+- **serious** — the pre-push local pass ran or its Codex-unavailable waiver is
+  recorded, and the PR-side review evidence covers the head that merges (the
+  gate enforces the latter). A normal-profile failure never waives this pass.
 
 After a bounded pass, fix the valid findings, **re-run every applicable
 deterministic check and the intended validation scenario** — a valid fix can
