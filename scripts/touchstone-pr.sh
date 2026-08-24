@@ -26,9 +26,11 @@ TOOL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 CANONICAL_POLICY="$TOOL_ROOT/policy/github/touchstone-main.json"
 PR_NUMBER=""
 CAPTURE_STDERR_TEMP=""
+BODY_SNAPSHOT_TEMP=""
 
 cleanup() {
   [ -z "$CAPTURE_STDERR_TEMP" ] || rm -f -- "$CAPTURE_STDERR_TEMP"
+  [ -z "$BODY_SNAPSHOT_TEMP" ] || rm -f -- "$BODY_SNAPSHOT_TEMP"
 }
 trap cleanup EXIT
 
@@ -212,6 +214,19 @@ absolute_input_file() {
   esac
 }
 
+snapshot_body_file() {
+  [ -n "$BODY_FILE" ] || return 0
+  [ -r "$BODY_FILE" ] && [ ! -d "$BODY_FILE" ] \
+    || fail_input "open requires a readable --body-file" "Put the reviewed PR description in that file."
+  BODY_SNAPSHOT_TEMP="$(mktemp "${TMPDIR:-/tmp}/touchstone-pr-body.XXXXXX" 2>/dev/null)" \
+    || fail_operation "could not create a temporary PR-body snapshot" "Make ${TMPDIR:-/tmp} writable, then retry."
+  cat 2>/dev/null <"$BODY_FILE" >"$BODY_SNAPSHOT_TEMP" \
+    || fail_input "open could not read --body-file" "Pass a readable file or stream containing the reviewed PR description."
+  [ -s "$BODY_SNAPSHOT_TEMP" ] \
+    || fail_input "open requires a non-empty --body-file" "Put the reviewed PR description in that file."
+  BODY_FILE="$BODY_SNAPSHOT_TEMP"
+}
+
 require_option_value() {
   local option="${1:-}" value="${2:-}"
   [ "$#" -ge 2 ] || fail_input "missing value for $option" "Pass a non-empty value after $option."
@@ -326,6 +341,7 @@ fi
 PROJECT_ROOT="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE git -C "$PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PROJECT_ROOT")"
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 [ -z "$BODY_FILE" ] || BODY_FILE="$(absolute_input_file "$BODY_FILE")"
+[ "$OPERATION" != open ] || snapshot_body_file
 
 project_git rev-parse --git-dir >/dev/null 2>&1 \
   || fail_input "project is not a Git repository" "Initialize the project before using PR commands."

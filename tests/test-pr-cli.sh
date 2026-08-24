@@ -538,11 +538,16 @@ EOF
   rm -f "$TMP/state/edits" "$TMP/state/pr-title"
   printf 'Original body.\n' >"$TMP/state/pr-body"
   printf 'Corrected body with ## Review tier\n' >"$TMP/body2"
-  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2" --json
+  run_pr "$TMP/out" open --title 'Test PR' \
+    --body-file <(printf 'Corrected body with ## Review tier\n') --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"body":"updated"'
-  grep -q -- '--body-file' "$TMP/state/edits" && [ "$(cat "$TMP/state/pr-body")" = "$(cat "$TMP/body2")" ] \
-    && ok "changed body applied on reuse" || fail "body not applied on reuse: $(cat "$TMP/state/edits" 2>/dev/null)"
+  if grep -q -- '--body-file' "$TMP/state/edits" \
+    && [ "$(cat "$TMP/state/pr-body")" = "$(cat "$TMP/body2")" ]; then
+    ok "a streamed body is reused from one snapshot"
+  else
+    fail "body not applied on reuse: $(cat "$TMP/state/edits" 2>/dev/null)"
+  fi
   grep -q -- '--title' "$TMP/state/edits" && fail "title edited although unchanged" || true
   rm -f "$TMP/state/edits"
   run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2" --json
@@ -565,10 +570,32 @@ EOF
   # A freshly created PR carries the body by construction and says nothing
   # about applying it.
   rm -f "$TMP/state/pr-exists"
-  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  streamed_body='Streamed PR body.
+
+Closes #42'
+  TMPDIR="$TMP" run_pr "$TMP/out" open --title 'Test PR' \
+    --body-file <(printf '%s\n' "$streamed_body") --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"opened"'
   assert_not_has "$TMP/out" '"body":'
+  if [ "$(cat "$TMP/state/pr-body")" = "$streamed_body" ]; then
+    ok "a process-substitution body is snapshotted before PR creation"
+  else
+    fail "the streamed body did not survive PR creation"
+  fi
+  snapshot_leftover=""
+  for candidate in "$TMP"/touchstone-pr-body.*; do
+    [ -e "$candidate" ] || continue
+    snapshot_leftover="$candidate"
+    break
+  done
+  if [ -n "$snapshot_leftover" ]; then
+    fail "the PR-body snapshot survived command exit"
+  fi
+  run_pr "$TMP/out" open --title 'Empty stream' --body-file <(printf '') --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'open requires a non-empty --body-file'
+  [ ! -s "$GH_CALLS" ] || fail "an empty body stream reached GitHub"
 
   echo "==> open refuses head drift and reconciles a lying creation response"
   rm -f "$TMP/state/pr-exists" "$TMP/state/review-request"
@@ -588,7 +615,6 @@ EOF
   GH_HEAD="$HEAD_SHA"
   rm -f "$TMP/state/pr-exists"
   caller_directory="$PWD"
-  canonical_body="$(cd "$TMP" && pwd -P)/body"
   cd "$TMP"
   GH_MODE=create_lied run_pr "$TMP/out" open --title 'Test PR' --body-file body --json
   cd "$caller_directory"
@@ -598,7 +624,9 @@ EOF
   # The result names the branch it acted on. Two pull requests were opened for
   # the wrong branch, and nothing in the output would have shown it.
   assert_has "$TMP/out" '"branch":"feat/test"'
-  assert_has "$GH_CALLS" "pr create --repo github.com/autumngarage/current --head feat/test --base main --title Test PR --body-file $canonical_body"
+  assert_has "$GH_CALLS" "pr create --repo github.com/autumngarage/current --head feat/test --base main --title Test PR --body-file"
+  [ "$(cat "$TMP/state/pr-body")" = "$(cat "$TMP/body")" ] \
+    || fail "a relative body path was not snapshotted before the project-directory change"
   [ "$(grep -c '^pr comment' "$GH_CALLS")" -eq 1 ] || fail "open did not post one review request"
   rm -f "$TMP/state/review-request"
   GH_MODE=comment_lied run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
