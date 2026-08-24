@@ -97,7 +97,9 @@ serve_rules() {
     fi
     queue_rule=',{"type":"merge_queue"}'
     [ ! -f "$GH_STATE/no-queue-rule" ] || queue_rule=""
-    rules='['"$pr_rule"',{"type":"deletion"},{"type":"non_fast_forward"}'"$queue_rule"',{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":'"$source_id"',"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":'"$source_id"',"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$evidence_sha"'"}]}}]'
+    status_rule=""
+    [ ! -f "$GH_STATE/consumer-status" ] || status_rule=',{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"convoy/delivery-protocol"}]}}'
+    rules='['"$pr_rule"',{"type":"deletion"},{"type":"non_fast_forward"}'"$queue_rule"',{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":'"$source_id"',"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":'"$source_id"',"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$evidence_sha"'"}]}}'"$status_rule"']'
   elif [ -f "$GH_STATE/no-rules" ]; then
     rules='[]'
   else
@@ -984,6 +986,19 @@ Closes #42'
   run_pr "$TMP/out" status 7
   assert_has "$TMP/out" 'enforcement on main: applied'
   rm -f "$TMP/state/review-gate"
+
+  echo "==> consumer policy assesses every declared required status (AUT-577)"
+  jq '.repository = "current"
+    | .managedRuleset.name = "Touchstone policy v1: autumngarage/current@main"
+    | .managedRuleset.conditions.repository_name.include = ["current"]' \
+    "$ROOT/policy/github/consumers/convoy.json" >"$TMP/tool2/policy/github/consumers/current.json"
+  touch "$TMP/state/review-gate" "$TMP/state/no-queue-rule" "$TMP/state/consumer-status"
+  bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
+  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  rm -f "$TMP/state/consumer-status"
+  bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
+  assert_has "$TMP/out" '"enforcement":{"status":"partial","missing":["convoy/delivery-protocol status"]}'
+  rm -f "$TMP/state/no-queue-rule" "$TMP/state/review-gate"
 
   echo "==> workflow-source policy uses its required status without inventing a review gate (AUT-531)"
   GH_FAKE_REPO=autumngarage/touchstone-workflows run_pr "$TMP/out" policy-status --json
