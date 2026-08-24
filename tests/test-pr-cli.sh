@@ -583,7 +583,13 @@ Closes #42'
   else
     fail "the streamed body did not survive PR creation"
   fi
-  if [ -n "$(find "$TMP" -maxdepth 1 -name 'touchstone-pr-body.*' -print -quit)" ]; then
+  snapshot_leftover=""
+  for candidate in "$TMP"/touchstone-pr-body.*; do
+    [ -e "$candidate" ] || continue
+    snapshot_leftover="$candidate"
+    break
+  done
+  if [ -n "$snapshot_leftover" ]; then
     fail "the PR-body snapshot survived command exit"
   fi
   run_pr "$TMP/out" open --title 'Empty stream' --body-file <(printf '') --json
