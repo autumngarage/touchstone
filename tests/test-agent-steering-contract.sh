@@ -90,13 +90,14 @@ for file in \
   # git state, so the terminal-owner precondition must be auto-loaded by every
   # driver rather than left only in the routed swarm guide.
   assert_contains "$file" "remove one only after its task is terminal"
+  assert_contains "$file" "and its final result reaches the parent"
   assert_not_contains "$file" "Review is an enforced gate."
 done
 
 assert_contains "$TOUCHSTONE_ROOT/principles/agent-swarms.md" \
   "an open or merged PR"
 assert_contains "$TOUCHSTONE_ROOT/principles/agent-swarms.md" \
-  "and a clean worktree prove neither condition"
+  "clean worktree prove"
 assert_contains "$TOUCHSTONE_ROOT/principles/agent-swarms.md" \
   "interrupt or cancel it and confirm that it is"
 

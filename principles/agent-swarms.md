@@ -175,16 +175,19 @@ Deleting a worktree directory is not the same as `git worktree remove <path>`.
 `rm -rf ../app-slice` removes files but can leave stale records under Git's
 shared worktree metadata, so Git may still think a branch is checked out there
 and refuse later checkouts, branch deletes, or merges. For normal cleanup, use
-`git worktree remove <path>`. If someone already deleted the directory
-directly, run `git worktree prune` from a remaining checkout to remove
-metadata for missing paths, then rerun the failed checkout, merge, or cleanup
-command.
+`git worktree remove <path>`. If someone already deleted one or more
+directories directly, first confirm every affected worker task is terminal and
+the parent received every final report. Then run `git worktree prune` from a
+remaining checkout to remove metadata for the missing paths, and rerun the
+failed checkout, merge, or cleanup command.
 
 Rules:
 
-- never remove a worker's tree or prune its worktree record before its task is
-  terminal and the parent has received its final report; an open or merged PR
-  and a clean worktree prove neither condition
+- never remove a worker's tree before its task is terminal and the parent has
+  received its final report; an open or merged PR and a clean worktree prove
+  neither condition
+- never run repository-wide `git worktree prune` until every prunable worker
+  meets that lifecycle precondition
 - if abandoning a live worker, interrupt or cancel it and confirm that it is
   terminal before removing its tree
 - never `git worktree remove --force` another agent's tree

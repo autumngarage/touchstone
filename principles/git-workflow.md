@@ -479,7 +479,8 @@ order — each line is a command, not advice:
 ```bash
 touchstone cleanup check            # read-only: lists what is left; exit 0 means nothing
 git checkout <default> && git pull --rebase    # first: Git refuses to delete the branch you are on
-git worktree remove <path>          # only after its worker is terminal and its final report reached you; then prune
+git worktree remove <path>          # only after its worker is terminal and its final report reached you
+git worktree prune                  # only after every prunable worker meets that lifecycle proof
 git branch -D <branch>              # after the merged-head proof under "Periodic branch hygiene"
 git push origin --force-with-lease=<branch>:<merged-sha> :<branch>   # delete the MERGED PR's remote branch only if it is still at the merged SHA (a CLOSED one may hold abandoned work: decide, don't reflexively delete)
 git status --porcelain --untracked-files=all   # must print nothing: remove test/build residue or ignore it
@@ -711,15 +712,17 @@ For the full fan-out playbook — slice manifests, file ownership, parent orches
 **Cleanup.**
 
 Before removing a worker's tree, confirm its task is terminal and its final
-report reached the parent. A merged PR and a clean tree prove neither.
+report reached the parent. A merged PR and a clean tree prove neither. Because
+pruning is repository-wide, run it only after every prunable worker meets that
+lifecycle proof.
 
 ```bash
 git worktree list                  # what accumulated
 git worktree remove <path>         # remove one after that lifecycle proof
-git worktree prune                 # drop records for already-deleted paths
+git worktree prune                 # only after every prunable worker passes
 ```
 
-Do not substitute `rm -rf <worktree-dir>` for `git worktree remove <path>`. Deleting only the directory leaves stale Git worktree metadata behind; Git may still treat the missing path as owning the branch and refuse later branch deletes, checkouts, or merge cleanup. If that already happened, run `git worktree prune` from a remaining checkout, then retry the blocked command.
+Do not substitute `rm -rf <worktree-dir>` for `git worktree remove <path>`. Deleting only the directory leaves stale Git worktree metadata behind; Git may still treat the missing path as owning the branch and refuse later branch deletes, checkouts, or merge cleanup. If that already happened, prove every prunable worker meets the lifecycle rule, run `git worktree prune` from a remaining checkout, then retry the blocked command.
 
 ## Emergency path
 

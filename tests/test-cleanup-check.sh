@@ -123,6 +123,8 @@ grep -E '^  remote-branch.*feat/stack-parent.*still bases open PR #46' "$TMP/out
 grep -E '^  local-branch.*feat/fork-open \(#47 merged\)' "$TMP/out" >/dev/null && ok "a fork's open PR does not hide our finished branch" || fail "fork open PR hid a finished branch"
 grep -q 'confirm the worker is terminal and its final report reached the parent, and confirm its PR is merged' "$TMP/out" \
   && ok "worktree removal requires terminal-worker evidence" || fail "worktree removal remedy trusts repository state alone"
+grep -q 'git worktree prune' "$TMP/out" \
+  && fail "intact worktree removal chains repository-wide pruning" || ok "intact worktree removal does not prune sibling records"
 # nothing mutated
 [ -f "$TMP/repo/__pycache__.tmp" ] && git -C "$TMP/repo" rev-parse --verify -q feat/done >/dev/null \
   && [ -d "$TMP/repo wt" ] && [ ! -f "$TMP/repo/.git/FETCH_HEAD" ] && ok "check mutated nothing (no FETCH_HEAD either)" || fail "check mutated the repository"
@@ -164,8 +166,8 @@ rm -rf "$TMP/repo wt"
 run
 [ "$RC" -eq 1 ] && grep -q 'worktree.*directory missing' "$TMP/out" && grep -q 'git worktree prune' "$TMP/out" \
   && ok "prunable worktree reported with the prune remedy" || fail "prunable worktree not handled (rc=$RC): $(head -3 "$TMP/out")"
-grep -q 'confirm the worker is terminal and its final report reached the parent; then git worktree prune' "$TMP/out" \
-  && ok "prunable worktree requires terminal-worker evidence" || fail "prunable worktree remedy trusts missing-directory state alone"
+grep -q 'confirm every prunable worker is terminal and each final report reached the parent; then git worktree prune' "$TMP/out" \
+  && ok "pruning requires aggregate terminal-worker evidence" || fail "prune remedy proves only one missing worktree"
 git -C "$TMP/repo" worktree prune
 
 echo "==> an unreachable origin is a checkout finding, not a clean exit"
