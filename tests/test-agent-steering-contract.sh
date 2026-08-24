@@ -85,8 +85,21 @@ for file in \
   assert_contains "$file" "in-scope fixes still proceed to exact-head review"
   assert_contains "$file" "follow the capability across replacement PRs"
   assert_contains "$file" "closing or renaming never resets the budget"
+  # A parent deleted two clean worktrees while their workers were still live;
+  # one lost its final push. Cleanup cannot infer task lifecycle from GitHub or
+  # git state, so the terminal-owner precondition must be auto-loaded by every
+  # driver rather than left only in the routed swarm guide.
+  assert_contains "$file" "remove one only after final result delivery"
+  assert_contains "$file" "or confirmed cancellation"
   assert_not_contains "$file" "Review is an enforced gate."
 done
+
+assert_contains "$TOUCHSTONE_ROOT/principles/agent-swarms.md" \
+  "acknowledged its cancellation; an open"
+assert_contains "$TOUCHSTONE_ROOT/principles/agent-swarms.md" \
+  "merged PR and a clean worktree prove"
+assert_contains "$TOUCHSTONE_ROOT/principles/agent-swarms.md" \
+  "interrupt or cancel it, confirm that it is"
 
 echo "==> one Codex harness is routed by tier without provider knowledge"
 for file in \
