@@ -70,8 +70,13 @@ taking this document's word for it.
   exists; a fully applied workflow-source policy instead states that
   exact-head review remains driver procedure.
 - `status` is a read-only observation of state, URL, exact head, base ref/base
-  SHA, draft state, and GitHub's merge-state observation. Raw equivalent:
-  `gh pr view --json number,state,url,headRefOid,baseRefName,baseRefOid,mergeStateStatus,isDraft`.
+  SHA, draft state, GitHub's merge-state observation, and whether GitHub's
+  durable `autoMergeRequest` is armed. Armed state includes its `enabledAt`
+  timestamp and the live PR head that state belongs to. It does not reconstruct
+  auto-merge from local wait conditions or decide whether review is complete.
+  Raw equivalent: `gh pr view --json
+  number,state,url,headRefOid,baseRefName,baseRefOid,mergeStateStatus,isDraft`
+  plus `autoMergeRequest { enabledAt }` from GitHub's GraphQL API.
 
   Why not the raw sequence: over the raw call it adds bounded retries and the
   versioned `touchstone.pr/v1` field names, so an agent parses one stable

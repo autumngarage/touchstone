@@ -238,7 +238,13 @@ case "$1 ${2:-}" in
     ;;
   "api user") printf '%s\n' alice ;;
   "api graphql")
-    if has 'mergeQueueEntry' "$@"; then
+    if has 'autoMergeRequest.enabledAt // ""' "$@"; then
+      if [ "${GH_MODE:-ok}" = status_auto_merge ]; then
+        printf '%s\t%s\n' "$GH_HEAD" '2026-08-24T20:00:00Z'
+      else
+        printf '%s\t\n' "$GH_HEAD"
+      fi
+    elif has 'mergeQueueEntry' "$@"; then
       if [ "${GH_MODE:-ok}" = merge_reconcile_failed ]; then
         printf 'GraphQL unavailable\n' >&2
         exit 1
@@ -494,7 +500,18 @@ EOF
   assert_has "$TMP/out" '"schema":"touchstone.pr/v1"'
   assert_has "$TMP/out" '"status":"observed"'
   assert_has "$TMP/out" "\"head\":\"$HEAD_SHA\""
+  assert_has "$TMP/out" "\"autoMerge\":{\"armed\":false,\"enabledAt\":null,\"head\":\"$HEAD_SHA\"}"
+  assert_has "$GH_CALLS" 'api graphql --hostname github.com -f owner=autumngarage -f name=current -F number=7'
   [ "$(grep -c '^pr view' "$GH_CALLS")" -eq 2 ] || fail "status did not retry exactly once"
+  run_pr "$TMP/out" status 7
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "auto-merge: not armed for $HEAD_SHA"
+  GH_MODE=status_auto_merge run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "\"autoMerge\":{\"armed\":true,\"enabledAt\":\"2026-08-24T20:00:00Z\",\"head\":\"$HEAD_SHA\"}"
+  GH_MODE=status_auto_merge run_pr "$TMP/out" status 7
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "auto-merge: armed at 2026-08-24T20:00:00Z for $HEAD_SHA"
   GH_REPO_HOST=github.enterprise.example run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'pr view 7 --repo github.enterprise.example/autumngarage/current'

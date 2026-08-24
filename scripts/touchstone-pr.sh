@@ -1078,12 +1078,49 @@ read_pr_row() {
   PR_ROW="$READ_OUTPUT"
 }
 
+read_auto_merge_state() {
+  local number="$1" expected_head="$2" row
+  read_with_retry gh api graphql --hostname "$REPO_HOST" \
+    -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F number="$number" \
+    -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid autoMergeRequest{enabledAt}}}}' \
+    --jq '[.data.repository.pullRequest.headRefOid, (.data.repository.pullRequest.autoMergeRequest.enabledAt // "")] | @tsv' \
+    || fail_operation "could not read auto-merge state for PR #$number: $READ_OUTPUT" "Retry after GitHub recovers."
+  row="$READ_OUTPUT"
+  IFS="$(printf '\t')" read -r AUTO_MERGE_HEAD AUTO_MERGE_ENABLED_AT <<<"$row"
+  [ -n "$AUTO_MERGE_HEAD" ] \
+    || fail_operation "GitHub returned no live head while reading auto-merge state for PR #$number" "Retry after GitHub recovers."
+  [ "$AUTO_MERGE_HEAD" = "$expected_head" ] \
+    || fail_operation "PR #$number moved from $expected_head to $AUTO_MERGE_HEAD while status was being read" "Re-run status against the live head."
+  if [ -n "$AUTO_MERGE_ENABLED_AT" ]; then
+    AUTO_MERGE_ARMED=true
+  else
+    AUTO_MERGE_ARMED=false
+  fi
+}
+
+auto_merge_json() {
+  printf '{"armed":%s,"enabledAt":' "$AUTO_MERGE_ARMED"
+  if [ -n "$AUTO_MERGE_ENABLED_AT" ]; then json_string "$AUTO_MERGE_ENABLED_AT"; else printf 'null'; fi
+  printf ',"head":'
+  json_string "$AUTO_MERGE_HEAD"
+  printf '}'
+}
+
+auto_merge_text() {
+  if [ "$AUTO_MERGE_ARMED" = true ]; then
+    printf 'armed at %s for %s' "$AUTO_MERGE_ENABLED_AT" "$AUTO_MERGE_HEAD"
+  else
+    printf 'not armed for %s' "$AUTO_MERGE_HEAD"
+  fi
+}
+
 status_pr() {
   local number state url head base base_sha merge_state draft
   read_pr_row
   IFS="$(printf '\t')" read -r number state url head base base_sha merge_state draft <<<"$PR_ROW"
   # Read before the first byte of output: a failed read must produce one
   # error document, not a truncated status followed by another object.
+  read_auto_merge_state "$number" "$head"
   read_enforcement "$base"
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"status","status":"observed","pullRequest":%s,"state":' "$OUTPUT_SCHEMA" "$number"
@@ -1098,12 +1135,14 @@ status_pr() {
     json_string "$base_sha"
     printf ',"mergeState":'
     json_string "$merge_state"
-    printf ',"draft":%s,"enforcement":' "$draft"
+    printf ',"draft":%s,"autoMerge":' "$draft"
+    auto_merge_json
+    printf ',"enforcement":'
     enforcement_json
     printf '}\n'
   else
-    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  merge state: %s\n  draft: %s\n  enforcement on %s: %s\n' \
-      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$merge_state" "$draft" "$base" "$(enforcement_text)"
+    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  merge state: %s\n  draft: %s\n  auto-merge: %s\n  enforcement on %s: %s\n' \
+      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$merge_state" "$draft" "$(auto_merge_text)" "$base" "$(enforcement_text)"
   fi
 }
 
