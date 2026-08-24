@@ -121,7 +121,7 @@ grep -q "repo wt \[feat/in-flight\]" "$TMP/out" && ok "worktree path with a spac
 grep -E '^  remote-branch.*feat/stack-parent.*still bases open PR #46' "$TMP/out" >/dev/null && ! grep -E 'delete feat/stack-parent' "$TMP/out" >/dev/null \
   && ok "a merged branch that bases an open PR is preserved, retarget named" || fail "stack parent not protected: $(grep stack-parent "$TMP/out")"
 grep -E '^  local-branch.*feat/fork-open \(#47 merged\)' "$TMP/out" >/dev/null && ok "a fork's open PR does not hide our finished branch" || fail "fork open PR hid a finished branch"
-grep -q 'confirm the worker is terminal, its final report reached the parent, and its PR is merged' "$TMP/out" \
+grep -q 'confirm the worker is terminal and its final report reached the parent, and confirm its PR is merged' "$TMP/out" \
   && ok "worktree removal requires terminal-worker evidence" || fail "worktree removal remedy trusts repository state alone"
 # nothing mutated
 [ -f "$TMP/repo/__pycache__.tmp" ] && git -C "$TMP/repo" rev-parse --verify -q feat/done >/dev/null \
@@ -164,6 +164,8 @@ rm -rf "$TMP/repo wt"
 run
 [ "$RC" -eq 1 ] && grep -q 'worktree.*directory missing' "$TMP/out" && grep -q 'git worktree prune' "$TMP/out" \
   && ok "prunable worktree reported with the prune remedy" || fail "prunable worktree not handled (rc=$RC): $(head -3 "$TMP/out")"
+grep -q 'confirm the worker is terminal and its final report reached the parent; then git worktree prune' "$TMP/out" \
+  && ok "prunable worktree requires terminal-worker evidence" || fail "prunable worktree remedy trusts missing-directory state alone"
 git -C "$TMP/repo" worktree prune
 
 echo "==> an unreachable origin is a checkout finding, not a clean exit"
