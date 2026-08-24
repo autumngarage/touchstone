@@ -566,29 +566,34 @@ ENFORCEMENT_EXPECTS_QUEUE=true
 ENFORCEMENT_EXPECTS_REVIEW_GATE=true
 
 select_enforcement_policy() {
-  local name="${REPO##*/}" candidate candidate_repo source_policy=""
+  local base_ref="$1" name="${REPO##*/}" candidate candidate_repo source_policy="" policy_branch
   ENFORCEMENT_POLICY_FILE="$CANONICAL_POLICY"
   if [ "$REPO" = "autumngarage/touchstone" ]; then
-    return 0
+    :
+  else
+    for candidate in "$TOOL_ROOT"/policy/github/workflow-sources/*.json; do
+      [ -f "$candidate" ] || continue
+      candidate_repo="$(jq -er '"\(.organization)/\(.repository)"' "$candidate")" \
+        || fail_operation "could not read repository coordinates from $candidate" "Reinstall touchstone; the workflow-source policy inventory is corrupt."
+      [ "$candidate_repo" = "$REPO" ] || continue
+      [ -z "$source_policy" ] \
+        || fail_operation "multiple workflow-source policies match $REPO" "Keep exactly one checked-in policy for this repository."
+      source_policy="$candidate"
+    done
+    if [ -n "$source_policy" ]; then
+      ENFORCEMENT_POLICY_FILE="$source_policy"
+    else
+      candidate="$TOOL_ROOT/policy/github/consumers/$name.json"
+      if [ -f "$candidate" ] \
+        && [ "$(jq -r '"\(.organization)/\(.repository)"' "$candidate")" = "$REPO" ]; then
+        ENFORCEMENT_POLICY_FILE="$candidate"
+      fi
+    fi
   fi
-  for candidate in "$TOOL_ROOT"/policy/github/workflow-sources/*.json; do
-    [ -f "$candidate" ] || continue
-    candidate_repo="$(jq -er '"\(.organization)/\(.repository)"' "$candidate")" \
-      || fail_operation "could not read repository coordinates from $candidate" "Reinstall touchstone; the workflow-source policy inventory is corrupt."
-    [ "$candidate_repo" = "$REPO" ] || continue
-    [ -z "$source_policy" ] \
-      || fail_operation "multiple workflow-source policies match $REPO" "Keep exactly one checked-in policy for this repository."
-    source_policy="$candidate"
-  done
-  if [ -n "$source_policy" ]; then
-    ENFORCEMENT_POLICY_FILE="$source_policy"
-    return 0
-  fi
-  candidate="$TOOL_ROOT/policy/github/consumers/$name.json"
-  if [ -f "$candidate" ] \
-    && [ "$(jq -r '"\(.organization)/\(.repository)"' "$candidate")" = "$REPO" ]; then
-    ENFORCEMENT_POLICY_FILE="$candidate"
-  fi
+  policy_branch="$(jq -er '.branch' "$ENFORCEMENT_POLICY_FILE")" \
+    || fail_operation "could not read the protected branch from $ENFORCEMENT_POLICY_FILE" "Reinstall touchstone; the policy file is corrupt or incomplete."
+  [ "$policy_branch" = "$base_ref" ] \
+    || fail_operation "$ENFORCEMENT_POLICY_FILE protects $policy_branch, not PR base $base_ref" "Use a checked-in policy for $REPO@$base_ref; enforcement cannot be inferred from another branch."
 }
 
 read_enforcement() {
@@ -602,7 +607,7 @@ read_enforcement() {
   # Required gates/statuses must be complete, or the read fails rather than
   # silently expecting nothing.
   local expect_queue
-  select_enforcement_policy
+  select_enforcement_policy "$base_ref"
   policy_file="$ENFORCEMENT_POLICY_FILE"
   [ -f "$policy_file" ] \
     || fail_operation "the tool's policy file is missing: $policy_file" "Reinstall touchstone."
@@ -953,6 +958,10 @@ open_pr() {
   if [ -z "$BASE_REF" ]; then
     BASE_REF="$DEFAULT_REF"
   fi
+  # Policy is branch-specific. Refuse an unmodelled base before creating,
+  # editing, or commenting on a pull request; another branch's rules cannot
+  # establish what GitHub will enforce here.
+  select_enforcement_policy "$BASE_REF"
   # Checked before anything is pushed or posted: with Actions disabled the
   # request would be accepted and then bind to a gate run that can never
   # exist, and the later timeout would read as a dispatch delay.

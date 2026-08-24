@@ -71,7 +71,7 @@ serve_rules() {
   # when the gate is "installed", only the native rules otherwise.
   pr_rule='{"type":"pull_request","parameters":{"required_review_thread_resolution":true}}'
   [ ! -f "$GH_STATE/pr-rule-no-threads" ] || pr_rule='{"type":"pull_request","parameters":{}}'
-  if [ "${GH_FAKE_REPO:-autumngarage/current}" = autumngarage/touchstone-workflows ]; then
+  if [ "${GH_FAKE_REPO:-${GH_REPO:-autumngarage/current}}" = autumngarage/touchstone-workflows ]; then
     rules="[$pr_rule"
     [ -f "$GH_STATE/source-no-deletion" ] || rules="$rules"',{"type":"deletion"}'
     [ -f "$GH_STATE/source-no-non-fast-forward" ] || rules="$rules"',{"type":"non_fast_forward"}'
@@ -141,11 +141,8 @@ case "$1 ${2:-}" in
       git -C "$GH_SWITCH_BRANCH_IN" checkout -q -b feat/moved 2>/dev/null \
         || git -C "$GH_SWITCH_BRANCH_IN" checkout -q feat/moved
     fi
-    if [ -n "${GH_FAKE_REPO:-}" ]; then
-      printf '%s\thttps://%s/%s\tmain\n' "$GH_FAKE_REPO" "${GH_REPO_HOST:-github.com}" "$GH_FAKE_REPO"
-    else
-      printf 'autumngarage/current\thttps://%s/autumngarage/current\tmain\n' "${GH_REPO_HOST:-github.com}"
-    fi
+    fake_repo="${GH_FAKE_REPO:-${GH_REPO:-autumngarage/current}}"
+    printf '%s\thttps://%s/%s\tmain\n' "$fake_repo" "${GH_REPO_HOST:-github.com}" "$fake_repo"
     ;;
   "pr list")
     if [ -f "$GH_STATE/pr-exists" ]; then
@@ -327,7 +324,7 @@ case "$1 ${2:-}" in
       else
         printf 'true\n'
       fi
-    elif has "repos/${GH_FAKE_REPO:-autumngarage/current} --jq .allow_auto_merge" "$@"; then
+    elif has "repos/${GH_FAKE_REPO:-${GH_REPO:-autumngarage/current}} --jq .allow_auto_merge" "$@"; then
       # The repository's auto-merge setting: on unless the fixture says otherwise.
       if [ -f "$GH_STATE/auto-merge-off" ]; then printf 'false\n'; else printf 'true\n'; fi
     elif has 'repositories/1333343261' "$@"; then
@@ -735,18 +732,15 @@ Closes #42'
   assert_rc "$RUN_RC" 0
   cp "$TMP/body" "$TMP/state/pr-body"
 
-  GH_BASE_REF=release GH_BASE_SHA=release-sha \
-    run_pr "$TMP/out" open --title 'Retargeted PR' --body-file "$TMP/body" \
-    --base release --json
+  GH_BASE_SHA=release-sha \
+    run_pr "$TMP/out" open --title 'Moved-base PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'already has a review request for different base coordinates'
   rm -f "$TMP/state/review-request"
-  GH_BASE_REF=release GH_BASE_SHA=release-sha \
-    run_pr "$TMP/out" open --title 'Retargeted PR' --body-file "$TMP/body" \
-    --base release --json
+  GH_BASE_SHA=release-sha \
+    run_pr "$TMP/out" open --title 'Moved-base PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
-  assert_has "$GH_CALLS" "touchstone:pr-open head=$HEAD_SHA base=release base_sha=release-sha"
-  GH_BASE_REF=main
+  assert_has "$GH_CALLS" "touchstone:pr-open head=$HEAD_SHA base=main base_sha=release-sha"
   GH_BASE_SHA=base-sha
 
   echo "==> review findings and responses stay on the canonical GitHub surface"
@@ -1036,6 +1030,17 @@ EOF
   set -e
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" 'declares no required status check'
+  mv "$TMP/source-policy.good" "$source_policy"
+  cp "$source_policy" "$TMP/source-policy.good"
+  jq '.branch = "release"' "$source_policy" >"$TMP/source-policy.wrong-branch"
+  mv "$TMP/source-policy.wrong-branch" "$source_policy"
+  set +e
+  GH_FAKE_REPO=autumngarage/touchstone-workflows bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
+  RUN_RC=$?
+  set -e
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'protects release, not PR base main'
+  assert_has "$TMP/out" 'enforcement cannot be inferred from another branch'
   mv "$TMP/source-policy.good" "$source_policy"
   cp "$source_policy" "$TMP/tool2/policy/github/workflow-sources/duplicate.json"
   set +e
