@@ -121,6 +121,12 @@ grep -q "repo wt \[feat/in-flight\]" "$TMP/out" && ok "worktree path with a spac
 grep -E '^  remote-branch.*feat/stack-parent.*still bases open PR #46' "$TMP/out" >/dev/null && ! grep -E 'delete feat/stack-parent' "$TMP/out" >/dev/null \
   && ok "a merged branch that bases an open PR is preserved, retarget named" || fail "stack parent not protected: $(grep stack-parent "$TMP/out")"
 grep -E '^  local-branch.*feat/fork-open \(#47 merged\)' "$TMP/out" >/dev/null && ok "a fork's open PR does not hide our finished branch" || fail "fork open PR hid a finished branch"
+grep -q 'confirm the worker is terminal, then confirm its final report reached the parent or its cancellation was acknowledged; then git worktree remove' "$TMP/out" \
+  && ok "worktree removal requires terminal-worker evidence" || fail "worktree removal remedy trusts repository state alone"
+grep -q 'confirm its PR is merged' "$TMP/out" \
+  && fail "worktree removal still depends on PR lifecycle" || ok "worktree removal ignores PR lifecycle"
+grep -q 'git worktree prune' "$TMP/out" \
+  && fail "intact worktree removal chains repository-wide pruning" || ok "intact worktree removal does not prune sibling records"
 # nothing mutated
 [ -f "$TMP/repo/__pycache__.tmp" ] && git -C "$TMP/repo" rev-parse --verify -q feat/done >/dev/null \
   && [ -d "$TMP/repo wt" ] && [ ! -f "$TMP/repo/.git/FETCH_HEAD" ] && ok "check mutated nothing (no FETCH_HEAD either)" || fail "check mutated the repository"
@@ -130,6 +136,8 @@ run --json
 [ "$RC" -eq 1 ] || fail "json leftovers did not exit 1"
 jq -e '.schema == "touchstone.cleanup/v1" and .clean == false and (.findings | length) >= 5 and (.findings | map(.kind) | index("worktree"))' "$TMP/out" >/dev/null \
   && ok "json shape" || fail "json shape wrong: $(cat "$TMP/out")"
+jq -e 'all(.findings[] | select(.kind == "worktree"); (.remedy | test("\\bPR\\b|pull request"; "i") | not))' "$TMP/out" >/dev/null \
+  && ok "worktree remedies contain no PR predicate" || fail "worktree remedy depends on repository lifecycle"
 
 echo "==> a detached HEAD and a feature-branch checkout are reported"
 git -C "$TMP/repo" checkout -q --detach
@@ -162,6 +170,8 @@ rm -rf "$TMP/repo wt"
 run
 [ "$RC" -eq 1 ] && grep -q 'worktree.*directory missing' "$TMP/out" && grep -q 'git worktree prune' "$TMP/out" \
   && ok "prunable worktree reported with the prune remedy" || fail "prunable worktree not handled (rc=$RC): $(head -3 "$TMP/out")"
+grep -q 'confirm every prunable worker is terminal, then confirm each final report or cancellation was acknowledged; then git worktree prune' "$TMP/out" \
+  && ok "pruning requires aggregate terminal-worker evidence" || fail "prune remedy proves only one missing worktree"
 git -C "$TMP/repo" worktree prune
 
 echo "==> an unreachable origin is a checkout finding, not a clean exit"
