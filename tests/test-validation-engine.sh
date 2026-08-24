@@ -1915,6 +1915,7 @@ case "${1:-} ${2:-}" in
   'auth status') exit 0 ;;
   'repo view') printf '%s\n' $'autumngarage/consumer\thttps://github.com/autumngarage/consumer' ;;
   'pr view') printf '%s\n' $'1\tOPEN\thttps://example.invalid/pr/1\t1111111111111111111111111111111111111111\tmain\t2222222222222222222222222222222222222222\tCLEAN\tfalse' ;;
+  'api graphql') printf '%s\t\n' '1111111111111111111111111111111111111111' ;;
 esac
 EOF
   chmod +x "$TMP/mock-bin/gh"
