@@ -186,13 +186,38 @@ case "$COMMAND" in
         exit 0
         ;;
     esac
+    STEERING_WAS_MANAGED=false
+    if bash "$TOUCHSTONE_ROOT/scripts/touchstone-steering-install.sh" managed >/dev/null; then
+      STEERING_WAS_MANAGED=true
+    else
+      MANAGED_STATUS="$?"
+      [ "$MANAGED_STATUS" -eq 1 ] || {
+        echo "ERROR: could not determine whether this machine has a Touchstone-managed steering install; upgrade did not run" >&2
+        exit 1
+      }
+    fi
+    converge_upgraded_steering() {
+      local upgraded_cli="$1"
+      [ "$STEERING_WAS_MANAGED" = true ] || return 0
+      [ -x "$upgraded_cli" ] || {
+        echo "ERROR: the upgrade succeeded, but the new Touchstone CLI is missing at $upgraded_cli; repair the install, then run 'touchstone steering install'" >&2
+        exit 1
+      }
+      bash "$upgraded_cli" steering install || {
+        echo "ERROR: Touchstone was upgraded, but its machine-level steering could not be refreshed; fix the reported error, then run 'touchstone steering install'" >&2
+        exit 1
+      }
+      echo "Restart or reload already-running coding-agent sessions so they read the refreshed Touchstone contract."
+    }
     INSTALL_PREFIX=""
     case "$TOUCHSTONE_ROOT" in
       */cli/*) INSTALL_PREFIX="${TOUCHSTONE_ROOT%/cli/*}" ;;
     esac
     if [ -n "$INSTALL_PREFIX" ] && [ -f "$INSTALL_PREFIX/current" ] \
       && [ "$INSTALL_PREFIX/cli/$(cat "$INSTALL_PREFIX/current")" = "$TOUCHSTONE_ROOT" ]; then
-      exec bash "$TOUCHSTONE_ROOT/install.sh" --prefix "$INSTALL_PREFIX" "$@"
+      bash "$TOUCHSTONE_ROOT/install.sh" --prefix "$INSTALL_PREFIX" "$@"
+      converge_upgraded_steering "$INSTALL_PREFIX/bin/touchstone"
+      exit 0
     fi
     case "$TOUCHSTONE_ROOT" in
       *)
@@ -203,7 +228,9 @@ case "$COMMAND" in
           BREW_OPT="$(brew --prefix touchstone 2>/dev/null || true)"
           if [ -n "$BREW_OPT" ] && [ -d "$BREW_OPT/libexec" ] \
             && [ "$(cd -P "$BREW_OPT/libexec" && pwd)" = "$TOUCHSTONE_ROOT" ]; then
-            exec brew upgrade touchstone
+            brew upgrade touchstone
+            converge_upgraded_steering "$BREW_OPT/libexec/bin/touchstone"
+            exit 0
           fi
         fi
         echo "ERROR: this touchstone ($TOUCHSTONE_ROOT) is neither a Homebrew install nor an install.sh prefix; upgrade it the way it was installed (a source checkout: git pull)." >&2

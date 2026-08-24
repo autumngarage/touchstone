@@ -12,8 +12,12 @@ generated project declaration is owned by
 `touchstone adopt` applies that same plan. Adoption writes the project's own
 declarations only — it neither reads nor writes instruction files, because
 steering reaches agents through the installed tool (`touchstone steering
-install`), never through repository copies. There is no `upgrade` subcommand;
-it existed only to refresh copies that no longer exist.
+install`), never through repository copies. `touchstone upgrade` is a separate
+installed-tool operation: launchers carrying the upgrade handoff refresh an
+existing managed steering install without touching adoption state, while an
+operator who never installed or uninstalled steering stays opted out. The
+one-time transition from 3.5.0 or an older launcher requires
+`touchstone steering install` after upgrading.
 
 The command accepts `--json` and `--project DIR`. Fresh adoption accepts
 repeated `--task NAME=COMMAND` arguments for the explicit manual path and
