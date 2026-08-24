@@ -10,7 +10,7 @@
 #
 # `managed` is the upgrader's read-only ownership probe. It is deliberately
 # not a user-facing steering mode: exit 0 means this tool already owns at
-# least one managed block or document manifest, and exit 1 means absent.
+# least one managed block, and exit 1 means confirmed absent.
 #
 # Steering was the only Touchstone layer that propagated by copying. Merge
 # rules live in one GitHub ruleset, the validation workflow in one pinned SHA,
@@ -144,6 +144,10 @@ done
 
 die() {
   echo "ERROR: $*" >&2
+  # The upgrader reserves exit 1 for one fact only: no managed steering is
+  # present. Any malformed path or operational failure must remain distinct
+  # so upgrade cannot mistake an unreadable ownership state for opt-out.
+  [ "${ACTION:-}" != managed ] || exit 2
   exit 1
 }
 
@@ -174,11 +178,17 @@ esac
 # prove its own provenance, and ordinary ~/.touchstone or agent directories
 # are operator state that must not opt a machine into steering.
 managed_steering_present() {
-  local target relative path probe_status
+  local target relative path parent probe_status
+  [ -d "$HOME_DIR" ] && [ -x "$HOME_DIR" ] || return 2
   for target in "${TARGETS[@]}"; do
     relative="${target#*:}"
     path="$HOME_DIR/$relative"
-    if [ -f "$path" ]; then
+    parent="${path%/*}"
+    if [ -e "$parent" ] || [ -L "$parent" ]; then
+      [ -d "$parent" ] && [ -x "$parent" ] || return 2
+    fi
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      [ -f "$path" ] || return 2
       if grep -Eq "$BEGIN_MARKER_ANY" "$path"; then
         return 0
       else

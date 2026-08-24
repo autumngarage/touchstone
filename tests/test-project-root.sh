@@ -497,6 +497,39 @@ STALE AFTER TRANSITION
 <!-- touchstone:steering:end -->
 operator suffix
 EOF
+if (
+  unset HOME
+  bash "$PREFIX/bin/touchstone" upgrade \
+    --formula-file "$INSTALL_TMP/formula-9.9.2.rb" \
+    --archive-file "$INSTALL_TMP/v9.9.2.tar.gz"
+) >"$INSTALL_TMP/no-home-upgrade.out" 2>&1; then
+  fail "upgrade treated an unreadable ownership state as steering opt-out"
+fi
+grep -qF 'could not determine whether this machine has a Touchstone-managed steering install' "$INSTALL_TMP/no-home-upgrade.out" \
+  || fail "upgrade did not distinguish a probe error from steering absence: $(cat "$INSTALL_TMP/no-home-upgrade.out")"
+grep -qF 'STALE AFTER TRANSITION' "$UPGRADE_HOME/.codex/AGENTS.md" \
+  || fail "the refused probe-error upgrade mutated steering"
+UNREADABLE_HOME="$INSTALL_TMP/unreadable-home"
+mkdir -p "$UNREADABLE_HOME/.codex"
+cp "$UPGRADE_HOME/.codex/AGENTS.md" "$UNREADABLE_HOME/.codex/AGENTS.md"
+chmod 000 "$UNREADABLE_HOME/.codex"
+if [ ! -x "$UNREADABLE_HOME/.codex" ]; then
+  unreadable_succeeded=false
+  if HOME="$UNREADABLE_HOME" bash "$PREFIX/bin/touchstone" upgrade \
+    --formula-file "$INSTALL_TMP/formula-9.9.2.rb" \
+    --archive-file "$INSTALL_TMP/v9.9.2.tar.gz" >"$INSTALL_TMP/unreadable-upgrade.out" 2>&1; then
+    unreadable_succeeded=true
+  fi
+  chmod 700 "$UNREADABLE_HOME/.codex"
+  [ "$unreadable_succeeded" = false ] \
+    || fail "upgrade treated an untraversable steering directory as opt-out"
+  grep -qF 'could not determine whether this machine has a Touchstone-managed steering install' "$INSTALL_TMP/unreadable-upgrade.out" \
+    || fail "upgrade did not report the untraversable steering path: $(cat "$INSTALL_TMP/unreadable-upgrade.out")"
+  grep -qF 'STALE AFTER TRANSITION' "$UNREADABLE_HOME/.codex/AGENTS.md" \
+    || fail "the refused untraversable-path upgrade mutated steering"
+else
+  chmod 700 "$UNREADABLE_HOME/.codex"
+fi
 if (cd "$UPGRADE_PROJECT" && HOME="$UPGRADE_HOME" bash "$PREFIX/bin/touchstone" upgrade \
   --formula-file "$INSTALL_TMP/formula-9.9.2.rb" \
   --archive-file "$INSTALL_TMP/v9.9.2.tar.gz") >"$INSTALL_TMP/handoff-upgrade.out" 2>&1; then
