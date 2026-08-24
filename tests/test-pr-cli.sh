@@ -71,7 +71,14 @@ serve_rules() {
   # when the gate is "installed", only the native rules otherwise.
   pr_rule='{"type":"pull_request","parameters":{"required_review_thread_resolution":true}}'
   [ ! -f "$GH_STATE/pr-rule-no-threads" ] || pr_rule='{"type":"pull_request","parameters":{}}'
-  if [ -f "$GH_STATE/review-gate" ]; then
+  if [ "${GH_FAKE_REPO:-autumngarage/current}" = autumngarage/touchstone-workflows ]; then
+    rules="[$pr_rule"
+    [ -f "$GH_STATE/source-no-deletion" ] || rules="$rules"',{"type":"deletion"}'
+    [ -f "$GH_STATE/source-no-non-fast-forward" ] || rules="$rules"',{"type":"non_fast_forward"}'
+    [ -f "$GH_STATE/no-queue-rule" ] || rules="$rules"',{"type":"merge_queue"}'
+    [ -f "$GH_STATE/source-no-status" ] || rules="$rules"',{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"source contract"}]}}'
+    rules="$rules]"
+  elif [ -f "$GH_STATE/review-gate" ]; then
     # validate and review-gate carry the fixture's variant pin; delivery-evidence
     # stays at the policy revision, so a variant names exactly two gates.
     pin_sha="$GH_POLICY_SHA"
@@ -134,8 +141,8 @@ case "$1 ${2:-}" in
       git -C "$GH_SWITCH_BRANCH_IN" checkout -q -b feat/moved 2>/dev/null \
         || git -C "$GH_SWITCH_BRANCH_IN" checkout -q feat/moved
     fi
-    if [ -n "${GH_REPO:-}" ]; then
-      printf '%s\thttps://%s/%s\tmain\n' "$GH_REPO" "${GH_REPO_HOST:-github.com}" "$GH_REPO"
+    if [ -n "${GH_FAKE_REPO:-}" ]; then
+      printf '%s\thttps://%s/%s\tmain\n' "$GH_FAKE_REPO" "${GH_REPO_HOST:-github.com}" "$GH_FAKE_REPO"
     else
       printf 'autumngarage/current\thttps://%s/autumngarage/current\tmain\n' "${GH_REPO_HOST:-github.com}"
     fi
@@ -320,7 +327,7 @@ case "$1 ${2:-}" in
       else
         printf 'true\n'
       fi
-    elif has 'repos/autumngarage/current --jq .allow_auto_merge' "$@"; then
+    elif has "repos/${GH_FAKE_REPO:-autumngarage/current} --jq .allow_auto_merge" "$@"; then
       # The repository's auto-merge setting: on unless the fixture says otherwise.
       if [ -f "$GH_STATE/auto-merge-off" ]; then printf 'false\n'; else printf 'true\n'; fi
     elif has 'repositories/1333343261' "$@"; then
@@ -429,7 +436,19 @@ case "$1 ${2:-}" in
       fi
       printf '%s' "$runs" | jq -r "$(value_after --jq "$@")"
     elif has '/issues/comments/1' "$@"; then
-      [ "${GH_MODE:-ok}" = live_comment_invalid ] || printf '%s\n' 1
+      if [ "${GH_MODE:-ok}" = live_comment_invalid ]; then
+        jq -cn '{id: 1, user: {login: "mallory"}, body: "not a review request", author_association: "OWNER"}'
+      else
+        if [ -f "$GH_STATE/review-request" ]; then
+          read -r saved_head saved_base saved_base_sha <"$GH_STATE/review-request"
+        else
+          saved_head="$GH_HEAD"; saved_base="$GH_BASE_REF"; saved_base_sha="$GH_BASE_SHA"
+        fi
+        jq -cn --arg body "@codex review
+
+<!-- touchstone:pr-open head=$saved_head base=$saved_base base_sha=$saved_base_sha -->" \
+          '{id: 1, user: {login: "alice"}, body: $body, author_association: "NONE"}'
+      fi
     elif has '/issues/7/comments' "$@"; then
       if [ -f "$GH_STATE/review-request" ]; then printf '%s\n' https://example.test/pr/7#issuecomment-1; fi
     elif has '/commits/' "$@" && has '/status' "$@"; then
@@ -935,10 +954,11 @@ Closes #42'
   # A consumer derived --no-queue expects no queue: the tool consults the
   # repository's own shipped policy, reports applied without a queue rule,
   # and merges by arming auto-merge (there is no queue to enter).
-  mkdir -p "$TMP/tool2/policy/github/consumers"
+  mkdir -p "$TMP/tool2/policy/github/consumers" "$TMP/tool2/policy/github/workflow-sources"
   cp -R "$ROOT/bin" "$ROOT/scripts" "$TMP/tool2/"
   cp "$ROOT/VERSION" "$TMP/tool2/VERSION"
   cp "$ROOT/policy/github/touchstone-main.json" "$TMP/tool2/policy/github/touchstone-main.json"
+  cp "$ROOT/policy/github/workflow-sources/touchstone-workflows.json" "$TMP/tool2/policy/github/workflow-sources/touchstone-workflows.json"
   jq '.managedRepositoryRuleset = null | .repository = "current"' "$ROOT/policy/github/touchstone-main.json" >"$TMP/tool2/policy/github/consumers/current.json"
   # A same-named consumer file for another organization must not be consulted.
   jq '.organization = "someone-else"' "$TMP/tool2/policy/github/consumers/current.json" >"$TMP/tool2/policy/github/consumers/current.other.json"
@@ -970,6 +990,70 @@ Closes #42'
   run_pr "$TMP/out" status 7
   assert_has "$TMP/out" 'enforcement on main: applied'
   rm -f "$TMP/state/review-gate"
+
+  echo "==> workflow-source policy uses its required status without inventing a review gate (AUT-531)"
+  GH_FAKE_REPO=autumngarage/touchstone-workflows run_pr "$TMP/out" policy-status --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"policy":"policy/github/workflow-sources/touchstone-workflows.json"'
+  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  while IFS='|' read -r flag missing; do
+    touch "$TMP/state/$flag"
+    GH_FAKE_REPO=autumngarage/touchstone-workflows run_pr "$TMP/out" policy-status --json
+    assert_rc "$RUN_RC" 0
+    assert_has "$TMP/out" '"status":"partial"'
+    assert_has "$TMP/out" "$missing"
+    rm -f "$TMP/state/$flag"
+  done <<'EOF'
+source-no-status|source contract status
+no-queue-rule|merge queue
+pr-rule-no-threads|pull-request rule (with thread resolution)
+source-no-deletion|deletion protection
+source-no-non-fast-forward|force-push protection
+auto-merge-off|auto-merge setting
+EOF
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/merged"
+  GH_FAKE_REPO=autumngarage/touchstone-workflows run_pr "$TMP/out" open --title 'Source change' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'exact-head review remains mandatory driver procedure'
+  assert_not_has "$TMP/out" 'Track the policy gap'
+  assert_not_has "$GH_CALLS" 'actions/runs?head_sha='
+  GH_FAKE_REPO=autumngarage/touchstone-workflows run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'pr merge 7 --repo github.com/autumngarage/touchstone-workflows --squash'
+  assert_has "$GH_CALLS" "--match-head-commit $HEAD_SHA"
+  assert_not_has "$GH_CALLS" 'actions/runs?head_sha='
+  assert_not_has "$GH_CALLS" ' --auto '
+  rm -f "$TMP/state/merged"
+
+  source_policy="$TMP/tool2/policy/github/workflow-sources/touchstone-workflows.json"
+  cp "$source_policy" "$TMP/source-policy.good"
+  jq '(.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks) = []' \
+    "$source_policy" >"$TMP/source-policy.empty"
+  mv "$TMP/source-policy.empty" "$source_policy"
+  set +e
+  GH_FAKE_REPO=autumngarage/touchstone-workflows bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
+  RUN_RC=$?
+  set -e
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'declares no required status check'
+  mv "$TMP/source-policy.good" "$source_policy"
+  cp "$source_policy" "$TMP/tool2/policy/github/workflow-sources/duplicate.json"
+  set +e
+  GH_FAKE_REPO=autumngarage/touchstone-workflows bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
+  RUN_RC=$?
+  set -e
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'multiple workflow-source policies match autumngarage/touchstone-workflows'
+  rm "$TMP/tool2/policy/github/workflow-sources/duplicate.json"
+  jq '.organization = "someone-else"' "$source_policy" >"$TMP/tool2/policy/github/workflow-sources/unrelated.json"
+  set +e
+  GH_FAKE_REPO=autumngarage/touchstone-workflows bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
+  RUN_RC=$?
+  set -e
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"policy":"policy/github/workflow-sources/touchstone-workflows.json"'
+  rm "$TMP/tool2/policy/github/workflow-sources/unrelated.json"
+
   echo "==> pr answer is the installed name for respond-review and forwards its arguments"
   # A stand-in script records the argv it received and the directory it ran
   # in, so the dispatch is asserted by what arrives, not by usage text.

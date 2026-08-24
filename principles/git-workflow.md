@@ -58,8 +58,8 @@ touchstone policy status
 ```
 
 It reads the default branch's effective rules and reports `enforcement:
-applied`, or names what is missing (the pinned `validate`, `review-gate`, and
-`delivery-evidence` workflows, the merge queue where the policy declares one, the native rules). Where it
+applied`, or names what is missing (the policy's pinned workflows or required
+status, the merge queue where declared, and the native rules). Where it
 is not `applied`, exact-head review and every answered finding remain
 mandatory driver procedure, `touchstone pr merge` refuses without
 `--unguarded`, and the gap is tracked — not inferred from this document.
@@ -78,8 +78,9 @@ EOF
 
 The installed CLI is the PR-open sequencer on every machine: it creates or
 reuses the PR for the branch, posts the review request once for the exact
-head, and reports success only after the pinned `review-gate` has been asked
-to evaluate that head and the coordinates still hold. `--expect-branch` is
+head, re-runs the pinned `review-gate` where policy declares one, and reports
+success only after the coordinates still hold. A policy with no gate leaves
+exact-head review as explicit driver procedure. `--expect-branch` is
 written out, never derived from `git branch --show-current` — that reads the
 same checkout the command reads and would agree with a wrong worktree. Where
 the CLI is absent, the raw equivalent is `gh pr create --title … --body-file …`,
@@ -106,7 +107,8 @@ declared by `.touchstone-tracker.toml`; a generic GitHub-or-Linear pattern can
 accept the wrong tracker or Linear team key.
 
 **Request review through `touchstone pr open`, not by hand** — it posts the
-request and confirms the gate bound it to the exact head and base. Raw
+request and confirms its exact head/base binding, including the gate where
+declared. Raw
 `gh pr create` alone posts no request, so a PR opened that way waits on a gate
 with nothing to evaluate.
 
@@ -119,7 +121,7 @@ the sequencer reads it as a request for other coordinates and refuses to repair
 anything, wedging the pull request until the comment is deleted.
 
 When a later head needs re-review, re-run the project's PR-open command; it is
-idempotent and confirms the gate bound the request.
+idempotent and confirms the request's live coordinates and any declared gate.
 
 **Before the PR exists** — work slicing, the review tier, and the bounded
 local review — is owned by `principles/local-review.md`. This document owns
@@ -226,10 +228,10 @@ Contents: read and write. Then re-run the pinned gate for the head, as
 touchstone pr merge <n> --head <reviewed-sha>
 ```
 
-It re-runs the pinned gate for that head, asks GitHub to merge bound to it,
-and reports merged, queued, or auto-merge-enabled only while the head still
-equals the reviewed one. Where the CLI is absent, the raw equivalent is: re-run
-the pinned gate's run for the reviewed head (`gh api -X POST
+It re-runs the pinned gate where policy declares one, asks GitHub to merge
+bound to that head, and reports merged, queued, or auto-merge-enabled only
+while the head still equals the reviewed one. Where the CLI is absent, re-run
+any declared gate for the reviewed head (`gh api -X POST
 repos/<owner>/<repo>/actions/runs/<id>/rerun`), then
 
 ```bash

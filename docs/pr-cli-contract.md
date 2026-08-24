@@ -40,9 +40,9 @@ taking this document's word for it.
   not "no-ops": a body silently kept let the required `delivery-evidence`
   gate fail with no signal from the one command the driver uses (AUT-437). Its invisible
   comment marker (`<!-- touchstone:pr-open head=… base=… base_sha=… -->`)
-  is what the pinned `review-gate` reads as the request, and it makes partial
-  reruns idempotent. It reports success only after the gate has been asked to
-  re-run for that head and a fresh PR read still matches the head and base.
+  is what a pinned `review-gate` reads as the request, and it makes partial
+  reruns idempotent. It reports success only after any policy-declared gate
+  has been asked to re-run and a fresh PR read still matches the head and base.
   Raw equivalent: compare `git rev-parse HEAD` with `git ls-remote`, inspect
   `gh pr list`, create with `gh pr create`, re-read, then inspect comments
   before `gh pr comment --body "@codex review"`, then re-run the gate's run
@@ -65,9 +65,10 @@ taking this document's word for it.
   the exact head and confirms the coordinates still hold before reporting
   success. The invisible marker additionally makes a retry after a timeout
   reuse the existing request instead of posting a second one. Where no pinned
-  gate protects the base, `open` verifies the request comment and
-  coordinates, names the gap on stderr, and leaves exact-head review as
-  driver procedure.
+  gate protects the base, `open` verifies the authenticated author's exact
+  request comment and coordinates. It names an enforcement gap where one
+  exists; a fully applied workflow-source policy instead states that
+  exact-head review remains driver procedure.
 - `status` is a read-only observation of state, URL, exact head, base ref/base
   SHA, draft state, and GitHub's merge-state observation. Raw equivalent:
   `gh pr view --json number,state,url,headRefOid,baseRefName,baseRefOid,mergeStateStatus,isDraft`.
@@ -113,8 +114,8 @@ taking this document's word for it.
   is one step here and two easily-forgotten flags there.
 
 - `policy status` reads the base branch's effective rules once and reports
-  `enforcement: applied | partial | none` with what is missing — the three
-  pinned required workflows, the merge queue where the policy declares one,
+  `enforcement: applied | partial | none` with what is missing — the policy's
+  pinned workflows or required source status, the merge queue where declared,
   the native pull-request, force-push, and deletion rules, and whether
   repository Actions are enabled at all — disabled Actions is reported first
   and forces `none`, since no required workflow can then run (AUT-467);
@@ -142,13 +143,13 @@ taking this document's word for it.
   ceiling — never assumed from the SHA. A revision behind, diverged, off that
   branch, or from another source is missing, and a lineage that cannot be
   resolved at all is reported as unverified and stays closed.
-  `applied` means all three pinned workflows and the native pull-request,
-  force-push, and deletion rules are present, plus the merge queue where the
-  repository's own policy declares one; `partial` and `none` name what is
-  missing. The policy consulted is the repository's own where the tool ships one
-  (`policy/github/consumers/<repo>.json`; a private consumer derived
-  `--no-queue` legitimately expects no queue), otherwise the canonical one.
-  `applied` → re-run the gate, request the merge — with `--auto` where the
+  `applied` means the policy's pinned workflows or required source status and
+  the native pull-request, force-push, and deletion rules are present, plus
+  the merge queue where declared; `partial` and `none` name what is missing.
+  The policy consulted is the repository's exact checked-in workflow-source or
+  consumer policy where one exists (a private consumer derived `--no-queue`
+  legitimately expects no queue), otherwise the canonical one.
+  `applied` → re-run any declared gate, request the merge — with `--auto` where the
   policy carries no queue, since there is nothing to enter and GitHub refuses
   a plain merge while the re-run is pending.
   Anything else → refuse with the remedy (apply the consumer policy, then

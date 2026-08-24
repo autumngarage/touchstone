@@ -553,46 +553,85 @@ pin_lineage() {
 "
 }
 
-# What GitHub enforces on a branch, read once from its effective rules. The
-# policy's gates are three pinned required workflows plus the merge queue;
-# the native rules that refuse direct delivery complete the set. "applied"
-# means all of them; anything less is named, so no agent has to read rulesets
-# by hand to learn whether a merge would be gated.
+# What GitHub enforces on a branch, read once from its effective rules. A
+# consumer policy requires pinned workflows; a workflow-source policy requires
+# its source-contract status. The queue and native rules complete either set.
+# "applied" means all of them; anything less is named, so no agent has to read
+# rulesets by hand to learn whether a merge would be gated.
 ENFORCEMENT_STATUS=""
 ENFORCEMENT_MISSING=""
 ENFORCEMENT_POLICY_FILE=""
+ENFORCEMENT_POLICY_TYPE=""
 ENFORCEMENT_EXPECTS_QUEUE=true
+ENFORCEMENT_EXPECTS_REVIEW_GATE=true
+
+select_enforcement_policy() {
+  local name="${REPO##*/}" candidate candidate_repo source_policy=""
+  ENFORCEMENT_POLICY_FILE="$CANONICAL_POLICY"
+  if [ "$REPO" = "autumngarage/touchstone" ]; then
+    return 0
+  fi
+  for candidate in "$TOOL_ROOT"/policy/github/workflow-sources/*.json; do
+    [ -f "$candidate" ] || continue
+    candidate_repo="$(jq -er '"\(.organization)/\(.repository)"' "$candidate")" \
+      || fail_operation "could not read repository coordinates from $candidate" "Reinstall touchstone; the workflow-source policy inventory is corrupt."
+    [ "$candidate_repo" = "$REPO" ] || continue
+    [ -z "$source_policy" ] \
+      || fail_operation "multiple workflow-source policies match $REPO" "Keep exactly one checked-in policy for this repository."
+    source_policy="$candidate"
+  done
+  if [ -n "$source_policy" ]; then
+    ENFORCEMENT_POLICY_FILE="$source_policy"
+    return 0
+  fi
+  candidate="$TOOL_ROOT/policy/github/consumers/$name.json"
+  if [ -f "$candidate" ] \
+    && [ "$(jq -r '"\(.organization)/\(.repository)"' "$candidate")" = "$REPO" ]; then
+    ENFORCEMENT_POLICY_FILE="$candidate"
+  fi
+}
+
 read_enforcement() {
-  local base_ref="$1" encoded expected
+  local base_ref="$1" encoded expected expected_statuses expected_count policy_file policy_type
   encoded="$(uri_encode "$base_ref")"
   # The expected pins travel with the tool: a workflow at the right path but
   # from another repository, another ref, or a stale revision is not the
   # canonical gate and is reported as missing with the reason. The policy
-  # consulted is the repository's own where the tool ships one (a private
-  # consumer derived --no-queue legitimately has no queue), else the
-  # canonical one; each gate must have exactly one pin there, or the read
-  # fails rather than silently expecting nothing.
-  local policy_file="$CANONICAL_POLICY" expect_queue candidate
-  candidate="$TOOL_ROOT/policy/github/consumers/${REPO##*/}.json"
-  # The shipped consumer policy applies only to the repository it names in
-  # full (organization and name); a fork with the same basename gets the
-  # canonical expectations, not another repository's.
-  if [ "$REPO" != "autumngarage/touchstone" ] && [ -f "$candidate" ] \
-    && [ "$(jq -r '"\(.organization)/\(.repository)"' "$candidate")" = "$REPO" ]; then
-    policy_file="$candidate"
-  fi
+  # consulted is the repository's own where the tool ships one (a source
+  # policy or a private consumer derived --no-queue), else the canonical one.
+  # Required gates/statuses must be complete, or the read fails rather than
+  # silently expecting nothing.
+  local expect_queue
+  select_enforcement_policy
+  policy_file="$ENFORCEMENT_POLICY_FILE"
   [ -f "$policy_file" ] \
     || fail_operation "the tool's policy file is missing: $policy_file" "Reinstall touchstone."
-  expected="$(jq -c '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | {path, repository_id, ref, sha}]' "$policy_file")" \
-    || fail_operation "could not read the expected workflow pins from $policy_file" "Reinstall touchstone."
-  local gate_path
-  for gate_path in .github/workflows/validate.yml .github/workflows/review-gate.yml .github/workflows/delivery-evidence.yml; do
-    [ "$(printf '%s' "$expected" | jq --arg p "$gate_path" '[.[] | select(.path == $p)] | length')" = 1 ] \
-      || fail_operation "$policy_file does not pin exactly one $gate_path" "Reinstall touchstone; the policy file is corrupt or incomplete."
-  done
+  policy_type="$(jq -er '.policyType // "consumer"' "$policy_file")" \
+    || fail_operation "could not read the policy type from $policy_file" "Reinstall touchstone."
+  case "$policy_type" in
+    consumer)
+      expected="$(jq -c '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | {path, repository_id, ref, sha}]' "$policy_file")" \
+        || fail_operation "could not read the expected workflow pins from $policy_file" "Reinstall touchstone."
+      expected_statuses='[]'
+      local gate_path
+      for gate_path in .github/workflows/validate.yml .github/workflows/review-gate.yml .github/workflows/delivery-evidence.yml; do
+        [ "$(printf '%s' "$expected" | jq --arg p "$gate_path" '[.[] | select(.path == $p)] | length')" = 1 ] \
+          || fail_operation "$policy_file does not pin exactly one $gate_path" "Reinstall touchstone; the policy file is corrupt or incomplete."
+      done
+      ;;
+    workflow-source)
+      expected='[]'
+      expected_statuses="$(jq -c '[.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[] | {context, integration_id: (.integration_id // null)}]' "$policy_file")" \
+        || fail_operation "could not read the expected status checks from $policy_file" "Reinstall touchstone."
+      [ "$(printf '%s' "$expected_statuses" | jq 'length')" -gt 0 ] \
+        || fail_operation "$policy_file declares no required status check" "Reinstall touchstone; the workflow-source policy file is corrupt or incomplete."
+      ;;
+    *) fail_operation "$policy_file has unsupported policy type '$policy_type'" "Reinstall touchstone." ;;
+  esac
   expect_queue="$(jq -r 'if .managedRepositoryRuleset == null then "false" else "true" end' "$policy_file")"
-  ENFORCEMENT_POLICY_FILE="$policy_file"
+  ENFORCEMENT_POLICY_TYPE="$policy_type"
   ENFORCEMENT_EXPECTS_QUEUE="$expect_queue"
+  ENFORCEMENT_EXPECTS_REVIEW_GATE="$(printf '%s' "$expected" | jq 'any(.path == ".github/workflows/review-gate.yml")')"
   # Pull requests land through auto-merge in both policy shapes (the queue
   # admits through it; without a queue `merge` arms it), so a repository with
   # it disabled is not fully enforced either.
@@ -609,21 +648,24 @@ read_enforcement() {
   # same source and ref needs GitHub asked about lineage, so the rules
   # document is turned into verdicts here and resolved below.
   local gate_report
-  gate_report="$(printf '%s' "$READ_OUTPUT" | jq -s 'add // []' | jq -r --argjson expected "$expected" --argjson expect_queue "$expect_queue" '
+  gate_report="$(printf '%s' "$READ_OUTPUT" | jq -s 'add // []' | jq -r --argjson expected "$expected" --argjson expected_statuses "$expected_statuses" --argjson expect_queue "$expect_queue" '
       ([.[] | select(.type == "workflows") | .parameters.workflows[]?]) as $w
-      | def gate($name; $path):
-          ($expected[] | select(.path == $path)) as $e
-          | ($w | map(select(.path == $path))) as $found
+      | ([.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?]) as $s
+      | def gate($e):
+          ($w | map(select(.path == $e.path))) as $found
           | ($found | map(select(.repository_id == $e.repository_id and .ref == $e.ref))) as $same
+          | ($e.path | split("/") | last | sub("[.]yml$"; "")) as $name
           | if ($found | length) == 0 then ["gate", $name, "absent", "", "", "", ""]
             elif any($same[]; ((.sha // "") | ascii_downcase) == ($e.sha | ascii_downcase)) then ["gate", $name, "pinned", "", "", "", ""]
             elif ($same | length) == 0 then ["gate", $name, "other-source", "", "", "", ""]
             else ["gate", $name, "other-revision", ($e.repository_id | tostring), $e.ref, ($e.sha | ascii_downcase),
                   ([$same[] | (.sha // "") | ascii_downcase | select(. != "")] | unique | join(" "))] end;
+      def required_status($e):
+          if any($s[]; .context == $e.context and ($e.integration_id == null or (.integration_id // null) == $e.integration_id))
+          then empty else ["status", $e.context] end;
       [
-        gate("validate"; ".github/workflows/validate.yml"),
-        gate("review-gate"; ".github/workflows/review-gate.yml"),
-        gate("delivery-evidence"; ".github/workflows/delivery-evidence.yml"),
+        ($expected[] | gate(.)),
+        ($expected_statuses[] | required_status(.)),
         (if (any(.[]; .type == "merge_queue") or ($expect_queue | not)) then empty else ["rule", "merge queue"] end),
         (if any(.[]; .type == "pull_request" and (.parameters.required_review_thread_resolution // false) == true) then empty else ["rule", "pull-request rule (with thread resolution)"] end),
         (if any(.[]; .type == "non_fast_forward") then empty else ["rule", "force-push protection"] end),
@@ -636,6 +678,10 @@ read_enforcement() {
     case "$kind" in
       rule)
         missing_names+=("$name")
+        continue
+        ;;
+      status)
+        missing_names+=("$name status")
         continue
         ;;
       gate) ;;
@@ -676,11 +722,11 @@ read_enforcement() {
     ENFORCEMENT_STATUS=none
     return 0
   fi
-  # Everything expected missing is "none": seven items with a queue, six
-  # without, plus the auto-merge setting. Counted, not string-compared: the
-  # names are sorted and a name may carry a reason.
-  local missing_count expected_count=8
-  [ "$expect_queue" = true ] || expected_count=7
+  # Everything expected missing is "none". Derive the count from the policy's
+  # own gate/status declarations plus the shared native rules and auto-merge.
+  expected_count=$(($(printf '%s' "$expected" | jq 'length') + $(printf '%s' "$expected_statuses" | jq 'length') + 4))
+  [ "$expect_queue" = true ] && expected_count=$((expected_count + 1))
+  local missing_count
   missing_count="$(printf '%s' "$ENFORCEMENT_MISSING" | awk -F',' 'NF { print NF } !NF { print 0 }')"
   if [ -z "$ENFORCEMENT_MISSING" ]; then
     ENFORCEMENT_STATUS=applied
@@ -705,6 +751,8 @@ enforcement_remedy() {
   fi
   if [ "$REPO" = "autumngarage/touchstone" ]; then
     printf 'scripts/github-policy.sh apply policy/github/touchstone-main.json (in the Touchstone checkout), then close/reopen open PRs'
+  elif [ "$ENFORCEMENT_POLICY_TYPE" = workflow-source ]; then
+    printf 'scripts/github-policy.sh apply %s (in the Touchstone checkout), then close/reopen open PRs' "${ENFORCEMENT_POLICY_FILE#"$TOOL_ROOT"/}"
   elif [ -f "$TOOL_ROOT/policy/github/consumers/$name.json" ] \
     && [ "$(jq -r '"\(.organization)/\(.repository)"' "$TOOL_ROOT/policy/github/consumers/$name.json")" = "$REPO" ]; then
     printf 'scripts/github-policy.sh apply policy/github/consumers/%s.json (in the Touchstone checkout), then close/reopen open PRs' "$name"
@@ -839,8 +887,8 @@ verify_live_coordinates() {
 }
 
 wait_for_request_binding() {
-  local number="$1" head="$2" base_ref="$3" base_sha="$4" request_url="$5"
-  local comment_id live_comment
+  local number="$1" head="$2" base_ref="$3" base_sha="$4" request_url="$5" request_author="$6"
+  local comment_id live_comment request_marker
   if review_gate_required "$base_ref"; then
     rerun_review_gate "$number" "$head"
     verify_live_coordinates "$number" "$head" "$base_ref" "$base_sha"
@@ -849,20 +897,30 @@ wait_for_request_binding() {
   fi
   comment_id="${request_url##*issuecomment-}"
   case "$comment_id" in '' | *[!0-9]*) fail_operation "review request URL has no stable comment ID: $request_url" "Inspect the surviving request comment." ;; esac
+  request_marker="<!-- touchstone:pr-open head=$head base=$base_ref base_sha=$base_sha -->"
   # No pinned review gate on this base: nothing server-side binds the request,
   # so the most this command can prove is that the request comment survived
   # as a valid driver request and that the coordinates it was posted for are
-  # still live. Exact-head review stays mandatory driver procedure here; the
-  # missing gate is a rollout gap the driver reports, not permission.
+  # still live. Exact-head review stays mandatory driver procedure here;
+  # whether the absent gate is intentional or a rollout gap comes from the
+  # selected policy below.
   read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/issues/comments/$comment_id" \
-    --jq 'select(((.author_association // "") == "OWNER" or (.author_association // "") == "MEMBER" or (.author_association // "") == "COLLABORATOR") and ((.body // "") | test("^[[:space:]]*@codex[[:space:]]+review([[:space:]]|$)"; "i"))) | .id' \
     || fail_operation "could not re-read review request comment $comment_id: $READ_OUTPUT" "Inspect GitHub before retrying."
-  live_comment="$READ_OUTPUT"
+  live_comment="$(printf '%s' "$READ_OUTPUT" | jq -r --arg author "$request_author" --arg marker "$request_marker" \
+    'select((.user.login // "") == $author and ((.body // "") | test("^@codex review(\\r?\\n|$)"; "i") and contains($marker))) | .id')" \
+    || fail_operation "could not evaluate review request comment $comment_id" "Inspect GitHub before retrying."
   [ "$live_comment" = "$comment_id" ] \
     || fail_operation "review request comment $comment_id is no longer a valid driver request" "Post a fresh exact-head review request."
   verify_live_coordinates "$number" "$head" "$base_ref" "$base_sha"
-  # Stderr in both modes: JSON stdout stays data, and the gap must be visible.
-  printf 'No pinned review gate protects %s here; the request is posted but nothing binds it server-side. Track the policy gap.\n' "$base_ref" >&2
+  read_enforcement "$base_ref"
+  # Stderr in both modes: JSON stdout stays data, and the exact-head driver
+  # obligation must remain visible where the source policy intentionally has
+  # no reusable review gate.
+  if [ "$ENFORCEMENT_STATUS" = applied ] && [ "$ENFORCEMENT_EXPECTS_REVIEW_GATE" = false ]; then
+    printf 'The applied workflow-source policy has no pinned review gate; exact-head review remains mandatory driver procedure.\n' >&2
+  else
+    printf 'No pinned review gate protects %s here; the request is posted but nothing binds it server-side. Track the policy gap.\n' "$base_ref" >&2
+  fi
   return 0
 }
 
@@ -974,7 +1032,7 @@ open_pr() {
     '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
   if [ -n "$existing_request" ]; then
     request_url="$(printf '%s\n' "$existing_request" | sed -n '1p')"
-    wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url"
+    wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url" "$request_author"
     emit_open_result "$state" "$number" "$url" "$local_head" "existing:$request_url" "$branch"
     return 0
   fi
@@ -1000,7 +1058,7 @@ $request_marker"
     '$1 == url && $2 == author && index($3, "@codex review") && index($3, marker) { found=1 } END { exit !found }' \
     || fail_operation "review request returned $request_url but was not verified" \
       "Inspect comments before retrying; a rerun will reuse a surviving exact-binding request."
-  wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url"
+  wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url" "$request_author"
   emit_open_result "$state" "$number" "$url" "$local_head" "posted:$request_url" "$branch"
 }
 
@@ -1066,12 +1124,17 @@ merge_pr() {
     # all not the gate.
     read_enforcement "$base"
     if [ "$ENFORCEMENT_STATUS" = applied ]; then
-      rerun_review_gate "$number" "$head"
-      # Requesting the re-run can wait for an in-progress run; the head and
-      # the base *ref* must still be what the evaluation covers. The base tip
-      # may advance -- the gate binds by ancestry.
+      if [ "$ENFORCEMENT_EXPECTS_REVIEW_GATE" = true ]; then
+        rerun_review_gate "$number" "$head"
+        [ "$JSON_MODE" = true ] || printf 'Review gate re-run requested for run %s; GitHub merges when it passes.\n' "$REVIEW_GATE_RUN_ID" >&2
+      elif [ "$JSON_MODE" != true ]; then
+        printf 'Workflow-source policy applied; GitHub merges when its required source check passes.\n' >&2
+      fi
+      # A gate re-run may wait for an in-progress run. The source-policy path
+      # has no gate to re-run, but both paths must still merge the head and
+      # base ref whose enforcement was just inspected. The base tip may
+      # advance because GitHub's checks and queue remain authoritative.
       verify_live_head_and_base_ref "$number" "$head" "$base"
-      [ "$JSON_MODE" = true ] || printf 'Review gate re-run requested for run %s; GitHub merges when it passes.\n' "$REVIEW_GATE_RUN_ID" >&2
     else
       # Enforcement is not fully applied on this base: merging here would not
       # be gated the way the policy intends. Missing enforcement is a tracked
@@ -1097,7 +1160,7 @@ merge_pr() {
       prior_records="$(printf '%s\n' "$READ_OUTPUT" | awk '{ total += $1 } END { print total + 0 }')"
       if [ "$prior_records" = 0 ]; then
         gh pr comment "$PR_NUMBER" --repo "$REPO_SPEC" --body "$unguarded_marker
-Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarded\`: enforcement on \`$base\` is $(enforcement_text), so GitHub's requirements for this merge differ from the policy by exactly what is listed (other checks or reviews may still have run). Apply the consumer policy to close the gap." >/dev/null \
+Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarded\`: enforcement on \`$base\` is $(enforcement_text), so GitHub's requirements for this merge differ from the policy by exactly what is listed (other checks or reviews may still have run). Apply the repository's checked-in policy to close the gap." >/dev/null \
           || fail_operation "could not record the unguarded merge request on PR #$PR_NUMBER" "Inspect GitHub before retrying."
       fi
       # The base inspected and recorded must be the base merged into.
