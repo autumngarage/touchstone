@@ -89,17 +89,17 @@ for file in \
   # one lost its final push. Cleanup cannot infer task lifecycle from GitHub or
   # git state, so the terminal-owner precondition must be auto-loaded by every
   # driver rather than left only in the routed swarm guide.
-  assert_contains "$file" "remove one only after its task is terminal"
-  assert_contains "$file" "and its final result reaches the parent"
+  assert_contains "$file" "remove one only after final result delivery"
+  assert_contains "$file" "or confirmed cancellation"
   assert_not_contains "$file" "Review is an enforced gate."
 done
 
 assert_contains "$TOUCHSTONE_ROOT/principles/agent-swarms.md" \
-  "an open or merged PR"
+  "acknowledged its cancellation; an open"
 assert_contains "$TOUCHSTONE_ROOT/principles/agent-swarms.md" \
-  "clean worktree prove"
+  "merged PR and a clean worktree prove"
 assert_contains "$TOUCHSTONE_ROOT/principles/agent-swarms.md" \
-  "interrupt or cancel it and confirm that it is"
+  "interrupt or cancel it, confirm that it is"
 
 echo "==> one Codex harness is routed by tier without provider knowledge"
 for file in \

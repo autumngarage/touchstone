@@ -101,10 +101,11 @@ The parent session owns the coordination boundary:
 - invokes the final review path
 - opens or routes PRs
 - cleans up worktrees with `git worktree remove`, but only after the worker's
-  task is terminal and the parent has received its final report — whoever
-  creates a worktree removes it, and the dispatch record (issue comment or
-  brief) names the worktree path so a later sweep can find it; `touchstone
-  cleanup check` in the main checkout lists any that remain
+  task is terminal, with the parent having received its final report or
+  acknowledged its cancellation — whoever creates a worktree removes it, and
+  the dispatch record (issue comment or brief) names the worktree path so a
+  later sweep can find it; `touchstone cleanup check` in the main checkout
+  lists any that remain
 
 Workers own only their slice:
 
@@ -177,19 +178,20 @@ shared worktree metadata, so Git may still think a branch is checked out there
 and refuse later checkouts, branch deletes, or merges. For normal cleanup, use
 `git worktree remove <path>`. If someone already deleted one or more
 directories directly, first confirm every affected worker task is terminal and
-the parent received every final report. Then run `git worktree prune` from a
-remaining checkout to remove metadata for the missing paths, and rerun the
-failed checkout, merge, or cleanup command.
+the parent received each final report or acknowledged the corresponding
+cancellation. Then run `git worktree prune` from a remaining checkout to remove
+metadata for the missing paths, and rerun the failed checkout, merge, or
+cleanup command.
 
 Rules:
 
 - never remove a worker's tree before its task is terminal and the parent has
-  received its final report; an open or merged PR and a clean worktree prove
-  neither condition
+  either received its final report or acknowledged its cancellation; an open
+  or merged PR and a clean worktree prove neither condition
 - never run repository-wide `git worktree prune` until every prunable worker
   meets that lifecycle precondition
-- if abandoning a live worker, interrupt or cancel it and confirm that it is
-  terminal before removing its tree
+- if abandoning a live worker, interrupt or cancel it, confirm that it is
+  terminal, and acknowledge the cancellation before removing its tree
 - never `git worktree remove --force` another agent's tree
 - never `git gc --prune=now` while sibling worktrees are active
 - never share one branch across multiple worktrees

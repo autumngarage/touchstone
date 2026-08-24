@@ -121,7 +121,7 @@ grep -q "repo wt \[feat/in-flight\]" "$TMP/out" && ok "worktree path with a spac
 grep -E '^  remote-branch.*feat/stack-parent.*still bases open PR #46' "$TMP/out" >/dev/null && ! grep -E 'delete feat/stack-parent' "$TMP/out" >/dev/null \
   && ok "a merged branch that bases an open PR is preserved, retarget named" || fail "stack parent not protected: $(grep stack-parent "$TMP/out")"
 grep -E '^  local-branch.*feat/fork-open \(#47 merged\)' "$TMP/out" >/dev/null && ok "a fork's open PR does not hide our finished branch" || fail "fork open PR hid a finished branch"
-grep -q 'confirm the worker is terminal and its final report reached the parent, and confirm its PR is merged' "$TMP/out" \
+grep -q 'confirm the worker is terminal, then confirm its final report reached the parent or its cancellation was acknowledged, and confirm its PR is merged' "$TMP/out" \
   && ok "worktree removal requires terminal-worker evidence" || fail "worktree removal remedy trusts repository state alone"
 grep -q 'git worktree prune' "$TMP/out" \
   && fail "intact worktree removal chains repository-wide pruning" || ok "intact worktree removal does not prune sibling records"
@@ -166,7 +166,7 @@ rm -rf "$TMP/repo wt"
 run
 [ "$RC" -eq 1 ] && grep -q 'worktree.*directory missing' "$TMP/out" && grep -q 'git worktree prune' "$TMP/out" \
   && ok "prunable worktree reported with the prune remedy" || fail "prunable worktree not handled (rc=$RC): $(head -3 "$TMP/out")"
-grep -q 'confirm every prunable worker is terminal and each final report reached the parent; then git worktree prune' "$TMP/out" \
+grep -q 'confirm every prunable worker is terminal, then confirm each final report or cancellation was acknowledged; then git worktree prune' "$TMP/out" \
   && ok "pruning requires aggregate terminal-worker evidence" || fail "prune remedy proves only one missing worktree"
 git -C "$TMP/repo" worktree prune
 
