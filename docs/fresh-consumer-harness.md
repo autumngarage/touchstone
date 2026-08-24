@@ -29,7 +29,8 @@ command, using fakes for the locked npm and Python setup declarations.
 The compatibility lane starts from schema 1, the oldest supported shape. A
 newer runtime validates it without migration; adoption adds the missing tracker
 declaration through check/dry-run/apply while preserving the project-owned
-validation command, and the deleted upgrade subcommand is asserted absent.
+validation command. The tool-level upgrade path is exercised separately and
+must not mutate the compatibility repository.
 
 The policy lane runs the local CLI and the required-workflow engine against the
 same contract and compares their machine results. Deleting a consumer-local
@@ -39,10 +40,13 @@ plans continue to report remote policy as a separate operation.
 
 The non-mutation lane snapshots the scratch repository around validation,
 installed-CLI help, a Homebrew upgrade adapter, and a mocked read-only PR
-status observation. The upgrade may
-write only to its isolated installation prefix; it cannot search for or change
-a project. AUT-276 will replace the adapter with the released formula without
-changing this boundary. Default-branch and dirty apply attempts refuse without
-partial files. Every adoption fixture sits beside a committed sentinel
+status observation. The upgrade lane proves the 3.5 launcher transition is an
+explicit one-time steering install, a handoff-aware launcher subsequently
+refreshes only an existing managed install, and an opted-out machine remains
+untouched. Upgrade may write only to its isolated installation prefix and
+managed user-level steering; it cannot search for or change a project. AUT-276
+will replace the adapter with the released formula without changing this
+boundary. Default-branch and dirty apply attempts refuse without partial
+files. Every adoption fixture sits beside a committed sentinel
 repository; exact sibling inventory and source-checkout snapshots prove the
 operation does not cross its declared ownership boundary.

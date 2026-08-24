@@ -8,6 +8,10 @@
 #   bash scripts/touchstone-steering-install.sh check   [--home DIR]
 #   bash scripts/touchstone-steering-install.sh uninstall [--home DIR]
 #
+# `managed` is the upgrader's read-only ownership probe. It is deliberately
+# not a user-facing steering mode: exit 0 means this tool already owns at
+# least one managed block, and exit 1 means confirmed absent.
+#
 # Steering was the only Touchstone layer that propagated by copying. Merge
 # rules live in one GitHub ruleset, the validation workflow in one pinned SHA,
 # tool logic in one Homebrew formula — but the contract itself was pasted into
@@ -140,6 +144,10 @@ done
 
 die() {
   echo "ERROR: $*" >&2
+  # The upgrader reserves exit 1 for one fact only: no managed steering is
+  # present. Any malformed path or operational failure must remain distinct
+  # so upgrade cannot mistake an unreadable ownership state for opt-out.
+  [ "${ACTION:-}" != managed ] || exit 2
   exit 1
 }
 
@@ -164,6 +172,50 @@ esac
 case "$HOME_DIR" in
   *"'"*) die "the home directory contains a single quote, which the rewritten command examples cannot quote safely: $HOME_DIR" ;;
 esac
+
+# Upgrade may refresh only an existing Touchstone install. The reserved block
+# marker is the ownership fact at this boundary; a manifest pathname cannot
+# prove its own provenance, and ordinary ~/.touchstone or agent directories
+# are operator state that must not opt a machine into steering.
+managed_steering_present() {
+  local target relative path parent probe_status
+  [ -d "$HOME_DIR" ] && [ -x "$HOME_DIR" ] || return 2
+  for target in "${TARGETS[@]}"; do
+    relative="${target#*:}"
+    path="$HOME_DIR/$relative"
+    parent="${path%/*}"
+    if [ -e "$parent" ] || [ -L "$parent" ]; then
+      [ -d "$parent" ] && [ -x "$parent" ] || return 2
+    fi
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      [ -f "$path" ] || return 2
+      if grep -Eq "$BEGIN_MARKER_ANY" "$path"; then
+        return 0
+      else
+        probe_status="$?"
+        [ "$probe_status" -eq 1 ] || return 2
+      fi
+    fi
+  done
+  return 1
+}
+
+if [ "$ACTION" = managed ]; then
+  [ "$DRY_RUN" = false ] || die "managed is a read-only ownership probe and accepts no --dry-run"
+  if managed_steering_present; then
+    echo "managed"
+    exit 0
+  else
+    probe_status="$?"
+  fi
+  if [ "$probe_status" -ne 1 ]; then
+    echo "ERROR: could not inspect existing steering ownership under $HOME_DIR" >&2
+    exit 2
+  fi
+  echo "absent"
+  exit 1
+fi
+
 [ -f "$SOURCE" ] || die "canonical steering is missing: $SOURCE"
 
 # A marker line in the source would be copied into the block and make the very
@@ -1037,7 +1089,7 @@ case "$ACTION" in
     done
     if [ "$DRIFTED" -ne 0 ]; then
       echo "ERROR: $DRIFTED user-level steering file(s) do not carry this tool's contract" >&2
-      echo "Run: touchstone steering install -- it rewrites only the block between the markers in each driver file and the routed documents it installed under ~/.touchstone/principles and ~/.claude/skills (idempotent; everything outside them is untouched). A tool upgrade does not refresh them by itself." >&2
+      echo "Run: touchstone steering install -- it rewrites only the block between the markers in each driver file and the routed documents it installed under ~/.touchstone/principles and ~/.claude/skills (idempotent; everything outside them is untouched). The supported 'touchstone upgrade' path refreshes them; a direct package-manager upgrade does not." >&2
       exit 1
     fi
     echo "==> PASS: every supported driver reads the current contract"

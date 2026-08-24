@@ -24,10 +24,12 @@ pull request is opened per consumer, and nothing drifts because nothing is
 duplicated.
 
 Adoption writes a repository's own declarations and nothing else. It neither
-reads nor writes instruction files, and there is no `upgrade` subcommand:
-with no repository copy to refresh, the operation had no remaining job. A
-copy left by a pre-retirement adoption is the operator's to remove; re-running
-`adopt` never refreshes or deletes it.
+reads nor writes instruction files. On an install whose launcher carries the
+upgrade handoff, `touchstone upgrade` upgrades the installed tool and then
+converges machine-level steering only when Touchstone already manages it; an
+operator who uninstalled or never installed steering stays opted out. It never
+refreshes a repository copy. A copy left by a pre-retirement adoption is the
+operator's to remove; re-running `adopt` never refreshes or deletes it.
 
 Copying was the alternative and it failed measurably: on 2026-08-18, zero of
 ten consumer repositories carried a block matching this contract, and several
@@ -39,7 +41,13 @@ Two costs are accepted deliberately:
 - **Per machine, not per repository.** An agent on a machine that never ran
   the installer receives no steering. `touchstone steering check` reports it
   by comparing the installed block against the contract the running tool
-  carries, so a stale or absent install is visible. There is deliberately no
+  carries, so a stale or absent install is visible. The supported
+  `touchstone upgrade` path refreshes managed steering after switching the
+  tool; an already-running agent session must restart or reload to consume the
+  new instructions. The first upgrade from 3.5.0 or an older launcher cannot
+  execute a handoff that did not exist in that launcher, so that transition
+  requires one explicit `touchstone steering install`; every subsequent
+  supported upgrade converges it. There is deliberately no
   separate version record: the installed tool *is* the version, and a second
   number to keep in sync would be one more thing to drift.
 - **The contract must stay small.** Distribution being free removes the

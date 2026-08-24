@@ -344,7 +344,9 @@ make_release() {
   mkdir -p "$stage"
   git -C "$REPO_ROOT" archive --format=tar --prefix="touchstone-$version/" HEAD | tar -xf - -C "$stage"
   # Uncommitted edits in this checkout must ship too: the archive is the code under test.
-  for f in install.sh bin/touchstone; do cp "$REPO_ROOT/$f" "$stage/touchstone-$version/$f"; done
+  for f in install.sh bin/touchstone scripts/touchstone-steering-install.sh; do
+    cp "$REPO_ROOT/$f" "$stage/touchstone-$version/$f"
+  done
   printf '%s\n' "$version" >"$stage/touchstone-$version/VERSION"
   (cd "$stage" && tar -czf "$out" "touchstone-$version")
 }
@@ -436,7 +438,28 @@ fi
 
 echo "==> touchstone upgrade on an install.sh prefix re-runs the installer for the recorded release"
 make_formula 9.9.2 "$(sha256_of "$INSTALL_TMP/v9.9.2.tar.gz")" "$INSTALL_TMP/formula-9.9.2.rb"
-if bash "$PREFIX/bin/touchstone" upgrade --formula-file "$INSTALL_TMP/formula-9.9.2.rb" --archive-file "$INSTALL_TMP/v9.9.2.tar.gz" >"$INSTALL_TMP/upgrade.out" 2>&1; then
+UPGRADE_HOME="$INSTALL_TMP/upgrade-home"
+UPGRADE_PROJECT="$INSTALL_TMP/upgrade-project"
+mkdir -p "$UPGRADE_HOME/.codex" "$UPGRADE_PROJECT"
+cat >"$UPGRADE_HOME/.codex/AGENTS.md" <<'EOF'
+operator prefix
+<!-- touchstone:steering:start -->
+
+<!-- Installed by touchstone 9.9.1. Old contract. -->
+OLD MANAGED COMMAND
+<!-- touchstone:steering:end -->
+operator suffix
+EOF
+printf 'project sentinel\n' >"$UPGRADE_PROJECT/sentinel"
+upgrade_project_before="$(cksum <"$UPGRADE_PROJECT/sentinel")"
+# The 3.5.0 launcher execed the old installer. Its process cannot return to a
+# handoff that exists only in the archive it just installed; keep that exact
+# release boundary executable instead of accidentally testing new code on
+# both sides of the upgrade.
+cp "$REPO_ROOT/tests/fixtures/touchstone-upgrade-v3.5.0.sh" "$PREFIX/cli/9.9.1/bin/touchstone"
+if (cd "$UPGRADE_PROJECT" && HOME="$UPGRADE_HOME" bash "$PREFIX/bin/touchstone" upgrade \
+  --formula-file "$INSTALL_TMP/formula-9.9.2.rb" \
+  --archive-file "$INSTALL_TMP/v9.9.2.tar.gz") >"$INSTALL_TMP/upgrade.out" 2>&1; then
   pass "upgrade ran"
 else
   fail "upgrade failed: $(cat "$INSTALL_TMP/upgrade.out")"
@@ -444,6 +467,130 @@ fi
 [ "$(cat "$PREFIX/current")" = "9.9.2" ] && pass "current now names 9.9.2" || fail "upgrade did not switch current: $(cat "$PREFIX/current")"
 [ "$(bash "$PREFIX/bin/touchstone" version)" = "touchstone v9.9.2" ] && pass "wrapper runs the upgraded version" || fail "wrapper did not follow the upgrade"
 [ -d "$PREFIX/cli/9.9.1" ] && pass "previous release retained for rollback (current can be edited back)" || fail "previous release removed"
+if HOME="$UPGRADE_HOME" bash "$PREFIX/bin/touchstone" steering check >/dev/null 2>&1; then
+  fail "the 3.5.0 launcher somehow executed a handoff that it does not contain"
+else
+  pass "the 3.5.0 transition exposes its one-time steering migration"
+fi
+grep -qF 'Installed by touchstone 9.9.1.' "$UPGRADE_HOME/.codex/AGENTS.md" \
+  || fail "the compatibility fixture did not preserve the old managed block"
+if grep -qF 'Restart or reload already-running coding-agent sessions' "$INSTALL_TMP/upgrade.out"; then
+  fail "the 3.5.0 launcher claimed it refreshed steering"
+fi
+HOME="$UPGRADE_HOME" bash "$PREFIX/bin/touchstone" steering install >"$INSTALL_TMP/transition-steering.out" 2>&1 \
+  || fail "the documented one-time steering migration failed: $(cat "$INSTALL_TMP/transition-steering.out")"
+HOME="$UPGRADE_HOME" bash "$PREFIX/bin/touchstone" steering check >/dev/null 2>&1 \
+  || fail "the one-time transition did not converge machine steering"
+grep -qF 'Installed by touchstone 9.9.2.' "$UPGRADE_HOME/.codex/AGENTS.md" \
+  || fail "the one-time transition did not install the new steering version"
+grep -qF 'operator prefix' "$UPGRADE_HOME/.codex/AGENTS.md" \
+  && grep -qF 'operator suffix' "$UPGRADE_HOME/.codex/AGENTS.md" \
+  || fail "the one-time transition changed content outside the managed block"
+
+echo "==> a handoff-aware prefix upgrade refreshes an existing managed install"
+cat >"$UPGRADE_HOME/.codex/AGENTS.md" <<'EOF'
+operator prefix
+<!-- touchstone:steering:start -->
+
+<!-- Installed by touchstone 9.9.1. Old contract. -->
+STALE AFTER TRANSITION
+<!-- touchstone:steering:end -->
+operator suffix
+EOF
+if (
+  unset HOME
+  bash "$PREFIX/bin/touchstone" upgrade \
+    --formula-file "$INSTALL_TMP/formula-9.9.2.rb" \
+    --archive-file "$INSTALL_TMP/v9.9.2.tar.gz"
+) >"$INSTALL_TMP/no-home-upgrade.out" 2>&1; then
+  fail "upgrade treated an unreadable ownership state as steering opt-out"
+fi
+grep -qF 'could not determine whether this machine has a Touchstone-managed steering install' "$INSTALL_TMP/no-home-upgrade.out" \
+  || fail "upgrade did not distinguish a probe error from steering absence: $(cat "$INSTALL_TMP/no-home-upgrade.out")"
+grep -qF 'STALE AFTER TRANSITION' "$UPGRADE_HOME/.codex/AGENTS.md" \
+  || fail "the refused probe-error upgrade mutated steering"
+UNREADABLE_HOME="$INSTALL_TMP/unreadable-home"
+mkdir -p "$UNREADABLE_HOME/.codex"
+cp "$UPGRADE_HOME/.codex/AGENTS.md" "$UNREADABLE_HOME/.codex/AGENTS.md"
+chmod 000 "$UNREADABLE_HOME/.codex"
+if [ ! -x "$UNREADABLE_HOME/.codex" ]; then
+  unreadable_succeeded=false
+  if HOME="$UNREADABLE_HOME" bash "$PREFIX/bin/touchstone" upgrade \
+    --formula-file "$INSTALL_TMP/formula-9.9.2.rb" \
+    --archive-file "$INSTALL_TMP/v9.9.2.tar.gz" >"$INSTALL_TMP/unreadable-upgrade.out" 2>&1; then
+    unreadable_succeeded=true
+  fi
+  chmod 700 "$UNREADABLE_HOME/.codex"
+  [ "$unreadable_succeeded" = false ] \
+    || fail "upgrade treated an untraversable steering directory as opt-out"
+  grep -qF 'could not determine whether this machine has a Touchstone-managed steering install' "$INSTALL_TMP/unreadable-upgrade.out" \
+    || fail "upgrade did not report the untraversable steering path: $(cat "$INSTALL_TMP/unreadable-upgrade.out")"
+  grep -qF 'STALE AFTER TRANSITION' "$UNREADABLE_HOME/.codex/AGENTS.md" \
+    || fail "the refused untraversable-path upgrade mutated steering"
+else
+  chmod 700 "$UNREADABLE_HOME/.codex"
+fi
+if (cd "$UPGRADE_PROJECT" && HOME="$UPGRADE_HOME" bash "$PREFIX/bin/touchstone" upgrade \
+  --formula-file "$INSTALL_TMP/formula-9.9.2.rb" \
+  --archive-file "$INSTALL_TMP/v9.9.2.tar.gz") >"$INSTALL_TMP/handoff-upgrade.out" 2>&1; then
+  pass "handoff-aware upgrade ran"
+else
+  fail "handoff-aware upgrade failed: $(cat "$INSTALL_TMP/handoff-upgrade.out")"
+fi
+HOME="$UPGRADE_HOME" bash "$PREFIX/bin/touchstone" steering check >/dev/null 2>&1 \
+  || fail "handoff-aware prefix upgrade left machine steering stale"
+grep -qF 'Restart or reload already-running coding-agent sessions' "$INSTALL_TMP/handoff-upgrade.out" \
+  || fail "handoff-aware upgrade did not tell active agent sessions to reload"
+[ "$(cksum <"$UPGRADE_PROJECT/sentinel")" = "$upgrade_project_before" ] \
+  && [ "$(find "$UPGRADE_PROJECT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" = 1 ] \
+  || fail "tool upgrade mutated the invoking project"
+
+echo "==> Homebrew upgrade refreshes steering through the newly active CLI"
+BREW_PREFIX="$INSTALL_TMP/brew-prefix"
+BREW_HOME="$INSTALL_TMP/brew-home"
+BREW_BIN="$INSTALL_TMP/brew-bin"
+mkdir -p "$BREW_PREFIX/libexec" "$BREW_HOME/.codex" "$BREW_BIN"
+cp -R "$PREFIX/cli/9.9.2/." "$BREW_PREFIX/libexec/"
+cat >"$BREW_HOME/.codex/AGENTS.md" <<'EOF'
+brew operator content
+<!-- touchstone:steering:start -->
+
+<!-- Installed by touchstone 9.9.1. Old contract. -->
+OLD BREW MANAGED COMMAND
+<!-- touchstone:steering:end -->
+EOF
+cat >"$BREW_BIN/brew" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-} ${2:-}" in
+  '--prefix touchstone') printf '%s\n' "$TOUCHSTONE_TEST_BREW_PREFIX" ;;
+  'upgrade touchstone') printf 'upgraded\n' >"$TOUCHSTONE_TEST_BREW_PREFIX/brew-upgraded" ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$BREW_BIN/brew"
+HOME="$BREW_HOME" TOUCHSTONE_TEST_BREW_PREFIX="$BREW_PREFIX" PATH="$BREW_BIN:$PATH" \
+  bash "$BREW_PREFIX/libexec/bin/touchstone" upgrade >"$INSTALL_TMP/brew-upgrade.out" 2>&1 \
+  || fail "Homebrew upgrade path failed: $(cat "$INSTALL_TMP/brew-upgrade.out")"
+[ -f "$BREW_PREFIX/brew-upgraded" ] || fail "Homebrew upgrade adapter did not run"
+HOME="$BREW_HOME" bash "$BREW_PREFIX/libexec/bin/touchstone" steering check >/dev/null 2>&1 \
+  || fail "Homebrew upgrade left machine steering stale"
+grep -qF 'brew operator content' "$BREW_HOME/.codex/AGENTS.md" \
+  || fail "Homebrew upgrade discarded operator steering content"
+
+echo "==> upgrade preserves steering opt-out"
+BREW_OPT_OUT_HOME="$INSTALL_TMP/brew-opt-out-home"
+mkdir -p "$BREW_OPT_OUT_HOME/.touchstone/principles"
+printf 'operator-owned manifest collision\n' >"$BREW_OPT_OUT_HOME/.touchstone/principles/.touchstone-installed"
+opt_out_manifest_before="$(cksum <"$BREW_OPT_OUT_HOME/.touchstone/principles/.touchstone-installed")"
+HOME="$BREW_OPT_OUT_HOME" TOUCHSTONE_TEST_BREW_PREFIX="$BREW_PREFIX" PATH="$BREW_BIN:$PATH" \
+  bash "$BREW_PREFIX/libexec/bin/touchstone" upgrade >"$INSTALL_TMP/brew-opt-out.out" 2>&1 \
+  || fail "opted-out Homebrew upgrade failed: $(cat "$INSTALL_TMP/brew-opt-out.out")"
+[ ! -e "$BREW_OPT_OUT_HOME/.claude" ] \
+  && [ ! -e "$BREW_OPT_OUT_HOME/.codex" ] \
+  && [ ! -e "$BREW_OPT_OUT_HOME/.gemini" ] \
+  && [ "$(cksum <"$BREW_OPT_OUT_HOME/.touchstone/principles/.touchstone-installed")" = "$opt_out_manifest_before" ] \
+  || fail "upgrade enrolled an opted-out machine into steering"
 
 echo "==> Overlapping installers are serialised, and a failed publication keeps the active release"
 make_release 9.9.3 "$INSTALL_TMP/v9.9.3.tar.gz"
