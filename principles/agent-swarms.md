@@ -100,10 +100,11 @@ The parent session owns the coordination boundary:
 - runs final deterministic tests
 - invokes the final review path
 - opens or routes PRs
-- cleans up worktrees with `git worktree remove` — whoever creates a
-  worktree removes it, and the dispatch record (issue comment or brief)
-  names the worktree path so a later sweep can find it; `touchstone cleanup
-  check` in the main checkout lists any that remain
+- cleans up worktrees with `git worktree remove`, but only after the worker's
+  task is terminal and the parent has received its final report — whoever
+  creates a worktree removes it, and the dispatch record (issue comment or
+  brief) names the worktree path so a later sweep can find it; `touchstone
+  cleanup check` in the main checkout lists any that remain
 
 Workers own only their slice:
 
@@ -181,6 +182,11 @@ command.
 
 Rules:
 
+- never remove a worker's tree or prune its worktree record before its task is
+  terminal and the parent has received its final report; an open or merged PR
+  and a clean worktree prove neither condition
+- if abandoning a live worker, interrupt or cancel it and confirm that it is
+  terminal before removing its tree
 - never `git worktree remove --force` another agent's tree
 - never `git gc --prune=now` while sibling worktrees are active
 - never share one branch across multiple worktrees
