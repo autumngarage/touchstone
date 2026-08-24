@@ -151,7 +151,7 @@ emit_worktree() {
   if [ "$WT_PRUNABLE" = true ]; then
     finding "worktree" "$WT_PATH [${WT_BRANCH:-(detached)}] directory missing" "git worktree prune (the directory is gone; Git still records it)"
   else
-    finding "worktree" "$WT_PATH [${WT_BRANCH:-(detached)}]" "git worktree remove $(q "$WT_PATH") once its PR is merged, then git worktree prune"
+    finding "worktree" "$WT_PATH [${WT_BRANCH:-(detached)}]" "confirm the worker is terminal, its final report reached the parent, and its PR is merged; then git worktree remove $(q "$WT_PATH") && git worktree prune"
   fi
 }
 while IFS= read -r -d '' record; do

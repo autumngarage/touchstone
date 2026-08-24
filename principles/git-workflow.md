@@ -479,7 +479,7 @@ order — each line is a command, not advice:
 ```bash
 touchstone cleanup check            # read-only: lists what is left; exit 0 means nothing
 git checkout <default> && git pull --rebase    # first: Git refuses to delete the branch you are on
-git worktree remove <path>          # every worktree you created; then: git worktree prune
+git worktree remove <path>          # only after its worker is terminal and its final report reached you; then prune
 git branch -D <branch>              # after the merged-head proof under "Periodic branch hygiene"
 git push origin --force-with-lease=<branch>:<merged-sha> :<branch>   # delete the MERGED PR's remote branch only if it is still at the merged SHA (a CLOSED one may hold abandoned work: decide, don't reflexively delete)
 git status --porcelain --untracked-files=all   # must print nothing: remove test/build residue or ignore it
@@ -710,9 +710,12 @@ For the full fan-out playbook — slice manifests, file ownership, parent orches
 
 **Cleanup.**
 
+Before removing a worker's tree, confirm its task is terminal and its final
+report reached the parent. A merged PR and a clean tree prove neither.
+
 ```bash
 git worktree list                  # what accumulated
-git worktree remove <path>         # remove one
+git worktree remove <path>         # remove one after that lifecycle proof
 git worktree prune                 # drop records for already-deleted paths
 ```
 
