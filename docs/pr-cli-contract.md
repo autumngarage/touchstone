@@ -70,12 +70,21 @@ taking this document's word for it.
   exists; a fully applied workflow-source policy instead states that
   exact-head review remains driver procedure.
 - `status` is a read-only observation of state, URL, exact head, base ref/base
-  SHA, draft state, and GitHub's merge-state observation. Raw equivalent:
-  `gh pr view --json number,state,url,headRefOid,baseRefName,baseRefOid,mergeStateStatus,isDraft`.
+  SHA, draft state, GitHub's merge-state observation, and the newest valid
+  `touchstone:pr-open` review-request binding. It classifies that request as
+  `current`, `absent`, `stale-head`, or `stale-base`, reports its bound
+  coordinates in human and JSON output, and points absent or stale state back
+  to the existing recovery: re-run `touchstone pr open` from the current
+  branch/head. It observes the request marker; it does not recognize reviewer
+  vendors or decide whether review is complete. Raw equivalent: `gh pr view
+  --json number,state,url,headRefOid,baseRefName,baseRefOid,mergeStateStatus,isDraft`
+  plus the repository's PR issue comments, filtered to valid review-request
+  markers.
 
-  Why not the raw sequence: over the raw call it adds bounded retries and the
-  versioned `touchstone.pr/v1` field names, so an agent parses one stable
-  schema across all three operations instead of two.
+  Why not the raw sequence: over the raw calls it adds bounded retries, request
+  classification against the same live coordinates, and the versioned
+  `touchstone.pr/v1` field names, so an agent parses one stable schema across
+  all three operations instead of two.
 
   The failure it prevents is a driver trusting a local verdict over GitHub's.
   On 2026-08-18 the vendored merge gate in `henrymodisett/vesper` reported PR
@@ -88,9 +97,9 @@ taking this document's word for it.
   bypass with no evidence. Both were taken on that PR before the read settled
   it.
 
-  It remains the thinnest of the three, and deliberately so: its unique
-  implementation is output formatting, and its read path is shared with
-  `merge`. If it ever stops earning a public command, delete it.
+  It remains the thinnest of the three, and deliberately so: it formats
+  GitHub-owned state and request coordinates without adjudicating either. If
+  it ever stops earning a public command, delete it.
 
 - `merge` requires the caller's exact reviewed head, passes it through
   `--match-head-commit`, and re-reads state and head after the mutation. It

@@ -276,7 +276,21 @@ case "$1 ${2:-}" in
       # second.
       if [ -f "$GH_STATE/unguarded-recorded" ]; then printf '0\n1\n'; else printf '0\n0\n'; fi
     elif has '/issues/7/comments' "$@"; then
-      if [ "${GH_MODE:-ok}" = many_requests ]; then
+      if has '$binding.base_sha' "$@"; then
+        if [ -f "$GH_STATE/review-request" ]; then
+          read -r saved_head saved_base saved_base_sha <"$GH_STATE/review-request"
+          if [ "${GH_MODE:-ok}" = status_multiple ]; then
+            printf '%s\t%s\t%s\t%s\t%s\n' 'https://example.test/pr/7#issuecomment-old' alice \
+              stale-head "$saved_base" "$saved_base_sha"
+          fi
+          printf '%s\t%s\t%s\t%s\t%s\n' 'https://example.test/pr/7#issuecomment-1' alice \
+            "$saved_head" "$saved_base" "$saved_base_sha"
+          if [ "${GH_MODE:-ok}" = status_multiple ]; then
+            printf '%s\t%s\t%s\t%s\t%s\n' 'https://example.test/pr/7#issuecomment-spoofed' mallory \
+              spoofed-head "$saved_base" "$saved_base_sha"
+          fi
+        fi
+      elif [ "${GH_MODE:-ok}" = many_requests ]; then
         for index in $(awk 'BEGIN { for (i = 1; i <= 4000; i++) print i }'); do
           printf 'https://example.test/pr/7#issuecomment-%s\talice\t%s\n' "$index" \
             "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
@@ -494,7 +508,31 @@ EOF
   assert_has "$TMP/out" '"schema":"touchstone.pr/v1"'
   assert_has "$TMP/out" '"status":"observed"'
   assert_has "$TMP/out" "\"head\":\"$HEAD_SHA\""
+  assert_has "$TMP/out" '"reviewRequest":{"status":"absent","url":null,"head":null,"baseRef":null,"baseSha":null,"recovery":"re-run touchstone pr open from the current branch/head"}'
   [ "$(grep -c '^pr view' "$GH_CALLS")" -eq 2 ] || fail "status did not retry exactly once"
+  printf '%s %s %s\n' "$HEAD_SHA" "$GH_BASE_REF" "$GH_BASE_SHA" >"$TMP/state/review-request"
+  run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "\"reviewRequest\":{\"status\":\"current\",\"url\":\"https://example.test/pr/7#issuecomment-1\",\"head\":\"$HEAD_SHA\",\"baseRef\":\"main\",\"baseSha\":\"base-sha\"}"
+  GH_MODE=status_multiple run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "\"reviewRequest\":{\"status\":\"current\",\"url\":\"https://example.test/pr/7#issuecomment-1\""
+  assert_not_has "$TMP/out" 'spoofed-head'
+  run_pr "$TMP/out" status 7
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "review request: current ($HEAD_SHA on main at base-sha; https://example.test/pr/7#issuecomment-1)"
+  assert_not_has "$TMP/out" 'recovery:'
+  printf '%s %s %s\n' stale-head main base-sha >"$TMP/state/review-request"
+  run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewRequest":{"status":"stale-head"'
+  assert_has "$TMP/out" '"head":"stale-head","baseRef":"main","baseSha":"base-sha","recovery":"re-run touchstone pr open from the current branch/head"'
+  printf '%s %s %s\n' "$HEAD_SHA" main stale-base-sha >"$TMP/state/review-request"
+  run_pr "$TMP/out" status 7
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "review request: stale-base ($HEAD_SHA on main at stale-base-sha; https://example.test/pr/7#issuecomment-1)"
+  assert_has "$TMP/out" 'recovery: re-run touchstone pr open from the current branch/head'
+  rm -f "$TMP/state/review-request"
   GH_REPO_HOST=github.enterprise.example run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'pr view 7 --repo github.enterprise.example/autumngarage/current'

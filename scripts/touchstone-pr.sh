@@ -1078,12 +1078,69 @@ read_pr_row() {
   PR_ROW="$READ_OUTPUT"
 }
 
+read_review_request_binding() {
+  local number="$1" live_head="$2" live_base="$3" live_base_sha="$4" binding_row request_author
+  REVIEW_REQUEST_STATUS=absent
+  REVIEW_REQUEST_URL=""
+  REVIEW_REQUEST_HEAD=""
+  REVIEW_REQUEST_BASE=""
+  REVIEW_REQUEST_BASE_SHA=""
+  read_with_retry gh api user --hostname "$REPO_HOST" --jq '.login' \
+    || fail_operation "could not resolve the authenticated user: $READ_OUTPUT" "Verify authentication for $REPO_HOST."
+  request_author="$READ_OUTPUT"
+  [ -n "$request_author" ] \
+    || fail_operation "GitHub returned no authenticated login" "Re-authenticate to $REPO_HOST."
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$number/comments" \
+    --jq '.[] | (.body // "") as $body
+      | select($body | test("^@codex review(\\r?\\n|$)"; "i"))
+      | ($body | capture("<!-- touchstone:pr-open head=(?<head>[^ ]+) base=(?<base>[^ ]+) base_sha=(?<base_sha>[^ ]+) -->")) as $binding
+      | [.html_url, (.user.login // ""), $binding.head, $binding.base, $binding.base_sha] | @tsv' \
+    || fail_operation "could not inspect review requests for PR #$number: $READ_OUTPUT" "Retry after GitHub recovers."
+  binding_row="$(printf '%s\n' "$READ_OUTPUT" | awk -F '\t' -v author="$request_author" \
+    '$2 == author { print $1 "\t" $3 "\t" $4 "\t" $5 }' | sed -n '$p')"
+  [ -n "$binding_row" ] || return 0
+  IFS="$(printf '\t')" read -r REVIEW_REQUEST_URL REVIEW_REQUEST_HEAD REVIEW_REQUEST_BASE REVIEW_REQUEST_BASE_SHA <<<"$binding_row"
+  if [ "$REVIEW_REQUEST_HEAD" != "$live_head" ]; then
+    REVIEW_REQUEST_STATUS=stale-head
+  elif [ "$REVIEW_REQUEST_BASE" != "$live_base" ] || [ "$REVIEW_REQUEST_BASE_SHA" != "$live_base_sha" ]; then
+    REVIEW_REQUEST_STATUS=stale-base
+  else
+    REVIEW_REQUEST_STATUS=current
+  fi
+}
+
+review_request_json() {
+  printf '{"status":'
+  json_string "$REVIEW_REQUEST_STATUS"
+  printf ',"url":'
+  if [ -n "$REVIEW_REQUEST_URL" ]; then json_string "$REVIEW_REQUEST_URL"; else printf 'null'; fi
+  printf ',"head":'
+  if [ -n "$REVIEW_REQUEST_HEAD" ]; then json_string "$REVIEW_REQUEST_HEAD"; else printf 'null'; fi
+  printf ',"baseRef":'
+  if [ -n "$REVIEW_REQUEST_BASE" ]; then json_string "$REVIEW_REQUEST_BASE"; else printf 'null'; fi
+  printf ',"baseSha":'
+  if [ -n "$REVIEW_REQUEST_BASE_SHA" ]; then json_string "$REVIEW_REQUEST_BASE_SHA"; else printf 'null'; fi
+  if [ "$REVIEW_REQUEST_STATUS" != current ]; then
+    printf ',"recovery":'
+    json_string 're-run touchstone pr open from the current branch/head'
+  fi
+  printf '}'
+}
+
+review_request_text() {
+  printf '%s' "$REVIEW_REQUEST_STATUS"
+  if [ -n "$REVIEW_REQUEST_HEAD" ]; then
+    printf ' (%s on %s at %s; %s)' "$REVIEW_REQUEST_HEAD" "$REVIEW_REQUEST_BASE" "$REVIEW_REQUEST_BASE_SHA" "$REVIEW_REQUEST_URL"
+  fi
+}
+
 status_pr() {
   local number state url head base base_sha merge_state draft
   read_pr_row
   IFS="$(printf '\t')" read -r number state url head base base_sha merge_state draft <<<"$PR_ROW"
   # Read before the first byte of output: a failed read must produce one
   # error document, not a truncated status followed by another object.
+  read_review_request_binding "$number" "$head" "$base" "$base_sha"
   read_enforcement "$base"
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"status","status":"observed","pullRequest":%s,"state":' "$OUTPUT_SCHEMA" "$number"
@@ -1098,12 +1155,17 @@ status_pr() {
     json_string "$base_sha"
     printf ',"mergeState":'
     json_string "$merge_state"
-    printf ',"draft":%s,"enforcement":' "$draft"
+    printf ',"draft":%s,"reviewRequest":' "$draft"
+    review_request_json
+    printf ',"enforcement":'
     enforcement_json
     printf '}\n'
   else
-    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  merge state: %s\n  draft: %s\n  enforcement on %s: %s\n' \
-      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$merge_state" "$draft" "$base" "$(enforcement_text)"
+    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  merge state: %s\n  draft: %s\n  review request: %s\n  enforcement on %s: %s\n' \
+      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$merge_state" "$draft" "$(review_request_text)" "$base" "$(enforcement_text)"
+    if [ "$REVIEW_REQUEST_STATUS" != current ]; then
+      printf '  recovery: re-run touchstone pr open from the current branch/head\n'
+    fi
   fi
 }
 
