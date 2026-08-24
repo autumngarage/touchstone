@@ -613,11 +613,12 @@ read_enforcement() {
     || fail_operation "the tool's policy file is missing: $policy_file" "Reinstall touchstone."
   policy_type="$(jq -er '.policyType // "consumer"' "$policy_file")" \
     || fail_operation "could not read the policy type from $policy_file" "Reinstall touchstone."
+  expected_statuses="$(jq -c '[.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]? | {context, integration_id: (.integration_id // null)}]' "$policy_file")" \
+    || fail_operation "could not read the expected status checks from $policy_file" "Reinstall touchstone."
   case "$policy_type" in
     consumer)
       expected="$(jq -c '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | {path, repository_id, ref, sha}]' "$policy_file")" \
         || fail_operation "could not read the expected workflow pins from $policy_file" "Reinstall touchstone."
-      expected_statuses='[]'
       local gate_path
       for gate_path in .github/workflows/validate.yml .github/workflows/review-gate.yml .github/workflows/delivery-evidence.yml; do
         [ "$(printf '%s' "$expected" | jq --arg p "$gate_path" '[.[] | select(.path == $p)] | length')" = 1 ] \
@@ -626,8 +627,6 @@ read_enforcement() {
       ;;
     workflow-source)
       expected='[]'
-      expected_statuses="$(jq -c '[.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[] | {context, integration_id: (.integration_id // null)}]' "$policy_file")" \
-        || fail_operation "could not read the expected status checks from $policy_file" "Reinstall touchstone."
       [ "$(printf '%s' "$expected_statuses" | jq 'length')" -gt 0 ] \
         || fail_operation "$policy_file declares no required status check" "Reinstall touchstone; the workflow-source policy file is corrupt or incomplete."
       ;;
