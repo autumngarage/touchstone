@@ -578,7 +578,7 @@ while IFS="$(printf '\t')" read -r task_name task_target _task_required task_sta
   # execute in the enforcement run, where a staged-tree check is meaningless.
   [ "$task_stage" = "$STAGE_ARG" ] || continue
   target_path="$(validation_records "$TARGETS_FILE" \
-    | awk -F '\t' -v name="$task_target" '$1 == name { print $2; exit }')"
+    | awk -F '\t' -v name="$task_target" '$1 == name { print $2 }')"
   if [ -z "$task_command" ]; then
     SKIPPED=$((SKIPPED + 1))
     human "  SKIP $task_name ($task_target): optional task has no command"

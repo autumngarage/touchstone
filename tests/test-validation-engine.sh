@@ -396,6 +396,31 @@ run_capture "$LARGE" "$TMP_DIR/large.out" --json
 assert_contains "$TMP_DIR/large.out" '"ran":40'
 [ "$(cat "$LARGE/packages/p40/result")" = 40 ] || fail "large fixture missed last target"
 
+PIPE_BUFFER="$TMP_DIR/pipe-buffer"
+mkdir -p "$PIPE_BUFFER"
+cat >"$PIPE_BUFFER/.touchstone.toml" <<'EOF'
+schema = 1
+[validation]
+runtime = "bash"
+EOF
+for index in $(awk 'BEGIN { for (i=1; i<=2000; i++) print i }'); do
+  cat >>"$PIPE_BUFFER/.touchstone.toml" <<EOF
+[[validation.targets]]
+name = "p$index"
+path = "."
+EOF
+done
+cat >>"$PIPE_BUFFER/.touchstone.toml" <<'EOF'
+[[validation.tasks]]
+name = "first"
+target = "p1"
+command = "true"
+required = true
+EOF
+run_capture "$PIPE_BUFFER" "$TMP_DIR/pipe-buffer.out" --json
+[ "$RUN_STATUS" -eq 0 ] || fail "an early target lookup closed its record producer"
+assert_contains "$TMP_DIR/pipe-buffer.out" '"ran":1'
+
 echo "==> setup is explicit and stops tasks after failure"
 SETUP="$TMP_DIR/setup"
 write_contract "$SETUP" 'test -f prepared'

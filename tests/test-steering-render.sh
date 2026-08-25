@@ -762,6 +762,24 @@ if [ "$readonly_check" = "$normal_check" ]; then
 else
   fail "check changed under an unwritable TMPDIR: $readonly_check"
 fi
+RENDER_FAILURE_ROOT="$TMP_DIR/render-failure"
+RENDER_FAILURE="$RENDER_FAILURE_ROOT/scripts/touchstone-steering-install.sh"
+mkdir -p "$RENDER_FAILURE_ROOT/scripts"
+ln -s "$REPO_ROOT/TOUCHSTONE.md" "$RENDER_FAILURE_ROOT/TOUCHSTONE.md"
+ln -s "$REPO_ROOT/principles" "$RENDER_FAILURE_ROOT/principles"
+ln -s "$REPO_ROOT/skills" "$RENDER_FAILURE_ROOT/skills"
+awk '
+  { print }
+  /^render_block\(\) \{/ { print "  return 1" }
+' "$INSTALL" >"$RENDER_FAILURE"
+if TMPDIR="$TMP_DIR/absent-workspace" bash "$RENDER_FAILURE" check --home "$H3" \
+  >"$TMP_DIR/render-failure.out" 2>&1; then
+  fail "check treated a failed canonical render as current"
+elif grep -q 'could not render canonical steering content' "$TMP_DIR/render-failure.out"; then
+  pass "check reports a canonical render failure as operational, not drift"
+else
+  fail "check hid a canonical render failure as drift: $(cat "$TMP_DIR/render-failure.out")"
+fi
 printf '\nmy own note outside the block\n' >>"$H3/.claude/CLAUDE.md"
 if bash "$INSTALL" check --home "$H3" >/dev/null 2>&1; then
   pass "an edit outside the markers is not drift"

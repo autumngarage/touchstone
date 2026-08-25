@@ -150,7 +150,7 @@ record_plan_setup() {
     || operational_failure "could not inspect adoption setup before recording '$relative'"
   if [ "$PLAN_IN_MEMORY" = true ]; then
     existing="$(plan_records "$SETUPS_FILE" | awk -F '\t' -v path="$relative" \
-      '$1 == path { print substr($0, index($0, "\t") + 1); exit }')" \
+      '$1 == path { print substr($0, index($0, "\t") + 1) }')" \
       || lookup_status=$?
   else
     existing="$(awk -F '\t' -v path="$relative" \

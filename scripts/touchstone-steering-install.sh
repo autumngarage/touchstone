@@ -329,6 +329,18 @@ EOF
   } >"$out"
 }
 
+capture_rendered() {
+  local output_name="$1" captured
+  shift
+  captured="$({
+    "$@" /dev/stdout || exit
+    printf x
+  })" \
+    || die "could not render canonical steering content"
+  captured="${captured%x}"
+  printf -v "$output_name" '%s' "$captured"
+}
+
 # A home path is data, not sed replacement syntax. `&` means "the whole match"
 # and the delimiter ends the replacement, so a home like `home&name` silently
 # produced routes to directories that do not exist -- silently because install
@@ -466,6 +478,8 @@ BLOCK=""
 if [ "$ACTION" != check ]; then
   BLOCK="$TMP_DIR/block"
   render_block "$BLOCK"
+else
+  capture_rendered BLOCK render_block
 fi
 
 # Fail before any driver file is touched if the routed destination cannot be
@@ -756,14 +770,14 @@ principles_current() {
     [ -n "$recorded_name" ] || continue
     shipped_document "$recorded_name" || return 1
   done < <(cut -f 2- <"$destination/$PRINCIPLES_MANIFEST")
-  local doc_name
+  local rendered doc_name
   while IFS= read -r doc_name; do
     [ -n "$doc_name" ] || continue
     [ -f "$destination/$doc_name" ] || return 1
     grep -qxF "$(cksum <"$destination/$doc_name")	$doc_name" \
       "$destination/$PRINCIPLES_MANIFEST" || return 1
-    render_principle "$SET_SOURCE/$doc_name" /dev/stdout \
-      | cmp -s - "$destination/$doc_name" || return 1
+    capture_rendered rendered render_principle "$SET_SOURCE/$doc_name"
+    printf '%s' "$rendered" | cmp -s - "$destination/$doc_name" || return 1
   done < <(set_documents)
   return 0
 }
@@ -836,7 +850,7 @@ for entry in "${TARGETS[@]}"; do
     elif awk -v b="$BEGIN_MARKER_RE" -v e="$END_MARKER" -v plain="$BEGIN_MARKER" \
       '$0 ~ b { inside = 1; print plain; next } inside { print } $0 == e { inside = 0 }' "$path" \
       | sed -E 's/^<!-- Installed by touchstone [^ .]+(\.[0-9]+)*\. /<!-- Installed by touchstone. /' \
-      | cmp -s - <(render_block /dev/stdout \
+      | cmp -s - <(printf '%s' "$BLOCK" \
         | sed -E 's/^<!-- Installed by touchstone [^ .]+(\.[0-9]+)*\. /<!-- Installed by touchstone. /'); then
       printf '  ok: %s carries the current contract (block from touchstone %s)\n' "$relative" "$(installed_block_version "$path")"
     else
