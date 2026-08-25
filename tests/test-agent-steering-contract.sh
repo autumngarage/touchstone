@@ -835,6 +835,19 @@ DIRECT_RESOLVED="$(touchstone_resolve_codex_native "$DIRECT_CODEX" Darwin arm64)
 [ "$DIRECT_RESOLVED" = "$DIRECT_CODEX_CANONICAL" ] \
   || fail "direct Codex resolution changed the executable path"
 
+NEWLINE_LINK="$TEST_DIR/newline-codex"
+ln -s "$DIRECT_CODEX"$'\n'"injected-path" "$NEWLINE_LINK"
+if NEWLINE_ERROR="$(touchstone_resolve_codex_native "$NEWLINE_LINK" Darwin arm64 2>&1)"; then
+  fail "Codex resolution accepted a newline introduced by a symbolic-link target"
+elif ! printf '%s\n' "$NEWLINE_ERROR" | grep -qF 'link target contains a newline'; then
+  fail "newline-bearing Codex link produced the wrong error: $NEWLINE_ERROR"
+fi
+TRAILING_NEWLINE_LINK="$TEST_DIR/trailing-newline-codex"
+ln -s "$DIRECT_CODEX"$'\n' "$TRAILING_NEWLINE_LINK"
+if touchstone_resolve_codex_native "$TRAILING_NEWLINE_LINK" Darwin arm64 >/dev/null 2>&1; then
+  fail "Codex resolution lost a trailing newline from a symbolic-link target"
+fi
+
 LOOKALIKE_ROOT="$TEST_DIR/lookalike/codex"
 LOOKALIKE_LAUNCHER="$LOOKALIKE_ROOT/bin/codex.js"
 LOOKALIKE_NATIVE="$LOOKALIKE_ROOT/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"

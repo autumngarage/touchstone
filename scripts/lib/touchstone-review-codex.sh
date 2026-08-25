@@ -29,10 +29,22 @@ touchstone_codex_canonical_path() {
       touchstone_codex_fail "Codex executable has too many symbolic-link hops: $1"
       return
     fi
-    link="$(readlink "$path")" || {
+    link="$(
+      link_status=0
+      readlink -n "$path" || link_status=$?
+      printf '\001'
+      exit "$link_status"
+    )" || {
       touchstone_codex_fail "could not read Codex executable link: $path"
       return
     }
+    link="${link%$'\001'}"
+    case "$link" in
+      *$'\n'*)
+        touchstone_codex_fail "Codex executable link target contains a newline: $path"
+        return
+        ;;
+    esac
     case "$link" in
       /*) path="$link" ;;
       *) path="$(dirname "$path")/$link" ;;
