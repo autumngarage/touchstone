@@ -759,10 +759,15 @@ if grep -qF 'dummy-openrouter-token' "$TEST_DIR/review-setup.out"; then
 fi
 review_command check --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
   || fail "check failed immediately after setup"
-assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
+REVIEW_CODEX_LIB="$TOUCHSTONE_ROOT/scripts/lib/touchstone-review-codex.sh"
+assert_contains "$REVIEW_CODEX_LIB" \
   "TeamIdentifier=2DC432GLL2"
+assert_contains "$REVIEW_CODEX_LIB" \
+  '"$codesign_bin" --verify --deep --strict'
 assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
-  'codesign --verify --deep --strict'
+  'touchstone_verify_openai_codex "$candidate" /usr/bin/codesign'
+assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
+  'PATH="$bundled_path:$PATH"'
 assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
   "TOUCHSTONE_REVIEW_CODEX_BIN"
 for boundary in \
@@ -775,6 +780,158 @@ for boundary in \
   'unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE'; do
   assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" "$boundary"
 done
+
+echo "==> normal-review launcher resolves only the official npm native child"
+# shellcheck source=../scripts/lib/touchstone-review-codex.sh
+source "$REVIEW_CODEX_LIB"
+TOUCHSTONE_CODEX_ERROR=""
+TOUCHSTONE_CODEX_BIN=""
+TOUCHSTONE_CODEX_BUNDLED_PATH=""
+NPM_PREFIX="$TEST_DIR/npm-prefix"
+NPM_PACKAGE="$NPM_PREFIX/lib/node_modules/@openai/codex"
+NPM_LAUNCHER="$NPM_PACKAGE/bin/codex.js"
+NPM_NATIVE="$NPM_PREFIX/lib/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex"
+NPM_TOOLS="$NPM_PREFIX/lib/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/path"
+NPM_MARKER="$TEST_DIR/npm-launcher-executed"
+mkdir -p "$(dirname "$NPM_LAUNCHER")" "$(dirname "$NPM_NATIVE")" "$NPM_TOOLS" "$NPM_PREFIX/bin"
+cat >"$NPM_LAUNCHER" <<EOF
+#!/usr/bin/env bash
+touch "$NPM_MARKER"
+exit 99
+EOF
+: >"$NPM_NATIVE"
+chmod +x "$NPM_LAUNCHER" "$NPM_NATIVE"
+ln -s ../lib/node_modules/@openai/codex/bin/codex.js "$NPM_PREFIX/bin/codex"
+NPM_NATIVE_CANONICAL="$(cd "$(dirname "$NPM_NATIVE")" && pwd -P)/$(basename "$NPM_NATIVE")"
+NPM_TOOLS_CANONICAL="$(cd "$NPM_TOOLS" && pwd -P)"
+
+touchstone_resolve_codex_native "$NPM_PREFIX/bin/codex" Darwin arm64 \
+  || fail "official npm Codex did not resolve: $TOUCHSTONE_CODEX_ERROR"
+NPM_RESOLVED="$TOUCHSTONE_CODEX_BIN"
+NPM_RESOLVED_TOOLS="$TOUCHSTONE_CODEX_BUNDLED_PATH"
+[ "$NPM_RESOLVED" = "$NPM_NATIVE_CANONICAL" ] \
+  || fail "official npm Codex resolved to $NPM_RESOLVED instead of its native child"
+[ "$NPM_RESOLVED_TOOLS" = "$NPM_TOOLS_CANONICAL" ] \
+  || fail "official npm Codex did not preserve its bundled-tool path"
+[ ! -e "$NPM_MARKER" ] \
+  || fail "official npm Codex resolution evaluated the JavaScript launcher"
+
+NESTED_PACKAGE="$TEST_DIR/npm-nested/lib/node_modules/@openai/codex"
+NESTED_LAUNCHER="$NESTED_PACKAGE/bin/codex.js"
+NESTED_NATIVE="$NESTED_PACKAGE/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
+mkdir -p "$(dirname "$NESTED_LAUNCHER")" "$(dirname "$NESTED_NATIVE")"
+: >"$NESTED_LAUNCHER"
+: >"$NESTED_NATIVE"
+chmod +x "$NESTED_LAUNCHER" "$NESTED_NATIVE"
+NESTED_NATIVE_CANONICAL="$(cd "$(dirname "$NESTED_NATIVE")" && pwd -P)/$(basename "$NESTED_NATIVE")"
+touchstone_resolve_codex_native "$NESTED_LAUNCHER" Darwin arm64 \
+  || fail "nested official npm Codex did not resolve: $TOUCHSTONE_CODEX_ERROR"
+NESTED_RESOLVED="$TOUCHSTONE_CODEX_BIN"
+[ "$NESTED_RESOLVED" = "$NESTED_NATIVE_CANONICAL" ] \
+  || fail "nested official npm Codex resolved to $NESTED_RESOLVED instead of its native child"
+
+DIRECT_CODEX="$TEST_DIR/direct-codex"
+: >"$DIRECT_CODEX"
+chmod +x "$DIRECT_CODEX"
+DIRECT_CODEX_CANONICAL="$(cd "$(dirname "$DIRECT_CODEX")" && pwd -P)/$(basename "$DIRECT_CODEX")"
+touchstone_resolve_codex_native "$DIRECT_CODEX" Darwin arm64 \
+  || fail "direct Codex binary did not resolve: $TOUCHSTONE_CODEX_ERROR"
+DIRECT_RESOLVED="$TOUCHSTONE_CODEX_BIN"
+[ "$DIRECT_RESOLVED" = "$DIRECT_CODEX_CANONICAL" ] \
+  || fail "direct Codex resolution changed the executable path"
+
+NEWLINE_LINK="$TEST_DIR/newline-codex"
+ln -s "$DIRECT_CODEX"$'\n'"injected-path" "$NEWLINE_LINK"
+if touchstone_resolve_codex_native "$NEWLINE_LINK" Darwin arm64; then
+  fail "Codex resolution accepted a newline introduced by a symbolic-link target"
+elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" | grep -qF 'link target contains a newline'; then
+  fail "newline-bearing Codex link produced the wrong error: $TOUCHSTONE_CODEX_ERROR"
+fi
+TRAILING_NEWLINE_LINK="$TEST_DIR/trailing-newline-codex"
+ln -s "$DIRECT_CODEX"$'\n' "$TRAILING_NEWLINE_LINK"
+if touchstone_resolve_codex_native "$TRAILING_NEWLINE_LINK" Darwin arm64; then
+  fail "Codex resolution lost a trailing newline from a symbolic-link target"
+fi
+
+ANCESTOR_TARGET="$TEST_DIR/ancestor"$'\n'"target"
+ANCESTOR_CODEX="$ANCESTOR_TARGET/codex"
+ANCESTOR_LINK="$TEST_DIR/ancestor-link"
+mkdir -p "$ANCESTOR_TARGET"
+: >"$ANCESTOR_CODEX"
+chmod +x "$ANCESTOR_CODEX"
+ln -s "$ANCESTOR_TARGET" "$ANCESTOR_LINK"
+if touchstone_resolve_codex_native "$ANCESTOR_LINK/codex" Darwin arm64; then
+  fail "Codex resolution accepted a newline introduced by an ancestor symbolic link"
+elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" | grep -qF 'physical directory contains a newline'; then
+  fail "newline-bearing Codex ancestor produced the wrong error: $TOUCHSTONE_CODEX_ERROR"
+fi
+
+LOOKALIKE_ROOT="$TEST_DIR/lookalike/codex"
+LOOKALIKE_LAUNCHER="$LOOKALIKE_ROOT/bin/codex.js"
+LOOKALIKE_NATIVE="$LOOKALIKE_ROOT/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
+mkdir -p "$(dirname "$LOOKALIKE_LAUNCHER")" "$(dirname "$LOOKALIKE_NATIVE")"
+: >"$LOOKALIKE_LAUNCHER"
+: >"$LOOKALIKE_NATIVE"
+chmod +x "$LOOKALIKE_LAUNCHER" "$LOOKALIKE_NATIVE"
+LOOKALIKE_LAUNCHER_CANONICAL="$(cd "$(dirname "$LOOKALIKE_LAUNCHER")" && pwd -P)/$(basename "$LOOKALIKE_LAUNCHER")"
+touchstone_resolve_codex_native "$LOOKALIKE_LAUNCHER" Darwin arm64 \
+  || fail "non-official launcher path did not remain a direct candidate: $TOUCHSTONE_CODEX_ERROR"
+LOOKALIKE_RESOLVED="$TOUCHSTONE_CODEX_BIN"
+[ "$LOOKALIKE_RESOLVED" = "$LOOKALIKE_LAUNCHER_CANONICAL" ] \
+  || fail "normal review performed generic launcher discovery outside the official npm path"
+
+MISSING_PACKAGE="$TEST_DIR/missing/lib/node_modules/@openai/codex"
+MISSING_LAUNCHER="$MISSING_PACKAGE/bin/codex.js"
+mkdir -p "$(dirname "$MISSING_LAUNCHER")"
+: >"$MISSING_LAUNCHER"
+chmod +x "$MISSING_LAUNCHER"
+if touchstone_resolve_codex_native "$MISSING_LAUNCHER" Darwin arm64; then
+  fail "official npm Codex resolved without its native child"
+elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" | grep -qF 'native executable is missing or not executable'; then
+  fail "missing npm native child produced the wrong error: $TOUCHSTONE_CODEX_ERROR"
+fi
+if touchstone_resolve_codex_native "$NPM_LAUNCHER" Darwin sparc; then
+  fail "official npm Codex accepted an unsupported macOS architecture"
+elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" | grep -qF 'no supported macOS package'; then
+  fail "unsupported npm architecture produced the wrong error: $TOUCHSTONE_CODEX_ERROR"
+fi
+
+FAKE_CODESIGN="$TEST_DIR/codesign"
+FAKE_CODESIGN_LOG="$TEST_DIR/codesign-log"
+cat >"$FAKE_CODESIGN" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+candidate=""
+for arg in "$@"; do
+  candidate="$arg"
+done
+printf '%s\n' "$candidate" >>"$TOUCHSTONE_FAKE_CODESIGN_LOG"
+if [ "${1:-}" = --verify ]; then
+  [ "${TOUCHSTONE_FAKE_SIGNATURE:-valid}" != invalid ]
+  exit
+fi
+printf 'Identifier=%s\n' "${TOUCHSTONE_FAKE_IDENTIFIER:-codex}" >&2
+printf 'TeamIdentifier=%s\n' "${TOUCHSTONE_FAKE_TEAM:-2DC432GLL2}" >&2
+EOF
+chmod +x "$FAKE_CODESIGN"
+
+TOUCHSTONE_FAKE_CODESIGN_LOG="$FAKE_CODESIGN_LOG" \
+  touchstone_verify_openai_codex "$NPM_NATIVE_CANONICAL" "$FAKE_CODESIGN" \
+  || fail "signed OpenAI npm native child was rejected"
+[ "$(tail -n 1 "$FAKE_CODESIGN_LOG")" = "$NPM_NATIVE_CANONICAL" ] \
+  || fail "signature verification did not inspect the npm native child"
+if TOUCHSTONE_FAKE_CODESIGN_LOG="$FAKE_CODESIGN_LOG" TOUCHSTONE_FAKE_SIGNATURE=invalid \
+  touchstone_verify_openai_codex "$NPM_NATIVE_CANONICAL" "$FAKE_CODESIGN"; then
+  fail "normal review accepted a native child with an invalid signature"
+elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" | grep -qF 'integrity verification'; then
+  fail "invalid native signature produced the wrong error: $TOUCHSTONE_CODEX_ERROR"
+fi
+if TOUCHSTONE_FAKE_CODESIGN_LOG="$FAKE_CODESIGN_LOG" TOUCHSTONE_FAKE_TEAM=NOT-OPENAI \
+  touchstone_verify_openai_codex "$NPM_NATIVE_CANONICAL" "$FAKE_CODESIGN"; then
+  fail "normal review accepted a native child not signed by OpenAI"
+elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" | grep -qF 'not signed by OpenAI'; then
+  fail "wrong native signing team produced the wrong error: $TOUCHSTONE_CODEX_ERROR"
+fi
 for boundary in \
   'default_permissions = "touchstone_review"' \
   '":minimal" = "read"' \
