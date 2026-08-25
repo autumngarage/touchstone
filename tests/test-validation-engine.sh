@@ -190,6 +190,11 @@ mv "$CONTRACT_ONLY/with-setup" "$CONTRACT_ONLY/.touchstone.toml"
 run_capture "$CONTRACT_ONLY" "$TMP_DIR/contract-only.out" --check-contract
 [ "$RUN_STATUS" -eq 0 ] || fail "contract-only validation failed"
 assert_contains "$TMP_DIR/contract-only.out" "schema-v1 contract is valid"
+TMPDIR="$TMP_DIR/absent-workspace" run_capture \
+  "$CONTRACT_ONLY" "$TMP_DIR/contract-only-readonly.out" --check-contract
+[ "$RUN_STATUS" -eq 0 ] || fail "contract-only validation required writable temporary storage"
+cmp -s "$TMP_DIR/contract-only.out" "$TMP_DIR/contract-only-readonly.out" \
+  || fail "contract-only validation changed without writable temporary storage"
 [ ! -e "$CONTRACT_ONLY/setup-ran" ] || fail "contract check executed setup"
 [ ! -e "$CONTRACT_ONLY/command-ran" ] || fail "contract check executed a task"
 run_capture "$CONTRACT_ONLY" "$TMP_DIR/contract-only-json.out" --check-contract --json
@@ -1120,6 +1125,12 @@ run_adoption "$ADOPTION/manual-check.json" adopt --check --json --project "$MANU
   --tracker linear --tracker-prefix AUT --task 'verify=true'
 [ "$ADOPTION_STATUS" -eq 3 ] || fail "adoption check did not report required changes"
 [ ! -e "$MANUAL/.touchstone.toml" ] || fail "adoption check mutated the repository"
+TMPDIR="$ADOPTION/absent-workspace" run_adoption "$ADOPTION/manual-check-readonly.json" \
+  adopt --check --json --project "$MANUAL" \
+  --tracker linear --tracker-prefix AUT --task 'verify=true'
+[ "$ADOPTION_STATUS" -eq 3 ] || fail "adoption check required writable temporary storage"
+cmp -s "$ADOPTION/manual-check.json" "$ADOPTION/manual-check-readonly.json" \
+  || fail "adoption check changed its plan without writable temporary storage"
 
 run_adoption "$ADOPTION/conflicting-modes.json" adopt --json --check --dry-run \
   --project "$MANUAL" --task 'verify=true'
@@ -1760,7 +1771,8 @@ project' ] || fail "$2 wrote an unexpected sibling outside the consumer"
     git -C "$repo" add .touchstone.toml .touchstone-tracker.toml
     git -C "$repo" commit -qm "adopt Touchstone"
     assert_clean "$repo" "$id committed adoption"
-    run_cli "$TMP/$id-repeat" adopt --project "$repo" --check --json
+    TMPDIR="$TMP/absent-workspace" run_cli "$TMP/$id-repeat" \
+      adopt --project "$repo" --check --json
     if [ "$RUN_STATUS" -ne 0 ]; then
       cat "$TMP/$id-repeat" "$TMP/$id-repeat.err" >&2
       fail "$id second adoption was not current"

@@ -23,7 +23,7 @@ render_contract() {
         setup_entry="(cd $quoted_path && $setup_value)"
       fi
       setup_command="${setup_command:+$setup_command && }$setup_entry"
-    done <"$SETUPS_FILE"
+    done < <(plan_records "$SETUPS_FILE")
     if [ -n "$setup_command" ]; then
       printf 'setup = "%s"\n' "$(toml_escape "$setup_command")"
     fi
@@ -32,7 +32,7 @@ render_contract() {
       printf '\n[[validation.targets]]\n'
       printf 'name = "%s"\n' "$(toml_escape "$name")"
       printf 'path = "%s"\n' "$(toml_escape "$path")"
-    done <"$TARGETS_FILE"
+    done < <(plan_records "$TARGETS_FILE")
     while IFS="$(printf '\t')" read -r task target required command; do
       [ -n "$task" ] || continue
       printf '\n[[validation.tasks]]\n'
@@ -40,8 +40,46 @@ render_contract() {
       printf 'target = "%s"\n' "$(toml_escape "$target")"
       printf 'command = "%s"\n' "$(toml_escape "$command")"
       printf 'required = %s\n' "$required"
-    done <"$TASKS_FILE"
+    done < <(plan_records "$TASKS_FILE")
   } >"$output" || operational_failure "could not render .touchstone.toml"
+}
+
+capture_rendered_plan() {
+  local output_name="$1" renderer="$2" rendered
+  rendered="$({
+    "$renderer" /dev/stdout || exit
+    printf x
+  })" \
+    || operational_failure "could not render adoption plan"
+  rendered="${rendered%x}"
+  printf -v "$output_name" '%s' "$rendered"
+}
+
+plan_rendered_file() {
+  local relative="$1" renderer="$2" ownership="$3" proposed
+  if [ "$PLAN_IN_MEMORY" = false ]; then
+    proposed="$PLAN_ROOT/proposed-$(basename "$relative")"
+    "$renderer" "$proposed"
+    plan_file "$relative" "$proposed" "$ownership"
+    return
+  fi
+  capture_rendered_plan proposed "$renderer"
+  plan_memory_file "$relative" "$proposed" "$ownership"
+}
+
+plan_memory_file() {
+  local relative="$1" proposed="$2" ownership="$3" action destination
+  require_managed_output_available "$relative"
+  destination="$PROJECT_ROOT/$relative"
+  if [ -e "$destination" ]; then
+    cmp -s "$destination" <(printf '%s' "$proposed") && return 0
+    action=update
+  else
+    action=create
+  fi
+  append_plan_record "$CHANGES_FILE" "could not record planned change for $relative" \
+    '%s\t%s\t%s\n' "$action" "$relative" "$ownership"
+  PLAN_CHANGE_CONTENTS+=("$proposed")
 }
 
 render_tracker_contract() {
@@ -129,6 +167,10 @@ git_plan_diff() {
 render_plan_diff() {
   local action relative _ownership diff_status renderer_status
   local -a pipeline_status
+  if [ "$PLAN_IN_MEMORY" = true ]; then
+    render_memory_plan_diff
+    return
+  fi
   : >"$DIFF_FILE" || operational_failure "could not initialize adoption diff"
   while IFS="$(printf '\t')" read -r action relative _ownership; do
     [ -n "$relative" ] || continue
@@ -155,6 +197,63 @@ render_plan_diff() {
     case "$diff_status" in 0 | 1) ;; *) operational_failure "could not render diff for $relative" ;; esac
     [ "$renderer_status" -eq 0 ] || operational_failure "could not render diff for $relative"
   done <"$CHANGES_FILE"
+}
+
+render_memory_plan_diff() {
+  local index record action rest relative proposed chunk
+  DIFF_CONTENT=""
+  [ "${#PLAN_CHANGE_RECORDS[@]}" -eq "${#PLAN_CHANGE_CONTENTS[@]}" ] \
+    || operational_failure "in-memory adoption changes lost their proposed content"
+  index=0
+  while [ "$index" -lt "${#PLAN_CHANGE_RECORDS[@]}" ]; do
+    record="${PLAN_CHANGE_RECORDS[$index]}"
+    action="${record%%"$TAB"*}"
+    rest="${record#*"$TAB"}"
+    relative="${rest%%"$TAB"*}"
+    proposed="${PLAN_CHANGE_CONTENTS[$index]}"
+    chunk="$({
+      render_one_memory_diff "$action" "$relative" "$proposed" || exit
+      printf x
+    })" \
+      || operational_failure "could not render diff for $relative"
+    chunk="${chunk%x}"
+    DIFF_CONTENT="$DIFF_CONTENT$chunk"
+    index=$((index + 1))
+  done
+}
+
+render_one_memory_diff() {
+  local action="$1" relative="$2" proposed="$3" diff_status renderer_status proposed_hash
+  local -a pipeline_status
+  proposed_hash="$(printf '%s' "$proposed" | (cd / && git hash-object --stdin))" || return 1
+  proposed_hash="${proposed_hash:0:7}"
+  set +e
+  if [ "$action" = create ]; then
+    (cd / && git_plan_diff --no-index --no-ext-diff --no-color --unified=3 \
+      --src-prefix=a/ --dst-prefix=b/ -- /dev/null <(printf '%s' "$proposed")) \
+      | awk -v path="$relative" -v hash="$proposed_hash" '
+          /^diff --git / { print "diff --git a/" path " b/" path; next }
+          /^new file mode / { print; print "index 0000000.." hash; next }
+          /^\+\+\+ / { print "+++ b/" path; next }
+          { print }
+        '
+  else
+    (cd / && git_plan_diff --no-index --no-ext-diff --no-color --unified=3 \
+      --src-prefix=a/ --dst-prefix=b/ -- "$PROJECT_ROOT/$relative" <(printf '%s' "$proposed")) \
+      | awk -v path="$relative" -v hash="$proposed_hash" '
+          /^diff --git / { print "diff --git a/" path " b/" path; next }
+          /^index / { sub(/\.\.[0-9a-f]+/, ".." hash); print; next }
+          /^--- / { print "--- a/" path; next }
+          /^\+\+\+ / { print "+++ b/" path; next }
+          { print }
+        '
+  fi
+  pipeline_status=("${PIPESTATUS[@]}")
+  diff_status=${pipeline_status[0]}
+  renderer_status=${pipeline_status[1]}
+  set -e
+  case "$diff_status" in 0 | 1) ;; *) return 1 ;; esac
+  [ "$renderer_status" -eq 0 ]
 }
 
 managed_destination_is_local() {

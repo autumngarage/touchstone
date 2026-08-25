@@ -755,6 +755,13 @@ fi
 echo "==> check distinguishes operator edits from real drift"
 H3="$TMP_DIR/h3"
 bash "$INSTALL" install --home "$H3" >/dev/null
+normal_check="$(bash "$INSTALL" check --home "$H3" 2>&1)"
+readonly_check="$(TMPDIR="$TMP_DIR/absent-workspace" bash "$INSTALL" check --home "$H3" 2>&1)"
+if [ "$readonly_check" = "$normal_check" ]; then
+  pass "check needs no writable temporary directory and preserves its output"
+else
+  fail "check changed under an unwritable TMPDIR: $readonly_check"
+fi
 printf '\nmy own note outside the block\n' >>"$H3/.claude/CLAUDE.md"
 if bash "$INSTALL" check --home "$H3" >/dev/null 2>&1; then
   pass "an edit outside the markers is not drift"
