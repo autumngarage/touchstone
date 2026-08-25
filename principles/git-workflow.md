@@ -603,7 +603,11 @@ a `--force` that clobbered someone else's push may not be.
 
 ## Stacked PRs (and how they merge)
 
-A stacked PR is a PR whose base branch is another open PR's branch instead of the default branch. The goal: split a large change into a chain where each step is reviewable on its own. Open one with `touchstone pr open --base <parent-branch> --expect-branch <child> --title … --body-file …`; the CLI-absent raw sequence is the same one as for any PR (above: verify the head, `gh pr create --base <parent-branch>`, bare `@codex review`, re-run the gate).
+A stacked change is a dependent chain prepared as separate branches so each
+step remains reviewable. The supported default publication path keeps each
+child local until its parent merges, rebases the child onto the protected
+default branch, then opens it with `touchstone pr open`. Do not bypass a
+refusal by opening the child against an unmodeled parent with raw `gh`.
 
 **Exact-head review makes moving stacks multiply work.** Every parent update
 changes or invalidates each descendant's reviewed head. Do not open dependent
@@ -612,9 +616,16 @@ merge the parent and open the rebased child; use parallel PRs only for changes
 that are independently based on the default branch. An open stack is not a
 parallelization mechanism when exact-head evidence is required.
 
-**Retain the head branch on merge.** Do not enable `deleteBranchOnMerge`, and do not delete a parent branch that children are based on. If a head branch is deleted while open PRs are based on it, those PRs can be closed-without-merge with their review discussion abandoned — this fired on sentinel PRs #49/#50/#51 (2026-04-16) and is the reason the merge path retains branches (issue #713).
+**Recover an inherited open stack; do not create another one.** A stack created
+outside this contract may still exist. Do not enable `deleteBranchOnMerge`, and
+do not delete a parent branch that children are based on. If a head branch is
+deleted while open PRs are based on it, those PRs can be closed-without-merge
+with their review discussion abandoned. This fired on sentinel PRs #49/#50/#51
+(2026-04-16) and is the reason the merge path retains branches (issue #713).
 
-**Children still need retargeting after the parent lands.** Nothing rebases a child automatically. After the parent merges (resolve the default branch once — downstream repositories are not all `main`):
+**An inherited open child still needs retargeting after the parent lands.**
+Nothing rebases a child automatically. After the parent merges (resolve the
+default branch once — downstream repositories are not all `main`):
 
 ```bash
 DEFAULT=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
