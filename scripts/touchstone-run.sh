@@ -113,17 +113,12 @@ case "$CONFIG_ARG" in
   *) CONFIG_FILE="$PROJECT_ROOT/$CONFIG_ARG" ;;
 esac
 
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-validate.XXXXXX")" || {
-  echo "ERROR: could not create validation workspace" >&2
-  exit 2
-}
-TARGETS_FILE="$TMP_DIR/targets"
-TASKS_FILE="$TMP_DIR/tasks"
-FAILURES_FILE="$TMP_DIR/failures"
-: >"$TARGETS_FILE"
-: >"$TASKS_FILE"
-: >"$FAILURES_FILE"
-trap 'rm -rf "$TMP_DIR"' EXIT
+VALIDATION_TARGET_RECORDS=()
+VALIDATION_TASK_RECORDS=()
+VALIDATION_FAILURE_RECORDS=()
+TARGETS_FILE=:targets
+TASKS_FILE=:tasks
+FAILURES_FILE=:failures
 
 RAN=0
 SKIPPED=0
@@ -152,9 +147,33 @@ human() {
 
 progress() { printf '%s\n' "$*" >&2; }
 
+validation_records() {
+  local storage="$1" record
+  case "$storage" in
+    "$TARGETS_FILE")
+      for record in ${VALIDATION_TARGET_RECORDS[@]+"${VALIDATION_TARGET_RECORDS[@]}"}; do printf '%s\n' "$record"; done
+      ;;
+    "$TASKS_FILE")
+      for record in ${VALIDATION_TASK_RECORDS[@]+"${VALIDATION_TASK_RECORDS[@]}"}; do printf '%s\n' "$record"; done
+      ;;
+    "$FAILURES_FILE")
+      for record in ${VALIDATION_FAILURE_RECORDS[@]+"${VALIDATION_FAILURE_RECORDS[@]}"}; do printf '%s\n' "$record"; done
+      ;;
+  esac
+}
+
+append_validation_record() {
+  local storage="$1" record="$2"
+  case "$storage" in
+    "$TARGETS_FILE") VALIDATION_TARGET_RECORDS+=("$record") ;;
+    "$TASKS_FILE") VALIDATION_TASK_RECORDS+=("$record") ;;
+    "$FAILURES_FILE") VALIDATION_FAILURE_RECORDS+=("$record") ;;
+  esac
+}
+
 record_failure() {
   local task="$1" target="$2" status="$3" reason="$4"
-  printf '%s\t%s\t%s\t%s\n' "$task" "$target" "$status" "$reason" >>"$FAILURES_FILE"
+  append_validation_record "$FAILURES_FILE" "$task	$target	$status	$reason"
   FAILED=$((FAILED + 1))
   if [ "$EXIT_STATUS" -eq 0 ]; then EXIT_STATUS="$status"; fi
 }
@@ -179,7 +198,7 @@ emit_report() {
     first=false
     printf '{"task":"%s","target":"%s","status":%s,"reason":"%s"}' \
       "$task" "$target" "$status" "$reason"
-  done <"$FAILURES_FILE"
+  done < <(validation_records "$FAILURES_FILE")
   printf ']}\n'
 }
 
@@ -268,10 +287,11 @@ finalize_block() {
     [ -n "$BLOCK_PATH" ] || config_error "target '$BLOCK_NAME' has no path"
     valid_identifier "$BLOCK_NAME" || config_error "invalid target name '$BLOCK_NAME'"
     valid_relative_path "$BLOCK_PATH" || config_error "target '$BLOCK_NAME' path must stay inside the project"
-    if awk -F '\t' -v name="$BLOCK_NAME" '$1 == name { found=1 } END { exit !found }' "$TARGETS_FILE"; then
+    if validation_records "$TARGETS_FILE" \
+      | awk -F '\t' -v name="$BLOCK_NAME" '$1 == name { found=1 } END { exit !found }'; then
       config_error "duplicate target '$BLOCK_NAME'"
     fi
-    printf '%s\t%s\n' "$BLOCK_NAME" "$BLOCK_PATH" >>"$TARGETS_FILE"
+    append_validation_record "$TARGETS_FILE" "$BLOCK_NAME	$BLOCK_PATH"
   elif [ "$BLOCK" = task ]; then
     [ -n "$BLOCK_NAME" ] || config_error "task ending near line $LINE_NUMBER has no name"
     [ -n "$BLOCK_TARGET" ] || config_error "task '$BLOCK_NAME' has no target"
@@ -283,14 +303,15 @@ finalize_block() {
     if [ "$BLOCK_REQUIRED" = true ] && [ -z "$BLOCK_COMMAND" ]; then
       config_error "required task '$BLOCK_NAME' has no command"
     fi
-    if awk -F '\t' -v name="$BLOCK_NAME" '$1 == name { found=1 } END { exit !found }' "$TASKS_FILE"; then
+    if validation_records "$TASKS_FILE" \
+      | awk -F '\t' -v name="$BLOCK_NAME" '$1 == name { found=1 } END { exit !found }'; then
       config_error "duplicate task '$BLOCK_NAME'"
     fi
     # Schema 1 declares no stages; every task is enforce-stage, preserving
     # schema-1 meaning exactly.
     [ -n "$BLOCK_STAGE" ] || BLOCK_STAGE=enforce
-    printf '%s\t%s\t%s\t%s\t%s\n' \
-      "$BLOCK_NAME" "$BLOCK_TARGET" "$BLOCK_REQUIRED" "$BLOCK_STAGE" "$BLOCK_COMMAND" >>"$TASKS_FILE"
+    append_validation_record "$TASKS_FILE" \
+      "$BLOCK_NAME	$BLOCK_TARGET	$BLOCK_REQUIRED	$BLOCK_STAGE	$BLOCK_COMMAND"
   fi
 
   BLOCK=""
@@ -418,14 +439,15 @@ case "$SCHEMA_VERSION" in
 esac
 [ "$VALIDATION_SEEN" = true ] || config_error "missing [validation] section"
 [ "$RUNTIME" = bash ] || config_error "schema 1 requires runtime = \"bash\""
-[ -s "$TARGETS_FILE" ] || config_error "schema 1 requires at least one explicit target"
-[ -s "$TASKS_FILE" ] || config_error "schema 1 requires at least one explicit task"
+[ -n "$(validation_records "$TARGETS_FILE")" ] || config_error "schema 1 requires at least one explicit target"
+[ -n "$(validation_records "$TASKS_FILE")" ] || config_error "schema 1 requires at least one explicit task"
 
 while IFS="$(printf '\t')" read -r task_name task_target _task_required _task_stage _task_command; do
-  if ! awk -F '\t' -v name="$task_target" '$1 == name { found=1 } END { exit !found }' "$TARGETS_FILE"; then
+  if ! validation_records "$TARGETS_FILE" \
+    | awk -F '\t' -v name="$task_target" '$1 == name { found=1 } END { exit !found }'; then
     config_error "task '$task_name' references unknown target '$task_target'"
   fi
-done <"$TASKS_FILE"
+done < <(validation_records "$TASKS_FILE")
 
 resolve_target() {
   local target_name="$1" target_path="$2" resolved_target
@@ -466,13 +488,13 @@ while IFS="$(printf '\t')" read -r target_name target_path; do
       [ "$task_stage" = "$STAGE_ARG" ] || continue
       target_in_stage=true
       break
-    done <"$TASKS_FILE"
+    done < <(validation_records "$TASKS_FILE")
     if [ "$target_owned" = true ] && [ "$target_in_stage" != true ]; then
       continue
     fi
   fi
   resolve_target "$target_name" "$target_path" || true
-done <"$TARGETS_FILE"
+done < <(validation_records "$TARGETS_FILE")
 
 if [ "$FAILED" -ne 0 ]; then
   emit_report failed
@@ -536,7 +558,7 @@ while IFS="$(printf '\t')" read -r _n _t _r stage_field _c; do
   [ "$stage_field" = "$STAGE_ARG" ] || continue
   STAGE_HAS_TASKS=true
   break
-done <"$TASKS_FILE"
+done < <(validation_records "$TASKS_FILE")
 
 if [ -n "$SETUP_COMMAND" ] && [ "$STAGE_HAS_TASKS" = true ]; then
   progress "==> setup (root): $SETUP_COMMAND"
@@ -555,7 +577,8 @@ while IFS="$(printf '\t')" read -r task_name task_target _task_required task_sta
   # Stage selection. Authoring guards are local fast feedback and must never
   # execute in the enforcement run, where a staged-tree check is meaningless.
   [ "$task_stage" = "$STAGE_ARG" ] || continue
-  target_path="$(awk -F '\t' -v name="$task_target" '$1 == name { print $2; exit }' "$TARGETS_FILE")"
+  target_path="$(validation_records "$TARGETS_FILE" \
+    | awk -F '\t' -v name="$task_target" '$1 == name { print $2 }')"
   if [ -z "$task_command" ]; then
     SKIPPED=$((SKIPPED + 1))
     human "  SKIP $task_name ($task_target): optional task has no command"
@@ -577,7 +600,7 @@ while IFS="$(printf '\t')" read -r task_name task_target _task_required task_sta
   [ "$reason" = command-not-started ] || RAN=$((RAN + 1))
   progress "ERROR: $task_name failed on $task_target (exit $status, $reason)"
   record_failure "$task_name" "$task_target" "$status" "$reason"
-done <"$TASKS_FILE"
+done < <(validation_records "$TASKS_FILE")
 
 # A declaration that runs nothing at the enforcement stage cannot be a gate,
 # so that stays a failure. The commit stage is optional fast feedback: a

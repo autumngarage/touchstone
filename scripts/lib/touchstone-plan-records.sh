@@ -1,11 +1,52 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034 # PROFILE is an output consumed by the adoption planner.
 
+PLAN_IN_MEMORY="${PLAN_IN_MEMORY:-false}"
+
 trim_plan_value() {
   local value="$1"
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   printf '%s' "$value"
+}
+
+plan_records() {
+  local storage="$1" record
+  if [ "$PLAN_IN_MEMORY" = false ]; then
+    cat "$storage" || operational_failure "could not read adoption plan records"
+    return
+  fi
+  case "$storage" in
+    "$TARGETS_FILE")
+      for record in ${PLAN_TARGET_RECORDS[@]+"${PLAN_TARGET_RECORDS[@]}"}; do printf '%s\n' "$record"; done
+      ;;
+    "$TASKS_FILE")
+      for record in ${PLAN_TASK_RECORDS[@]+"${PLAN_TASK_RECORDS[@]}"}; do printf '%s\n' "$record"; done
+      ;;
+    "$SETUPS_FILE")
+      for record in ${PLAN_SETUP_RECORDS[@]+"${PLAN_SETUP_RECORDS[@]}"}; do printf '%s\n' "$record"; done
+      ;;
+    "$CHANGES_FILE")
+      for record in ${PLAN_CHANGE_RECORDS[@]+"${PLAN_CHANGE_RECORDS[@]}"}; do printf '%s\n' "$record"; done
+      ;;
+    *) operational_failure "unknown in-memory adoption plan storage: $storage" ;;
+  esac
+}
+
+plan_record_count() {
+  local storage="$1"
+  if [ "$PLAN_IN_MEMORY" = true ]; then
+    case "$storage" in
+      "$TARGETS_FILE") printf '%s\n' "${#PLAN_TARGET_RECORDS[@]}" ;;
+      "$TASKS_FILE") printf '%s\n' "${#PLAN_TASK_RECORDS[@]}" ;;
+      "$SETUPS_FILE") printf '%s\n' "${#PLAN_SETUP_RECORDS[@]}" ;;
+      "$CHANGES_FILE") printf '%s\n' "${#PLAN_CHANGE_RECORDS[@]}" ;;
+      *) operational_failure "unknown in-memory adoption plan storage: $storage" ;;
+    esac
+  else
+    awk 'NF { count++ } END { print count + 0 }' "$storage" \
+      || operational_failure "could not count adoption plan records"
+  fi
 }
 
 valid_plan_identifier() {
@@ -35,8 +76,12 @@ require_plan_record_shape() {
 
 plan_name_exists() {
   local file="$1" name="$2" label="$3" status
-  [ -f "$file" ] || operational_failure "could not inspect $label before recording '$name'"
-  if awk -F '\t' -v value="$name" '$1 == value { found=1 } END { exit !found }' "$file"; then
+  [ "$PLAN_IN_MEMORY" = true ] || [ -f "$file" ] \
+    || operational_failure "could not inspect $label before recording '$name'"
+  if { [ "$PLAN_IN_MEMORY" = true ] \
+    && plan_records "$file" | awk -F '\t' -v value="$name" '$1 == value { found=1 } END { exit !found }'; } \
+    || { [ "$PLAN_IN_MEMORY" = false ] \
+      && awk -F '\t' -v value="$name" '$1 == value { found=1 } END { exit !found }' "$file"; }; then
     return 0
   else
     status=$?
@@ -46,9 +91,21 @@ plan_name_exists() {
 }
 
 append_plan_record() {
-  local output="$1" failure="$2" format="$3"
+  local output="$1" failure="$2" format="$3" record
   shift 3
-  printf "$format" "$@" >>"$output" || operational_failure "$failure"
+  if [ "$PLAN_IN_MEMORY" = false ]; then
+    printf "$format" "$@" >>"$output" || operational_failure "$failure"
+    return
+  fi
+  printf -v record "$format" "$@" || operational_failure "$failure"
+  record="${record%$LF}"
+  case "$output" in
+    "$TARGETS_FILE") PLAN_TARGET_RECORDS+=("$record") ;;
+    "$TASKS_FILE") PLAN_TASK_RECORDS+=("$record") ;;
+    "$SETUPS_FILE") PLAN_SETUP_RECORDS+=("$record") ;;
+    "$CHANGES_FILE") PLAN_CHANGE_RECORDS+=("$record") ;;
+    *) operational_failure "unknown in-memory adoption plan storage: $output" ;;
+  esac
 }
 
 record_plan_target() {
@@ -89,11 +146,17 @@ record_plan_setup() {
     || contract_refusal "setup for '$relative' has an empty command"
   plan_value_has_control_byte "$command" \
     && contract_refusal "setup for '$relative' contains a control byte forbidden in a TOML command"
-  [ -f "$SETUPS_FILE" ] \
+  { [ "$PLAN_IN_MEMORY" = true ] || [ -f "$SETUPS_FILE" ]; } \
     || operational_failure "could not inspect adoption setup before recording '$relative'"
-  existing="$(awk -F '\t' -v path="$relative" \
-    '$1 == path { print substr($0, index($0, "\t") + 1); exit }' "$SETUPS_FILE")" \
-    || lookup_status=$?
+  if [ "$PLAN_IN_MEMORY" = true ]; then
+    existing="$(plan_records "$SETUPS_FILE" | awk -F '\t' -v path="$relative" \
+      '$1 == path { print substr($0, index($0, "\t") + 1) }')" \
+      || lookup_status=$?
+  else
+    existing="$(awk -F '\t' -v path="$relative" \
+      '$1 == path { print substr($0, index($0, "\t") + 1); exit }' "$SETUPS_FILE")" \
+      || lookup_status=$?
+  fi
   [ "$lookup_status" -eq 0 ] \
     || operational_failure "could not inspect adoption setup before recording '$relative'"
   if [ -n "$existing" ]; then

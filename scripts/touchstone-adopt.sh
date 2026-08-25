@@ -20,6 +20,13 @@ PLAN_STATUS=""
 KEEP_PLAN=false
 APPLY_IN_PROGRESS=false
 PLAN_ROOT=""
+PLAN_IN_MEMORY=false
+DIFF_CONTENT=""
+PLAN_TARGET_RECORDS=()
+PLAN_TASK_RECORDS=()
+PLAN_SETUP_RECORDS=()
+PLAN_CHANGE_RECORDS=()
+PLAN_CHANGE_CONTENTS=()
 TAB="$(printf '\t')"
 CR="$(printf '\r')"
 LF="$(printf '\n_')"
@@ -186,19 +193,29 @@ PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 git -C "$PROJECT_ROOT" rev-parse --verify HEAD >/dev/null 2>&1 \
   || invalid_invocation "project has no committed HEAD" "Commit the repository facts before adoption."
 
-plan_base="${TMPDIR:-/tmp}"
-resolved_plan_base="$(cd "$plan_base" 2>/dev/null && pwd -P)" || resolved_plan_base=/tmp
-case "$resolved_plan_base" in "$PROJECT_ROOT" | "$PROJECT_ROOT"/*) plan_base=/tmp ;; esac
-PLAN_ROOT="$(mktemp -d "$plan_base/touchstone-adopt.XXXXXX")" \
-  || operational_failure "could not create the adoption workspace under $plan_base: adopt --check modifies no repository file but needs a writable temporary directory (set TMPDIR)"
-TARGETS_FILE="$PLAN_ROOT/targets"
-TASKS_FILE="$PLAN_ROOT/tasks"
-SETUPS_FILE="$PLAN_ROOT/setups"
-CHANGES_FILE="$PLAN_ROOT/changes"
-CREATED_DIRS_FILE="$PLAN_ROOT/created-dirs"
-DIFF_FILE="$PLAN_ROOT/plan.diff"
-if ! { : >"$TARGETS_FILE" && : >"$TASKS_FILE" && : >"$SETUPS_FILE" && : >"$CHANGES_FILE" && : >"$CREATED_DIRS_FILE"; }; then
-  operational_failure "could not initialize adoption workspace"
+if [ "$MODE" = check ]; then
+  PLAN_IN_MEMORY=true
+  TARGETS_FILE=:targets
+  TASKS_FILE=:tasks
+  SETUPS_FILE=:setups
+  CHANGES_FILE=:changes
+  CREATED_DIRS_FILE=:created-dirs
+  DIFF_FILE=:diff
+else
+  plan_base="${TMPDIR:-/tmp}"
+  resolved_plan_base="$(cd "$plan_base" 2>/dev/null && pwd -P)" || resolved_plan_base=/tmp
+  case "$resolved_plan_base" in "$PROJECT_ROOT" | "$PROJECT_ROOT"/*) plan_base=/tmp ;; esac
+  PLAN_ROOT="$(mktemp -d "$plan_base/touchstone-adopt.XXXXXX")" \
+    || operational_failure "could not create the adoption workspace under $plan_base"
+  TARGETS_FILE="$PLAN_ROOT/targets"
+  TASKS_FILE="$PLAN_ROOT/tasks"
+  SETUPS_FILE="$PLAN_ROOT/setups"
+  CHANGES_FILE="$PLAN_ROOT/changes"
+  CREATED_DIRS_FILE="$PLAN_ROOT/created-dirs"
+  DIFF_FILE="$PLAN_ROOT/plan.diff"
+  if ! { : >"$TARGETS_FILE" && : >"$TASKS_FILE" && : >"$SETUPS_FILE" && : >"$CHANGES_FILE" && : >"$CREATED_DIRS_FILE"; }; then
+    operational_failure "could not initialize adoption workspace"
+  fi
 fi
 
 # shellcheck disable=SC1091 # sources resolve from the installed CLI root.
@@ -350,7 +367,7 @@ tracker_contract_failure() {
 }
 
 compile_new_contract() {
-  local proposed="$PLAN_ROOT/proposed-contract.toml" detected
+  local detected
   if [ "$MANUAL_TASK_COUNT" -gt 0 ]; then
     compile_manual_plan "${MANUAL_TASK_ARGS[@]}"
   elif [ -e "$PROJECT_ROOT/.touchstone-config" ] || [ -L "$PROJECT_ROOT/.touchstone-config" ]; then
@@ -364,12 +381,10 @@ compile_new_contract() {
     detected="$DETECTED_PROFILE"
     case "$detected" in npm) compile_npm_plan ;; python) compile_python_plan ;; swift) compile_swift_plan ;; esac
   fi
-  render_contract "$proposed"
-  plan_file .touchstone.toml "$proposed" project-contract
+  plan_rendered_file .touchstone.toml render_contract project-contract
 }
 
 plan_tracker_contract() {
-  local proposed="$PLAN_ROOT/proposed-tracker.toml"
   if [ -e "$PROJECT_ROOT/.touchstone-tracker.toml" ] || [ -L "$PROJECT_ROOT/.touchstone-tracker.toml" ]; then
     [ -z "$TRACKER_TYPE$TRACKER_PREFIX" ] \
       || invalid_invocation "an existing tracker declaration cannot be replaced by adoption options" "Edit project-owned values in a separate reviewed change."
@@ -379,8 +394,7 @@ plan_tracker_contract() {
   fi
   [ "$OPERATION" = adopt ] || return 0
   [ -n "$TRACKER_TYPE" ] || TRACKER_TYPE=github
-  render_tracker_contract "$proposed"
-  plan_file .touchstone-tracker.toml "$proposed" project-contract
+  plan_rendered_file .touchstone-tracker.toml render_tracker_contract project-contract
 }
 
 plan_tracker_contract
@@ -397,12 +411,16 @@ else
 fi
 
 render_plan_diff
-CHANGE_COUNT="$(awk 'NF { count++ } END { print count + 0 }' "$CHANGES_FILE")"
+CHANGE_COUNT="$(plan_record_count "$CHANGES_FILE")"
 [ "$CHANGE_COUNT" -gt 0 ] && PLAN_STATUS=changes-required || PLAN_STATUS=current
 
 emit_result() {
   local status="$1" first=true action relative ownership diff
-  diff="$(<"$DIFF_FILE")" || operational_failure "could not read adoption plan diff"
+  if [ "$PLAN_IN_MEMORY" = true ]; then
+    diff="$DIFF_CONTENT"
+  else
+    diff="$(<"$DIFF_FILE")" || operational_failure "could not read adoption plan diff"
+  fi
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"%s","status":"%s","profile":' \
       "$OUTPUT_SCHEMA" "$OPERATION" "$status"
@@ -415,7 +433,7 @@ emit_result() {
       printf '{"action":"%s","path":' "$action"
       json_string "$relative"
       printf ',"ownership":"%s"}' "$ownership"
-    done <"$CHANGES_FILE"
+    done < <(plan_records "$CHANGES_FILE")
     printf '],"diff":'
     json_string "$diff"
     printf ',"remotePolicy":{"status":"separate-operation","inspect":"touchstone policy status"}}\n'
