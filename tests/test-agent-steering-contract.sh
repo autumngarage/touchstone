@@ -706,6 +706,7 @@ case "${1:-}" in
   find-generic-password)
     [ "${TOUCHSTONE_FAKE_READBACK_FAIL:-false}" != true ] || exit 45
     [ -f "$state" ] || exit 44
+    [ "${TOUCHSTONE_FAKE_EMPTY_KEY:-false}" != true ] || exit 0
     printf 'dummy-openrouter-token\n'
     ;;
   add-generic-password)
@@ -724,13 +725,17 @@ chmod +x "$FAKE_SECURITY"
 
 FAKE_CODEX="$TEST_DIR/codex"
 FAKE_CODEX_LOG="$TEST_DIR/codex-log"
+FAKE_RUNTIME_HOME_LOG="$TEST_DIR/codex-runtime-home"
 cat >"$FAKE_CODEX" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 [ "${OPENROUTER_API_KEY:-}" = dummy-openrouter-token ] || exit 47
 [ -n "${CODEX_HOME:-}" ] || exit 48
+printf '%s\n' "$CODEX_HOME" >"$TOUCHSTONE_FAKE_RUNTIME_HOME_LOG"
 grep -qF 'OPENROUTER_API_KEY = "exclude"' \
   "$CODEX_HOME/review-normal.config.toml" || exit 49
+mkdir -p "$CODEX_HOME/shell_snapshots"
+printf '%s\n' "$OPENROUTER_API_KEY" >"$CODEX_HOME/shell_snapshots/adversarial.sh"
 if env -u OPENROUTER_API_KEY bash -c '[ -n "${OPENROUTER_API_KEY+x}" ]'; then
   exit 50
 fi
@@ -745,10 +750,12 @@ review_command() {
     TOUCHSTONE_FAKE_KEYCHAIN_DIR="$FAKE_KEYCHAIN_DIR" \
     TOUCHSTONE_FAKE_KEYCHAIN_LOG="$FAKE_KEYCHAIN_LOG" \
     TOUCHSTONE_FAKE_READBACK_FAIL="${TOUCHSTONE_FAKE_READBACK_FAIL:-false}" \
+    TOUCHSTONE_FAKE_EMPTY_KEY="${TOUCHSTONE_FAKE_EMPTY_KEY:-false}" \
     TOUCHSTONE_FAKE_DELETE_FAIL="${TOUCHSTONE_FAKE_DELETE_FAIL:-false}" \
     TOUCHSTONE_REVIEW_FAIL_PROFILE_PUBLISH="${TOUCHSTONE_REVIEW_FAIL_PROFILE_PUBLISH:-false}" \
     TOUCHSTONE_REVIEW_CODEX_BIN="$FAKE_CODEX" \
     TOUCHSTONE_FAKE_CODEX_LOG="$FAKE_CODEX_LOG" \
+    TOUCHSTONE_FAKE_RUNTIME_HOME_LOG="$FAKE_RUNTIME_HOME_LOG" \
     bash "$TOUCHSTONE_ROOT/bin/touchstone" review "$@"
 }
 
@@ -789,8 +796,15 @@ review_command check --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
   || fail "check failed immediately after setup"
 review_command run --codex-home "$REVIEW_HOME" >"$TEST_DIR/review-run.out" 2>&1 \
   || fail "the Keychain-backed normal review launcher failed"
-grep -qFx -- '-p review-normal -c shell_environment_policy.filters.OPENROUTER_API_KEY="exclude" -c allow_login_shell=false -s read-only -a never review --uncommitted' "$FAKE_CODEX_LOG" \
+grep -qF -- '-p review-normal -c projects."' "$FAKE_CODEX_LOG" \
+  || fail "the launcher did not isolate project-controlled Codex configuration"
+grep -qF -- '.trust_level="untrusted" -c shell_environment_policy.filters.OPENROUTER_API_KEY="exclude" -c allow_login_shell=false --disable shell_snapshot --disable plugins --disable plugin_hooks --disable enable_mcp_apps -s read-only -a never exec --ephemeral --ignore-rules review --uncommitted' "$FAKE_CODEX_LOG" \
   || fail "the launcher did not bind Codex to the one normal-review command"
+runtime_home="$(cat "$FAKE_RUNTIME_HOME_LOG")"
+[ "$runtime_home" != "$REVIEW_HOME" ] \
+  || fail "the launcher exposed the credential inside the operator's persistent Codex home"
+[ ! -e "$runtime_home" ] \
+  || fail "the launcher retained isolated Codex state containing the credential"
 if grep -qF 'dummy-openrouter-token' "$TEST_DIR/review-run.out" \
   || grep -qF 'dummy-openrouter-token' "$FAKE_CODEX_LOG"; then
   fail "the normal-review launcher exposed the provider key in agent-visible output"
@@ -875,6 +889,16 @@ if TOUCHSTONE_FAKE_READBACK_FAIL=true \
 fi
 [ ! -e "$(fake_key_path "$READBACK_REVIEW_HOME")" ] \
   || fail "failed credential readback did not roll back the new Keychain item"
+
+EMPTY_REVIEW_HOME="$TEST_DIR/review-empty-key"
+review_command setup --codex-home "$EMPTY_REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "empty-key fixture setup failed"
+if TOUCHSTONE_FAKE_EMPTY_KEY=true \
+  review_command check --codex-home "$EMPTY_REVIEW_HOME" >/dev/null 2>&1; then
+  fail "normal-review check accepted an empty Keychain credential"
+fi
+review_command uninstall --codex-home "$EMPTY_REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "empty-key fixture uninstall failed"
 
 PUBLISH_REVIEW_HOME="$TEST_DIR/review-publish-failure"
 mkdir -p "$PUBLISH_REVIEW_HOME"

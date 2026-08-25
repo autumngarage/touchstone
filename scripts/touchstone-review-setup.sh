@@ -2,8 +2,9 @@
 #
 # Install the lower-cost Codex profile used for normal local review.
 # The OpenRouter credential lives in macOS Keychain. The review launcher gives
-# it only to the Codex parent process; the managed profile strips it from every
-# model-issued subprocess before a repository can influence shell commands.
+# it only to one isolated Codex parent process. Project configuration is not
+# trusted for that process, shell snapshots are disabled, and the managed
+# profile strips it from every model-issued subprocess.
 
 set -euo pipefail
 
@@ -76,8 +77,25 @@ require_keychain() {
 }
 
 key_exists() {
-  "$SECURITY_BIN" find-generic-password \
-    -a "$KEYCHAIN_ACCOUNT" -s "$KEYCHAIN_SERVICE" -w >/dev/null 2>&1
+  local key
+  key="$(
+    "$SECURITY_BIN" find-generic-password \
+      -a "$KEYCHAIN_ACCOUNT" -s "$KEYCHAIN_SERVICE" -w 2>/dev/null
+  )" || return 1
+  [ -n "$key" ]
+}
+
+cleanup_runtime_home() {
+  local exit_status="$?"
+  trap - EXIT HUP INT TERM
+  unset OPENROUTER_API_KEY
+  if [ -n "${RUNTIME_HOME:-}" ] && [ -d "$RUNTIME_HOME" ]; then
+    if ! find "$RUNTIME_HOME" -depth -delete; then
+      echo "ERROR: could not remove isolated review state: $RUNTIME_HOME" >&2
+      exit 1
+    fi
+  fi
+  exit "$exit_status"
 }
 
 rollback_new_key() {
@@ -164,6 +182,7 @@ install_profile() {
 
 case "$ACTION" in
   run)
+    RUNTIME_HOME=""
     [ "$DRY_RUN" = false ] || die "--dry-run is not valid for run"
     require_keychain
     profile_is_current \
@@ -176,16 +195,38 @@ case "$ACTION" in
     )" || die "OpenRouter credential is absent from macOS Keychain; run: touchstone review setup"
     [ -n "$OPENROUTER_API_KEY" ] \
       || die "OpenRouter credential is empty; run: touchstone review rotate"
-    CODEX_HOME="$CODEX_HOME_DIR"
+    REPOSITORY_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
+      || die "normal review must run inside a git repository"
+    REPOSITORY_ROOT="$(cd "$REPOSITORY_ROOT" && pwd -P)"
+    case "$REPOSITORY_ROOT" in
+      *[\"\\]* | *$'\n'*)
+        die "repository path cannot be represented safely in the isolated Codex trust boundary: $REPOSITORY_ROOT"
+        ;;
+    esac
+    RUNTIME_HOME="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-review.XXXXXX")" \
+      || die "could not create isolated Codex state for normal review"
+    trap cleanup_runtime_home EXIT HUP INT TERM
+    cp "$PROFILE" "$RUNTIME_HOME/review-normal.config.toml" \
+      || die "could not stage the managed review profile in isolated Codex state"
+    chmod 700 "$RUNTIME_HOME" \
+      || die "could not restrict isolated Codex state"
+    chmod 600 "$RUNTIME_HOME/review-normal.config.toml" \
+      || die "could not restrict the isolated review profile"
+    CODEX_HOME="$RUNTIME_HOME"
     export CODEX_HOME
     export OPENROUTER_API_KEY
-    exec "$CODEX_BIN" \
+    "$CODEX_BIN" \
       -p review-normal \
+      -c "projects.\"$REPOSITORY_ROOT\".trust_level=\"untrusted\"" \
       -c 'shell_environment_policy.filters.OPENROUTER_API_KEY="exclude"' \
       -c 'allow_login_shell=false' \
+      --disable shell_snapshot \
+      --disable plugins \
+      --disable plugin_hooks \
+      --disable enable_mcp_apps \
       -s read-only \
       -a never \
-      review --uncommitted
+      exec --ephemeral --ignore-rules review --uncommitted
     ;;
   check)
     [ "$DRY_RUN" = false ] || die "--dry-run is not valid for check"

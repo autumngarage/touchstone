@@ -69,10 +69,12 @@ credential availability before an agent invokes it. A failed check permits the
 documented normal-tier waiver; it never permits a silent fallback to the more
 expensive default profile.
 
-The invariant is that the API key never appears in the profile, an agent tool
-environment, an agent prompt or output, or a repository. The launcher gives it
-only to the Codex parent process; the managed shell-environment filter removes
-it from every model-issued subprocess. An existing operator-owned profile at
+The invariant is that the API key never appears in the profile, durable Codex
+state, an agent tool environment, an agent prompt or output, or a repository.
+The launcher gives it only to one ephemeral Codex parent process. That process
+uses an isolated Codex home, treats the reviewed repository as untrusted for
+configuration, disables shell snapshots and plugins, and removes the key from
+every model-issued subprocess. An existing operator-owned profile at
 the reserved path is backed up before setup and restored by uninstall. The
 Keychain account is scoped to that Codex home, so rotating or uninstalling one
 profile cannot invalidate another home. `touchstone review rotate` is the
