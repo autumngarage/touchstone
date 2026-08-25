@@ -324,6 +324,29 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "Exact-head review makes moving stacks mul
 assert_contains "$GIT_WORKFLOW_GUIDE" "Do not open dependent"
 assert_contains "$GIT_WORKFLOW_GUIDE" "while a parent is still finding-bearing"
 
+echo "==> dirty PR recovery preserves authored work and re-ships the new head"
+assert_contains "$GIT_WORKFLOW_GUIDE" '## Recovering a `DIRTY` PR'
+assert_contains "$GIT_WORKFLOW_GUIDE" 'With a verified merge queue'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  'Without one, a base advance uses the sequence'
+assert_contains "$GIT_WORKFLOW_GUIDE" "PR's base repository"
+assert_contains "$GIT_WORKFLOW_GUIDE" '`baseRefOid`'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  'unless `FETCH_HEAD` equals the recorded `baseRefOid`'
+assert_contains "$GIT_WORKFLOW_GUIDE" 'with the same `--base`'
+assert_contains "$GIT_WORKFLOW_GUIDE" '`--ours` and'
+assert_contains "$GIT_WORKFLOW_GUIDE" '`--theirs` are whole-file operations'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  'git diff <pre-merge-head> HEAD -- <file...>'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  'requires exact-head review before it can merge'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  'started before the exact-head review completed'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "re-run the project's PR-open"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  'fragments per commit'
+
 echo "==> compiler scope and fixtures come from authoritative evidence"
 assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
   "Bind that enumeration to a versioned source of truth"

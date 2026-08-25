@@ -179,6 +179,11 @@ the `PRRT_` thread ID to root comment-ID mapping needed to answer and resolve
 each finding. Replies are deliberately omitted because the raw reply endpoint
 accepts the root finding ID. A zero exit proves no unresolved thread remains.
 
+A `review-gate` run that started before the exact-head review completed may
+fail only because the evidence did not exist yet. Re-run the project's PR-open
+command; it is idempotent and re-runs the pinned gate. Compare timestamps
+before treating that red check as a review verdict.
+
 **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.** GitHub's review API can support approval for authorized integrations, but that is not this adapter's observed contract. Do not expect an approval here or treat its absence as a stalled review.
 
 **Where the repository's effective policy requires `review-gate`, it enforces
@@ -221,6 +226,33 @@ mutation takes the thread ID. After the mutation, re-read the thread and
 confirm `isResolved == true` before counting it answered; the token needs
 Contents: read and write. Then re-run the pinned gate for the head, as
 `touchstone pr answer` does.
+
+## Recovering a `DIRTY` PR
+
+With a verified merge queue, do nothing when the base merely advances: the
+queue tests the combined result. Without one, a base advance uses the sequence
+below even when GitHub is not `DIRTY`. Always act when GitHub reports
+`mergeStateStatus: DIRTY`, because the branch cannot be merged as-is. Read the
+PR's base repository, `baseRefName`, and `baseRefOid`; inherited stacks,
+explicit bases, and forks do not necessarily target `origin` or the repository
+default branch.
+
+1. Record the current head and base binding. Fetch `baseRefName` from the base
+   repository, refuse unless `FETCH_HEAD` equals the recorded `baseRefOid`, and
+   merge that verified commit into the feature branch.
+2. Resolve conflicts deliberately and commit the merge. `--ours` and
+   `--theirs` are whole-file operations, not hunk choices; either discards all
+   changes from the other side of that file, including changes far from the
+   conflict.
+3. Prove the feature side survived: for every file the feature branch changed,
+   inspect `git diff <pre-merge-head> HEAD -- <file...>` and confirm that the
+   merge did not delete or replace those edits.
+4. Run the complete validation suite again, push the new head, and re-run the
+   PR-open command with the same `--base`. The merge commit is a new head and
+   requires exact-head review before it can merge.
+
+Never let a green suite substitute for step 3: a developer machine can carry
+state that masks a discarded fixture or precondition.
 
 ## Merging
 
@@ -272,6 +304,10 @@ gh pr view <n> --json state,mergedAt --jq '{state, mergedAt}'
 **Why it matters.** Atomic commits pay back continuously: they make `git blame` and `git log` informative, they make `git bisect` able to pin a regression to a single change, they make `git revert` surgical, and they let reviewers reason about one semantic change at a time.
 
 **Concise commit messages.** Lead with *what* changed in the subject line. Use the body to explain *why* when the why isn't obvious from the diff.
+
+**Per-commit release evidence.** Where a project validates release-note
+fragments per commit, every follow-up commit needs its own fragment or explicit
+skip record; an earlier commit's record does not cover it.
 
 **Tracker reconciliation before PR.** Treat tracker state as part of delivery,
 not cleanup after the fact. Before opening the PR, make a short ledger of every
