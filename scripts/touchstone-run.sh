@@ -165,6 +165,9 @@ emit_report() {
   if [ "$JSON_MODE" = false ]; then
     printf '==> validate verdict: %s ran=%d skipped=%d failed=%d\n' \
       "$verdict" "$RAN" "$SKIPPED" "$FAILED"
+    if [ "$verdict" = failed ] && [ "$STAGE_ARG" = commit ]; then
+      printf 'COMMIT REFUSED: commit-stage validation failed (%d failure(s))\n' "$FAILED"
+    fi
     return 0
   fi
 

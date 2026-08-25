@@ -34,6 +34,11 @@ staged-tree check is also meaningless in CI, which is why stage lives in the
 declaration: the engine can exclude authoring guards from the enforcement run
 rather than each project inventing its own wiring.
 
+When a human-mode commit-stage run fails, its last line begins `COMMIT
+REFUSED:`. The exit status remains the failing task's status; the final line
+makes a hook refusal visible after the task output that caused it. JSON output
+keeps its existing single-document schema.
+
 A declaration that runs nothing at the enforcement stage fails — a gate must
 execute something. A commit stage with no tasks passes: most projects have no
 authoring guards, and that is not a broken contract.
