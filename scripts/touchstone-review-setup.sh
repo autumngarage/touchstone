@@ -109,6 +109,8 @@ resolve_codex() {
   esac
   [ -x /usr/bin/codesign ] \
     || die "macOS code-signature verification is unavailable at /usr/bin/codesign"
+  /usr/bin/codesign --verify --deep --strict "$candidate" 2>/dev/null \
+    || die "Codex failed macOS code-signature integrity verification: $candidate"
   signature="$(/usr/bin/codesign -dv --verbose=4 "$candidate" 2>&1)" \
     || die "Codex does not have a verifiable macOS code signature: $candidate"
   printf '%s\n' "$signature" | grep -qFx 'Identifier=codex' \

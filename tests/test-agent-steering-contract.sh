@@ -753,6 +753,8 @@ review_command check --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
   || fail "check failed immediately after setup"
 assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
   "TeamIdentifier=2DC432GLL2"
+assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
+  'codesign --verify --deep --strict'
 assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
   "TOUCHSTONE_REVIEW_CODEX_BIN"
 for boundary in \
