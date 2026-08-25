@@ -426,6 +426,12 @@ fi
 
 echo "==> stacked-PR recovery uses the retained remote parent ref"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  'child local until its parent merges'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  'exact base and remains the authority'
+assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  'touchstone pr open --base <parent-branch>'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
   'git fetch origin'
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
   'git rebase --onto "origin/$DEFAULT" "origin/<parent-branch>" <child-branch>'
