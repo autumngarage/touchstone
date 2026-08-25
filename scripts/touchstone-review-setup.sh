@@ -12,6 +12,9 @@ PROFILE_SOURCE="$ROOT/config/review-normal.config.toml"
 KEYCHAIN_SERVICE="com.autumngarage.touchstone.review-normal"
 ACTION="${1:-}"
 
+# shellcheck source=lib/touchstone-review-codex.sh
+source "$ROOT/scripts/lib/touchstone-review-codex.sh"
+
 [ -n "$ACTION" ] || {
   echo "Usage: touchstone review setup|check|run|rotate|uninstall" >&2
   exit 2
@@ -99,24 +102,16 @@ require_usable_key() {
 }
 
 resolve_codex() {
-  local candidate signature
+  local candidate signature_error
   candidate="$(command -v codex 2>/dev/null || true)"
   [ -n "$candidate" ] && [ -x "$candidate" ] \
     || die "Codex is unavailable; install the signed OpenAI Codex CLI before running normal review"
-  case "$candidate" in
-    /*) ;;
-    *) die "Codex resolved to a non-absolute executable: $candidate" ;;
-  esac
-  [ -x /usr/bin/codesign ] \
-    || die "macOS code-signature verification is unavailable at /usr/bin/codesign"
-  /usr/bin/codesign --verify --deep --strict "$candidate" 2>/dev/null \
-    || die "Codex failed macOS code-signature integrity verification: $candidate"
-  signature="$(/usr/bin/codesign -dv --verbose=4 "$candidate" 2>&1)" \
-    || die "Codex does not have a verifiable macOS code signature: $candidate"
-  printf '%s\n' "$signature" | grep -qFx 'Identifier=codex' \
-    || die "refusing an executable that is not the signed Codex CLI: $candidate"
-  printf '%s\n' "$signature" | grep -qFx 'TeamIdentifier=2DC432GLL2' \
-    || die "refusing a Codex executable not signed by OpenAI: $candidate"
+  if ! candidate="$(touchstone_resolve_codex_native "$candidate" "$PLATFORM" "$(uname -m)" 2>&1)"; then
+    die "$candidate"
+  fi
+  if ! signature_error="$(touchstone_verify_openai_codex "$candidate" /usr/bin/codesign 2>&1)"; then
+    die "$signature_error"
+  fi
   CODEX_BIN="$candidate"
 }
 
