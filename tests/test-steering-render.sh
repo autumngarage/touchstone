@@ -544,7 +544,7 @@ HCMD="$TMP_DIR/hcmd"
 bash "$INSTALL" install --home "$HCMD" >/dev/null 2>&1
 if grep -qF -- 'touchstone review check' "$HCMD/.touchstone/principles/local-review.md" \
   && grep -qF -- 'OpenRouter' "$HCMD/.touchstone/principles/local-review.md" \
-  && grep -qF -- 'codex -p review-normal review --uncommitted' "$HCMD/.touchstone/principles/local-review.md" \
+  && grep -qF -- 'touchstone review run' "$HCMD/.touchstone/principles/local-review.md" \
   && ! grep -qF -- 'coderabbit review --agent --uncommitted' "$HCMD/.touchstone/principles/local-review.md"; then
   pass "installed local review uses the managed lower-cost Codex profile"
 else

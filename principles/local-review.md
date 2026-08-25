@@ -16,7 +16,7 @@ the loop:
 | Tier | Local pass | Command |
 |---|---|---|
 | trivial | none | — |
-| normal | one Codex pass of the staged slice, through Touchstone's lower-cost `review-normal` profile | `codex -p review-normal review --uncommitted` |
+| normal | one Codex pass of the staged slice, through Touchstone's lower-cost `review-normal` profile | `touchstone review run` |
 | serious | one Codex review of the branch, pre-push | `codex review --base <default>` |
 
 One harness keeps the procedure stable. Touchstone owns the normal profile as
@@ -164,12 +164,13 @@ touchstone review setup
 
 On macOS, setup securely prompts for a dedicated OpenRouter key, saves it in
 Keychain, and installs the canonical profile at
-`${CODEX_HOME:-$HOME/.codex}/review-normal.config.toml`. The profile uses
-Codex's command-backed provider authentication, so already-running Claude,
-Codex, and Gemini sessions do not need to inherit `OPENROUTER_API_KEY`, and
-future reviews do not require an approval prompt. `touchstone steering install`
-offers this setup during interactive onboarding. The shipped config shape is
-owned by `config/review-normal.config.toml`; credentials never appear in it.
+`${CODEX_HOME:-$HOME/.codex}/review-normal.config.toml`. The launcher passes the
+key only to the Codex parent process; the profile removes it from model-issued
+subprocess environments. Already-running Claude, Codex, and Gemini sessions
+need no environment refresh, and future reviews need no approval prompt.
+`touchstone steering install` offers this setup during interactive onboarding.
+The shipped config shape is owned by `config/review-normal.config.toml`;
+credentials never appear in it.
 
 Check the complete boundary before invocation because Codex 0.149 falls back
 silently when a named profile file is absent (AUT-500), and a readable profile
@@ -177,7 +178,7 @@ with an unavailable credential fails later with less useful context:
 
 ```bash
 touchstone review check
-codex -p review-normal review --uncommitted
+touchstone review run
 ```
 
 If the check fails, do not invoke Codex: record a reasoned `n/a` waiver naming

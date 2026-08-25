@@ -119,7 +119,7 @@ for file in \
   "$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md" \
   "$TOUCHSTONE_ROOT/.github/pull_request_template.md"; do
   assert_contains "$file" 'touchstone review check'
-  assert_contains "$file" 'codex -p review-normal review --uncommitted'
+  assert_contains "$file" 'touchstone review run'
   assert_contains "$file" 'codex review --base <default>'
   assert_contains "$file" 'may waive only when Codex is unavailable'
   assert_not_contains "$file" 'coderabbit review --agent --uncommitted'
@@ -139,9 +139,15 @@ assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
   'model_reasoning_effort = "medium"'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
-  'command = "touchstone"'
+  'env_key = "OPENROUTER_API_KEY"'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  'OPENROUTER_API_KEY = "exclude"'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  'allow_login_shell = false'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  'sandbox_mode = "read-only"'
 assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
-  'OPENROUTER_API_KEY'
+  '[model_providers.openrouter.auth]'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'A normal-profile failure never waives this pass.'
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
@@ -707,6 +713,7 @@ case "${1:-}" in
     : >"$state"
     ;;
   delete-generic-password)
+    [ "${TOUCHSTONE_FAKE_DELETE_FAIL:-false}" != true ] || exit 46
     printf 'delete\n' >>"$TOUCHSTONE_FAKE_KEYCHAIN_LOG"
     rm -f "$state"
     ;;
@@ -715,12 +722,33 @@ esac
 EOF
 chmod +x "$FAKE_SECURITY"
 
+FAKE_CODEX="$TEST_DIR/codex"
+FAKE_CODEX_LOG="$TEST_DIR/codex-log"
+cat >"$FAKE_CODEX" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${OPENROUTER_API_KEY:-}" = dummy-openrouter-token ] || exit 47
+[ -n "${CODEX_HOME:-}" ] || exit 48
+grep -qF 'OPENROUTER_API_KEY = "exclude"' \
+  "$CODEX_HOME/review-normal.config.toml" || exit 49
+if env -u OPENROUTER_API_KEY bash -c '[ -n "${OPENROUTER_API_KEY+x}" ]'; then
+  exit 50
+fi
+printf '%s\n' "$*" >>"$TOUCHSTONE_FAKE_CODEX_LOG"
+printf 'fake normal review passed\n'
+EOF
+chmod +x "$FAKE_CODEX"
+
 review_command() {
   TOUCHSTONE_REVIEW_PLATFORM=Darwin \
     TOUCHSTONE_REVIEW_SECURITY_BIN="$FAKE_SECURITY" \
     TOUCHSTONE_FAKE_KEYCHAIN_DIR="$FAKE_KEYCHAIN_DIR" \
     TOUCHSTONE_FAKE_KEYCHAIN_LOG="$FAKE_KEYCHAIN_LOG" \
     TOUCHSTONE_FAKE_READBACK_FAIL="${TOUCHSTONE_FAKE_READBACK_FAIL:-false}" \
+    TOUCHSTONE_FAKE_DELETE_FAIL="${TOUCHSTONE_FAKE_DELETE_FAIL:-false}" \
+    TOUCHSTONE_REVIEW_FAIL_PROFILE_PUBLISH="${TOUCHSTONE_REVIEW_FAIL_PROFILE_PUBLISH:-false}" \
+    TOUCHSTONE_REVIEW_CODEX_BIN="$FAKE_CODEX" \
+    TOUCHSTONE_FAKE_CODEX_LOG="$FAKE_CODEX_LOG" \
     bash "$TOUCHSTONE_ROOT/bin/touchstone" review "$@"
 }
 
@@ -759,10 +787,14 @@ profile_mode="$(stat -f '%Lp' "$REVIEW_HOME/review-normal.config.toml" 2>/dev/nu
   || fail "managed review profile mode is $profile_mode, not 600"
 review_command check --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
   || fail "check failed immediately after setup"
-token="$(CODEX_HOME="$REVIEW_HOME" review_command token)" \
-  || fail "the command-backed token boundary could not read Keychain"
-[ "$token" = dummy-openrouter-token ] \
-  || fail "the command-backed token boundary returned the wrong value"
+review_command run --codex-home "$REVIEW_HOME" >"$TEST_DIR/review-run.out" 2>&1 \
+  || fail "the Keychain-backed normal review launcher failed"
+grep -qFx -- '-p review-normal -c shell_environment_policy.filters.OPENROUTER_API_KEY="exclude" -c allow_login_shell=false -s read-only -a never review --uncommitted' "$FAKE_CODEX_LOG" \
+  || fail "the launcher did not bind Codex to the one normal-review command"
+if grep -qF 'dummy-openrouter-token' "$TEST_DIR/review-run.out" \
+  || grep -qF 'dummy-openrouter-token' "$FAKE_CODEX_LOG"; then
+  fail "the normal-review launcher exposed the provider key in agent-visible output"
+fi
 
 review_command setup --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
   || fail "idempotent setup failed"
@@ -786,6 +818,27 @@ review_command uninstall --codex-home "$SECOND_REVIEW_HOME" >/dev/null 2>&1 \
   || fail "the second Codex home could not uninstall cleanly"
 review_command check --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
   || fail "uninstalling one Codex home deleted another home's credential"
+
+ROLLBACK_REVIEW_HOME="$TEST_DIR/review-codex-uninstall-rollback"
+printf 'rollback operator profile\n' >"$ROLLBACK_REVIEW_HOME.input"
+mkdir -p "$ROLLBACK_REVIEW_HOME"
+cp "$ROLLBACK_REVIEW_HOME.input" "$ROLLBACK_REVIEW_HOME/review-normal.config.toml"
+review_command setup --codex-home "$ROLLBACK_REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "uninstall rollback fixture setup failed"
+if TOUCHSTONE_FAKE_DELETE_FAIL=true \
+  review_command uninstall --codex-home "$ROLLBACK_REVIEW_HOME" >/dev/null 2>&1; then
+  fail "uninstall reported success after Keychain credential deletion failed"
+fi
+cmp -s "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  "$ROLLBACK_REVIEW_HOME/review-normal.config.toml" \
+  || fail "failed credential deletion did not restore the managed profile"
+cmp -s "$ROLLBACK_REVIEW_HOME.input" \
+  "$ROLLBACK_REVIEW_HOME/review-normal.config.toml.pre-touchstone" \
+  || fail "failed credential deletion did not restore the operator backup"
+[ -e "$(fake_key_path "$ROLLBACK_REVIEW_HOME")" ] \
+  || fail "failed credential deletion lost the Keychain item"
+review_command uninstall --codex-home "$ROLLBACK_REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "uninstall did not recover after the transient Keychain failure"
 
 printf '# local edit\n' >>"$REVIEW_HOME/review-normal.config.toml"
 if review_command setup --codex-home "$REVIEW_HOME" >/dev/null 2>&1; then
@@ -823,6 +876,20 @@ fi
 [ ! -e "$(fake_key_path "$READBACK_REVIEW_HOME")" ] \
   || fail "failed credential readback did not roll back the new Keychain item"
 
+PUBLISH_REVIEW_HOME="$TEST_DIR/review-publish-failure"
+mkdir -p "$PUBLISH_REVIEW_HOME"
+printf 'publish operator profile\n' >"$PUBLISH_REVIEW_HOME/review-normal.config.toml"
+if TOUCHSTONE_REVIEW_FAIL_PROFILE_PUBLISH=true \
+  review_command setup --codex-home "$PUBLISH_REVIEW_HOME" >/dev/null 2>&1; then
+  fail "normal-review setup accepted an injected profile publication failure"
+fi
+[ "$(cat "$PUBLISH_REVIEW_HOME/review-normal.config.toml")" = "publish operator profile" ] \
+  || fail "failed profile publication did not restore the operator profile"
+[ ! -e "$PUBLISH_REVIEW_HOME/review-normal.config.toml.pre-touchstone" ] \
+  || fail "failed profile publication stranded the operator backup"
+[ ! -e "$(fake_key_path "$PUBLISH_REVIEW_HOME")" ] \
+  || fail "failed profile publication left the new Keychain credential behind"
+
 BLOCKED_REVIEW_HOME="$TEST_DIR/review-home-is-a-file"
 printf 'not a directory\n' >"$BLOCKED_REVIEW_HOME"
 if review_command setup --codex-home "$BLOCKED_REVIEW_HOME" >/dev/null 2>&1; then
@@ -850,7 +917,7 @@ fi
 assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-steering-install.sh" \
   'Set up lower-cost normal reviews through OpenRouter now?'
 assert_contains "$TOUCHSTONE_ROOT/bin/touchstone" \
-  'touchstone review setup|check|rotate|uninstall'
+  'touchstone review setup|check|run|rotate|uninstall'
 
 if [ "$ERRORS" -gt 0 ]; then
   echo ""

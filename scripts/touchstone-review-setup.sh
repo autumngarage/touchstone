@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # Install the lower-cost Codex profile used for normal local review.
-# The OpenRouter credential lives in macOS Keychain; the generated profile
-# contains only a command-backed auth reference and can be read safely by every
-# coding-agent process without inheriting an environment variable.
+# The OpenRouter credential lives in macOS Keychain. The review launcher gives
+# it only to the Codex parent process; the managed profile strips it from every
+# model-issued subprocess before a repository can influence shell commands.
 
 set -euo pipefail
 
@@ -13,7 +13,7 @@ KEYCHAIN_SERVICE="com.autumngarage.touchstone.review-normal"
 ACTION="${1:-}"
 
 [ -n "$ACTION" ] || {
-  echo "Usage: touchstone review setup|check|rotate|uninstall" >&2
+  echo "Usage: touchstone review setup|check|run|rotate|uninstall" >&2
   exit 2
 }
 shift
@@ -59,6 +59,7 @@ BACKUP="$CODEX_HOME_DIR/review-normal.config.toml.pre-touchstone"
 KEYCHAIN_ACCOUNT="$CODEX_HOME_DIR"
 PLATFORM="${TOUCHSTONE_REVIEW_PLATFORM:-$(uname -s)}"
 SECURITY_BIN="${TOUCHSTONE_REVIEW_SECURITY_BIN:-/usr/bin/security}"
+CODEX_BIN="${TOUCHSTONE_REVIEW_CODEX_BIN:-$(command -v codex 2>/dev/null || true)}"
 
 [ -r "$PROFILE_SOURCE" ] || die "managed review profile is missing: $PROFILE_SOURCE"
 
@@ -83,8 +84,11 @@ rollback_new_key() {
   local exit_status="$?"
   trap - EXIT
   if [ "$exit_status" -ne 0 ] && [ "${KEY_WAS_ADDED:-false}" = true ]; then
-    "$SECURITY_BIN" delete-generic-password \
-      -a "$KEYCHAIN_ACCOUNT" -s "$KEYCHAIN_SERVICE" >/dev/null 2>&1 || true
+    if ! "$SECURITY_BIN" delete-generic-password \
+      -a "$KEYCHAIN_ACCOUNT" -s "$KEYCHAIN_SERVICE" >/dev/null 2>&1; then
+      echo "ERROR: setup failed and the new Keychain credential could not be rolled back; run: touchstone review uninstall" >&2
+      exit 1
+    fi
   fi
   exit "$exit_status"
 }
@@ -122,28 +126,66 @@ install_profile() {
 
   temporary="$(mktemp "$CODEX_HOME_DIR/.review-normal.config.toml.XXXXXX")" \
     || die "could not create a temporary profile in $CODEX_HOME_DIR"
-  trap 'rm -f -- "${temporary:-}"' RETURN
-  cp "$PROFILE_SOURCE" "$temporary"
-  chmod 600 "$temporary"
+  if ! cp "$PROFILE_SOURCE" "$temporary"; then
+    rm -f -- "$temporary" \
+      || die "could not copy the managed profile and could not remove its temporary file: $temporary"
+    die "could not copy the managed profile into $CODEX_HOME_DIR"
+  fi
+  if ! chmod 600 "$temporary"; then
+    rm -f -- "$temporary" \
+      || die "could not secure the temporary profile and could not remove it: $temporary"
+    die "could not restrict the temporary review profile to mode 600"
+  fi
 
   if [ -e "$PROFILE" ]; then
-    mv "$PROFILE" "$BACKUP"
+    if ! mv "$PROFILE" "$BACKUP"; then
+      rm -f -- "$temporary" \
+        || die "could not back up $PROFILE and could not remove its temporary replacement: $temporary"
+      die "could not back up the operator profile: $PROFILE"
+    fi
     echo "  backed up: $PROFILE -> $BACKUP"
   fi
-  if ! mv "$temporary" "$PROFILE"; then
-    [ ! -e "$BACKUP" ] || mv "$BACKUP" "$PROFILE" || true
-    die "could not install $PROFILE"
+  if [ "${TOUCHSTONE_REVIEW_FAIL_PROFILE_PUBLISH:-false}" = true ] \
+    || ! mv "$temporary" "$PROFILE"; then
+    if [ -e "$BACKUP" ]; then
+      if mv "$BACKUP" "$PROFILE"; then
+        rm -f -- "$temporary" \
+          || die "profile publication failed and the operator profile was restored, but the temporary file remains: $temporary"
+        die "could not install $PROFILE; the previous operator profile was restored"
+      fi
+      die "could not install $PROFILE and could not restore its backup; recover the operator profile from $BACKUP and inspect the temporary replacement at $temporary"
+    fi
+    rm -f -- "$temporary" \
+      || die "profile publication failed and its temporary file remains: $temporary"
+    die "could not install $PROFILE; no previous operator profile was moved"
   fi
-  trap - RETURN
   echo "  installed: $PROFILE"
 }
 
 case "$ACTION" in
-  token)
-    [ "$DRY_RUN" = false ] || die "--dry-run is not valid for the token command"
+  run)
+    [ "$DRY_RUN" = false ] || die "--dry-run is not valid for run"
     require_keychain
-    exec "$SECURITY_BIN" find-generic-password \
-      -a "$KEYCHAIN_ACCOUNT" -s "$KEYCHAIN_SERVICE" -w
+    profile_is_current \
+      || die "normal-review profile is absent or drifted; run: touchstone review setup"
+    [ -n "$CODEX_BIN" ] && [ -x "$CODEX_BIN" ] \
+      || die "Codex is unavailable; install it before running normal review"
+    OPENROUTER_API_KEY="$(
+      "$SECURITY_BIN" find-generic-password \
+        -a "$KEYCHAIN_ACCOUNT" -s "$KEYCHAIN_SERVICE" -w
+    )" || die "OpenRouter credential is absent from macOS Keychain; run: touchstone review setup"
+    [ -n "$OPENROUTER_API_KEY" ] \
+      || die "OpenRouter credential is empty; run: touchstone review rotate"
+    CODEX_HOME="$CODEX_HOME_DIR"
+    export CODEX_HOME
+    export OPENROUTER_API_KEY
+    exec "$CODEX_BIN" \
+      -p review-normal \
+      -c 'shell_environment_policy.filters.OPENROUTER_API_KEY="exclude"' \
+      -c 'allow_login_shell=false' \
+      -s read-only \
+      -a never \
+      review --uncommitted
     ;;
   check)
     [ "$DRY_RUN" = false ] || die "--dry-run is not valid for check"
@@ -217,23 +259,66 @@ case "$ACTION" in
       echo "==> dry run: nothing was changed"
       exit 0
     fi
-    if key_exists; then
-      "$SECURITY_BIN" delete-generic-password \
-        -a "$KEYCHAIN_ACCOUNT" -s "$KEYCHAIN_SERVICE" >/dev/null
-      echo "  removed: OpenRouter credential from macOS Keychain"
+    transaction=""
+    restored_backup=false
+    if [ -e "$PROFILE" ] || [ -e "$BACKUP" ]; then
+      transaction="$(mktemp -d "$CODEX_HOME_DIR/.review-normal-uninstall.XXXXXX")" \
+        || die "could not start a recoverable uninstall transaction in $CODEX_HOME_DIR"
     fi
     if [ -e "$PROFILE" ]; then
-      rm -f -- "$PROFILE"
-      echo "  removed: $PROFILE"
+      if ! mv "$PROFILE" "$transaction/managed-profile"; then
+        rmdir "$transaction" 2>/dev/null \
+          || die "could not remove empty uninstall transaction: $transaction"
+        die "could not stage the managed review profile for removal: $PROFILE"
+      fi
+      echo "  staged removal: $PROFILE"
     fi
     if [ -e "$BACKUP" ]; then
-      mv "$BACKUP" "$PROFILE"
+      if ! mv "$BACKUP" "$PROFILE"; then
+        if [ -e "$transaction/managed-profile" ]; then
+          if ! mv "$transaction/managed-profile" "$PROFILE"; then
+            die "could not restore $BACKUP and could not roll back $PROFILE; recover the managed profile from $transaction/managed-profile"
+          fi
+        fi
+        rmdir "$transaction" 2>/dev/null \
+          || die "profile restoration failed and the empty transaction remains: $transaction"
+        die "could not restore the operator profile from $BACKUP; the managed profile was put back"
+      fi
+      restored_backup=true
       echo "  restored: $PROFILE"
+    fi
+    if key_exists; then
+      if ! "$SECURITY_BIN" delete-generic-password \
+        -a "$KEYCHAIN_ACCOUNT" -s "$KEYCHAIN_SERVICE" >/dev/null; then
+        rollback_error=""
+        if [ "$restored_backup" = true ] && ! mv "$PROFILE" "$BACKUP"; then
+          rollback_error="could not move the restored operator profile back to $BACKUP"
+        fi
+        if [ -n "$transaction" ] && [ -e "$transaction/managed-profile" ] \
+          && ! mv "$transaction/managed-profile" "$PROFILE"; then
+          rollback_error="${rollback_error:+$rollback_error; }could not put the managed profile back at $PROFILE"
+        fi
+        if [ -n "$rollback_error" ]; then
+          die "Keychain credential removal failed and profile rollback was incomplete: $rollback_error; inspect $transaction"
+        fi
+        [ -z "$transaction" ] || rmdir "$transaction" \
+          || die "Keychain credential removal failed; profile state was restored, but the empty transaction remains: $transaction"
+        die "OpenRouter credential could not be removed; the managed profile state was restored"
+      fi
+      echo "  removed: OpenRouter credential from macOS Keychain"
+    fi
+    if [ -n "$transaction" ]; then
+      if [ -e "$transaction/managed-profile" ]; then
+        rm -f -- "$transaction/managed-profile" \
+          || die "credential was removed, but the staged managed profile remains: $transaction/managed-profile"
+      fi
+      rmdir "$transaction" \
+        || die "credential was removed, but the empty uninstall transaction remains: $transaction"
     fi
     echo "==> lower-cost normal review setup removed"
     ;;
   *)
-    echo "ERROR: unknown review command '$ACTION'; available: setup, check, rotate, uninstall" >&2
+    echo "ERROR: unknown review command '$ACTION'; available: setup, check, run, rotate, uninstall" >&2
     exit 2
     ;;
 esac

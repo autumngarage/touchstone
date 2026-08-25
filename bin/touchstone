@@ -24,7 +24,7 @@ Usage:
   touchstone pr open|status|merge [arguments]
   touchstone policy status [--base BRANCH] [--project DIR] [--json]
   touchstone cleanup check [--project DIR] [--json]
-  touchstone review setup|check|rotate|uninstall [--codex-home DIR] [--dry-run]
+  touchstone review setup|check|run|rotate|uninstall [--codex-home DIR] [--dry-run]
   touchstone pr answer PR --comment-id ID --body-file FILE [--fix-commit SHA]
   touchstone pr answer PR --all-resolved-check
   touchstone version
