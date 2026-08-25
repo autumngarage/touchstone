@@ -231,11 +231,13 @@ Contents: read and write. Then re-run the pinned gate for the head, as
 
 Do nothing when the base merely advances: the merge queue tests the combined
 result. Act when GitHub reports `mergeStateStatus: DIRTY`, because the branch
-cannot be merged as-is. Read the PR's `baseRefName`; inherited stacks and an
-explicit `--base` do not necessarily target the repository default branch.
+cannot be merged as-is. Read the PR's base repository, `baseRefName`, and
+`baseRefOid`; inherited stacks, explicit bases, and forks do not necessarily
+target `origin` or the repository default branch.
 
-1. Record the current head and base, fetch, and merge `origin/<baseRefName>`
-   into the feature branch.
+1. Record the current head and base binding. Fetch `baseRefName` from the base
+   repository, refuse unless `FETCH_HEAD` equals the recorded `baseRefOid`, and
+   merge that verified commit into the feature branch.
 2. Resolve conflicts deliberately and commit the merge. `--ours` and
    `--theirs` are whole-file operations, not hunk choices; either discards all
    changes from the other side of that file, including changes far from the

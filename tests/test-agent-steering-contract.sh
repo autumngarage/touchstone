@@ -326,8 +326,10 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "while a parent is still finding-bearing"
 
 echo "==> dirty PR recovery preserves authored work and re-ships the new head"
 assert_contains "$GIT_WORKFLOW_GUIDE" '## Recovering a `DIRTY` PR'
-assert_contains "$GIT_WORKFLOW_GUIDE" "Read the PR's \`baseRefName\`"
-assert_contains "$GIT_WORKFLOW_GUIDE" 'merge `origin/<baseRefName>`'
+assert_contains "$GIT_WORKFLOW_GUIDE" "Read the PR's base repository"
+assert_contains "$GIT_WORKFLOW_GUIDE" '`baseRefOid`'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  'unless `FETCH_HEAD` equals the recorded `baseRefOid`'
 assert_contains "$GIT_WORKFLOW_GUIDE" 'with the same `--base`'
 assert_contains "$GIT_WORKFLOW_GUIDE" '`--ours` and'
 assert_contains "$GIT_WORKFLOW_GUIDE" '`--theirs` are whole-file operations'
