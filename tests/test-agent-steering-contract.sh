@@ -764,6 +764,12 @@ for boundary in \
   'unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE'; do
   assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" "$boundary"
 done
+for boundary in \
+  'default_permissions = "touchstone_review"' \
+  'extends = ":read-only"' \
+  '"~/Library/Keychains" = "deny"'; do
+  assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" "$boundary"
+done
 
 review_command setup --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
   || fail "idempotent setup failed"
@@ -840,6 +846,8 @@ if TOUCHSTONE_REVIEW_PLATFORM=Linux \
 fi
 assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-steering-install.sh" \
   'Set up lower-cost normal reviews through OpenRouter now?'
+assert_contains "$TOUCHSTONE_ROOT/bin/touchstone" \
+  'steering install --non-interactive'
 assert_contains "$TOUCHSTONE_ROOT/bin/touchstone" \
   'touchstone review setup|check|run|rotate|uninstall'
 

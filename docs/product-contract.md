@@ -73,7 +73,9 @@ durable Codex state, the spawned review agent's tool environment, its prompt or
 output, or a repository. The launcher gives it only to one ephemeral Codex
 parent process. That process uses an isolated Codex home, treats the reviewed
 repository as untrusted for configuration, disables shell snapshots and
-plugins, and removes the key from every model-issued subprocess. The fully
+plugins, removes the key from every model-issued subprocess, and denies those
+subprocesses read access to the user's Keychain directory through Codex's own
+read-only permission profile. The fully
 empowered same-user driving shell remains a trusted principal: no-prompt
 Keychain access cannot also protect a secret from that same principal. The
 Keychain account is scoped to the selected Codex home, so rotating or

@@ -29,7 +29,7 @@ Usage:
   touchstone pr answer PR --all-resolved-check
   touchstone version
   touchstone upgrade
-  touchstone steering install|check|uninstall [--home DIR] [--dry-run]
+  touchstone steering install|check|uninstall [--home DIR] [--dry-run] [--non-interactive]
   touchstone hook branch-guard
 EOF
 }
@@ -207,7 +207,7 @@ case "$COMMAND" in
         echo "ERROR: the upgrade succeeded, but the new Touchstone CLI is missing at $upgraded_cli; repair the install, then run 'touchstone steering install'" >&2
         exit 1
       }
-      bash "$upgraded_cli" steering install || {
+      bash "$upgraded_cli" steering install --non-interactive || {
         echo "ERROR: Touchstone was upgraded, but its machine-level steering could not be refreshed; fix the reported error, then run 'touchstone steering install'" >&2
         exit 1
       }

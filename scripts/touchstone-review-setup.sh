@@ -2,7 +2,8 @@
 #
 # Configure and launch the lower-cost Codex pass used for normal local review.
 # The OpenRouter credential lives in macOS Keychain and is exported only to one
-# isolated, ephemeral Codex process whose child environment excludes the key.
+# isolated, ephemeral Codex process. Its sandbox cannot read Keychain and its
+# child environment excludes the key.
 
 set -euo pipefail
 
@@ -173,7 +174,6 @@ case "$ACTION" in
       --disable plugins \
       --disable plugin_hooks \
       --disable enable_mcp_apps \
-      -s read-only \
       -a never \
       exec --ephemeral --ignore-rules review --uncommitted
     ;;

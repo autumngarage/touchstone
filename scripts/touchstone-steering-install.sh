@@ -4,7 +4,7 @@
 # every agent on this machine reads it.
 #
 # Usage:
-#   bash scripts/touchstone-steering-install.sh install [--home DIR] [--dry-run]
+#   bash scripts/touchstone-steering-install.sh install [--home DIR] [--dry-run] [--non-interactive]
 #   bash scripts/touchstone-steering-install.sh check   [--home DIR]
 #   bash scripts/touchstone-steering-install.sh uninstall [--home DIR]
 #
@@ -122,6 +122,7 @@ shift
 HOME_DIR="${HOME:-}"
 HOME_WAS_EXPLICIT=false
 DRY_RUN=false
+NON_INTERACTIVE=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --home)
@@ -135,6 +136,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --dry-run)
       DRY_RUN=true
+      shift
+      ;;
+    --non-interactive)
+      NON_INTERACTIVE=true
       shift
       ;;
     *)
@@ -168,6 +173,10 @@ offer_review_setup() {
   if bash "$ROOT/scripts/touchstone-review-setup.sh" check \
     --codex-home "$review_codex_home" >/dev/null 2>&1; then
     echo "==> lower-cost normal review is already configured"
+    return 0
+  fi
+  if [ "$NON_INTERACTIVE" = true ]; then
+    echo "Next: run 'touchstone review setup' once to save an OpenRouter key in macOS Keychain for lower-cost normal reviews."
     return 0
   fi
   if [ -t 0 ] && [ -t 1 ]; then

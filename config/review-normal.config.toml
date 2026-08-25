@@ -8,6 +8,13 @@ model_reasoning_summary = "none"
 allow_login_shell = false
 approval_policy = "never"
 sandbox_mode = "read-only"
+default_permissions = "touchstone_review"
+
+[permissions.touchstone_review]
+extends = ":read-only"
+
+[permissions.touchstone_review.filesystem]
+"~/Library/Keychains" = "deny"
 
 [shell_environment_policy]
 inherit = "all"

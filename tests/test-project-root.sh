@@ -541,6 +541,9 @@ HOME="$UPGRADE_HOME" bash "$PREFIX/bin/touchstone" steering check >/dev/null 2>&
   || fail "handoff-aware prefix upgrade left machine steering stale"
 grep -qF 'Restart or reload already-running coding-agent sessions' "$INSTALL_TMP/handoff-upgrade.out" \
   || fail "handoff-aware upgrade did not tell active agent sessions to reload"
+if grep -qF 'Set up lower-cost normal reviews through OpenRouter now?' "$INSTALL_TMP/handoff-upgrade.out"; then
+  fail "handoff-aware upgrade prompted for unrelated credential setup"
+fi
 [ "$(cksum <"$UPGRADE_PROJECT/sentinel")" = "$upgrade_project_before" ] \
   && [ "$(find "$UPGRADE_PROJECT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" = 1 ] \
   || fail "tool upgrade mutated the invoking project"
@@ -572,6 +575,9 @@ chmod +x "$BREW_BIN/brew"
 HOME="$BREW_HOME" TOUCHSTONE_TEST_BREW_PREFIX="$BREW_PREFIX" PATH="$BREW_BIN:$PATH" \
   bash "$BREW_PREFIX/libexec/bin/touchstone" upgrade >"$INSTALL_TMP/brew-upgrade.out" 2>&1 \
   || fail "Homebrew upgrade path failed: $(cat "$INSTALL_TMP/brew-upgrade.out")"
+if grep -qF 'Set up lower-cost normal reviews through OpenRouter now?' "$INSTALL_TMP/brew-upgrade.out"; then
+  fail "Homebrew upgrade prompted for unrelated credential setup"
+fi
 [ -f "$BREW_PREFIX/brew-upgraded" ] || fail "Homebrew upgrade adapter did not run"
 HOME="$BREW_HOME" bash "$BREW_PREFIX/libexec/bin/touchstone" steering check >/dev/null 2>&1 \
   || fail "Homebrew upgrade left machine steering stale"
