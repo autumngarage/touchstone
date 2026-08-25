@@ -160,7 +160,15 @@ case "$1 ${2:-}" in
   "pr list")
     if [ -f "$GH_STATE/pr-exists" ]; then
       head="$GH_HEAD"
-      [ "${GH_MODE:-ok}" = list_head_stale ] && head=stale-head-0000000000000000000000000000
+      if [ "${GH_MODE:-ok}" = list_head_stale ]; then
+        head=stale-head-0000000000000000000000000000
+      elif [ "${GH_MODE:-ok}" = list_head_stale_then_current ]; then
+        stale_reads=0
+        [ ! -f "$GH_STATE/stale-head-reads" ] || stale_reads="$(cat "$GH_STATE/stale-head-reads")"
+        stale_reads=$((stale_reads + 1))
+        printf '%s\n' "$stale_reads" >"$GH_STATE/stale-head-reads"
+        [ "$stale_reads" -ge 3 ] || head=stale-head-0000000000000000000000000000
+      fi
       printf '7\thttps://example.test/pr/7\t%s\t%s\t%s\n' \
         "$head" "${GH_BASE_REF:-main}" "${GH_BASE_SHA:-base-sha}"
     fi
@@ -631,9 +639,20 @@ EOF
   rm -f "$TMP/state/edits"
   printf 'Original body.\n' >"$TMP/state/pr-body"
   touch "$TMP/state/pr-exists"
+  rm -f "$TMP/state/stale-head-reads"
+  GH_MODE=list_head_stale_then_current run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2" --json
+  assert_rc "$RUN_RC" 0
+  [ "$(cat "$TMP/state/stale-head-reads")" -eq 3 ] \
+    && ok "a post-push stale PR head converged within the bounded retry" \
+    || fail "stale PR head did not take the expected three reads"
+  assert_not_has "$TMP/out" 'does not match local/remote head'
+  rm -f "$TMP/state/stale-head-reads" "$TMP/state/edits"
   GH_MODE=list_head_stale run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2" --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'does not match local/remote head'
+  [ "$(grep -c '^pr list ' "$GH_CALLS")" -eq 11 ] \
+    && ok "a real PR-head mismatch stops after the bounded retry window" \
+    || fail "PR-head mismatch was not bounded to eleven reads"
   [ ! -f "$TMP/state/edits" ] && ok "no edit before the head check refuses" || fail "a drifted PR was edited before being refused"
   rm -f "$TMP/state/pr-body"
   # A freshly created PR carries the body by construction and says nothing

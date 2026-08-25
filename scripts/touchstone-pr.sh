@@ -6,6 +6,9 @@ set -euo pipefail
 OUTPUT_SCHEMA="touchstone.pr/v1"
 READ_ATTEMPTS="${TOUCHSTONE_READ_ATTEMPTS:-3}"
 RETRY_DELAY="${TOUCHSTONE_RETRY_DELAY:-2}"
+# One initial PR-head read plus ten default 2-second waits covers the observed
+# post-push lag without turning a real mismatch into success.
+PR_HEAD_ATTEMPTS=11
 # A review-gate run takes a minute or two; waiting for one before re-running
 # it has its own budget, separate from transport retries.
 GATE_ATTEMPTS="${TOUCHSTONE_GATE_ATTEMPTS:-60}"
@@ -176,6 +179,32 @@ read_with_retry() {
     fi
     if [ "$JSON_MODE" = false ]; then
       printf 'Read attempt %s failed; retrying in %ss.\n' "$attempt" "$RETRY_DELAY" >&2
+    fi
+    attempt=$((attempt + 1))
+    sleep "$RETRY_DELAY"
+  done
+}
+
+read_open_pr_rows_for_head() {
+  local branch="$1" expected_head="$2" attempt=1 rows count observed_head
+  while :; do
+    read_with_retry gh pr list --repo "$REPO_SPEC" --state open --head "$branch" --limit 100 \
+      --json number,url,headRefOid,baseRefName,baseRefOid \
+      --jq '.[] | [.number,.url,.headRefOid,.baseRefName,.baseRefOid] | @tsv' \
+      || return $?
+    rows="$READ_OUTPUT"
+    count="$(printf '%s\n' "$rows" | awk 'NF { count++ } END { print count + 0 }')"
+    if [ "$count" -ne 1 ]; then
+      READ_OUTPUT="$rows"
+      return 0
+    fi
+    IFS="$(printf '\t')" read -r _ _ observed_head _ _ <<<"$rows"
+    if [ "$observed_head" = "$expected_head" ] || [ "$attempt" -ge "$PR_HEAD_ATTEMPTS" ]; then
+      READ_OUTPUT="$rows"
+      return 0
+    fi
+    if [ "$JSON_MODE" = false ]; then
+      printf 'PR head read does not yet match the pushed head; retrying in %ss.\n' "$RETRY_DELAY" >&2
     fi
     attempt=$((attempt + 1))
     sleep "$RETRY_DELAY"
@@ -1148,9 +1177,7 @@ open_pr() {
     || fail_input "repository Actions are disabled for $REPO, so no required workflow can run and nothing would gate this pull request" \
       "$(actions_disabled_remedy | sed 's/^enable them: /Enable them: /'), then retry."
 
-  read_with_retry gh pr list --repo "$REPO_SPEC" --state open --head "$branch" --limit 100 \
-    --json number,url,headRefOid,baseRefName,baseRefOid \
-    --jq '.[] | [.number,.url,.headRefOid,.baseRefName,.baseRefOid] | @tsv' \
+  read_open_pr_rows_for_head "$branch" "$local_head" \
     || fail_operation "could not inspect existing pull requests: $READ_OUTPUT" "Retry after GitHub recovers."
   rows="$READ_OUTPUT"
   count="$(printf '%s\n' "$rows" | awk 'NF { count++ } END { print count + 0 }')"
@@ -1158,9 +1185,7 @@ open_pr() {
   if [ "$count" -eq 0 ]; then
     create_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr create --repo "$REPO_SPEC" --head "$branch" --base "$BASE_REF" \
       --title "$TITLE" --body-file "$BODY_FILE" 2>&1)" || create_status=$?
-    read_with_retry gh pr list --repo "$REPO_SPEC" --state open --head "$branch" --limit 100 \
-      --json number,url,headRefOid,baseRefName,baseRefOid \
-      --jq '.[] | [.number,.url,.headRefOid,.baseRefName,.baseRefOid] | @tsv' \
+    read_open_pr_rows_for_head "$branch" "$local_head" \
       || fail_operation "PR creation could not be reconciled: $READ_OUTPUT" "Inspect GitHub before retrying."
     rows="$READ_OUTPUT"
     count="$(printf '%s\n' "$rows" | awk 'NF { count++ } END { print count + 0 }')"
