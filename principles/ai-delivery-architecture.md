@@ -141,7 +141,9 @@ Rules:
 - Agents must not revert or overwrite another agent's work.
 - Workers may produce candidate changes; only the driver integrates them into the PR that enters the review loop.
 - No agent opens or merges the final PR unless the driver explicitly assigns that role.
-- Clean up worktrees after merge or abandonment.
+- Clean up a worker's worktree only after its task is terminal and the driver
+  has either received its final report or acknowledged cancellation; merge,
+  abandonment, and a clean tree are not worker-lifecycle evidence.
 
 ## Implementation Scope
 

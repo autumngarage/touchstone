@@ -146,12 +146,14 @@ MAIN_WORKTREE=""
 WT_PATH=""
 WT_BRANCH=""
 WT_PRUNABLE=false
+WORKER_DONE="confirm the worker is terminal, then confirm its final report reached the parent or its cancellation was acknowledged"
+PRUNABLE_DONE="confirm every prunable worker is terminal, then confirm each final report or cancellation was acknowledged"
 emit_worktree() {
   [ -n "$WT_PATH" ] && [ "$WT_PATH" != "$MAIN_WORKTREE" ] || return 0
   if [ "$WT_PRUNABLE" = true ]; then
-    finding "worktree" "$WT_PATH [${WT_BRANCH:-(detached)}] directory missing" "git worktree prune (the directory is gone; Git still records it)"
+    finding "worktree" "$WT_PATH [${WT_BRANCH:-(detached)}] directory missing" "$PRUNABLE_DONE; then git worktree prune (the directory is gone; Git still records it)"
   else
-    finding "worktree" "$WT_PATH [${WT_BRANCH:-(detached)}]" "git worktree remove $(q "$WT_PATH") once its PR is merged, then git worktree prune"
+    finding "worktree" "$WT_PATH [${WT_BRANCH:-(detached)}]" "$WORKER_DONE; then git worktree remove $(q "$WT_PATH")"
   fi
 }
 while IFS= read -r -d '' record; do
