@@ -34,7 +34,7 @@ ok() {
   assert_not_has() { grep -qF -- "$2" "$1" && fail "expected $1 not to contain: $2" || true; }
   assert_rc() { [ "$1" -eq "$2" ] || fail "expected rc $2, got $1"; }
 
-  mkdir -p "$TMP/bin" "$TMP/project" "$TMP/origin.git" "$TMP/state"
+  mkdir -p "$TMP/bin" "$TMP/project/policy/github" "$TMP/origin.git" "$TMP/state"
   git -C "$TMP/origin.git" init -q --bare
   git -C "$TMP/project" init -q -b main
   git -C "$TMP/project" config user.name test
@@ -45,7 +45,8 @@ ok() {
     '' '[[validation.tasks]]' 'name = "test"' 'target = "root"' \
     'command = "true"' 'required = true' >"$TMP/project/.touchstone.toml"
   printf '%s\n' 'schema = 1' 'type = "github"' >"$TMP/project/.touchstone-tracker.toml"
-  git -C "$TMP/project" add README.md .touchstone.toml .touchstone-tracker.toml
+  cp "$ROOT/policy/github/touchstone-main.json" "$TMP/project/policy/github/touchstone-main.json"
+  git -C "$TMP/project" add README.md .touchstone.toml .touchstone-tracker.toml policy/github/touchstone-main.json
   git -C "$TMP/project" commit -qm fixture
   git -C "$TMP/project" remote add origin "$TMP/origin.git"
   git -C "$TMP/project" push -qu origin main
@@ -53,10 +54,20 @@ ok() {
   MAIN_SHA="$(git -C "$TMP/project" rev-parse HEAD)"
   git -C "$TMP/project" switch -qc feat/test
   printf 'change\n' >>"$TMP/project/README.md"
+  jq '(.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[].sha) = "9ab13f0c5d2e47bb8c6a1f30d94e7c2b5a08d613"' \
+    "$TMP/project/policy/github/touchstone-main.json" >"$TMP/project/policy/github/touchstone-main.next.json"
+  mv "$TMP/project/policy/github/touchstone-main.next.json" "$TMP/project/policy/github/touchstone-main.json"
   git -C "$TMP/project" add README.md
+  git -C "$TMP/project" add policy/github/touchstone-main.json
   git -C "$TMP/project" commit -qm change
   git -C "$TMP/project" push -qu origin HEAD
   HEAD_SHA="$(git -C "$TMP/project" rev-parse HEAD)"
+  git -C "$TMP/project" switch -qc empty-policy "$MAIN_SHA"
+  : >"$TMP/project/policy/github/touchstone-main.json"
+  git -C "$TMP/project" add policy/github/touchstone-main.json
+  git -C "$TMP/project" commit -qm 'empty policy fixture'
+  EMPTY_POLICY_SHA="$(git -C "$TMP/project" rev-parse HEAD)"
+  git -C "$TMP/project" switch -q feat/test
   printf '%s\n' 'Change summary.' '' 'Closes #42' >"$TMP/body"
   printf '%s\n' 'Handled the finding.' >"$TMP/reply"
 
@@ -194,8 +205,11 @@ case "$1 ${2:-}" in
       exit 1
     fi
     if has '--json headRefOid,baseRefName,baseRefOid' "$@"; then
-      if [ "${GH_MODE:-ok}" = binding_moved ]; then
+      if [ "${GH_MODE:-ok}" = binding_moved ] || [ "${GH_MODE:-ok}" = moved_during_gate ] \
+        || { [ "${GH_MODE:-ok}" = candidate_files_moved ] && [ -f "$GH_STATE/candidate-files-read" ]; }; then
         printf 'moved-head\t%s\t%s\n' "$GH_BASE_REF" "$GH_BASE_SHA"
+      elif [ "${GH_MODE:-ok}" = base_advanced ]; then
+        printf '%s\t%s\tadvanced-base-sha\n' "$GH_HEAD" "$GH_BASE_REF"
       else
         printf '%s\t%s\t%s\n' "$GH_HEAD" "$GH_BASE_REF" "$GH_BASE_SHA"
       fi
@@ -218,9 +232,15 @@ case "$1 ${2:-}" in
     elif has '--json state,url' "$@"; then
       if [ -f "$GH_STATE/merged" ]; then printf 'MERGED\thttps://example.test/pr/7\n'; else printf 'OPEN\thttps://example.test/pr/7\n'; fi
     elif [ -f "$GH_STATE/merged" ]; then
-      printf '7\tMERGED\thttps://example.test/pr/7\t%s\tmain\tbase-sha\tUNKNOWN\tfalse\n' "$GH_HEAD"
+      head_repo="${GH_FAKE_HEAD_REPO:-${GH_FAKE_REPO:-${GH_REPO:-autumngarage/current}}}"
+      [ ! -f "$GH_STATE/head-repo-missing" ] || head_repo=-
+      printf '7\tMERGED\thttps://example.test/pr/7\t%s\t%s\tmain\t%s\tUNKNOWN\tfalse\n' \
+        "$GH_HEAD" "$head_repo" "${GH_BASE_SHA:-base-sha}"
     else
-      printf '7\tOPEN\thttps://example.test/pr/7\t%s\tmain\tbase-sha\tCLEAN\tfalse\n' "$GH_HEAD"
+      head_repo="${GH_FAKE_HEAD_REPO:-${GH_FAKE_REPO:-${GH_REPO:-autumngarage/current}}}"
+      [ ! -f "$GH_STATE/head-repo-missing" ] || head_repo=-
+      printf '7\tOPEN\thttps://example.test/pr/7\t%s\t%s\tmain\t%s\tCLEAN\tfalse\n' \
+        "$GH_HEAD" "$head_repo" "${GH_BASE_SHA:-base-sha}"
     fi
     ;;
   "pr merge")
@@ -276,6 +296,17 @@ case "$1 ${2:-}" in
   "api --paginate")
     if has 'rules/branches/' "$@"; then
       serve_rules "$@"
+    elif has '/pulls/7/files?per_page=100' "$@"; then
+      [ "${GH_MODE:-ok}" != candidate_files_moved ] || touch "$GH_STATE/candidate-files-read"
+      if [ -f "$GH_STATE/policy-unchanged" ]; then
+        :
+      elif [ -f "$GH_STATE/policy-removed" ]; then
+        printf 'removed\tpolicy/github/touchstone-main.json\t-\n'
+      elif [ -f "$GH_STATE/policy-renamed" ]; then
+        printf 'renamed\tpolicy/github/touchstone-renamed.json\tpolicy/github/touchstone-main.json\n'
+      else
+        printf 'modified\tpolicy/github/touchstone-main.json\t-\n'
+      fi
     elif has 'touchstone:unguarded-merge' "$@"; then
       # The count of prior unguarded-merge records for this head, one per
       # page as --paginate delivers it: two pages, the record (if any) on the
@@ -321,7 +352,9 @@ case "$1 ${2:-}" in
     printf '%s\n' 71
     ;;
   api*)
-    if has 'actions/permissions --jq .enabled' "$@"; then
+    if has '/contents/' "$@" && has '?ref=' "$@"; then
+      cat "$GH_CANDIDATE_POLICY"
+    elif has 'actions/permissions --jq .enabled' "$@"; then
       # Repository Actions: on unless the fixture says otherwise. The
       # "-after-preflight" shape answers true once (open's up-front check)
       # and false from then on: Actions switched off while the gate waited.
@@ -479,6 +512,7 @@ EOF
   GH_UNKNOWN_SHA=0000000000000000000000000000000000000000
   GH_SOURCE_HEAD="$GH_AHEAD_SHA"
   export PATH="$TMP/bin:$PATH" GH_CALLS="$TMP/calls" GH_STATE="$TMP/state" GH_HEAD="$HEAD_SHA" GH_POLICY_SHA
+  export GH_CANDIDATE_POLICY="$TMP/project/policy/github/touchstone-main.json"
   export GH_BEHIND_SHA GH_AHEAD_SHA GH_OFFREF_SHA GH_DIVERGED_SHA GH_UNKNOWN_SHA GH_SOURCE_HEAD
   export GH_BASE_REF=main GH_BASE_SHA=base-sha
   export TOUCHSTONE_READ_ATTEMPTS=2 TOUCHSTONE_REQUEST_ATTEMPTS=2 TOUCHSTONE_RETRY_DELAY=0 TOUCHSTONE_GATE_RETRY_DELAY=0
@@ -643,6 +677,11 @@ Closes #42'
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'cannot open a pull request from the default branch'
   git -C "$TMP/project" switch -q feat/test
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" open --title 'Wrong base' --body-file "$TMP/body" --base release --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'protects main, not PR base release'
+  assert_not_has "$GH_CALLS" 'pr create'
   touch "$TMP/state/pr-exists"
   GH_HEAD=wrong run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 2
@@ -787,6 +826,10 @@ Closes #42'
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'moved (head moved-head'
   assert_not_has "$GH_CALLS" 'pr merge'
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
+  GH_MODE=base_advanced run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'pr merge'
   # The verdict is GitHub's: merge is requested regardless of what the gate
   # will conclude; GitHub arms auto-merge or enqueues.
   rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
@@ -830,15 +873,135 @@ Closes #42'
   # No consumer policy is shipped for this fixture repository: the remedy is
   # the derivation step, never a file that does not exist.
   assert_has "$TMP/out" 'remedy: derive a consumer policy first: scripts/derive-consumer-policy.sh current'
+  assert_has "$TMP/out" "at $(git -C "$ROOT" rev-parse HEAD)"
+
+  echo "==> source policy provenance ignores ambient Git state (AUT-522)"
+  GIT_DIR="$TMP/project/.git" GIT_WORK_TREE="$TMP/project" run_pr "$TMP/out" policy-status --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "\"policyRevision\":\"$(git -C "$ROOT" rev-parse HEAD)\""
+
+  echo "==> source provenance covers the complete policy inventory (AUT-522)"
+  mkdir -p "$TMP/source-tool"
+  cp -R "$ROOT/bin" "$ROOT/scripts" "$ROOT/policy" "$TMP/source-tool/"
+  cp "$ROOT/VERSION" "$TMP/source-tool/VERSION"
+  git -C "$TMP/source-tool" init -q -b main
+  git -C "$TMP/source-tool" config user.name test
+  git -C "$TMP/source-tool" config user.email test@example.com
+  git -C "$TMP/source-tool" add bin scripts policy VERSION
+  git -C "$TMP/source-tool" commit -qm fixture
+  printf '\n' >>"$TMP/source-tool/policy/github/consumers/vesper.json"
+  set +e
+  bash "$TMP/source-tool/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
+  RUN_RC=$?
+  set -e
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'the policy inventory is not represented by source revision'
+
+  echo "==> an installed policy remedy names its immutable release (AUT-522)"
+  mkdir -p "$TMP/installed/bin" "$TMP/installed/scripts" "$TMP/installed/policy/github/workflow-sources"
+  cp "$ROOT/bin/touchstone" "$TMP/installed/bin/touchstone"
+  cp "$ROOT/scripts/touchstone-pr.sh" "$TMP/installed/scripts/touchstone-pr.sh"
+  cp "$ROOT/policy/github/touchstone-main.json" "$TMP/installed/policy/github/touchstone-main.json"
+  printf '3.4.0\n' >"$TMP/installed/VERSION"
+  set +e
+  bash "$TMP/installed/bin/touchstone" pr policy-status --project "$TMP/project" >"$TMP/out" 2>&1
+  RUN_RC=$?
+  set -e
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'policy: policy/github/touchstone-main.json at v3.4.0'
+  assert_has "$TMP/out" 'in a clean Touchstone checkout at v3.4.0'
+  assert_not_has "$TMP/out" "$(git -C "$ROOT" rev-parse HEAD)"
+
   touch "$TMP/state/review-gate"
   run_pr "$TMP/out" policy-status --json
   assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+
+  echo "==> a Touchstone policy-pin PR assesses the live base policy (AUT-522)"
+  GH_FAKE_REPO=autumngarage/touchstone GH_BASE_SHA="$MAIN_SHA" run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  assert_has "$TMP/out" "\"policy\":{\"source\":\"policy/github/touchstone-main.json\",\"revision\":\"$MAIN_SHA\"}"
+  assert_has "$TMP/out" "\"candidatePolicy\":{\"source\":\"policy/github/touchstone-main.json\",\"revision\":\"$HEAD_SHA\",\"role\":\"desired-after-merge\"}"
+  jq '.branch = "release"' "$GH_CANDIDATE_POLICY" >"$TMP/candidate-invalid-branch.json"
+  GH_CANDIDATE_POLICY="$TMP/candidate-invalid-branch.json" GH_FAKE_REPO=autumngarage/touchstone \
+    GH_BASE_SHA="$MAIN_SHA" run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "\"policy\":{\"source\":\"policy/github/touchstone-main.json\",\"revision\":\"$MAIN_SHA\"}"
+  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  printf '%s\n' '{not-json' >"$TMP/candidate-malformed.json"
+  GH_CANDIDATE_POLICY="$TMP/candidate-malformed.json" GH_FAKE_REPO=autumngarage/touchstone \
+    GH_BASE_SHA="$MAIN_SHA" run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "\"policy\":{\"source\":\"policy/github/touchstone-main.json\",\"revision\":\"$MAIN_SHA\"}"
+  assert_has "$TMP/out" "\"candidatePolicy\":{\"source\":\"policy/github/touchstone-main.json\",\"revision\":\"$HEAD_SHA\",\"role\":\"desired-after-merge\"}"
+  rm -f "$TMP/state/candidate-files-read"
+  GH_MODE=candidate_files_moved GH_FAKE_REPO=autumngarage/touchstone GH_BASE_SHA="$MAIN_SHA" \
+    run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'after enforcement was assessed'
+  TMPDIR="$TMP/does-not-exist" GH_FAKE_REPO=autumngarage/touchstone GH_BASE_SHA="$MAIN_SHA" \
+    run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "\"policy\":{\"source\":\"policy/github/touchstone-main.json\",\"revision\":\"$MAIN_SHA\"}"
+  touch "$TMP/state/policy-unchanged"
+  GH_FAKE_REPO=autumngarage/touchstone GH_BASE_SHA="$MAIN_SHA" run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_not_has "$TMP/out" '"candidatePolicy"'
+  assert_not_has "$GH_CALLS" "/contents/policy/github/touchstone-main.json?ref=$HEAD_SHA"
+  rm -f "$TMP/state/policy-unchanged"
+  touch "$TMP/state/policy-removed"
+  GH_FAKE_REPO=autumngarage/touchstone GH_BASE_SHA="$MAIN_SHA" run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "\"candidatePolicy\":{\"source\":\"policy/github/touchstone-main.json\",\"revision\":\"$HEAD_SHA\",\"role\":\"absent-after-merge\"}"
+  assert_not_has "$GH_CALLS" '/contents/'
+  rm -f "$TMP/state/policy-removed"
+  touch "$TMP/state/policy-renamed"
+  GH_FAKE_REPO=autumngarage/touchstone GH_BASE_SHA="$MAIN_SHA" run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "\"candidatePolicy\":{\"source\":\"policy/github/touchstone-renamed.json\",\"revision\":\"$HEAD_SHA\",\"role\":\"desired-after-merge\"}"
+  assert_has "$GH_CALLS" "repos/autumngarage/touchstone/contents/policy/github/touchstone-renamed.json?ref=$HEAD_SHA"
+  rm -f "$TMP/state/policy-renamed"
+  touch "$TMP/state/policy-unchanged" "$TMP/state/head-repo-missing"
+  GH_FAKE_REPO=autumngarage/touchstone GH_BASE_SHA="$MAIN_SHA" run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "\"baseRef\":\"main\",\"baseSha\":\"$MAIN_SHA\""
+  rm -f "$TMP/state/policy-unchanged" "$TMP/state/head-repo-missing"
+  GH_FAKE_REPO=autumngarage/touchstone GH_BASE_SHA="$EMPTY_POLICY_SHA" run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" "could not read the protected branch from policy/github/touchstone-main.json at $EMPTY_POLICY_SHA"
+  fork_head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  GH_HEAD="$fork_head" GH_FAKE_REPO=autumngarage/touchstone GH_FAKE_HEAD_REPO=someone/touchstone \
+    GH_BASE_SHA="$MAIN_SHA" run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "\"revision\":\"$fork_head\",\"role\":\"desired-after-merge\""
+  assert_has "$GH_CALLS" "repos/someone/touchstone/contents/policy/github/touchstone-main.json?ref=$fork_head"
+  GH_FAKE_REPO=autumngarage/touchstone GH_BASE_SHA=unresolved run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'PR base policy revision is not an immutable commit SHA: unresolved'
+  : >"$GH_CALLS"
+  rm -f "$TMP/state/merged" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
+  GH_MODE=base_advanced GH_FAKE_REPO=autumngarage/touchstone GH_BASE_SHA="$MAIN_SHA" \
+    run_pr "$TMP/out" merge 7 --head "$HEAD_SHA"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'after enforcement was assessed'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  : >"$GH_CALLS"
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
+  GH_FAKE_REPO=autumngarage/touchstone GH_BASE_SHA="$MAIN_SHA" run_pr "$TMP/out" merge 7 --head "$HEAD_SHA"
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "Enforcement assessed with policy/github/touchstone-main.json at $MAIN_SHA."
+  assert_has "$TMP/out" "Candidate policy/github/touchstone-main.json at $HEAD_SHA is desired-after-merge."
+  assert_has "$GH_CALLS" 'pr merge'
+  assert_not_has "$GH_CALLS" 'touchstone:unguarded-merge'
+  rm -f "$TMP/state/merged" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
+
   # The same paths from a stale revision are not the canonical gates, and a
   # stale gate does not take the guarded merge path either.
   touch "$TMP/state/stale-pin"
   run_pr "$TMP/out" policy-status --json
   assert_has "$TMP/out" '"status":"partial"'
   assert_has "$TMP/out" 'review-gate workflow (present but not pinned at the policy revision)'
+  assert_has "$TMP/out" "expected $GH_POLICY_SHA; observed $GH_DIVERGED_SHA"
   assert_has "$TMP/out" 'validate workflow (present but not pinned at the policy revision)'
   assert_not_has "$TMP/out" 'delivery-evidence workflow'
   : >"$GH_CALLS"

@@ -124,8 +124,11 @@ taking this document's word for it.
   the native pull-request, force-push, and deletion rules, and whether
   repository Actions are enabled at all — disabled Actions is reported first
   and forces `none`, since no required workflow can then run (AUT-467);
-  `pr open` refuses up front in that state. `pr status` carries the same field for the
-  PR's base. Raw equivalent: `gh api repos/O/R/actions/permissions --jq .enabled`,
+  `pr open` refuses up front in that state. Every observation names the policy
+  path and immutable Touchstone revision it evaluated. `pr status` carries the
+  same field for the PR's base; on a Touchstone policy-changing PR it evaluates
+  policy bytes from the exact base SHA and reports a changed, renamed, or
+  removed head policy only as post-merge intent. Raw equivalent: `gh api repos/O/R/actions/permissions --jq .enabled`,
   `gh api repos/O/R/rules/branches/<ref>`, `gh api repos/O/R --jq .allow_auto_merge`,
   and a reading of the workflows and rule types.
   Why not the raw sequence: on 2026-08-21 four fresh agents (two Claude, two
@@ -153,7 +156,10 @@ taking this document's word for it.
   the merge queue where declared; `partial` and `none` name what is missing.
   The policy consulted is the repository's exact checked-in workflow-source or
   consumer policy where one exists (a private consumer derived `--no-queue`
-  legitimately expects no queue), otherwise the canonical one.
+  legitimately expects no queue), otherwise the canonical one. Source
+  checkouts bind it to the commit containing those exact bytes; packaged tools
+  bind it to their release tag. A remedy names that same revision so following
+  it cannot silently apply a newer source policy than the verdict assessed.
   `applied` → re-run any declared gate, request the merge — with `--auto` where the
   policy carries no queue, since there is nothing to enter and GitHub refuses
   a plain merge while the re-run is pending.
