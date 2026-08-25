@@ -1,13 +1,40 @@
 #!/usr/bin/env bash
 # Resolve and authenticate the native Codex executable used by normal review.
+# Sourced callers read the three TOUCHSTONE_CODEX_* values after each call;
+# filesystem paths never cross a text serialization boundary.
 
 touchstone_codex_fail() {
-  printf '%s\n' "$*" >&2
+  TOUCHSTONE_CODEX_ERROR="$*"
+  : "$TOUCHSTONE_CODEX_ERROR"
   return 1
+}
+
+touchstone_codex_physical_directory() {
+  local requested="$1" previous="$PWD" directory
+
+  TOUCHSTONE_CODEX_DIRECTORY=""
+  if ! builtin cd -P "$requested" 2>/dev/null; then
+    touchstone_codex_fail "Codex executable has an unreadable directory: $requested"
+    return
+  fi
+  directory="$PWD"
+  if ! builtin cd "$previous" 2>/dev/null; then
+    touchstone_codex_fail "could not restore the working directory after resolving Codex: $previous"
+    return
+  fi
+  case "$directory" in
+    *$'\n'*)
+      touchstone_codex_fail "Codex executable physical directory contains a newline: $requested"
+      return
+      ;;
+  esac
+  TOUCHSTONE_CODEX_DIRECTORY="$directory"
 }
 
 touchstone_codex_canonical_path() {
   local path="$1" link directory basename depth=0
+
+  TOUCHSTONE_CODEX_CANONICAL=""
 
   case "$path" in
     /*) ;;
@@ -49,27 +76,27 @@ touchstone_codex_canonical_path() {
       /*) path="$link" ;;
       *) path="$(dirname "$path")/$link" ;;
     esac
-    directory="$(cd "$(dirname "$path")" 2>/dev/null && pwd -P)" || {
-      touchstone_codex_fail "Codex executable link has an unreadable target: $path"
-      return
-    }
+    touchstone_codex_physical_directory "$(dirname "$path")" || return
+    directory="$TOUCHSTONE_CODEX_DIRECTORY"
     basename="$(basename "$path")"
     path="$directory/$basename"
   done
 
-  directory="$(cd "$(dirname "$path")" 2>/dev/null && pwd -P)" || {
-    touchstone_codex_fail "Codex executable has an unreadable directory: $path"
-    return
-  }
-  printf '%s/%s\n' "$directory" "$(basename "$path")"
+  touchstone_codex_physical_directory "$(dirname "$path")" || return
+  directory="$TOUCHSTONE_CODEX_DIRECTORY"
+  TOUCHSTONE_CODEX_CANONICAL="$directory/$(basename "$path")"
 }
 
 touchstone_resolve_codex_native() {
   local candidate="$1" platform="$2" machine="$3"
   local package_root package_scope platform_package target_triple package_candidate leaf native bundled_path
 
-  candidate="$(touchstone_codex_canonical_path "$candidate")" || return
+  TOUCHSTONE_CODEX_ERROR=""
+  TOUCHSTONE_CODEX_BIN=""
+  TOUCHSTONE_CODEX_BUNDLED_PATH=""
   bundled_path=""
+  touchstone_codex_canonical_path "$candidate" || return
+  candidate="$TOUCHSTONE_CODEX_CANONICAL"
 
   case "$candidate" in
     */@openai/codex/bin/codex.js)
@@ -109,9 +136,11 @@ touchstone_resolve_codex_native() {
         touchstone_codex_fail "official npm Codex native executable is missing or not executable for package: $platform_package"
         return
       }
-      candidate="$(touchstone_codex_canonical_path "$native")" || return
+      touchstone_codex_canonical_path "$native" || return
+      candidate="$TOUCHSTONE_CODEX_CANONICAL"
       if [ -d "$(dirname "$(dirname "$candidate")")/path" ]; then
-        bundled_path="$(cd "$(dirname "$(dirname "$candidate")")/path" && pwd -P)" || return
+        touchstone_codex_physical_directory "$(dirname "$(dirname "$candidate")")/path" || return
+        bundled_path="$TOUCHSTONE_CODEX_DIRECTORY"
         case "$bundled_path" in
           *:*)
             touchstone_codex_fail "official npm Codex bundled-tool path cannot be represented safely: $bundled_path"
@@ -122,13 +151,15 @@ touchstone_resolve_codex_native() {
       ;;
   esac
 
-  printf '%s\n' "$candidate"
-  [ -z "$bundled_path" ] || printf '%s\n' "$bundled_path"
+  TOUCHSTONE_CODEX_BIN="$candidate"
+  TOUCHSTONE_CODEX_BUNDLED_PATH="$bundled_path"
+  : "$TOUCHSTONE_CODEX_BIN" "$TOUCHSTONE_CODEX_BUNDLED_PATH"
 }
 
 touchstone_verify_openai_codex() {
   local candidate="$1" codesign_bin="$2" signature
 
+  TOUCHSTONE_CODEX_ERROR=""
   [ -x "$codesign_bin" ] || {
     touchstone_codex_fail "macOS code-signature verification is unavailable at $codesign_bin"
     return

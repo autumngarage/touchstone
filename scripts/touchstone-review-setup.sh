@@ -102,21 +102,19 @@ require_usable_key() {
 }
 
 resolve_codex() {
-  local candidate resolution bundled_path signature_error
+  local candidate bundled_path
+  case "${PATH:-}" in
+    *$'\n'*) die "PATH contains a newline and cannot safely resolve Codex" ;;
+  esac
   candidate="$(command -v codex 2>/dev/null || true)"
   [ -n "$candidate" ] && [ -x "$candidate" ] \
     || die "Codex is unavailable; install the signed OpenAI Codex CLI before running normal review"
-  if ! resolution="$(touchstone_resolve_codex_native "$candidate" "$PLATFORM" "$(uname -m)" 2>&1)"; then
-    die "$resolution"
-  fi
-  candidate="${resolution%%$'\n'*}"
-  bundled_path=""
-  case "$resolution" in
-    *$'\n'*) bundled_path="${resolution#*$'\n'}" ;;
-  esac
-  if ! signature_error="$(touchstone_verify_openai_codex "$candidate" /usr/bin/codesign 2>&1)"; then
-    die "$signature_error"
-  fi
+  touchstone_resolve_codex_native "$candidate" "$PLATFORM" "$(uname -m)" \
+    || die "$TOUCHSTONE_CODEX_ERROR"
+  candidate="$TOUCHSTONE_CODEX_BIN"
+  bundled_path="$TOUCHSTONE_CODEX_BUNDLED_PATH"
+  touchstone_verify_openai_codex "$candidate" /usr/bin/codesign \
+    || die "$TOUCHSTONE_CODEX_ERROR"
   if [ -n "$bundled_path" ]; then
     if [ -n "${PATH:-}" ]; then
       PATH="$bundled_path:$PATH"
