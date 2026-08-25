@@ -118,8 +118,11 @@ def answers_body_finding($id):
     $root.reviews[]?
     | select(trusted($trusted))
     | select((.commit_id // "" | ascii_downcase) == ($head | ascii_downcase))
-    | select((.submitted_at // "") > $threshold)
     | select((.state // "") != "DISMISSED")
+  ] as $head_reviews
+| [
+    $head_reviews[]
+    | select((.submitted_at // "") > $threshold)
   ] as $reviews
 | [
     $root.issueComments[]?
@@ -130,7 +133,10 @@ def answers_body_finding($id):
 | [
     $root.reviewComments[]? as $finding
     | select($finding.in_reply_to_id == null)
-    | $reviews[]
+    # A later same-head recovery request raises the threshold for fresh
+    # completion evidence, but it cannot erase an inline finding already
+    # attached to this exact head.
+    | $head_reviews[]
     | select((.id | tostring) == ($finding.pull_request_review_id | tostring))
     | ($finding.updated_at // $finding.created_at // "") as $finding_at
     | {

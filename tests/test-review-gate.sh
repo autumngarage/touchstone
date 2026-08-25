@@ -80,6 +80,14 @@ run_case "an answered inline finding passes" '
   .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
   | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
                        {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed."}]' success
+run_case "same-head recovery cannot erase an earlier unanswered inline finding" '
+  .issueComments = [
+    .issueComments[0],
+    {"id":102,"created_at":"2026-08-20T10:25:00Z","user":{"login":"henry"},"body":"@codex review"},
+    {"id":103,"created_at":"2026-08-20T10:40:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Codex Review: Did not find any major issues.\n\n**Reviewed commit:** `1111111111`","resolved_review_sha":"'"$HEAD_SHA"'"}
+  ]
+  | .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"}]' failure "inline finding"
 run_case "read permission cannot answer an inline finding" '
   .authorPermissions.henry = "read"
   | .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
