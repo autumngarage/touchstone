@@ -169,6 +169,7 @@ case "$ACTION" in
     export CODEX_HOME OPENROUTER_API_KEY
     "$CODEX_BIN" \
       -p review-normal \
+      --strict-config \
       -c "projects.\"$REPOSITORY_ROOT\".trust_level=\"untrusted\"" \
       -c 'shell_environment_policy.filters.OPENROUTER_API_KEY="exclude"' \
       -c 'allow_login_shell=false' \

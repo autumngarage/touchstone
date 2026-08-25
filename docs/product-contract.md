@@ -76,7 +76,8 @@ repository as untrusted for configuration, disables shell snapshots and
 plugins, removes the key from every model-issued subprocess, and denies those
 subprocesses access to non-repository user files through Codex's own permission
 profile. Their environment inherits only Codex's core variables, never the
-driver's unrelated credential variables. The fully
+driver's unrelated credential variables. Strict configuration parsing refuses
+Codex versions that cannot enforce any field in that boundary. The fully
 empowered same-user driving shell remains a trusted principal: no-prompt
 Keychain access cannot also protect a secret from that same principal. The
 Keychain account is scoped to the selected Codex home, so rotating or

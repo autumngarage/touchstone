@@ -759,6 +759,7 @@ assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
   "TOUCHSTONE_REVIEW_CODEX_BIN"
 for boundary in \
   'trust_level=\"untrusted\"' \
+  '--strict-config' \
   '--disable shell_snapshot' \
   '--disable plugins' \
   'shell_environment_policy.filters.OPENROUTER_API_KEY="exclude"' \
