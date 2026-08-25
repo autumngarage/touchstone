@@ -16,12 +16,14 @@ the loop:
 | Tier | Local pass | Command |
 |---|---|---|
 | trivial | none | — |
-| normal | one Codex pass of the staged slice, through the user-side `review-normal` profile | `codex -p review-normal review --uncommitted` |
+| normal | one Codex pass of the staged slice, through Touchstone's lower-cost `review-normal` profile | `codex -p review-normal review --uncommitted` |
 | serious | one Codex review of the branch, pre-push | `codex review --base <default>` |
 
-One harness keeps the procedure stable; the normal profile is driver-side
-configuration, not a Touchstone model or provider choice. The PR-side reviewer
-runs on open regardless and remains the merge authority.
+One harness keeps the procedure stable. Touchstone owns the normal profile as
+a machine-wide cost boundary: it routes the bounded local pass through
+OpenRouter's Pareto Code router at medium reasoning, while the serious pass and
+PR-side reviewer remain on the default Codex path. The PR-side reviewer runs on
+open regardless and remains the merge authority.
 
 Local Codex reads `AGENTS.md` and applies its rules as review authority —
 observed citing this repository's own rule lines in findings — so durable
@@ -154,21 +156,37 @@ intent and risks. Codex's `--uncommitted` mode sees staged, unstaged, and
 untracked changes, so isolate the slice before running it; do not let unrelated
 dirty state ride along.
 
-The normal profile is a user-side Codex file. Touchstone names its stable
-profile name and preflight path, never its model, provider, endpoint, or
-credential source. Check the file before invocation because Codex 0.149 falls
-back silently when a named profile file is absent (AUT-500):
+The normal profile is installed once per machine with:
 
 ```bash
-test -r "${CODEX_HOME:-$HOME/.codex}/review-normal.config.toml"
+touchstone review setup
+```
+
+On macOS, setup securely prompts for a dedicated OpenRouter key, saves it in
+Keychain, and installs the canonical profile at
+`${CODEX_HOME:-$HOME/.codex}/review-normal.config.toml`. The profile uses
+Codex's command-backed provider authentication, so already-running Claude,
+Codex, and Gemini sessions do not need to inherit `OPENROUTER_API_KEY`, and
+future reviews do not require an approval prompt. `touchstone steering install`
+offers this setup during interactive onboarding. The shipped config shape is
+owned by `config/review-normal.config.toml`; credentials never appear in it.
+
+Check the complete boundary before invocation because Codex 0.149 falls back
+silently when a named profile file is absent (AUT-500), and a readable profile
+with an unavailable credential fails later with less useful context:
+
+```bash
+touchstone review check
 codex -p review-normal review --uncommitted
 ```
 
-If the file is not readable, do not invoke Codex: record a reasoned `n/a`
-waiver naming that failed preflight. If the configured-profile command exits
-nonzero, record its concise cause as the waiver and stop; do not retry, inspect
-credentials, or add provider routing. The serious pass remains
-`codex review --base <default>` after the branch is committed.
+If the check fails, do not invoke Codex: record a reasoned `n/a` waiver naming
+its concise cause. If the configured-profile command exits nonzero, record its
+concise cause as the waiver and stop. Never fall back silently to the default
+profile: doing so defeats the cost boundary and misstates which review ran.
+Do not retry or inspect credentials; the operator recovery is `touchstone
+review setup`. The serious pass remains `codex review --base <default>` after
+the branch is committed.
 
 **Local passes and PR-side reviews can share one metered pool**, depending on
 the provider's plan. A driver that re-runs locally after every edit is then
@@ -207,7 +225,7 @@ the PR body's Validation block carries
 ```markdown
 - Local review: codex on abc1234: 3 findings, 2 fixed, 1 routed to AUT-n.
 - Local review: codex on the staged slice (review-normal): 0 findings.
-- Local review: n/a — review-normal.config.toml is not readable at the preflight path.
+- Local review: n/a — `touchstone review check` reports that the OpenRouter credential is not configured.
 ```
 
 The row *begins* with `codex on <target>: <n> findings` — prose and
@@ -219,7 +237,7 @@ a reason.
 When the row is present but unreadable it says so and quotes the line.
 The gate checks shape, not truth — it cannot see a terminal — but it can
 refuse silence, and silence was the failure. For normal, a waiver is only the
-profile being unreadable, its configured run exiting nonzero, or Codex being
+managed profile check failing, its configured run exiting nonzero, or Codex being
 absent, unauthenticated, or out of quota. Serious may waive only when Codex is unavailable.
 Unavailable means absent, unauthenticated, or out of quota; either waiver says which.
 
@@ -232,7 +250,7 @@ is met:
 
 - **trivial** — no initiated review; deterministic checks alone complete it.
 - **normal** — one local pass has run and its findings are triaged, **or**
-  the recorded waiver applies (the normal profile is unreadable, its configured
+  the recorded waiver applies (the normal profile check fails, its configured
   pass exits nonzero, or Codex is unavailable — recorded in the validation
   block).
 - **serious** — the pre-push local pass ran or its Codex-unavailable waiver is

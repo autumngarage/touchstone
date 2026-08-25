@@ -1,0 +1,23 @@
+# touchstone:review-normal:v1
+# Managed by `touchstone review setup`. Do not put credentials in this file.
+
+model = "openrouter/pareto-code"
+model_provider = "openrouter"
+model_reasoning_effort = "medium"
+model_reasoning_summary = "none"
+model_verbosity = "low"
+
+[model_providers.openrouter]
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+wire_api = "responses"
+
+[model_providers.openrouter.http_headers]
+HTTP-Referer = "https://github.com/autumngarage/touchstone"
+X-OpenRouter-Title = "Touchstone Local Review"
+
+[model_providers.openrouter.auth]
+command = "touchstone"
+args = ["review", "token"]
+refresh_interval_ms = 0
+timeout_ms = 5000

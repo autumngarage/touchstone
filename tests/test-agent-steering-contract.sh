@@ -109,7 +109,7 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
   "abandonment, and a clean tree are not worker-lifecycle evidence"
 
-echo "==> one Codex harness is routed by tier without provider knowledge"
+echo "==> one Codex harness is routed by tier with an explicit normal-review cost lane"
 for file in \
   "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
   "$TOUCHSTONE_ROOT/AGENTS.md" \
@@ -118,20 +118,30 @@ for file in \
   "$TOUCHSTONE_ROOT/principles/local-review.md" \
   "$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md" \
   "$TOUCHSTONE_ROOT/.github/pull_request_template.md"; do
-  assert_contains "$file" 'review-normal.config.toml'
+  assert_contains "$file" 'touchstone review check'
   assert_contains "$file" 'codex -p review-normal review --uncommitted'
   assert_contains "$file" 'codex review --base <default>'
   assert_contains "$file" 'may waive only when Codex is unavailable'
   assert_not_contains "$file" 'coderabbit review --agent --uncommitted'
 done
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  'test -r "${CODEX_HOME:-$HOME/.codex}/review-normal.config.toml"'
+  'touchstone review setup'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  'back silently when a named profile file is absent'
+  'silently when a named profile file is absent'
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   '## The deep review pass'
-assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'OpenRouter'
-assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'Gemini'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'OpenRouter'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'Keychain, and installs'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  'Never fall back silently to the default'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  'model = "openrouter/pareto-code"'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  'model_reasoning_effort = "medium"'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  'command = "touchstone"'
+assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  'OPENROUTER_API_KEY'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'A normal-profile failure never waives this pass.'
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
@@ -467,7 +477,8 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Merge
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "project-documented executable merge boundary"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "It is the whole mechanism"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Parallel file-writing agents use worktrees by default"
-assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Touchstone invokes no model router"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "only model-routing decision"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "OpenRouter Pareto Code"
 
 echo "==> active product surfaces do not reintroduce the retired model router"
 # The two compatibility helpers may name retired paths solely to back them up
@@ -662,6 +673,133 @@ for file in $GATE_FILES; do
     fail "$(basename "$file") retains the superseded unenforced-review caveat"
   fi
 done
+
+echo "==> normal-review setup keeps credentials out of agent environments and config"
+FAKE_SECURITY="$TEST_DIR/security"
+FAKE_KEYCHAIN_STATE="$TEST_DIR/keychain-state"
+FAKE_KEYCHAIN_LOG="$TEST_DIR/keychain-log"
+cat >"$FAKE_SECURITY" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  find-generic-password)
+    [ -f "$TOUCHSTONE_FAKE_KEYCHAIN_STATE" ] || exit 44
+    printf 'dummy-openrouter-token\n'
+    ;;
+  add-generic-password)
+    printf 'add\n' >>"$TOUCHSTONE_FAKE_KEYCHAIN_LOG"
+    : >"$TOUCHSTONE_FAKE_KEYCHAIN_STATE"
+    ;;
+  delete-generic-password)
+    printf 'delete\n' >>"$TOUCHSTONE_FAKE_KEYCHAIN_LOG"
+    rm -f "$TOUCHSTONE_FAKE_KEYCHAIN_STATE"
+    ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$FAKE_SECURITY"
+
+review_command() {
+  TOUCHSTONE_REVIEW_PLATFORM=Darwin \
+    TOUCHSTONE_REVIEW_SECURITY_BIN="$FAKE_SECURITY" \
+    TOUCHSTONE_FAKE_KEYCHAIN_STATE="$FAKE_KEYCHAIN_STATE" \
+    TOUCHSTONE_FAKE_KEYCHAIN_LOG="$FAKE_KEYCHAIN_LOG" \
+    bash "$TOUCHSTONE_ROOT/bin/touchstone" review "$@"
+}
+
+REVIEW_HOME="$TEST_DIR/review-codex"
+mkdir -p "$REVIEW_HOME"
+printf 'operator profile\n' >"$REVIEW_HOME/review-normal.config.toml"
+if review_command setup --codex-home "$REVIEW_HOME" >"$TEST_DIR/review-setup.out" 2>&1; then
+  :
+else
+  fail "normal-review setup failed: $(cat "$TEST_DIR/review-setup.out")"
+fi
+if cmp -s "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  "$REVIEW_HOME/review-normal.config.toml"; then
+  :
+else
+  fail "setup did not install the canonical review-normal profile"
+fi
+if [ "$(cat "$REVIEW_HOME/review-normal.config.toml.pre-touchstone")" = "operator profile" ]; then
+  :
+else
+  fail "setup did not preserve the operator's previous profile"
+fi
+if grep -qF 'dummy-openrouter-token' "$TEST_DIR/review-setup.out" \
+  || grep -qF 'dummy-openrouter-token' "$REVIEW_HOME/review-normal.config.toml"; then
+  fail "setup exposed the credential in output or profile"
+fi
+profile_mode="$(stat -f '%Lp' "$REVIEW_HOME/review-normal.config.toml" 2>/dev/null \
+  || stat -c '%a' "$REVIEW_HOME/review-normal.config.toml")"
+[ "$profile_mode" = 600 ] \
+  || fail "managed review profile mode is $profile_mode, not 600"
+review_command check --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "check failed immediately after setup"
+token="$(CODEX_HOME="$REVIEW_HOME" review_command token)" \
+  || fail "the command-backed token boundary could not read Keychain"
+[ "$token" = dummy-openrouter-token ] \
+  || fail "the command-backed token boundary returned the wrong value"
+
+review_command setup --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "idempotent setup failed"
+add_count="$(grep -c '^add$' "$FAKE_KEYCHAIN_LOG" || true)"
+[ "$add_count" = 1 ] \
+  || fail "idempotent setup prompted for the key $add_count times"
+
+printf '# local edit\n' >>"$REVIEW_HOME/review-normal.config.toml"
+if review_command setup --codex-home "$REVIEW_HOME" >/dev/null 2>&1; then
+  fail "setup overwrote local edits in a managed profile"
+fi
+tail -n 1 "$REVIEW_HOME/review-normal.config.toml" | grep -qF '# local edit' \
+  || fail "managed-profile drift was not preserved on refusal"
+cp "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  "$REVIEW_HOME/review-normal.config.toml"
+chmod 600 "$REVIEW_HOME/review-normal.config.toml"
+
+review_command uninstall --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "normal-review uninstall failed"
+[ "$(cat "$REVIEW_HOME/review-normal.config.toml")" = "operator profile" ] \
+  || fail "uninstall did not restore the operator's previous profile"
+[ ! -e "$REVIEW_HOME/review-normal.config.toml.pre-touchstone" ] \
+  || fail "uninstall left the consumed profile backup behind"
+[ ! -e "$FAKE_KEYCHAIN_STATE" ] \
+  || fail "uninstall left the managed Keychain credential behind"
+
+DRY_REVIEW_HOME="$TEST_DIR/review-dry"
+review_command setup --codex-home "$DRY_REVIEW_HOME" --dry-run >/dev/null 2>&1 \
+  || fail "normal-review dry run failed"
+[ ! -e "$DRY_REVIEW_HOME" ] \
+  || fail "normal-review dry run mutated Codex home"
+
+BLOCKED_REVIEW_HOME="$TEST_DIR/review-home-is-a-file"
+printf 'not a directory\n' >"$BLOCKED_REVIEW_HOME"
+if review_command setup --codex-home "$BLOCKED_REVIEW_HOME" >/dev/null 2>&1; then
+  fail "normal-review setup accepted a file as Codex home"
+fi
+[ ! -e "$FAKE_KEYCHAIN_STATE" ] \
+  || fail "failed profile publication left a newly added Keychain credential behind"
+
+SYMLINK_REVIEW_HOME="$TEST_DIR/review-symlink"
+mkdir -p "$SYMLINK_REVIEW_HOME"
+ln -s "$TEST_DIR/elsewhere-profile" \
+  "$SYMLINK_REVIEW_HOME/review-normal.config.toml"
+if review_command setup --codex-home "$SYMLINK_REVIEW_HOME" >/dev/null 2>&1; then
+  fail "normal-review setup followed a profile symlink"
+fi
+[ ! -e "$FAKE_KEYCHAIN_STATE" ] \
+  || fail "an unsafe profile path caused a credential side effect before refusal"
+
+if TOUCHSTONE_REVIEW_PLATFORM=Linux \
+  TOUCHSTONE_REVIEW_SECURITY_BIN="$FAKE_SECURITY" \
+  bash "$TOUCHSTONE_ROOT/bin/touchstone" review check \
+  --codex-home "$REVIEW_HOME" >/dev/null 2>&1; then
+  fail "automatic Keychain review setup claimed support on a non-macOS platform"
+fi
+assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-steering-install.sh" \
+  'Set up lower-cost normal reviews through OpenRouter now?'
+assert_contains "$TOUCHSTONE_ROOT/bin/touchstone" \
+  'touchstone review setup|check|uninstall'
 
 if [ "$ERRORS" -gt 0 ]; then
   echo ""

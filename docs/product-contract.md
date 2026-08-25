@@ -58,6 +58,25 @@ Two costs are accepted deliberately:
 Content outside the managed markers belongs to the operator and is never
 touched; `uninstall` removes the block and leaves the rest byte-identical.
 
+## Normal-review cost lane
+
+Normal local review is intentionally routed through OpenRouter to reduce the
+cost of the common review tier without changing the serious or PR-visible
+review paths. `touchstone review setup` owns one reserved Codex profile,
+`review-normal`, and on macOS stores its dedicated OpenRouter credential in
+Keychain. `touchstone review check` verifies both the exact managed profile and
+credential availability before an agent invokes it. A failed check permits the
+documented normal-tier waiver; it never permits a silent fallback to the more
+expensive default profile.
+
+The invariant is that the API key never appears in the profile, a shell
+environment, an agent prompt, or a repository. Codex obtains it only through
+its command-backed provider-auth interface. An existing operator-owned profile
+at the reserved path is backed up before setup and restored by uninstall. The
+canonical non-secret config shape lives in
+`config/review-normal.config.toml`; prose links to that owner instead of
+duplicating it.
+
 ## Outcome
 
 Touchstone is the standard delivery baseline for one person directing many
@@ -93,6 +112,7 @@ explain that owner's decision; they may not recompute it.
 | Bind merge to the reviewed head | GitHub merge API | Expected head passed to the merge mutation | Moving the head before merge is rejected |
 | Claim work | Configured tracker adapter | Tracker-neutral claim contract | GitHub- and Linear-backed fixtures distinguish verified from unavailable transport |
 | Carry agent steering | The installed tool, machine-wide | One delimited block in each driver's user-level instruction file, the routed principles under `~/.touchstone/principles`, and the bundled Claude skills under `~/.claude/skills` — all installed, checked, and removed by `touchstone steering`; Touchstone installs and manages no repository copy | `touchstone steering check` compares the installed block against the tool's contract; deterministic size-cap, path-integrity, and steering-contract assertions run in the required suite |
+| Route normal local review through the lower-cost lane | The installed tool, machine-wide | Managed `review-normal` Codex profile plus command-backed macOS Keychain credential access | Offline setup/check/uninstall fixtures prove idempotency, backup/restore, no secret in config or output, drift refusal, and fail-closed missing-credential behavior |
 | Adopt and evolve a repository | Touchstone CLI adoption module | Versioned project declarations and reviewable plan/apply output | Fresh, current, repeat, old-compatible, and unsupported-schema fixtures |
 | Make what a session left behind legible | `touchstone cleanup check` (read-only) | Versioned report (`touchstone.cleanup/v1`): checkout, worktrees, finished branches, untracked and dirty files | Each leftover kind is reported once with its remedy and nothing is mutated; a failed GitHub read is a finding, not silence |
 | Install and upgrade the local tool | Homebrew | Versioned formula and checksummed release | Install, upgrade, rollback, and no-project-mutation tests pass |
