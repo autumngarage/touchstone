@@ -185,8 +185,9 @@ its concise cause. If the configured-profile command exits nonzero, record its
 concise cause as the waiver and stop. Never fall back silently to the default
 profile: doing so defeats the cost boundary and misstates which review ran.
 Do not retry or inspect credentials; the operator recovery is `touchstone
-review setup`. The serious pass remains `codex review --base <default>` after
-the branch is committed.
+review setup` for a missing boundary or `touchstone review rotate` for a
+rejected credential. The serious pass remains `codex review --base <default>`
+after the branch is committed.
 
 **Local passes and PR-side reviews can share one metered pool**, depending on
 the provider's plan. A driver that re-runs locally after every edit is then

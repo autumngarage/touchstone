@@ -676,23 +676,39 @@ done
 
 echo "==> normal-review setup keeps credentials out of agent environments and config"
 FAKE_SECURITY="$TEST_DIR/security"
-FAKE_KEYCHAIN_STATE="$TEST_DIR/keychain-state"
+FAKE_KEYCHAIN_DIR="$TEST_DIR/keychain"
 FAKE_KEYCHAIN_LOG="$TEST_DIR/keychain-log"
 cat >"$FAKE_SECURITY" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+account=""
+args=("$@")
+index=0
+while [ "$index" -lt "${#args[@]}" ]; do
+  if [ "${args[$index]}" = -a ]; then
+    index=$((index + 1))
+    account="${args[$index]}"
+    break
+  fi
+  index=$((index + 1))
+done
+[ -n "$account" ] || exit 2
+key_id="$(printf '%s' "$account" | cksum | awk '{print $1}')"
+state="$TOUCHSTONE_FAKE_KEYCHAIN_DIR/$key_id"
+mkdir -p "$TOUCHSTONE_FAKE_KEYCHAIN_DIR"
 case "${1:-}" in
   find-generic-password)
-    [ -f "$TOUCHSTONE_FAKE_KEYCHAIN_STATE" ] || exit 44
+    [ "${TOUCHSTONE_FAKE_READBACK_FAIL:-false}" != true ] || exit 45
+    [ -f "$state" ] || exit 44
     printf 'dummy-openrouter-token\n'
     ;;
   add-generic-password)
     printf 'add\n' >>"$TOUCHSTONE_FAKE_KEYCHAIN_LOG"
-    : >"$TOUCHSTONE_FAKE_KEYCHAIN_STATE"
+    : >"$state"
     ;;
   delete-generic-password)
     printf 'delete\n' >>"$TOUCHSTONE_FAKE_KEYCHAIN_LOG"
-    rm -f "$TOUCHSTONE_FAKE_KEYCHAIN_STATE"
+    rm -f "$state"
     ;;
   *) exit 2 ;;
 esac
@@ -702,9 +718,16 @@ chmod +x "$FAKE_SECURITY"
 review_command() {
   TOUCHSTONE_REVIEW_PLATFORM=Darwin \
     TOUCHSTONE_REVIEW_SECURITY_BIN="$FAKE_SECURITY" \
-    TOUCHSTONE_FAKE_KEYCHAIN_STATE="$FAKE_KEYCHAIN_STATE" \
+    TOUCHSTONE_FAKE_KEYCHAIN_DIR="$FAKE_KEYCHAIN_DIR" \
     TOUCHSTONE_FAKE_KEYCHAIN_LOG="$FAKE_KEYCHAIN_LOG" \
+    TOUCHSTONE_FAKE_READBACK_FAIL="${TOUCHSTONE_FAKE_READBACK_FAIL:-false}" \
     bash "$TOUCHSTONE_ROOT/bin/touchstone" review "$@"
+}
+
+fake_key_path() {
+  local key_id
+  key_id="$(printf '%s' "$1" | cksum | awk '{print $1}')"
+  printf '%s/%s\n' "$FAKE_KEYCHAIN_DIR" "$key_id"
 }
 
 REVIEW_HOME="$TEST_DIR/review-codex"
@@ -747,9 +770,29 @@ add_count="$(grep -c '^add$' "$FAKE_KEYCHAIN_LOG" || true)"
 [ "$add_count" = 1 ] \
   || fail "idempotent setup prompted for the key $add_count times"
 
+review_command rotate --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "normal-review credential rotation failed"
+add_count="$(grep -c '^add$' "$FAKE_KEYCHAIN_LOG" || true)"
+[ "$add_count" = 2 ] \
+  || fail "rotation did not replace the existing Keychain credential"
+if review_command rotate --codex-home "$REVIEW_HOME" --dry-run >/dev/null 2>&1; then
+  fail "credential rotation accepted --dry-run even though it would mutate Keychain"
+fi
+
+SECOND_REVIEW_HOME="$TEST_DIR/review-codex-second"
+review_command setup --codex-home "$SECOND_REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "a second Codex home could not configure its own credential"
+review_command uninstall --codex-home "$SECOND_REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "the second Codex home could not uninstall cleanly"
+review_command check --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "uninstalling one Codex home deleted another home's credential"
+
 printf '# local edit\n' >>"$REVIEW_HOME/review-normal.config.toml"
 if review_command setup --codex-home "$REVIEW_HOME" >/dev/null 2>&1; then
   fail "setup overwrote local edits in a managed profile"
+fi
+if review_command uninstall --codex-home "$REVIEW_HOME" --dry-run >/dev/null 2>&1; then
+  fail "uninstall dry-run accepted profile drift that real uninstall refuses"
 fi
 tail -n 1 "$REVIEW_HOME/review-normal.config.toml" | grep -qF '# local edit' \
   || fail "managed-profile drift was not preserved on refusal"
@@ -763,7 +806,7 @@ review_command uninstall --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
   || fail "uninstall did not restore the operator's previous profile"
 [ ! -e "$REVIEW_HOME/review-normal.config.toml.pre-touchstone" ] \
   || fail "uninstall left the consumed profile backup behind"
-[ ! -e "$FAKE_KEYCHAIN_STATE" ] \
+[ ! -e "$(fake_key_path "$REVIEW_HOME")" ] \
   || fail "uninstall left the managed Keychain credential behind"
 
 DRY_REVIEW_HOME="$TEST_DIR/review-dry"
@@ -772,12 +815,20 @@ review_command setup --codex-home "$DRY_REVIEW_HOME" --dry-run >/dev/null 2>&1 \
 [ ! -e "$DRY_REVIEW_HOME" ] \
   || fail "normal-review dry run mutated Codex home"
 
+READBACK_REVIEW_HOME="$TEST_DIR/review-readback-failure"
+if TOUCHSTONE_FAKE_READBACK_FAIL=true \
+  review_command setup --codex-home "$READBACK_REVIEW_HOME" >/dev/null 2>&1; then
+  fail "normal-review setup accepted a credential it could not read back"
+fi
+[ ! -e "$(fake_key_path "$READBACK_REVIEW_HOME")" ] \
+  || fail "failed credential readback did not roll back the new Keychain item"
+
 BLOCKED_REVIEW_HOME="$TEST_DIR/review-home-is-a-file"
 printf 'not a directory\n' >"$BLOCKED_REVIEW_HOME"
 if review_command setup --codex-home "$BLOCKED_REVIEW_HOME" >/dev/null 2>&1; then
   fail "normal-review setup accepted a file as Codex home"
 fi
-[ ! -e "$FAKE_KEYCHAIN_STATE" ] \
+[ ! -e "$(fake_key_path "$BLOCKED_REVIEW_HOME")" ] \
   || fail "failed profile publication left a newly added Keychain credential behind"
 
 SYMLINK_REVIEW_HOME="$TEST_DIR/review-symlink"
@@ -787,7 +838,7 @@ ln -s "$TEST_DIR/elsewhere-profile" \
 if review_command setup --codex-home "$SYMLINK_REVIEW_HOME" >/dev/null 2>&1; then
   fail "normal-review setup followed a profile symlink"
 fi
-[ ! -e "$FAKE_KEYCHAIN_STATE" ] \
+[ ! -e "$(fake_key_path "$SYMLINK_REVIEW_HOME")" ] \
   || fail "an unsafe profile path caused a credential side effect before refusal"
 
 if TOUCHSTONE_REVIEW_PLATFORM=Linux \
@@ -799,7 +850,7 @@ fi
 assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-steering-install.sh" \
   'Set up lower-cost normal reviews through OpenRouter now?'
 assert_contains "$TOUCHSTONE_ROOT/bin/touchstone" \
-  'touchstone review setup|check|uninstall'
+  'touchstone review setup|check|rotate|uninstall'
 
 if [ "$ERRORS" -gt 0 ]; then
   echo ""
