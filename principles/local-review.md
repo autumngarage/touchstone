@@ -156,25 +156,24 @@ intent and risks. Codex's `--uncommitted` mode sees staged, unstaged, and
 untracked changes, so isolate the slice before running it; do not let unrelated
 dirty state ride along.
 
-The normal profile is installed once per machine with:
+The normal credential is configured once per machine with:
 
 ```bash
 touchstone review setup
 ```
 
-On macOS, setup securely prompts for a dedicated OpenRouter key, saves it in
-Keychain, and installs the canonical profile at
-`${CODEX_HOME:-$HOME/.codex}/review-normal.config.toml`. The launcher passes the
-key only to the Codex parent process; the profile removes it from model-issued
-subprocess environments. Already-running Claude, Codex, and Gemini sessions
-need no environment refresh, and future reviews need no approval prompt.
-`touchstone steering install` offers this setup during interactive onboarding.
-The shipped config shape is owned by `config/review-normal.config.toml`;
-credentials never appear in it.
+On macOS, setup securely prompts for a dedicated OpenRouter key and saves it in
+Keychain. For each run, the launcher stages the canonical profile in a
+disposable Codex home, passes the key only to that Codex parent process, and
+removes it from model-issued subprocess environments. Already-running Claude,
+Codex, and Gemini sessions need no environment refresh, and future reviews need
+no approval prompt. `touchstone steering install` offers this setup during
+interactive onboarding. The shipped config shape is owned by
+`config/review-normal.config.toml`; credentials never appear in it.
 
 Check the complete boundary before invocation because Codex 0.149 falls back
-silently when a named profile file is absent (AUT-500), and a readable profile
-with an unavailable credential fails later with less useful context:
+silently when a named profile file is absent (AUT-500), and an unavailable
+credential fails later with less useful context:
 
 ```bash
 touchstone review check

@@ -1,5 +1,5 @@
 # touchstone:review-normal:v1
-# Managed by `touchstone review setup`. Do not put credentials in this file.
+# Staged in disposable Codex state by `touchstone review run`. No credentials.
 
 model = "openrouter/pareto-code"
 model_provider = "openrouter"
