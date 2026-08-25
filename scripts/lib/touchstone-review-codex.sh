@@ -54,9 +54,10 @@ touchstone_codex_canonical_path() {
 
 touchstone_resolve_codex_native() {
   local candidate="$1" platform="$2" machine="$3"
-  local package_root package_scope platform_package target_triple package_candidate leaf native
+  local package_root package_scope platform_package target_triple package_candidate leaf native bundled_path
 
   candidate="$(touchstone_codex_canonical_path "$candidate")" || return
+  bundled_path=""
 
   case "$candidate" in
     */@openai/codex/bin/codex.js)
@@ -97,10 +98,20 @@ touchstone_resolve_codex_native() {
         return
       }
       candidate="$(touchstone_codex_canonical_path "$native")" || return
+      if [ -d "$(dirname "$(dirname "$candidate")")/path" ]; then
+        bundled_path="$(cd "$(dirname "$(dirname "$candidate")")/path" && pwd -P)" || return
+        case "$bundled_path" in
+          *:*)
+            touchstone_codex_fail "official npm Codex bundled-tool path cannot be represented safely: $bundled_path"
+            return
+            ;;
+        esac
+      fi
       ;;
   esac
 
   printf '%s\n' "$candidate"
+  [ -z "$bundled_path" ] || printf '%s\n' "$bundled_path"
 }
 
 touchstone_verify_openai_codex() {

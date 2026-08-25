@@ -102,15 +102,28 @@ require_usable_key() {
 }
 
 resolve_codex() {
-  local candidate signature_error
+  local candidate resolution bundled_path signature_error
   candidate="$(command -v codex 2>/dev/null || true)"
   [ -n "$candidate" ] && [ -x "$candidate" ] \
     || die "Codex is unavailable; install the signed OpenAI Codex CLI before running normal review"
-  if ! candidate="$(touchstone_resolve_codex_native "$candidate" "$PLATFORM" "$(uname -m)" 2>&1)"; then
-    die "$candidate"
+  if ! resolution="$(touchstone_resolve_codex_native "$candidate" "$PLATFORM" "$(uname -m)" 2>&1)"; then
+    die "$resolution"
   fi
+  candidate="${resolution%%$'\n'*}"
+  bundled_path=""
+  case "$resolution" in
+    *$'\n'*) bundled_path="${resolution#*$'\n'}" ;;
+  esac
   if ! signature_error="$(touchstone_verify_openai_codex "$candidate" /usr/bin/codesign 2>&1)"; then
     die "$signature_error"
+  fi
+  if [ -n "$bundled_path" ]; then
+    if [ -n "${PATH:-}" ]; then
+      PATH="$bundled_path:$PATH"
+    else
+      PATH="$bundled_path"
+    fi
+    export PATH
   fi
   CODEX_BIN="$candidate"
 }

@@ -766,6 +766,8 @@ assert_contains "$REVIEW_CODEX_LIB" \
   '"$codesign_bin" --verify --deep --strict'
 assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
   'touchstone_verify_openai_codex "$candidate" /usr/bin/codesign'
+assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
+  'PATH="$bundled_path:$PATH"'
 assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
   "TOUCHSTONE_REVIEW_CODEX_BIN"
 for boundary in \
@@ -786,8 +788,9 @@ NPM_PREFIX="$TEST_DIR/npm-prefix"
 NPM_PACKAGE="$NPM_PREFIX/lib/node_modules/@openai/codex"
 NPM_LAUNCHER="$NPM_PACKAGE/bin/codex.js"
 NPM_NATIVE="$NPM_PREFIX/lib/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex"
+NPM_TOOLS="$NPM_PREFIX/lib/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/path"
 NPM_MARKER="$TEST_DIR/npm-launcher-executed"
-mkdir -p "$(dirname "$NPM_LAUNCHER")" "$(dirname "$NPM_NATIVE")" "$NPM_PREFIX/bin"
+mkdir -p "$(dirname "$NPM_LAUNCHER")" "$(dirname "$NPM_NATIVE")" "$NPM_TOOLS" "$NPM_PREFIX/bin"
 cat >"$NPM_LAUNCHER" <<EOF
 #!/usr/bin/env bash
 touch "$NPM_MARKER"
@@ -797,11 +800,16 @@ EOF
 chmod +x "$NPM_LAUNCHER" "$NPM_NATIVE"
 ln -s ../lib/node_modules/@openai/codex/bin/codex.js "$NPM_PREFIX/bin/codex"
 NPM_NATIVE_CANONICAL="$(cd "$(dirname "$NPM_NATIVE")" && pwd -P)/$(basename "$NPM_NATIVE")"
+NPM_TOOLS_CANONICAL="$(cd "$NPM_TOOLS" && pwd -P)"
 
-NPM_RESOLVED="$(touchstone_resolve_codex_native "$NPM_PREFIX/bin/codex" Darwin arm64)" \
+NPM_RESOLUTION="$(touchstone_resolve_codex_native "$NPM_PREFIX/bin/codex" Darwin arm64)" \
   || fail "official npm Codex did not resolve"
+NPM_RESOLVED="${NPM_RESOLUTION%%$'\n'*}"
+NPM_RESOLVED_TOOLS="${NPM_RESOLUTION#*$'\n'}"
 [ "$NPM_RESOLVED" = "$NPM_NATIVE_CANONICAL" ] \
   || fail "official npm Codex resolved to $NPM_RESOLVED instead of its native child"
+[ "$NPM_RESOLVED_TOOLS" = "$NPM_TOOLS_CANONICAL" ] \
+  || fail "official npm Codex did not preserve its bundled-tool path"
 [ ! -e "$NPM_MARKER" ] \
   || fail "official npm Codex resolution evaluated the JavaScript launcher"
 
