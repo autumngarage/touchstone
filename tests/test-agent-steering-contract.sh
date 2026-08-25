@@ -785,7 +785,7 @@ source "$REVIEW_CODEX_LIB"
 NPM_PREFIX="$TEST_DIR/npm-prefix"
 NPM_PACKAGE="$NPM_PREFIX/lib/node_modules/@openai/codex"
 NPM_LAUNCHER="$NPM_PACKAGE/bin/codex.js"
-NPM_NATIVE="$NPM_PACKAGE/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
+NPM_NATIVE="$NPM_PREFIX/lib/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex"
 NPM_MARKER="$TEST_DIR/npm-launcher-executed"
 mkdir -p "$(dirname "$NPM_LAUNCHER")" "$(dirname "$NPM_NATIVE")" "$NPM_PREFIX/bin"
 cat >"$NPM_LAUNCHER" <<EOF
@@ -804,6 +804,19 @@ NPM_RESOLVED="$(touchstone_resolve_codex_native "$NPM_PREFIX/bin/codex" Darwin a
   || fail "official npm Codex resolved to $NPM_RESOLVED instead of its native child"
 [ ! -e "$NPM_MARKER" ] \
   || fail "official npm Codex resolution evaluated the JavaScript launcher"
+
+NESTED_PACKAGE="$TEST_DIR/npm-nested/lib/node_modules/@openai/codex"
+NESTED_LAUNCHER="$NESTED_PACKAGE/bin/codex.js"
+NESTED_NATIVE="$NESTED_PACKAGE/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
+mkdir -p "$(dirname "$NESTED_LAUNCHER")" "$(dirname "$NESTED_NATIVE")"
+: >"$NESTED_LAUNCHER"
+: >"$NESTED_NATIVE"
+chmod +x "$NESTED_LAUNCHER" "$NESTED_NATIVE"
+NESTED_NATIVE_CANONICAL="$(cd "$(dirname "$NESTED_NATIVE")" && pwd -P)/$(basename "$NESTED_NATIVE")"
+NESTED_RESOLVED="$(touchstone_resolve_codex_native "$NESTED_LAUNCHER" Darwin arm64)" \
+  || fail "nested official npm Codex did not resolve"
+[ "$NESTED_RESOLVED" = "$NESTED_NATIVE_CANONICAL" ] \
+  || fail "nested official npm Codex resolved to $NESTED_RESOLVED instead of its native child"
 
 DIRECT_CODEX="$TEST_DIR/direct-codex"
 : >"$DIRECT_CODEX"

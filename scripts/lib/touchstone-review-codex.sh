@@ -54,7 +54,7 @@ touchstone_codex_canonical_path() {
 
 touchstone_resolve_codex_native() {
   local candidate="$1" platform="$2" machine="$3"
-  local package_root platform_package target_triple native
+  local package_root package_scope platform_package target_triple package_candidate leaf native
 
   candidate="$(touchstone_codex_canonical_path "$candidate")" || return
 
@@ -79,9 +79,21 @@ touchstone_resolve_codex_native() {
           ;;
       esac
       package_root="${candidate%/bin/codex.js}"
-      native="$package_root/node_modules/@openai/$platform_package/vendor/$target_triple/bin/codex"
-      [ -x "$native" ] || {
-        touchstone_codex_fail "official npm Codex native executable is missing or not executable: $native"
+      package_scope="${package_root%/codex}"
+      native=""
+      for package_candidate in \
+        "$package_root/node_modules/@openai/$platform_package" \
+        "$package_scope/$platform_package" \
+        "$package_root"; do
+        for leaf in bin/codex codex/codex; do
+          if [ -x "$package_candidate/vendor/$target_triple/$leaf" ]; then
+            native="$package_candidate/vendor/$target_triple/$leaf"
+            break 2
+          fi
+        done
+      done
+      [ -n "$native" ] || {
+        touchstone_codex_fail "official npm Codex native executable is missing or not executable for package: $platform_package"
         return
       }
       candidate="$(touchstone_codex_canonical_path "$native")" || return
