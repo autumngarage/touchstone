@@ -2030,6 +2030,32 @@ case "$out" in
   *) fail "commit stage produced no sentinel: $out" ;;
 esac
 
+echo "==> a failed commit stage ends with an unmistakable refusal"
+COMMIT_FAIL="$STAGE_TMP/commit-fail"
+make_stage_project "$COMMIT_FAIL" 'schema = 2
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "guard"
+target = "root"
+stage = "commit"
+command = "exit 7"
+required = true'
+set +e
+bash "$RUN_ENGINE" validate --stage commit --project "$COMMIT_FAIL" >"$STAGE_TMP/commit-fail.out" 2>&1
+commit_fail_status=$?
+set -e
+[ "$commit_fail_status" -eq 7 ] || fail "commit-stage failure did not preserve task status 7"
+[ "$(tail -n 1 "$STAGE_TMP/commit-fail.out")" = "COMMIT REFUSED: commit-stage validation failed (1 failure(s))" ] \
+  && pass "commit-stage refusal is the final human-output line" \
+  || fail "commit-stage failure ended ambiguously: $(tail -n 3 "$STAGE_TMP/commit-fail.out" | tr '\n' ' ')"
+
 echo "==> schema 1 means exactly what it meant"
 V1="$STAGE_TMP/v1"
 make_stage_project "$V1" 'schema = 1

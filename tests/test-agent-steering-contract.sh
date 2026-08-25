@@ -56,6 +56,8 @@ for file in \
   assert_contains "$file" "Claim tracked work before implementation"
   assert_contains "$file" "assign yourself through the Linear MCP"
   assert_contains "$file" "unavailable transport is unverifiable"
+  assert_contains "$file" 'Run `git show --stat --oneline HEAD`'
+  assert_contains "$file" 'unchanged `HEAD`: do not ship'
   assert_contains "$file" "Reconcile tracked work"
   assert_contains "$file" 'Closes #123'
   assert_contains "$file" 'Fixes AUT-123'
