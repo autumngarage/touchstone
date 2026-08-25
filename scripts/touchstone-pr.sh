@@ -191,6 +191,14 @@ project_git() {
     git -C "$PROJECT_ROOT" "$@"
 }
 
+# Policy provenance belongs to the Touchstone checkout, never to ambient Git
+# state inherited from a hook or CI runner. Keep these reads isolated for the
+# same reason project_git isolates reads of the consumer repository.
+tool_git() {
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+    git -C "$TOOL_ROOT" "$@"
+}
+
 read_repository() {
   (
     unset GH_REPO GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
@@ -561,12 +569,28 @@ pin_lineage() {
 ENFORCEMENT_STATUS=""
 ENFORCEMENT_MISSING=""
 ENFORCEMENT_POLICY_FILE=""
+ENFORCEMENT_POLICY_CONTENT=""
+ENFORCEMENT_POLICY_BOUND=false
+ENFORCEMENT_POLICY_SOURCE=""
+ENFORCEMENT_POLICY_REVISION=""
+ENFORCEMENT_CANDIDATE_REVISION=""
+ENFORCEMENT_CANDIDATE_SOURCE=""
+ENFORCEMENT_CANDIDATE_ROLE=""
 ENFORCEMENT_POLICY_TYPE=""
 ENFORCEMENT_EXPECTS_QUEUE=true
 ENFORCEMENT_EXPECTS_REVIEW_GATE=true
 
 select_enforcement_policy() {
-  local base_ref="$1" name="${REPO##*/}" candidate candidate_repo source_policy="" policy_branch
+  local base_ref="$1" defer_branch="${2:-false}" name="${REPO##*/}" candidate candidate_repo source_policy="" policy_branch tool_git_root dirty_inventory
+  tool_git_root="$(tool_git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ "$tool_git_root" = "$TOOL_ROOT" ]; then
+    tool_git diff --quiet HEAD -- policy/github/touchstone-main.json policy/github/consumers policy/github/workflow-sources \
+      && tool_git diff --cached --quiet HEAD -- policy/github/touchstone-main.json policy/github/consumers policy/github/workflow-sources \
+      || fail_operation "the policy inventory is not represented by source revision $(tool_git rev-parse HEAD)" "Commit or discard every policy inventory edit before assessing enforcement."
+    dirty_inventory="$(tool_git ls-files --others --exclude-standard -- policy/github/touchstone-main.json policy/github/consumers policy/github/workflow-sources)"
+    [ -z "$dirty_inventory" ] \
+      || fail_operation "the policy inventory is not represented by source revision $(tool_git rev-parse HEAD)" "Commit or discard untracked policy inventory files before assessing enforcement."
+  fi
   ENFORCEMENT_POLICY_FILE="$CANONICAL_POLICY"
   if [ "$REPO" = "autumngarage/touchstone" ]; then
     :
@@ -590,14 +614,136 @@ select_enforcement_policy() {
       fi
     fi
   fi
-  policy_branch="$(jq -er '.branch' "$ENFORCEMENT_POLICY_FILE")" \
-    || fail_operation "could not read the protected branch from $ENFORCEMENT_POLICY_FILE" "Reinstall touchstone; the policy file is corrupt or incomplete."
-  [ "$policy_branch" = "$base_ref" ] \
-    || fail_operation "$ENFORCEMENT_POLICY_FILE protects $policy_branch, not PR base $base_ref" "Use a checked-in policy for $REPO@$base_ref; enforcement cannot be inferred from another branch."
+  if [ "$defer_branch" = false ]; then
+    policy_branch="$(jq -er '.branch' "$ENFORCEMENT_POLICY_FILE")" \
+      || fail_operation "could not read the protected branch from $ENFORCEMENT_POLICY_FILE" "Reinstall touchstone; the policy file is corrupt or incomplete."
+    [ "$policy_branch" = "$base_ref" ] \
+      || fail_operation "$ENFORCEMENT_POLICY_FILE protects $policy_branch, not PR base $base_ref" "Use a checked-in policy for $REPO@$base_ref; enforcement cannot be inferred from another branch."
+  fi
+}
+
+enforcement_policy_jq() {
+  if [ "$ENFORCEMENT_POLICY_BOUND" = true ]; then
+    printf '%s' "$ENFORCEMENT_POLICY_CONTENT" | jq "$@"
+  else
+    jq "$@" "$ENFORCEMENT_POLICY_FILE"
+  fi
+}
+
+bind_enforcement_policy() {
+  local policy_revision="${1:-}" candidate_revision="${2:-}" candidate_repo="${3:-}" pr_number="${4:-}" base_ref="${5:-}"
+  local tool_git_root="" source_blob working_blob changed_rows changed_status changed_path previous_path
+  ENFORCEMENT_POLICY_SOURCE="${ENFORCEMENT_POLICY_FILE#"$TOOL_ROOT"/}"
+  ENFORCEMENT_POLICY_CONTENT=""
+  ENFORCEMENT_POLICY_BOUND=false
+  ENFORCEMENT_POLICY_REVISION=""
+  ENFORCEMENT_CANDIDATE_REVISION=""
+  ENFORCEMENT_CANDIDATE_SOURCE=""
+  ENFORCEMENT_CANDIDATE_ROLE=""
+
+  # A Touchstone PR is the one place where the tool tree can carry policy
+  # that GitHub cannot enforce until after merge. Assess the live base against
+  # the immutable policy bytes at the PR's base SHA; the candidate head is
+  # separately reported as desired-after-merge when it changes those bytes.
+  if [ "$REPO" = "autumngarage/touchstone" ] && [ -n "$policy_revision" ]; then
+    case "$policy_revision" in *[!0-9a-fA-F]* | "")
+      fail_operation "PR base policy revision is not an immutable commit SHA: $policy_revision" "Retry after GitHub returns the complete PR binding."
+      ;;
+    esac
+    [ "${#policy_revision}" -eq 40 ] \
+      || fail_operation "PR base policy revision is not a full commit SHA: $policy_revision" "Retry after GitHub returns the complete PR binding."
+    ENFORCEMENT_POLICY_CONTENT="$(project_git show "$policy_revision:$ENFORCEMENT_POLICY_SOURCE" 2>/dev/null)" \
+      || fail_operation "could not resolve $ENFORCEMENT_POLICY_SOURCE at PR base $policy_revision" "Fetch the PR base commit, then retry."
+    ENFORCEMENT_POLICY_BOUND=true
+    ENFORCEMENT_POLICY_REVISION="$(printf '%s' "$policy_revision" | tr 'A-F' 'a-f')"
+    if [ -n "$candidate_revision" ]; then
+      case "$candidate_revision" in *[!0-9a-fA-F]* | "")
+        fail_operation "candidate policy revision is not an immutable commit SHA: $candidate_revision" "Retry after GitHub returns the complete PR binding."
+        ;;
+      esac
+      [ "${#candidate_revision}" -eq 40 ] \
+        || fail_operation "candidate policy revision is not a full commit SHA: $candidate_revision" "Retry after GitHub returns the complete PR binding."
+      case "$pr_number" in *[!0-9]* | "")
+        fail_operation "GitHub returned no pull request number for candidate policy $candidate_revision" "Retry after GitHub returns the complete PR binding."
+        ;;
+      esac
+      read_with_retry gh api --paginate --hostname "$REPO_HOST" \
+        "repos/$REPO/pulls/$pr_number/files?per_page=100" \
+        --jq '.[] | select(.filename == "policy/github/touchstone-main.json" or .previous_filename == "policy/github/touchstone-main.json") | [.status, .filename, (.previous_filename // "-")] | @tsv' \
+        || fail_operation "could not inspect the files changed by PR #$pr_number: $READ_OUTPUT" "Retry after GitHub recovers."
+      changed_rows="$READ_OUTPUT"
+      # The file list is live PR state, unlike the content reads below which
+      # address immutable commits. Bind it back to the coordinates captured by
+      # read_pr_row before interpreting it as this head's candidate intent.
+      verify_live_head_and_base "$pr_number" "$candidate_revision" "$base_ref" "$policy_revision"
+      if [ -n "$changed_rows" ]; then
+        [ "$(printf '%s\n' "$changed_rows" | awk 'NF { count++ } END { print count + 0 }')" -eq 1 ] \
+          || fail_operation "PR #$pr_number reports multiple changes for $ENFORCEMENT_POLICY_SOURCE" "Inspect the pull request file list."
+        IFS="$(printf '\t')" read -r changed_status changed_path previous_path <<<"$changed_rows"
+        [ "$changed_status" != renamed ] || [ "$previous_path" = "$ENFORCEMENT_POLICY_SOURCE" ] \
+          || fail_operation "PR #$pr_number reports an unexpected prior policy path '$previous_path'" "Inspect the pull request file list."
+        ENFORCEMENT_CANDIDATE_REVISION="$(printf '%s' "$candidate_revision" | tr 'A-F' 'a-f')"
+        case "$changed_status" in
+          removed)
+            ENFORCEMENT_CANDIDATE_SOURCE="$ENFORCEMENT_POLICY_SOURCE"
+            ENFORCEMENT_CANDIDATE_ROLE="absent-after-merge"
+            ;;
+          modified | added | renamed)
+            case "$candidate_repo" in */*) ;; *)
+              fail_operation "GitHub returned no candidate repository for changed policy $candidate_revision" "Retry after GitHub returns the complete PR source."
+              ;;
+            esac
+            ENFORCEMENT_CANDIDATE_SOURCE="$changed_path"
+            ENFORCEMENT_CANDIDATE_ROLE="desired-after-merge"
+            ;;
+          *) fail_operation "PR #$pr_number reports unsupported policy change status '$changed_status'" "Inspect the pull request file list." ;;
+        esac
+      fi
+      if [ "$ENFORCEMENT_CANDIDATE_ROLE" = desired-after-merge ]; then
+        read_with_retry gh api --hostname "$REPO_HOST" -H "Accept: application/vnd.github.raw+json" \
+          "repos/$candidate_repo/contents/$ENFORCEMENT_CANDIDATE_SOURCE?ref=$candidate_revision" \
+          || fail_operation "could not resolve changed $ENFORCEMENT_CANDIDATE_SOURCE at $candidate_repo@$candidate_revision: $READ_OUTPUT" "Restore access to the PR source, then retry."
+        # Candidate bytes are post-merge intent, not enforcement input. Do not
+        # locally adjudicate their schema: the protected validation workflow
+        # owns that verdict. Exact byte equality is enough to suppress a false
+        # candidate when GitHub reports a modified file with unchanged content.
+        if [ "$changed_status" = modified ] && [ "$ENFORCEMENT_POLICY_CONTENT" = "$READ_OUTPUT" ]; then
+          ENFORCEMENT_CANDIDATE_REVISION=""
+          ENFORCEMENT_CANDIDATE_SOURCE=""
+          ENFORCEMENT_CANDIDATE_ROLE=""
+        fi
+      fi
+    fi
+    return 0
+  fi
+
+  # A source checkout is bound to the commit that contains the exact policy
+  # bytes being evaluated. A modified policy has no immutable revision and is
+  # refused. A packaged install is the reviewed release named by VERSION.
+  tool_git_root="$(tool_git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ "$tool_git_root" = "$TOOL_ROOT" ]; then
+    ENFORCEMENT_POLICY_REVISION="$(tool_git rev-parse HEAD 2>/dev/null)" \
+      || fail_operation "could not resolve the source policy revision" "Repair the Touchstone checkout, then retry."
+    source_blob="$(tool_git rev-parse "$ENFORCEMENT_POLICY_REVISION:$ENFORCEMENT_POLICY_SOURCE" 2>/dev/null)" \
+      || fail_operation "could not resolve $ENFORCEMENT_POLICY_SOURCE at $ENFORCEMENT_POLICY_REVISION" "Use a commit that contains the selected policy."
+    working_blob="$(tool_git hash-object "$ENFORCEMENT_POLICY_FILE")" \
+      || fail_operation "could not hash $ENFORCEMENT_POLICY_SOURCE" "Use a readable policy artifact."
+    [ "$source_blob" = "$working_blob" ] \
+      || fail_operation "$ENFORCEMENT_POLICY_SOURCE is not represented by source revision $ENFORCEMENT_POLICY_REVISION" "Commit or discard the policy edit before assessing enforcement."
+  else
+    local version
+    version="$(cat "$TOOL_ROOT/VERSION" 2>/dev/null)" \
+      || fail_operation "could not resolve the installed policy release" "Reinstall touchstone."
+    if ! printf '%s\n' "$version" | awk -F. 'NF == 3 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ { found=1 } END { exit !found }'; then
+      fail_operation "installed VERSION does not name a release: $version" "Reinstall touchstone."
+    fi
+    ENFORCEMENT_POLICY_REVISION="v$version"
+  fi
 }
 
 read_enforcement() {
-  local base_ref="$1" encoded expected expected_statuses expected_count policy_file policy_type
+  local base_ref="$1" policy_revision="${2:-}" candidate_revision="${3:-}" candidate_repo="${4:-}" pr_number="${5:-}"
+  local encoded expected expected_statuses expected_count policy_file policy_type policy_branch
   encoded="$(uri_encode "$base_ref")"
   # The expected pins travel with the tool: a workflow at the right path but
   # from another repository, another ref, or a stale revision is not the
@@ -607,17 +753,26 @@ read_enforcement() {
   # Required gates/statuses must be complete, or the read fails rather than
   # silently expecting nothing.
   local expect_queue
-  select_enforcement_policy "$base_ref"
+  if [ "$REPO" = "autumngarage/touchstone" ] && [ -n "$policy_revision" ]; then
+    select_enforcement_policy "$base_ref" true
+  else
+    select_enforcement_policy "$base_ref"
+  fi
+  bind_enforcement_policy "$policy_revision" "$candidate_revision" "$candidate_repo" "$pr_number" "$base_ref"
   policy_file="$ENFORCEMENT_POLICY_FILE"
-  [ -f "$policy_file" ] \
+  [ "$ENFORCEMENT_POLICY_BOUND" = true ] || [ -f "$policy_file" ] \
     || fail_operation "the tool's policy file is missing: $policy_file" "Reinstall touchstone."
-  policy_type="$(jq -er '.policyType // "consumer"' "$policy_file")" \
+  policy_branch="$(enforcement_policy_jq -er '.branch')" \
+    || fail_operation "could not read the protected branch from $ENFORCEMENT_POLICY_SOURCE at $ENFORCEMENT_POLICY_REVISION" "Use a complete policy artifact."
+  [ "$policy_branch" = "$base_ref" ] \
+    || fail_operation "$ENFORCEMENT_POLICY_SOURCE at $ENFORCEMENT_POLICY_REVISION protects $policy_branch, not PR base $base_ref" "Use a policy for $REPO@$base_ref; enforcement cannot be inferred from another branch."
+  policy_type="$(enforcement_policy_jq -er '.policyType // "consumer"')" \
     || fail_operation "could not read the policy type from $policy_file" "Reinstall touchstone."
-  expected_statuses="$(jq -c '[.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]? | {context, integration_id: (.integration_id // null)}]' "$policy_file")" \
+  expected_statuses="$(enforcement_policy_jq -c '[.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]? | {context, integration_id: (.integration_id // null)}]')" \
     || fail_operation "could not read the expected status checks from $policy_file" "Reinstall touchstone."
   case "$policy_type" in
     consumer)
-      expected="$(jq -c '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | {path, repository_id, ref, sha}]' "$policy_file")" \
+      expected="$(enforcement_policy_jq -c '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | {path, repository_id, ref, sha}]')" \
         || fail_operation "could not read the expected workflow pins from $policy_file" "Reinstall touchstone."
       local gate_path
       for gate_path in .github/workflows/validate.yml .github/workflows/review-gate.yml .github/workflows/delivery-evidence.yml; do
@@ -632,7 +787,7 @@ read_enforcement() {
       ;;
     *) fail_operation "$policy_file has unsupported policy type '$policy_type'" "Reinstall touchstone." ;;
   esac
-  expect_queue="$(jq -r 'if .managedRepositoryRuleset == null then "false" else "true" end' "$policy_file")"
+  expect_queue="$(enforcement_policy_jq -r 'if .managedRepositoryRuleset == null then "false" else "true" end')"
   ENFORCEMENT_POLICY_TYPE="$policy_type"
   ENFORCEMENT_EXPECTS_QUEUE="$expect_queue"
   ENFORCEMENT_EXPECTS_REVIEW_GATE="$(printf '%s' "$expected" | jq 'any(.path == ".github/workflows/review-gate.yml")')"
@@ -659,9 +814,10 @@ read_enforcement() {
           ($w | map(select(.path == $e.path))) as $found
           | ($found | map(select(.repository_id == $e.repository_id and .ref == $e.ref))) as $same
           | ($e.path | split("/") | last | sub("[.]yml$"; "")) as $name
-          | if ($found | length) == 0 then ["gate", $name, "absent", "", "", "", ""]
+          | if ($found | length) == 0 then ["gate", $name, "absent", ($e.repository_id | tostring), $e.ref, ($e.sha | ascii_downcase), ""]
             elif any($same[]; ((.sha // "") | ascii_downcase) == ($e.sha | ascii_downcase)) then ["gate", $name, "pinned", "", "", "", ""]
-            elif ($same | length) == 0 then ["gate", $name, "other-source", "", "", "", ""]
+            elif ($same | length) == 0 then ["gate", $name, "other-source", ($e.repository_id | tostring), $e.ref, ($e.sha | ascii_downcase),
+                  ([$found[] | "repo=" + ((.repository_id // "") | tostring) + " ref=" + (.ref // "") + " sha=" + ((.sha // "") | ascii_downcase)] | unique | join(" "))]
             else ["gate", $name, "other-revision", ($e.repository_id | tostring), $e.ref, ($e.sha | ascii_downcase),
                   ([$same[] | (.sha // "") | ascii_downcase | select(. != "")] | unique | join(" "))] end;
       def required_status($e):
@@ -701,12 +857,15 @@ read_enforcement() {
           # the tool carries, enforces at least what the tool expects.
           at-or-ahead) ;;
           unverified)
-            missing_names+=("$name workflow (present but pinned at a revision this tool could not verify: $(printf '%s' "$PIN_LINEAGE_REASON" | tr ',' ';'))")
+            missing_names+=("$name workflow (present but pinned at a revision this tool could not verify: $(printf '%s' "$PIN_LINEAGE_REASON" | tr ',' ';')) [expected $pin_expected; observed ${pin_actual:-unreadable}]")
             ;;
-          *) missing_names+=("$name workflow (present but not pinned at the policy revision)") ;;
+          *) missing_names+=("$name workflow (present but not pinned at the policy revision) [expected $pin_expected; observed ${pin_actual:-unreadable}]") ;;
         esac
         ;;
-      *) missing_names+=("$name workflow (present but not pinned at the policy revision)") ;;
+      other-source)
+        missing_names+=("$name workflow (present but not pinned at the policy revision) [expected repo=$pin_repository_id ref=$pin_ref sha=$pin_expected; observed ${pin_actual:-unreadable}]")
+        ;;
+      *) missing_names+=("$name workflow (present but not pinned at the policy revision) [expected $pin_expected; observed ${pin_actual:-unreadable}]") ;;
     esac
   done <<<"$gate_report"
   if [ -n "$auto_merge_missing" ]; then
@@ -754,16 +913,16 @@ enforcement_remedy() {
     return 0
   fi
   if [ "$REPO" = "autumngarage/touchstone" ]; then
-    printf 'scripts/github-policy.sh apply policy/github/touchstone-main.json (in the Touchstone checkout), then close/reopen open PRs'
+    printf 'in a clean Touchstone checkout at %s, run scripts/github-policy.sh apply policy/github/touchstone-main.json, then close/reopen open PRs' "$ENFORCEMENT_POLICY_REVISION"
   elif [ "$ENFORCEMENT_POLICY_TYPE" = workflow-source ]; then
-    printf 'scripts/github-policy.sh apply %s (in the Touchstone checkout), then close/reopen open PRs' "${ENFORCEMENT_POLICY_FILE#"$TOOL_ROOT"/}"
+    printf 'in a clean Touchstone checkout at %s, run scripts/github-policy.sh apply %s, then close/reopen open PRs' "$ENFORCEMENT_POLICY_REVISION" "$ENFORCEMENT_POLICY_SOURCE"
   elif [ -f "$TOOL_ROOT/policy/github/consumers/$name.json" ] \
     && [ "$(jq -r '"\(.organization)/\(.repository)"' "$TOOL_ROOT/policy/github/consumers/$name.json")" = "$REPO" ]; then
-    printf 'scripts/github-policy.sh apply policy/github/consumers/%s.json (in the Touchstone checkout), then close/reopen open PRs' "$name"
+    printf 'in a clean Touchstone checkout at %s, run scripts/github-policy.sh apply policy/github/consumers/%s.json, then close/reopen open PRs' "$ENFORCEMENT_POLICY_REVISION" "$name"
   elif [ "${REPO%%/*}" = "$(jq -r .organization "$CANONICAL_POLICY")" ]; then
-    printf 'derive a consumer policy first: scripts/derive-consumer-policy.sh %s > policy/github/consumers/%s.json, review and merge it, then scripts/github-policy.sh apply it and close/reopen open PRs' "$name" "$name"
+    printf 'derive a consumer policy first: scripts/derive-consumer-policy.sh %s > policy/github/consumers/%s.json in a clean Touchstone checkout at %s, review and merge it, then scripts/github-policy.sh apply it and close/reopen open PRs' "$name" "$name" "$ENFORCEMENT_POLICY_REVISION"
   else
-    printf 'this tool ships policy for the %s organization only; %s needs its own policy file modelled on policy/github/touchstone-main.json before scripts/github-policy.sh apply' "$(jq -r .organization "$CANONICAL_POLICY")" "$REPO"
+    printf 'this tool ships policy for the %s organization only; %s needs its own policy file modelled at Touchstone revision %s before scripts/github-policy.sh apply' "$(jq -r .organization "$CANONICAL_POLICY")" "$REPO" "$ENFORCEMENT_POLICY_REVISION"
   fi
 }
 
@@ -787,6 +946,23 @@ enforcement_text() {
   fi
 }
 
+policy_binding_json_fields() {
+  printf ',"policy":{"source":'
+  json_string "$ENFORCEMENT_POLICY_SOURCE"
+  printf ',"revision":'
+  json_string "$ENFORCEMENT_POLICY_REVISION"
+  printf '}'
+  if [ -n "$ENFORCEMENT_CANDIDATE_REVISION" ]; then
+    printf ',"candidatePolicy":{"source":'
+    json_string "$ENFORCEMENT_CANDIDATE_SOURCE"
+    printf ',"revision":'
+    json_string "$ENFORCEMENT_CANDIDATE_REVISION"
+    printf ',"role":'
+    json_string "$ENFORCEMENT_CANDIDATE_ROLE"
+    printf '}'
+  fi
+}
+
 policy_status() {
   local base_ref="${BASE_REF:-$DEFAULT_REF}"
   read_enforcement "$base_ref"
@@ -796,12 +972,14 @@ policy_status() {
     printf ',"baseRef":'
     json_string "$base_ref"
     printf ',"policy":'
-    json_string "${ENFORCEMENT_POLICY_FILE#"$TOOL_ROOT"/}"
+    json_string "$ENFORCEMENT_POLICY_SOURCE"
+    printf ',"policyRevision":'
+    json_string "$ENFORCEMENT_POLICY_REVISION"
     printf ',"enforcement":'
     enforcement_json
     printf '}\n'
   else
-    printf 'repository: %s\n  base: %s\n  policy: %s\n  enforcement: %s\n' "$REPO" "$base_ref" "${ENFORCEMENT_POLICY_FILE#"$TOOL_ROOT"/}" "$(enforcement_text)"
+    printf 'repository: %s\n  base: %s\n  policy: %s at %s\n  enforcement: %s\n' "$REPO" "$base_ref" "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" "$(enforcement_text)"
     [ -z "$ENFORCEMENT_MISSING" ] || printf '  remedy: %s\n' "$(enforcement_remedy)"
   fi
 }
@@ -868,14 +1046,16 @@ rerun_review_gate() {
   done
 }
 
-verify_live_head_and_base_ref() {
-  local number="$1" head="$2" base_ref="$3" live_head live_base
-  read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json headRefOid,baseRefName \
-    --jq '[.headRefOid,.baseRefName] | @tsv' \
+verify_live_head_and_base() {
+  local number="$1" head="$2" base_ref="$3" base_sha="$4" live_head live_base live_base_sha
+  read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json headRefOid,baseRefName,baseRefOid \
+    --jq '[.headRefOid,.baseRefName,.baseRefOid] | @tsv' \
     || fail_operation "could not re-read PR coordinates: $READ_OUTPUT" "Inspect GitHub before retrying."
-  IFS="$(printf '\t')" read -r live_head live_base <<<"$READ_OUTPUT"
+  IFS="$(printf '\t')" read -r live_head live_base live_base_sha <<<"$READ_OUTPUT"
   [ "$live_head" = "$head" ] && [ "$live_base" = "$base_ref" ] \
-    || fail_input "PR #$number moved (head $live_head on $live_base) while the review gate was re-run" "Re-review the live head, then retry."
+    || fail_input "PR #$number moved (head $live_head on $live_base at $live_base_sha) after enforcement was assessed" "Re-run against the live head and base policy."
+  [ "$ENFORCEMENT_POLICY_BOUND" = false ] || [ "$live_base_sha" = "$base_sha" ] \
+    || fail_input "PR #$number base advanced from $base_sha to $live_base_sha after enforcement was assessed" "Re-run against the live base policy."
 }
 
 verify_live_coordinates() {
@@ -916,14 +1096,14 @@ wait_for_request_binding() {
   [ "$live_comment" = "$comment_id" ] \
     || fail_operation "review request comment $comment_id is no longer a valid driver request" "Post a fresh exact-head review request."
   verify_live_coordinates "$number" "$head" "$base_ref" "$base_sha"
-  read_enforcement "$base_ref"
+  read_enforcement "$base_ref" "$base_sha"
   # Stderr in both modes: JSON stdout stays data, and the exact-head driver
   # obligation must remain visible where the source policy intentionally has
   # no reusable review gate.
   if [ "$ENFORCEMENT_STATUS" = applied ] && [ "$ENFORCEMENT_EXPECTS_REVIEW_GATE" = false ]; then
-    printf 'The applied workflow-source policy has no pinned review gate; exact-head review remains mandatory driver procedure.\n' >&2
+    printf 'The applied workflow-source policy %s at %s has no pinned review gate; exact-head review remains mandatory driver procedure.\n' "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" >&2
   else
-    printf 'No pinned review gate protects %s here; the request is posted but nothing binds it server-side. Track the policy gap.\n' "$base_ref" >&2
+    printf 'No pinned review gate protects %s here; %s at %s reports the gap, and nothing binds the posted request server-side. Track it.\n' "$base_ref" "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" >&2
   fi
   return 0
 }
@@ -1072,8 +1252,8 @@ $request_marker"
 
 read_pr_row() {
   read_with_retry gh pr view "$PR_NUMBER" --repo "$REPO_SPEC" \
-    --json number,state,url,headRefOid,baseRefName,baseRefOid,mergeStateStatus,isDraft \
-    --jq '[.number,.state,.url,.headRefOid,.baseRefName,.baseRefOid,.mergeStateStatus,.isDraft] | @tsv' \
+    --json number,state,url,headRefOid,headRepository,baseRefName,baseRefOid,mergeStateStatus,isDraft \
+    --jq '[.number,.state,.url,.headRefOid,(.headRepository.nameWithOwner // "-"),.baseRefName,.baseRefOid,.mergeStateStatus,.isDraft] | @tsv' \
     || fail_operation "could not read PR #$PR_NUMBER: $READ_OUTPUT" "Verify the PR and GitHub access."
   PR_ROW="$READ_OUTPUT"
 }
@@ -1115,13 +1295,14 @@ auto_merge_text() {
 }
 
 status_pr() {
-  local number state url head base base_sha merge_state draft
+  local number state url head head_repo base base_sha merge_state draft
   read_pr_row
-  IFS="$(printf '\t')" read -r number state url head base base_sha merge_state draft <<<"$PR_ROW"
+  IFS="$(printf '\t')" read -r number state url head head_repo base base_sha merge_state draft <<<"$PR_ROW"
+  [ "$head_repo" != - ] || head_repo=""
   # Read before the first byte of output: a failed read must produce one
   # error document, not a truncated status followed by another object.
   read_auto_merge_state "$number" "$head"
-  read_enforcement "$base"
+  read_enforcement "$base" "$base_sha" "$head" "$head_repo" "$number"
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"status","status":"observed","pullRequest":%s,"state":' "$OUTPUT_SCHEMA" "$number"
     json_string "$state"
@@ -1139,20 +1320,24 @@ status_pr() {
     auto_merge_json
     printf ',"enforcement":'
     enforcement_json
+    policy_binding_json_fields
     printf '}\n'
   else
-    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  merge state: %s\n  draft: %s\n  auto-merge: %s\n  enforcement on %s: %s\n' \
-      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$merge_state" "$draft" "$(auto_merge_text)" "$base" "$(enforcement_text)"
+    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  merge state: %s\n  draft: %s\n  auto-merge: %s\n  policy: %s at %s\n  enforcement on %s: %s\n' \
+      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$merge_state" "$draft" "$(auto_merge_text)" "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" "$base" "$(enforcement_text)"
+    [ -z "$ENFORCEMENT_CANDIDATE_REVISION" ] \
+      || printf '  candidate policy: %s at %s (%s)\n' "$ENFORCEMENT_CANDIDATE_SOURCE" "$ENFORCEMENT_CANDIDATE_REVISION" "$ENFORCEMENT_CANDIDATE_ROLE"
   fi
 }
 
 merge_pr() {
-  local number state url head base base_sha merge_state draft merge_output merge_status=0
+  local number state url head head_repo base base_sha merge_state draft merge_output merge_status=0
   local merge_diagnostic final_state final_row final_head auto_merge queue_state unguarded_marker prior_records record_author merge_auto
   [ -n "$EXPECTED_HEAD" ] \
     || fail_input "merge requires --head SHA" "Pass the exact reviewed head from GitHub."
   read_pr_row
-  IFS="$(printf '\t')" read -r number state url head base base_sha merge_state draft <<<"$PR_ROW"
+  IFS="$(printf '\t')" read -r number state url head head_repo base base_sha merge_state draft <<<"$PR_ROW"
+  [ "$head_repo" != - ] || head_repo=""
   [ "$EXPECTED_HEAD" = "$head" ] \
     || fail_input "expected head $EXPECTED_HEAD but PR #$PR_NUMBER is at $head" "Re-review the live head."
   if [ "$state" = MERGED ]; then
@@ -1169,7 +1354,12 @@ merge_pr() {
     # native rules beside it. A same-path workflow from elsewhere, a pin
     # behind or off that lineage, and a lineage that cannot be resolved are
     # all not the gate.
-    read_enforcement "$base"
+    read_enforcement "$base" "$base_sha" "$head" "$head_repo" "$number"
+    if [ "$JSON_MODE" = false ]; then
+      printf 'Enforcement assessed with %s at %s.\n' "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" >&2
+      [ -z "$ENFORCEMENT_CANDIDATE_REVISION" ] \
+        || printf 'Candidate %s at %s is %s.\n' "$ENFORCEMENT_CANDIDATE_SOURCE" "$ENFORCEMENT_CANDIDATE_REVISION" "$ENFORCEMENT_CANDIDATE_ROLE" >&2
+    fi
     if [ "$ENFORCEMENT_STATUS" = applied ]; then
       if [ "$ENFORCEMENT_EXPECTS_REVIEW_GATE" = true ]; then
         rerun_review_gate "$number" "$head"
@@ -1179,9 +1369,8 @@ merge_pr() {
       fi
       # A gate re-run may wait for an in-progress run. The source-policy path
       # has no gate to re-run, but both paths must still merge the head and
-      # base ref whose enforcement was just inspected. The base tip may
-      # advance because GitHub's checks and queue remain authoritative.
-      verify_live_head_and_base_ref "$number" "$head" "$base"
+      # exact base policy whose enforcement was just inspected.
+      verify_live_head_and_base "$number" "$head" "$base" "$base_sha"
     else
       # Enforcement is not fully applied on this base: merging here would not
       # be gated the way the policy intends. Missing enforcement is a tracked
@@ -1207,11 +1396,11 @@ merge_pr() {
       prior_records="$(printf '%s\n' "$READ_OUTPUT" | awk '{ total += $1 } END { print total + 0 }')"
       if [ "$prior_records" = 0 ]; then
         gh pr comment "$PR_NUMBER" --repo "$REPO_SPEC" --body "$unguarded_marker
-Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarded\`: enforcement on \`$base\` is $(enforcement_text), so GitHub's requirements for this merge differ from the policy by exactly what is listed (other checks or reviews may still have run). Apply the repository's checked-in policy to close the gap." >/dev/null \
+Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarded\`: enforcement on \`$base\` is $(enforcement_text) using \`$ENFORCEMENT_POLICY_SOURCE\` at \`$ENFORCEMENT_POLICY_REVISION\`, so GitHub's requirements for this merge differ from that policy by exactly what is listed (other checks or reviews may still have run). Apply that policy revision to close the gap." >/dev/null \
           || fail_operation "could not record the unguarded merge request on PR #$PR_NUMBER" "Inspect GitHub before retrying."
       fi
       # The base inspected and recorded must be the base merged into.
-      verify_live_head_and_base_ref "$number" "$head" "$base"
+      verify_live_head_and_base "$number" "$head" "$base" "$base_sha"
       printf 'WARNING: requesting merge of PR #%s without a pinned review gate on %s (recorded on the PR).\n' "$PR_NUMBER" "$base" >&2
     fi
     # Without a merge queue there is nothing to enter: GitHub refuses a plain
@@ -1245,6 +1434,9 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
     printf '{"schema":"%s","operation":"merge","status":"%s","pullRequest":%s,"head":' \
       "$OUTPUT_SCHEMA" "$final_state" "$PR_NUMBER"
     json_string "$EXPECTED_HEAD"
+    if [ -n "$ENFORCEMENT_POLICY_REVISION" ]; then
+      policy_binding_json_fields
+    fi
     printf '}\n'
   else
     printf 'PR #%s: %s at %s\n' "$PR_NUMBER" "$final_state" "$EXPECTED_HEAD"
