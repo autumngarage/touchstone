@@ -10,14 +10,13 @@ approval_policy = "never"
 sandbox_mode = "read-only"
 default_permissions = "touchstone_review"
 
-[permissions.touchstone_review]
-extends = ":read-only"
-
 [permissions.touchstone_review.filesystem]
+":minimal" = "read"
+":workspace_roots" = "read"
 "~/Library/Keychains" = "deny"
 
 [shell_environment_policy]
-inherit = "all"
+inherit = "core"
 
 [shell_environment_policy.filters]
 OPENROUTER_API_KEY = "exclude"

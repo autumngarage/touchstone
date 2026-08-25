@@ -58,7 +58,8 @@ capability; neither may restore background propagation.
 The organization-required workflow remains pinned to an immutable Touchstone
 revision outside the consumer PR and executes the same project contract.
 
-Machine onboarding is one-time and keeps credentials out of agent processes:
+Machine onboarding is one-time and keeps credentials out of review tools and
+durable review state:
 
 ```bash
 touchstone steering install
@@ -68,7 +69,7 @@ touchstone review setup
 The second command securely saves a dedicated OpenRouter key in macOS Keychain.
 `touchstone review check` verifies that boundary and `touchstone review run`
 stages the shipped profile in disposable Codex state, then launches the pass
-without inheriting the key into review-agent shell commands. Serious and
+with core-only environment inheritance and repository-scoped reads. Serious and
 PR-visible reviews remain on their default Codex paths.
 
 `scripts/touchstone-run.sh` is the declaration-only validation engine,

@@ -768,7 +768,9 @@ for boundary in \
 done
 for boundary in \
   'default_permissions = "touchstone_review"' \
-  'extends = ":read-only"' \
+  '":minimal" = "read"' \
+  '":workspace_roots" = "read"' \
+  'inherit = "core"' \
   '"~/Library/Keychains" = "deny"'; do
   assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" "$boundary"
 done
