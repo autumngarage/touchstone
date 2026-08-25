@@ -4,7 +4,7 @@
 # every agent on this machine reads it.
 #
 # Usage:
-#   bash scripts/touchstone-steering-install.sh install [--home DIR] [--dry-run]
+#   bash scripts/touchstone-steering-install.sh install [--home DIR] [--dry-run] [--non-interactive]
 #   bash scripts/touchstone-steering-install.sh check   [--home DIR]
 #   bash scripts/touchstone-steering-install.sh uninstall [--home DIR]
 #
@@ -120,7 +120,9 @@ ACTION="${1:-}"
 shift
 
 HOME_DIR="${HOME:-}"
+HOME_WAS_EXPLICIT=false
 DRY_RUN=false
+NON_INTERACTIVE=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --home)
@@ -129,10 +131,15 @@ while [ "$#" -gt 0 ]; do
         exit 2
       }
       HOME_DIR="$2"
+      HOME_WAS_EXPLICIT=true
       shift 2
       ;;
     --dry-run)
       DRY_RUN=true
+      shift
+      ;;
+    --non-interactive)
+      NON_INTERACTIVE=true
       shift
       ;;
     *)
@@ -149,6 +156,46 @@ die() {
   # so upgrade cannot mistake an unreadable ownership state for opt-out.
   [ "${ACTION:-}" != managed ] || exit 2
   exit 1
+}
+
+offer_review_setup() {
+  local answer review_codex_home
+  [ "$DRY_RUN" = false ] || return 0
+  [ "${TOUCHSTONE_REVIEW_PLATFORM:-$(uname -s)}" = Darwin ] || {
+    echo "Next: configure a review-normal profile for this platform, or record the normal-review waiver when it is unavailable."
+    return 0
+  }
+  if [ "$HOME_WAS_EXPLICIT" = true ]; then
+    review_codex_home="$HOME_DIR/.codex"
+  else
+    review_codex_home="${CODEX_HOME:-$HOME_DIR/.codex}"
+  fi
+  if bash "$ROOT/scripts/touchstone-review-setup.sh" check \
+    --codex-home "$review_codex_home" >/dev/null 2>&1; then
+    echo "==> lower-cost normal review is already configured"
+    return 0
+  fi
+  if [ "$NON_INTERACTIVE" = true ]; then
+    echo "Next: run 'touchstone review setup' once to save an OpenRouter key in macOS Keychain for lower-cost normal reviews."
+    return 0
+  fi
+  if [ -t 0 ] && [ -t 1 ]; then
+    printf '\nSet up lower-cost normal reviews through OpenRouter now? [Y/n] '
+    if ! IFS= read -r answer; then
+      answer=n
+    fi
+    case "$answer" in
+      '' | y | Y | yes | YES | Yes)
+        bash "$ROOT/scripts/touchstone-review-setup.sh" setup \
+          --codex-home "$review_codex_home"
+        ;;
+      *)
+        echo "Skipped. Run 'touchstone review setup' once when you are ready."
+        ;;
+    esac
+  else
+    echo "Next: run 'touchstone review setup' once to save an OpenRouter key in macOS Keychain for lower-cost normal reviews."
+  fi
 }
 
 [ -n "$HOME_DIR" ] || die "no home directory: set HOME or pass --home"
@@ -1111,6 +1158,7 @@ case "$ACTION" in
         echo "==> machine-level steering installed for every supported agent"
       fi
     fi
+    offer_review_setup
     ;;
   uninstall)
     if [ "$DRY_RUN" = true ]; then

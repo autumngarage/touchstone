@@ -58,6 +58,20 @@ capability; neither may restore background propagation.
 The organization-required workflow remains pinned to an immutable Touchstone
 revision outside the consumer PR and executes the same project contract.
 
+Machine onboarding is one-time and keeps credentials out of review tools and
+durable review state:
+
+```bash
+touchstone steering install
+touchstone review setup
+```
+
+The second command securely saves a dedicated OpenRouter key in macOS Keychain.
+`touchstone review check` verifies that boundary and `touchstone review run`
+stages the shipped profile in disposable Codex state, then launches the pass
+with core-only environment inheritance and repository-scoped reads. Serious and
+PR-visible reviews remain on their default Codex paths.
+
 `scripts/touchstone-run.sh` is the declaration-only validation engine,
 accepting schema 1 and schema 2; its contract lives in [docs/validation-contract.md](docs/validation-contract.md).
 `scripts/touchstone-tracker.sh` owns the tracker-neutral verified claim boundary;

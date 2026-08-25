@@ -109,7 +109,7 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
   "abandonment, and a clean tree are not worker-lifecycle evidence"
 
-echo "==> one Codex harness is routed by tier without provider knowledge"
+echo "==> one Codex harness is routed by tier with an explicit normal-review cost lane"
 for file in \
   "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
   "$TOUCHSTONE_ROOT/AGENTS.md" \
@@ -118,20 +118,36 @@ for file in \
   "$TOUCHSTONE_ROOT/principles/local-review.md" \
   "$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md" \
   "$TOUCHSTONE_ROOT/.github/pull_request_template.md"; do
-  assert_contains "$file" 'review-normal.config.toml'
-  assert_contains "$file" 'codex -p review-normal review --uncommitted'
+  assert_contains "$file" 'touchstone review check'
+  assert_contains "$file" 'touchstone review run'
   assert_contains "$file" 'codex review --base <default>'
   assert_contains "$file" 'may waive only when Codex is unavailable'
   assert_not_contains "$file" 'coderabbit review --agent --uncommitted'
 done
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  'test -r "${CODEX_HOME:-$HOME/.codex}/review-normal.config.toml"'
+  'touchstone review setup'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  'back silently when a named profile file is absent'
+  'silently when a named profile file is absent'
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   '## The deep review pass'
-assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'OpenRouter'
-assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'Gemini'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'OpenRouter'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'stages the canonical profile'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  'Never fall back silently to the default'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  'model = "openrouter/pareto-code"'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  'model_reasoning_effort = "medium"'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  'env_key = "OPENROUTER_API_KEY"'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  'OPENROUTER_API_KEY = "exclude"'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  'allow_login_shell = false'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  'sandbox_mode = "read-only"'
+assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  '[model_providers.openrouter.auth]'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'A normal-profile failure never waives this pass.'
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
@@ -467,7 +483,8 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Merge
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "project-documented executable merge boundary"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "It is the whole mechanism"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Parallel file-writing agents use worktrees by default"
-assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Touchstone invokes no model router"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "only model-routing decision"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "OpenRouter Pareto Code"
 
 echo "==> active product surfaces do not reintroduce the retired model router"
 # The two compatibility helpers may name retired paths solely to back them up
@@ -662,6 +679,182 @@ for file in $GATE_FILES; do
     fail "$(basename "$file") retains the superseded unenforced-review caveat"
   fi
 done
+
+echo "==> normal-review setup keeps credentials out of agent environments and config"
+FAKE_SECURITY="$TEST_DIR/security"
+FAKE_KEYCHAIN_DIR="$TEST_DIR/keychain"
+FAKE_KEYCHAIN_LOG="$TEST_DIR/keychain-log"
+cat >"$FAKE_SECURITY" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+account=""
+args=("$@")
+index=0
+while [ "$index" -lt "${#args[@]}" ]; do
+  if [ "${args[$index]}" = -a ]; then
+    index=$((index + 1))
+    account="${args[$index]}"
+    break
+  fi
+  index=$((index + 1))
+done
+[ -n "$account" ] || exit 2
+key_id="$(printf '%s' "$account" | cksum | awk '{print $1}')"
+state="$TOUCHSTONE_FAKE_KEYCHAIN_DIR/$key_id"
+mkdir -p "$TOUCHSTONE_FAKE_KEYCHAIN_DIR"
+case "${1:-}" in
+  find-generic-password)
+    [ "${TOUCHSTONE_FAKE_READBACK_FAIL:-false}" != true ] || exit 45
+    [ -f "$state" ] || exit 44
+    [ "${TOUCHSTONE_FAKE_EMPTY_KEY:-false}" != true ] || exit 0
+    printf 'dummy-openrouter-token\n'
+    ;;
+  add-generic-password)
+    printf 'add\n' >>"$TOUCHSTONE_FAKE_KEYCHAIN_LOG"
+    : >"$state"
+    ;;
+  delete-generic-password)
+    [ "${TOUCHSTONE_FAKE_DELETE_FAIL:-false}" != true ] || exit 46
+    printf 'delete\n' >>"$TOUCHSTONE_FAKE_KEYCHAIN_LOG"
+    rm -f "$state"
+    ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$FAKE_SECURITY"
+
+review_command() {
+  TOUCHSTONE_REVIEW_PLATFORM=Darwin \
+    TOUCHSTONE_REVIEW_SECURITY_BIN="$FAKE_SECURITY" \
+    TOUCHSTONE_FAKE_KEYCHAIN_DIR="$FAKE_KEYCHAIN_DIR" \
+    TOUCHSTONE_FAKE_KEYCHAIN_LOG="$FAKE_KEYCHAIN_LOG" \
+    TOUCHSTONE_FAKE_READBACK_FAIL="${TOUCHSTONE_FAKE_READBACK_FAIL:-false}" \
+    TOUCHSTONE_FAKE_EMPTY_KEY="${TOUCHSTONE_FAKE_EMPTY_KEY:-false}" \
+    TOUCHSTONE_FAKE_DELETE_FAIL="${TOUCHSTONE_FAKE_DELETE_FAIL:-false}" \
+    bash "$TOUCHSTONE_ROOT/bin/touchstone" review "$@"
+}
+
+fake_key_path() {
+  local key_id
+  key_id="$(printf '%s' "$1" | cksum | awk '{print $1}')"
+  printf '%s/%s\n' "$FAKE_KEYCHAIN_DIR" "$key_id"
+}
+
+REVIEW_HOME="$TEST_DIR/review-codex"
+if review_command setup --codex-home "$REVIEW_HOME" >"$TEST_DIR/review-setup.out" 2>&1; then
+  :
+else
+  fail "normal-review setup failed: $(cat "$TEST_DIR/review-setup.out")"
+fi
+if grep -qF 'dummy-openrouter-token' "$TEST_DIR/review-setup.out"; then
+  fail "setup exposed the credential in output"
+fi
+review_command check --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "check failed immediately after setup"
+assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
+  "TeamIdentifier=2DC432GLL2"
+assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
+  'codesign --verify --deep --strict'
+assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
+  "TOUCHSTONE_REVIEW_CODEX_BIN"
+for boundary in \
+  'trust_level=\"untrusted\"' \
+  '--strict-config' \
+  '--disable shell_snapshot' \
+  '--disable plugins' \
+  'shell_environment_policy.filters.OPENROUTER_API_KEY="exclude"' \
+  'exec --ephemeral --ignore-rules review --uncommitted' \
+  'unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE'; do
+  assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" "$boundary"
+done
+for boundary in \
+  'default_permissions = "touchstone_review"' \
+  '":minimal" = "read"' \
+  '":workspace_roots" = "read"' \
+  'inherit = "core"' \
+  '"~/Library/Keychains" = "deny"'; do
+  assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" "$boundary"
+done
+
+review_command setup --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "idempotent setup failed"
+add_count="$(grep -c '^add$' "$FAKE_KEYCHAIN_LOG" || true)"
+[ "$add_count" = 1 ] \
+  || fail "idempotent setup prompted for the key $add_count times"
+
+review_command rotate --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "normal-review credential rotation failed"
+add_count="$(grep -c '^add$' "$FAKE_KEYCHAIN_LOG" || true)"
+[ "$add_count" = 2 ] \
+  || fail "rotation did not replace the existing Keychain credential"
+if review_command rotate --codex-home "$REVIEW_HOME" --dry-run >/dev/null 2>&1; then
+  fail "credential rotation accepted --dry-run even though it would mutate Keychain"
+fi
+
+SECOND_REVIEW_HOME="$TEST_DIR/review-codex-second"
+review_command setup --codex-home "$SECOND_REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "a second Codex home could not configure its own credential"
+review_command uninstall --codex-home "$SECOND_REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "the second Codex home could not uninstall cleanly"
+review_command check --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "uninstalling one Codex home deleted another home's credential"
+
+DELETE_FAILURE_HOME="$TEST_DIR/review-delete-failure"
+review_command setup --codex-home "$DELETE_FAILURE_HOME" >/dev/null 2>&1 \
+  || fail "credential deletion fixture setup failed"
+if TOUCHSTONE_FAKE_DELETE_FAIL=true \
+  review_command uninstall --codex-home "$DELETE_FAILURE_HOME" >/dev/null 2>&1; then
+  fail "uninstall reported success after Keychain credential deletion failed"
+fi
+[ -e "$(fake_key_path "$DELETE_FAILURE_HOME")" ] \
+  || fail "failed credential deletion lost the Keychain item"
+review_command uninstall --codex-home "$DELETE_FAILURE_HOME" >/dev/null 2>&1 \
+  || fail "uninstall did not recover after the transient Keychain failure"
+
+review_command uninstall --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "normal-review uninstall failed"
+[ ! -e "$(fake_key_path "$REVIEW_HOME")" ] \
+  || fail "uninstall left the managed Keychain credential behind"
+
+DRY_REVIEW_HOME="$TEST_DIR/review-dry"
+review_command setup --codex-home "$DRY_REVIEW_HOME" --dry-run >/dev/null 2>&1 \
+  || fail "normal-review dry run failed"
+[ ! -e "$DRY_REVIEW_HOME" ] \
+  || fail "normal-review dry run mutated Codex home"
+
+READBACK_REVIEW_HOME="$TEST_DIR/review-readback-failure"
+if TOUCHSTONE_FAKE_READBACK_FAIL=true \
+  review_command setup --codex-home "$READBACK_REVIEW_HOME" >/dev/null 2>&1; then
+  fail "normal-review setup treated an operational Keychain failure as absence"
+fi
+[ ! -e "$(fake_key_path "$READBACK_REVIEW_HOME")" ] \
+  || fail "an operational Keychain failure caused a credential mutation"
+
+EMPTY_REVIEW_HOME="$TEST_DIR/review-empty-key"
+review_command setup --codex-home "$EMPTY_REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "empty-key fixture setup failed"
+if TOUCHSTONE_FAKE_EMPTY_KEY=true \
+  review_command check --codex-home "$EMPTY_REVIEW_HOME" >/dev/null 2>&1; then
+  fail "normal-review check accepted an empty Keychain credential"
+fi
+TOUCHSTONE_FAKE_EMPTY_KEY=true \
+  review_command uninstall --codex-home "$EMPTY_REVIEW_HOME" >/dev/null 2>&1 \
+  || fail "empty-key fixture uninstall failed"
+[ ! -e "$(fake_key_path "$EMPTY_REVIEW_HOME")" ] \
+  || fail "uninstall left an empty Keychain item behind"
+
+if TOUCHSTONE_REVIEW_PLATFORM=Linux \
+  TOUCHSTONE_REVIEW_SECURITY_BIN="$FAKE_SECURITY" \
+  bash "$TOUCHSTONE_ROOT/bin/touchstone" review check \
+  --codex-home "$REVIEW_HOME" >/dev/null 2>&1; then
+  fail "automatic Keychain review setup claimed support on a non-macOS platform"
+fi
+assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-steering-install.sh" \
+  'Set up lower-cost normal reviews through OpenRouter now?'
+assert_contains "$TOUCHSTONE_ROOT/bin/touchstone" \
+  'steering install --non-interactive'
+assert_contains "$TOUCHSTONE_ROOT/bin/touchstone" \
+  'touchstone review setup|check|run|rotate|uninstall'
 
 if [ "$ERRORS" -gt 0 ]; then
   echo ""

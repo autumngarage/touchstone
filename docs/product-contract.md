@@ -58,6 +58,35 @@ Two costs are accepted deliberately:
 Content outside the managed markers belongs to the operator and is never
 touched; `uninstall` removes the block and leaves the rest byte-identical.
 
+## Normal-review cost lane
+
+Normal local review is intentionally routed through OpenRouter to reduce the
+cost of the common review tier without changing the serious or PR-visible
+review paths. `touchstone review setup` stores a dedicated OpenRouter credential
+in macOS Keychain. `touchstone review check` verifies the shipped profile and
+credential availability before an agent invokes it. A failed check permits the
+documented normal-tier waiver; it never permits a silent fallback to the more
+expensive default profile.
+
+The enforceable invariant is that the key never appears in the profile,
+durable Codex state, the spawned review agent's tool environment, its prompt or
+output, or a repository. The launcher gives it only to one ephemeral Codex
+parent process. That process uses an isolated Codex home, treats the reviewed
+repository as untrusted for configuration, disables shell snapshots and
+plugins, removes the key from every model-issued subprocess, and denies those
+subprocesses access to non-repository user files through Codex's own permission
+profile. Their environment inherits only Codex's core variables, never the
+driver's unrelated credential variables. Strict configuration parsing refuses
+Codex versions that cannot enforce any field in that boundary. The fully
+empowered same-user driving shell remains a trusted principal: no-prompt
+Keychain access cannot also protect a secret from that same principal. The
+Keychain account is scoped to the selected Codex home, so rotating or
+uninstalling one credential cannot invalidate another. `touchstone review
+rotate` is the explicit replacement path for a revoked or expired key. The
+canonical non-secret config shape lives in
+`config/review-normal.config.toml`; prose links to that owner instead of
+duplicating it.
+
 ## Outcome
 
 Touchstone is the standard delivery baseline for one person directing many
@@ -93,6 +122,7 @@ explain that owner's decision; they may not recompute it.
 | Bind merge to the reviewed head | GitHub merge API | Expected head passed to the merge mutation | Moving the head before merge is rejected |
 | Claim work | Configured tracker adapter | Tracker-neutral claim contract | GitHub- and Linear-backed fixtures distinguish verified from unavailable transport |
 | Carry agent steering | The installed tool, machine-wide | One delimited block in each driver's user-level instruction file, the routed principles under `~/.touchstone/principles`, and the bundled Claude skills under `~/.claude/skills` — all installed, checked, and removed by `touchstone steering`; Touchstone installs and manages no repository copy | `touchstone steering check` compares the installed block against the tool's contract; deterministic size-cap, path-integrity, and steering-contract assertions run in the required suite |
+| Route normal local review through the lower-cost lane | The installed tool, machine-wide | Shipped `review-normal` Codex profile plus a Keychain-backed launcher that filters the provider key from the spawned review agent | Offline setup/check/rotate/uninstall fixtures prove per-home isolation, idempotency, distinct missing/empty/error states, and fail-closed credential behavior; launcher assertions and a live adversarial probe cover ephemeral state and subprocess isolation |
 | Adopt and evolve a repository | Touchstone CLI adoption module | Versioned project declarations and reviewable plan/apply output | Fresh, current, repeat, old-compatible, and unsupported-schema fixtures |
 | Make what a session left behind legible | `touchstone cleanup check` (read-only) | Versioned report (`touchstone.cleanup/v1`): checkout, worktrees, finished branches, untracked and dirty files | Each leftover kind is reported once with its remedy and nothing is mutated; a failed GitHub read is a finding, not silence |
 | Install and upgrade the local tool | Homebrew | Versioned formula and checksummed release | Install, upgrade, rollback, and no-project-mutation tests pass |

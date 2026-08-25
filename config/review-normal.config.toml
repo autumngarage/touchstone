@@ -1,0 +1,32 @@
+# touchstone:review-normal:v1
+# Staged in disposable Codex state by `touchstone review run`. No credentials.
+
+model = "openrouter/pareto-code"
+model_provider = "openrouter"
+model_reasoning_effort = "medium"
+model_reasoning_summary = "none"
+allow_login_shell = false
+approval_policy = "never"
+sandbox_mode = "read-only"
+default_permissions = "touchstone_review"
+
+[permissions.touchstone_review.filesystem]
+":minimal" = "read"
+":workspace_roots" = "read"
+"~/Library/Keychains" = "deny"
+
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.filters]
+OPENROUTER_API_KEY = "exclude"
+
+[model_providers.openrouter]
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+env_key = "OPENROUTER_API_KEY"
+wire_api = "responses"
+
+[model_providers.openrouter.http_headers]
+HTTP-Referer = "https://github.com/autumngarage/touchstone"
+X-OpenRouter-Title = "Touchstone Local Review"
