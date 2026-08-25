@@ -609,10 +609,6 @@ child local until its parent merges, rebases the child onto the protected
 default branch, then opens it with `touchstone pr open`. Do not bypass a
 refusal by opening the child against an unmodeled parent with raw `gh`.
 
-A repository may deliberately check in policy for another base. Only then may
-the child open against that base: `touchstone pr open` selects policy for the
-exact base and remains the authority on whether the modeled stack is allowed.
-
 **Exact-head review makes moving stacks multiply work.** Every parent update
 changes or invalidates each descendant's reviewed head. Do not open dependent
 descendants while a parent is still finding-bearing. Prepare them locally, then
@@ -620,16 +616,16 @@ merge the parent and open the rebased child; use parallel PRs only for changes
 that are independently based on the default branch. An open stack is not a
 parallelization mechanism when exact-head evidence is required.
 
-**For a deliberately modeled open stack, retain the head branch on merge.** Do
-not enable `deleteBranchOnMerge`, and do not delete a parent branch that
-children are based on. If a head branch is deleted while open PRs are based on
-it, those PRs can be closed-without-merge with their review discussion
-abandoned — this fired on sentinel PRs #49/#50/#51 (2026-04-16) and is the
-reason the merge path retains branches (issue #713).
+**Recover an inherited open stack; do not create another one.** A stack created
+outside this contract may still exist. Do not enable `deleteBranchOnMerge`, and
+do not delete a parent branch that children are based on. If a head branch is
+deleted while open PRs are based on it, those PRs can be closed-without-merge
+with their review discussion abandoned. This fired on sentinel PRs #49/#50/#51
+(2026-04-16) and is the reason the merge path retains branches (issue #713).
 
-**A modeled open child still needs retargeting after the parent lands.** Nothing
-rebases a child automatically. After the parent merges (resolve the default
-branch once — downstream repositories are not all `main`):
+**An inherited open child still needs retargeting after the parent lands.**
+Nothing rebases a child automatically. After the parent merges (resolve the
+default branch once — downstream repositories are not all `main`):
 
 ```bash
 DEFAULT=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
