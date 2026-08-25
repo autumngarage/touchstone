@@ -229,11 +229,13 @@ Contents: read and write. Then re-run the pinned gate for the head, as
 
 ## Recovering a `DIRTY` PR
 
-Do nothing when the base merely advances: the merge queue tests the combined
-result. Act when GitHub reports `mergeStateStatus: DIRTY`, because the branch
-cannot be merged as-is. Read the PR's base repository, `baseRefName`, and
-`baseRefOid`; inherited stacks, explicit bases, and forks do not necessarily
-target `origin` or the repository default branch.
+With a verified merge queue, do nothing when the base merely advances: the
+queue tests the combined result. Without one, a base advance uses the sequence
+below even when GitHub is not `DIRTY`. Always act when GitHub reports
+`mergeStateStatus: DIRTY`, because the branch cannot be merged as-is. Read the
+PR's base repository, `baseRefName`, and `baseRefOid`; inherited stacks,
+explicit bases, and forks do not necessarily target `origin` or the repository
+default branch.
 
 1. Record the current head and base binding. Fetch `baseRefName` from the base
    repository, refuse unless `FETCH_HEAD` equals the recorded `baseRefOid`, and

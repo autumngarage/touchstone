@@ -326,7 +326,10 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "while a parent is still finding-bearing"
 
 echo "==> dirty PR recovery preserves authored work and re-ships the new head"
 assert_contains "$GIT_WORKFLOW_GUIDE" '## Recovering a `DIRTY` PR'
-assert_contains "$GIT_WORKFLOW_GUIDE" "Read the PR's base repository"
+assert_contains "$GIT_WORKFLOW_GUIDE" 'With a verified merge queue'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  'Without one, a base advance uses the sequence'
+assert_contains "$GIT_WORKFLOW_GUIDE" "PR's base repository"
 assert_contains "$GIT_WORKFLOW_GUIDE" '`baseRefOid`'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
   'unless `FETCH_HEAD` equals the recorded `baseRefOid`'
