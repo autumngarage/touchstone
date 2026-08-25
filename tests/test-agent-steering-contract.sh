@@ -326,12 +326,15 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "while a parent is still finding-bearing"
 
 echo "==> dirty PR recovery preserves authored work and re-ships the new head"
 assert_contains "$GIT_WORKFLOW_GUIDE" '## Recovering a `DIRTY` PR'
+assert_contains "$GIT_WORKFLOW_GUIDE" "Read the PR's \`baseRefName\`"
+assert_contains "$GIT_WORKFLOW_GUIDE" 'merge `origin/<baseRefName>`'
+assert_contains "$GIT_WORKFLOW_GUIDE" 'with the same `--base`'
 assert_contains "$GIT_WORKFLOW_GUIDE" '`--ours` and'
 assert_contains "$GIT_WORKFLOW_GUIDE" '`--theirs` are whole-file operations'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
   'git diff <pre-merge-head> HEAD -- <file...>'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
-  'merge commit is a new head and requires exact-head'
+  'requires exact-head review before it can merge'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
   'started before the exact-head review completed'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
