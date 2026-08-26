@@ -184,9 +184,9 @@ exists to prevent (vesper `ship-pr.sh`, 2026-08-21).
 - `answer` replies to a review finding by its root comment ID, resolves its
   thread, and asks the pinned gate to re-evaluate the head once; its
   `--all-resolved-check` form proves no thread remains. `--fix-commit SHA`
-  appends "Fixed in SHA." to the reply — the SHA is the fix commit the answer
-  claims, recorded as text for the reviewer and the gate, not verified against
-  the branch. Replies carry an invisible marker, so a rerun after a partial
+  appends "Fixed in SHA." only after GitHub resolves the revision and proves it
+  is reachable from the captured PR head; the reply records the canonical full
+  SHA. Replies carry an invisible marker, so a rerun after a partial
   failure (reply posted, resolve failed) resolves the existing thread instead
   of posting again; `--fix-commit` on a rerun does not edit the earlier reply. Raw equivalent:
   `gh api repos/O/R/pulls/N/comments/ID/replies -F body=@FILE`, the GraphQL

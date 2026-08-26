@@ -167,12 +167,6 @@ case "$COMMENT_ID" in *[!0-9]*) fail "--comment-id must be numeric, got: $COMMEN
 [ -f "$BODY_FILE" ] || fail "--body-file not found: $BODY_FILE"
 [ -s "$BODY_FILE" ] || fail "--body-file is empty: $BODY_FILE"
 
-REPLY_BODY="$(cat "$BODY_FILE")"
-if [ -n "$FIX_COMMIT" ]; then
-  REPLY_BODY="$REPLY_BODY
-
-Fixed in $FIX_COMMIT."
-fi
 # The head this answer binds to is captured BEFORE any mutation. Read after
 # the reply, a push landing mid-run would bind the merge hint and the gate
 # re-run to a commit the answer never addressed.
@@ -180,6 +174,32 @@ PR_ROW="$(gh_read pr view "$PR_NUMBER" --json headRefOid,baseRefName --jq '[.hea
   || fail "could not read the PR coordinates: $PR_ROW"
 IFS="$(printf '\t')" read -r HEAD_SHA BASE_REF <<<"$PR_ROW"
 [ -n "$HEAD_SHA" ] && [ -n "$BASE_REF" ] || fail "PR $PR_NUMBER has no readable head and base."
+
+# A fix reference is review evidence, not caller-supplied prose. Resolve it
+# through GitHub, then prove the resulting commit is the captured PR head or
+# one of its ancestors before publishing the canonical SHA. The compare API
+# reports `ahead` when HEAD_SHA descends from the named fix and `identical`
+# when the fix is the head itself; every other relationship is off-head.
+if [ -n "$FIX_COMMIT" ]; then
+  CANONICAL_FIX="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/commits/$FIX_COMMIT" --jq '.sha')" \
+    || fail "--fix-commit '$FIX_COMMIT' does not resolve to a commit in $REPO_WITH_OWNER: $CANONICAL_FIX"
+  [ -n "$CANONICAL_FIX" ] \
+    || fail "--fix-commit '$FIX_COMMIT' resolved without a canonical commit SHA."
+  FIX_RELATION="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/compare/$CANONICAL_FIX...$HEAD_SHA" --jq '.status')" \
+    || fail "could not prove --fix-commit $CANONICAL_FIX is reachable from PR #$PR_NUMBER head $HEAD_SHA: $FIX_RELATION"
+  case "$FIX_RELATION" in
+    ahead | identical) ;;
+    *) fail "--fix-commit $CANONICAL_FIX is not reachable from PR #$PR_NUMBER head $HEAD_SHA (relationship: ${FIX_RELATION:-<empty>})." ;;
+  esac
+  FIX_COMMIT="$CANONICAL_FIX"
+fi
+
+REPLY_BODY="$(cat "$BODY_FILE")"
+if [ -n "$FIX_COMMIT" ]; then
+  REPLY_BODY="$REPLY_BODY
+
+Fixed in $FIX_COMMIT."
+fi
 
 # Idempotency marker: reruns after a partial failure (reply posted, resolve
 # failed) must not post a duplicate reply. The marker is invisible in
