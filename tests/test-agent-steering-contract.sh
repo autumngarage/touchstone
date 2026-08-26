@@ -93,8 +93,22 @@ for file in \
   # driver rather than left only in the routed swarm guide.
   assert_contains "$file" "remove one only after final result delivery"
   assert_contains "$file" "or confirmed cancellation"
+  assert_contains "$file" "this session created"
+  assert_contains "$file" "leave sibling work untouched"
+  assert_contains "$file" "its nonzero exit never authorizes deleting another session's work"
   assert_not_contains "$file" "Review is an enforced gate."
 done
+
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  "repository-scoped, not a session-ownership"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  "delete another session's branch or worktree"
+assert_contains "$TOUCHSTONE_ROOT/bin/touchstone" \
+  "Repository cleanup residue"
+assert_not_contains "$TOUCHSTONE_ROOT/bin/touchstone" \
+  "What a session left behind"
+assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-cleanup.sh" \
+  '"I cleaned up" is a verified state'
 
 assert_contains "$TOUCHSTONE_ROOT/principles/agent-swarms.md" \
   "acknowledged its cancellation; an open"

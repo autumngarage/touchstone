@@ -49,7 +49,7 @@ carry the same numbers and add only the detail the steering leaves out.
 7. **Ship.** Push and open the PR — see "Opening a PR" below.
 8. **Answer every piece of PR feedback before merging.** Reply to each comment and resolve its thread, whoever left it. Where effective policy requires conversation resolution, GitHub blocks unresolved threads; elsewhere resolving them remains mandatory driver procedure.
 9. **Merge**, bound to the head the review actually saw — see "Merging" below.
-10. **Clean up after merge, and before the session ends** — see "Leaving no mess" below. `touchstone cleanup check` must report nothing.
+10. **Clean up after merge, and before the session ends** — see "Leaving no mess" below. Remove everything this session created; `touchstone cleanup check` reports repository-wide residue, including work another session may still own.
 
 ## Before trusting any merge: what does GitHub enforce here?
 
@@ -509,8 +509,8 @@ Cleanup is the step a session skips when the merge lands and attention
 moves on. It is what turned one day of agent work into two stale worktrees,
 ten merged local branches, fifty-six merged remote branches, a `__pycache__`
 that refused the next ship as "dirty", and tracker items left In Progress
-(2026-08-21). Before a session ends, every one of these is true, in this
-order — each line is a command, not advice:
+(2026-08-21). Before a session ends, every item it created satisfies the
+steps below, in this order — each line is a command, not advice:
 
 ```bash
 touchstone cleanup check            # read-only: lists what is left; exit 0 means nothing
@@ -529,11 +529,17 @@ session created go too.
 
 `touchstone cleanup check` never deletes anything — what is finished is the
 driver's decision, and a tool that pruned branches on its own would be
-adjudicating it. It makes the mess legible: checkout not on the default
-branch or behind origin, linked worktrees, local or remote branches whose PR
-is merged or closed, untracked and dirty files. Run it with `--project <dir>`
-for each repository the session touched, and with `--json` when a script
-consumes it (`touchstone.cleanup/v1`).
+adjudicating it. The check is repository-scoped, not a session-ownership
+oracle: a nonzero exit says residue exists, not that this session may remove
+it. Resolve every finding this session owns; leave active sibling work
+untouched, and route stale unowned residue to its owner or tracker. Never
+delete another session's branch or worktree without its lifecycle proof.
+
+The check makes residue legible: checkout not on the default branch or behind
+origin, linked worktrees, local or remote branches whose PR is merged or
+closed, untracked and dirty files. Run it with `--project <dir>` for each
+repository the session touched, and with `--json` when a script consumes it
+(`touchstone.cleanup/v1`).
 
 ## Periodic branch hygiene
 

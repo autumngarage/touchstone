@@ -122,8 +122,8 @@ case "$COMMAND" in
     esac
     ;;
   cleanup)
-    # What a session left behind -- read-only, so "I cleaned up" is a
-    # verified state (step 9) instead of a claim.
+    # Repository cleanup residue -- read-only, so concurrent work is visible
+    # without claiming that this session owns it.
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-cleanup.sh" "$@"
     ;;
   review)
