@@ -1380,6 +1380,7 @@ echo "gh: debug detail for $*" >&2
 }
 has() { local needle="$1"; shift; for arg in "$@"; do [[ "$arg" == *"$needle"* ]] && return 0; done; return 1; }
 value_after() { local wanted="$1"; shift; while [ "$#" -gt 0 ]; do if [ "$1" = "$wanted" ]; then printf '%s\n' "$2"; return 0; fi; shift; done; return 1; }
+field_value() { local wanted="$1"; shift; for arg in "$@"; do case "$arg" in "$wanted"=*) printf '%s\n' "${arg#*=}"; return 0 ;; esac; done; return 1; }
 case "$1 $2" in
   "repo view")
     echo "autumngarage/current"
@@ -1403,7 +1404,24 @@ case "$1 $2" in
     ;;
   "api repos/autumngarage/current/pulls/7/comments/51/replies")
     echo 1 >>"$GH_STATE/replies"
+    field_value body "$@" >"$GH_STATE/reply-body"
     echo "71"
+    ;;
+  "api repos/autumngarage/current/commits/abc123")
+    echo "abcdef0123456789abcdef0123456789abcdef01"
+    ;;
+  "api repos/autumngarage/current/commits/offhead")
+    echo "feedfacefeedfacefeedfacefeedfacefeedface"
+    ;;
+  "api repos/autumngarage/current/commits/missing")
+    echo "gh: HTTP 422 no commit found" >&2
+    exit 1
+    ;;
+  "api repos/autumngarage/current/compare/abcdef0123456789abcdef0123456789abcdef01...abcdef0123456789abcdef0123456789abcdef01")
+    echo "identical"
+    ;;
+  "api repos/autumngarage/current/compare/feedfacefeedfacefeedfacefeedfacefeedface...abcdef0123456789abcdef0123456789abcdef01")
+    echo "diverged"
     ;;
   "pr view")
     # Coordinates (head + base) before the answer; the bare head re-read
@@ -1461,6 +1479,26 @@ STUB
     RUN_RC=$?
     set -e
   }
+
+  echo "==> --fix-commit is verified against the captured PR head before mutation"
+  run 7 --comment-id 51 --body-file "$RR/body" --fix-commit missing
+  [ "$RUN_RC" -ne 0 ] && grep -qF "does not resolve to a commit" "$RR/out" \
+    && [ ! -e "$GH_STATE/replies" ] && [ ! -e "$GH_STATE/resolved" ] \
+    && ok "nonexistent fix commit refused before reply or resolution" \
+    || fail "nonexistent fix commit mutated or lacked a useful refusal (rc=$RUN_RC): $(tail -3 "$RR/out")"
+
+  run 7 --comment-id 51 --body-file "$RR/body" --fix-commit offhead
+  [ "$RUN_RC" -ne 0 ] && grep -qF "is not reachable from PR #7 head" "$RR/out" \
+    && [ ! -e "$GH_STATE/replies" ] && [ ! -e "$GH_STATE/resolved" ] \
+    && ok "off-head fix commit refused before reply or resolution" \
+    || fail "off-head fix commit mutated or lacked a useful refusal (rc=$RUN_RC): $(tail -3 "$RR/out")"
+
+  run 7 --comment-id 51 --body-file "$RR/body" --fix-commit abc123
+  [ "$RUN_RC" -eq 0 ] \
+    && grep -qF 'Fixed in abcdef0123456789abcdef0123456789abcdef01.' "$GH_STATE/reply-body" \
+    && ok "reachable short fix revision normalized to its canonical SHA" \
+    || fail "reachable short fix revision was not normalized (rc=$RUN_RC): $(cat "$RR/out")"
+  rm -f "$GH_STATE/replies" "$GH_STATE/reply-body" "$GH_STATE/resolved"
 
   echo "==> a reply is posted once and the id is parsed from stdout alone"
   run 7 --comment-id 51 --body-file "$RR/body"
