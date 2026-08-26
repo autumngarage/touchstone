@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-# scripts/touchstone-cleanup.sh — report what a session left behind.
+# scripts/touchstone-cleanup.sh — report repository cleanup residue.
 #
 # Usage:
 #   bash scripts/touchstone-cleanup.sh check [--project DIR] [--json]
 #
 # Read-only. It never deletes anything: cleanup is the driver's step 9, and
 # a tool that removed branches or worktrees on its own would be adjudicating
-# what is finished. What it does is make the mess legible, so "I cleaned up"
-# is a verified state rather than a claim. Exit 0 with nothing to report,
+# what is finished. What it does is make repository residue legible without
+# claiming which session owns it. Exit 0 with nothing to report,
 # exit 1 with the list, exit 2 on invalid input; a failed GitHub read is
 # reported as a finding of its own, never silently treated as clean.
 #
@@ -271,7 +271,8 @@ else
   if [ "$FINDING_COUNT" -eq 0 ]; then
     echo "clean: on $DEFAULT_BRANCH at origin, no worktrees, no finished branches, nothing untracked"
   else
-    echo "$FINDING_COUNT thing(s) left behind:"
+    echo "$FINDING_COUNT repository cleanup finding(s):"
+    echo "Resolve only findings this session owns; leave active sibling work untouched and route stale residue."
     for f in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
       IFS=$'\t' read -r kind subject remedy <<<"$f"
       printf '  %-14s %s\n      -> %s\n' "$kind" "$subject" "$remedy"

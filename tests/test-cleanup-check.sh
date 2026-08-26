@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# tests/test-cleanup-check.sh — `touchstone cleanup check` reports what a
-# session left behind and nothing else, without mutating anything.
+# tests/test-cleanup-check.sh — `touchstone cleanup check` reports repository
+# residue without claiming session ownership or mutating anything.
 # Offline: a fake gh answers the three PR-list reads and the repo view.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -107,6 +107,11 @@ git -C "$TMP/repo" branch feat/fork-name "$DONE_SHA"
 rm -f "$TMP/repo/.git/FETCH_HEAD" # the fixture fetched; the check must not
 run
 [ "$RC" -eq 1 ] || fail "leftovers did not exit 1 (rc=$RC)"
+grep -q '^.*repository cleanup finding(s):$' "$TMP/out" \
+  && grep -q '^Resolve only findings this session owns; leave active sibling work untouched and route stale residue\.$' "$TMP/out" \
+  && ! grep -q 'thing(s) left behind' "$TMP/out" \
+  && ok "human output distinguishes repository residue from session ownership" \
+  || fail "human output still claims session ownership: $(head -3 "$TMP/out")"
 for kind in untracked dirty worktree local-branch remote-branch; do
   grep -qE "^  $kind " "$TMP/out" && ok "$kind reported" || fail "$kind not reported: $(cat "$TMP/out")"
 done
