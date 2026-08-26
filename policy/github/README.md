@@ -75,7 +75,9 @@ Touchstone-owned and is never updated or deleted by this script.
 A private repository outside GitHub Enterprise Cloud cannot carry the merge
 queue: GitHub answers `Invalid rule 'merge_queue'` (measured 2026-08-21 on
 autumngarage/vesper and /arpeggio under the Team plan; public repositories
-and Enterprise Cloud accept it). Such consumers are derived with
+and Enterprise Cloud accept it). Autumn Garage moved to Enterprise Cloud on
+2026-08-26, making those private repositories queue-eligible. In an
+ineligible organization, consumers are derived with
 `--no-queue`, which drops only the companion repository ruleset; the pinned
 required workflows, pull-request-only delivery, thread resolution, and the
 native rules still apply, and the merge is not queued — the combination of

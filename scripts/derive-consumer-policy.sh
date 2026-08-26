@@ -16,13 +16,11 @@
 # repositories. tests/test-github-policy.sh refuses a checked-in consumer
 # policy that does not equal this derivation.
 #
-# --no-queue drops the companion merge-queue ruleset. GitHub accepts the
-# merge_queue rule on a private repository only under Enterprise Cloud
-# (measured 2026-08-21: "Invalid rule 'merge_queue'" on autumngarage/vesper
-# and /arpeggio, Team plan); the pinned required workflows, PR-only delivery,
-# thread resolution, and the native rules still apply. The queue returns to
-# such a consumer the day the plan or the visibility changes, by regenerating
-# without the flag.
+# --no-queue drops the companion merge-queue ruleset for a repository whose
+# current GitHub plan or visibility does not support it. The compatibility
+# evidence lives in policy/github/README.md; the pinned required workflows,
+# PR-only delivery, thread resolution, and native rules still apply. The queue
+# returns when eligibility changes by regenerating without this flag.
 #
 # --require-status CONTEXT (repeatable) adds one repository-owned required
 # status check to the consumer's ruleset, on top of the pinned workflows. It
