@@ -4,7 +4,10 @@
 # policy from the canonical Touchstone policy.
 #
 # Usage:
-#   bash scripts/derive-consumer-policy.sh REPOSITORY [--no-queue] [--require-status CONTEXT]... > policy/github/consumers/REPOSITORY.json
+#   bash scripts/derive-consumer-policy.sh REPOSITORY [--no-queue]
+#     [--require-status CONTEXT]...
+#     [--require-merge-group-status CONTEXT]...
+#     > policy/github/consumers/REPOSITORY.json
 #
 # A consumer's policy is the canonical policy with the repository name
 # substituted everywhere it appears as an ownership coordinate, and without
@@ -29,10 +32,16 @@
 # requiring a gate the project relies on. It is the only per-consumer
 # variation besides the queue: the canonical rules are never removed or
 # weakened, only joined by a context the consumer names and owns.
+#
+# --require-merge-group-status CONTEXT is the queued counterpart. It makes the
+# same required-status declaration while keeping the merge queue, and is an
+# explicit assertion that the repository-owned publisher runs for
+# `merge_group`. Keeping the two flags distinct makes the event contract
+# checked-in data instead of guessing from a status name.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 usage() {
-  echo "usage: derive-consumer-policy.sh REPOSITORY [--no-queue] [--require-status CONTEXT]..." >&2
+  echo "usage: derive-consumer-policy.sh REPOSITORY [--no-queue] [--require-status CONTEXT]... [--require-merge-group-status CONTEXT]..." >&2
   exit 2
 }
 REPOSITORY="${1:-}"
@@ -45,6 +54,7 @@ STATUS_CONTEXTS=()
 # Counted explicitly: under bash 3.2 with set -u, ${#array[@]} on an empty
 # array is an unbound-variable error.
 STATUS_COUNT=0
+STATUS_EVENT=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --no-queue)
@@ -61,17 +71,33 @@ while [ "$#" -gt 0 ]; do
       esac
       STATUS_CONTEXTS+=("$2")
       STATUS_COUNT=$((STATUS_COUNT + 1))
+      [ -z "$STATUS_EVENT" ] || [ "$STATUS_EVENT" = pull_request ] || usage
+      STATUS_EVENT=pull_request
+      shift 2
+      ;;
+    --require-merge-group-status)
+      [ "$#" -ge 2 ] || usage
+      case "$2" in
+        "" | *$'\n'* | *$'\r'*) usage ;;
+      esac
+      STATUS_CONTEXTS+=("$2")
+      STATUS_COUNT=$((STATUS_COUNT + 1))
+      [ -z "$STATUS_EVENT" ] || [ "$STATUS_EVENT" = merge_group ] || usage
+      STATUS_EVENT=merge_group
       shift 2
       ;;
     *) usage ;;
   esac
 done
-# A repository-owned status is published by a workflow that, today, runs on
-# pull_request only; on a queued consumer the queue commit would never carry
-# the context and every entry would be rejected. Until a consumer ships a
-# merge_group-publishing workflow, the flag is refused with the queue.
-if [ "$STATUS_COUNT" -gt 0 ] && [ "$QUEUE" = true ]; then
+# A pull-request status cannot gate a queued consumer: the queue commit would
+# never carry the context and every entry would be rejected. The distinct
+# merge-group flag is the explicit assertion that makes the queued case safe.
+if [ "$STATUS_COUNT" -gt 0 ] && [ "$QUEUE" = true ] && [ "$STATUS_EVENT" != merge_group ]; then
   echo "derive-consumer-policy.sh: --require-status needs --no-queue; a pull_request-only publisher never reports on a merge-queue commit" >&2
+  exit 2
+fi
+if [ "$STATUS_COUNT" -gt 0 ] && [ "$QUEUE" = false ] && [ "$STATUS_EVENT" = merge_group ]; then
+  echo "derive-consumer-policy.sh: --require-merge-group-status needs the merge queue; use --require-status for a queue-less consumer" >&2
   exit 2
 fi
 if [ "$STATUS_COUNT" -gt 0 ]; then
