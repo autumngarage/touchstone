@@ -75,7 +75,9 @@ Touchstone-owned and is never updated or deleted by this script.
 A private repository outside GitHub Enterprise Cloud cannot carry the merge
 queue: GitHub answers `Invalid rule 'merge_queue'` (measured 2026-08-21 on
 autumngarage/vesper and /arpeggio under the Team plan; public repositories
-and Enterprise Cloud accept it). Such consumers are derived with
+and Enterprise Cloud accept it). Autumn Garage moved to Enterprise Cloud on
+2026-08-26, making those private repositories queue-eligible. In an
+ineligible organization, consumers are derived with
 `--no-queue`, which drops only the companion repository ruleset; the pinned
 required workflows, pull-request-only delivery, thread resolution, and the
 native rules still apply, and the merge is not queued — the combination of
@@ -94,8 +96,15 @@ status until the policy is regenerated without the flag. The flag requires
 `--no-queue`: a `pull_request`-only publisher never reports on a merge-queue
 commit, so a queued consumer would reject every entry.
 
+A queued consumer whose repository-owned workflow publishes the status on
+`merge_group` declares it with `--require-merge-group-status CONTEXT`
+(repeatable). This keeps the queue and records the publisher's event contract
+explicitly. Do not use it for a pull-request-only workflow: the queue commit
+would never receive the required context and GitHub would eject every entry.
+
 Every adopted repository's policy is an exact derivation of the canonical
-one — `scripts/derive-consumer-policy.sh REPOSITORY [--no-queue] [--require-status CONTEXT]...` — checked in under
+one — `scripts/derive-consumer-policy.sh REPOSITORY [--no-queue]
+[--require-status CONTEXT]... [--require-merge-group-status CONTEXT]...` — checked in under
 `policy/github/consumers/` and refused by the test suite if it drifts. Apply
 one with `scripts/github-policy.sh apply policy/github/consumers/REPOSITORY.json`
 only once both hold: the repository has adopted (`touchstone adopt`), and

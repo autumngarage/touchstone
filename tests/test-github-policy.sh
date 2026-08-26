@@ -652,6 +652,18 @@ bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --no-que
 # with the queue so a queued consumer cannot be wedged by its own gate.
 bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --require-status canary/body-check >/dev/null 2>&1 && fail "derive accepted --require-status with the merge queue" || ok "derive refuses --require-status without --no-queue"
 bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --no-queue --require-status >/dev/null 2>&1 && fail "derive accepted --require-status without a value" || ok "derive refuses --require-status without a value"
+# A status known to publish on merge_group can remain required with the queue.
+with_queue_status="$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --require-merge-group-status canary/merged-result)"
+[ "$(jq -c '[.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context]' <<<"$with_queue_status")" = '["canary/merged-result"]' ] \
+  && jq -e 'any(.managedRepositoryRuleset.rules[]; .type == "merge_queue")' <<<"$with_queue_status" >/dev/null \
+  && ok "--require-merge-group-status keeps the queue and adds the named status" \
+  || fail "--require-merge-group-status did not preserve the queued policy"
+bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --no-queue --require-merge-group-status canary/merged-result >/dev/null 2>&1 \
+  && fail "derive accepted a merge-group status without the merge queue" \
+  || ok "derive refuses --require-merge-group-status with --no-queue"
+bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --require-status one --require-merge-group-status two >/dev/null 2>&1 \
+  && fail "derive mixed pull-request and merge-group status declarations" \
+  || ok "derive refuses mixed status event contracts"
 for consumer in "$ROOT"/policy/github/consumers/*.json; do
   [ -f "$consumer" ] || continue
   name="$(basename "$consumer" .json)"
@@ -660,9 +672,14 @@ for consumer in "$ROOT"/policy/github/consumers/*.json; do
   # A consumer-owned required status (convoy's delivery-protocol) is the same
   # derivation with --require-status; the checked-in rule says which.
   derive_flags=()
-  jq -e '.managedRepositoryRuleset == null' "$consumer" >/dev/null && derive_flags+=(--no-queue)
+  if jq -e '.managedRepositoryRuleset == null' "$consumer" >/dev/null; then
+    derive_flags+=(--no-queue)
+    status_flag=--require-status
+  else
+    status_flag=--require-merge-group-status
+  fi
   while IFS= read -r context; do
-    [ -n "$context" ] && derive_flags+=(--require-status "$context")
+    [ -n "$context" ] && derive_flags+=("$status_flag" "$context")
   done < <(jq -r '[.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | .[]' "$consumer")
   diff -u <(bash "$ROOT/scripts/derive-consumer-policy.sh" "$name" ${derive_flags[@]+"${derive_flags[@]}"} | jq -S .) <(jq -S . "$consumer") >/dev/null \
     || fail "policy/github/consumers/$name.json drifted from its derivation; regenerate it with scripts/derive-consumer-policy.sh $name ${derive_flags[*]+"${derive_flags[*]}"}"
@@ -683,14 +700,14 @@ jq -e 'any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")' \
   "$ROOT/policy/github/consumers/arpeggio.json" >/dev/null \
   && ok "arpeggio declares a merge queue" \
   || fail "arpeggio lost its merge queue; regenerate it without --no-queue"
-# Two consumers hold their queue, for unrelated reasons. vesper's own team owns
-# its queue: a second ruleset declaring merge_queue on the same branch is the
-# same rule at two layers. convoy's repository-owned required checks
-# (convoy/delivery-protocol, powershell-tests) have no merge_group trigger, so a
-# queue there would eject every entry at the timeout.
-jq -e '.managedRepositoryRuleset == null' "$ROOT/policy/github/consumers/vesper.json" >/dev/null \
-  && ok "vesper leaves its queue to the repository's own team" \
-  || fail "vesper declared a merge queue Touchstone does not own; its team manages that queue"
+# Vesper's hosted macOS workflow publishes on merge_group, so its checked-in
+# policy keeps the queue and requires that exact prospective-merge verdict.
+jq -e '
+  any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")
+  and [.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] == ["Build, test, and smoke"]
+' "$ROOT/policy/github/consumers/vesper.json" >/dev/null \
+  && ok "vesper queues on its hosted macOS prospective-merge verdict" \
+  || fail "vesper must queue on the required Build, test, and smoke merge-group status"
 jq -e '.managedRepositoryRuleset == null' "$ROOT/policy/github/consumers/convoy.json" >/dev/null \
   && ok "convoy holds its queue until its own required checks run on a merge group" \
   || fail "convoy declared a merge queue while convoy/delivery-protocol and powershell-tests still have no merge_group trigger"
