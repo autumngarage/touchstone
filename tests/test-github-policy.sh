@@ -2388,6 +2388,35 @@ if accepts; then fail "a row that does not begin with the run record was accepte
     *) fail "an unreadable row was not quoted back: $unread_report" ;;
   esac
 fi
+echo "==> rejected evidence is named in Actions annotations and the step summary"
+: >"$EVIDENCE_TMP/summary.md"
+set +e
+GITHUB_ACTIONS=true GITHUB_STEP_SUMMARY="$EVIDENCE_TMP/summary.md" \
+  bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/body.md" >"$EVIDENCE_TMP/actions.out" 2>&1
+actions_rc=$?
+set -e
+if [ "$actions_rc" -ne 0 ] \
+  && grep -qF "::error title=Delivery evidence unreadable::the Validation row '- Local review:' is present but not in the shape" "$EVIDENCE_TMP/actions.out" \
+  && grep -qF "the Validation row '- Local review:' is present but not in the shape" "$EVIDENCE_TMP/summary.md" \
+  && grep -qF "it must begin with 'codex on &lt;revision&gt;: &lt;n&gt; findings, &lt;disposition&gt;'" "$EVIDENCE_TMP/summary.md"; then
+  ok "an unreadable row names the rejected row and expected shape on GitHub"
+else
+  fail "an unreadable row lacked a useful Actions diagnostic: $(cat "$EVIDENCE_TMP/actions.out") $(cat "$EVIDENCE_TMP/summary.md")"
+fi
+lr_body '' normal
+: >"$EVIDENCE_TMP/summary.md"
+set +e
+GITHUB_ACTIONS=true GITHUB_STEP_SUMMARY="$EVIDENCE_TMP/summary.md" \
+  bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/body.md" >"$EVIDENCE_TMP/actions.out" 2>&1
+actions_rc=$?
+set -e
+if [ "$actions_rc" -ne 0 ] \
+  && grep -qF "::error title=Delivery evidence missing::the Validation row '- Local review:' present" "$EVIDENCE_TMP/actions.out" \
+  && grep -qF "the Validation row '- Local review:' present" "$EVIDENCE_TMP/summary.md"; then
+  ok "a missing row is named in the annotation and summary"
+else
+  fail "a missing row lacked a useful Actions diagnostic: $(cat "$EVIDENCE_TMP/actions.out") $(cat "$EVIDENCE_TMP/summary.md")"
+fi
 lr_body '' trivial
 accepts && ok "trivial needs no Local review row" || fail "trivial was refused without a Local review row"
 

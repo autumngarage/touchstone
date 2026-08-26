@@ -38,7 +38,13 @@ taking this document's word for it.
   from the live values (`gh pr edit`, re-read to verify) and reports `body:
   updated` or `unchanged` — idempotent means "converges on the arguments",
   not "no-ops": a body silently kept let the required `delivery-evidence`
-  gate fail with no signal from the one command the driver uses (AUT-437). Its invisible
+  gate fail with no signal from the one command the driver uses (AUT-437).
+  After convergence, a reused PR asks the policy-declared organization-required
+  `delivery-evidence` run to evaluate the surviving body. GitHub exposes only a
+  PR-wide update timestamp, so the sequencer does not guess whether activity was
+  a body edit: it requests a fresh attempt, then re-verifies the body, head, and
+  base immediately before success without closing the PR or disturbing
+  auto-merge (AUT-481). Its invisible
   comment marker (`<!-- touchstone:pr-open head=… base=… base_sha=… -->`)
   is what a pinned `review-gate` reads as the request, and it makes partial
   reruns idempotent. It reports success only after any policy-declared gate
