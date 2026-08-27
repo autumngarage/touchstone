@@ -77,7 +77,7 @@ def observed_at:
 | ($raw_cutoff == null
    or (($raw_cutoff | type) == "string"
        and ($raw_cutoff | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
-       and (try (($raw_cutoff | fromdateiso8601) | type == "number") catch false))) as $cutoff_valid
+       and (try (($raw_cutoff | fromdateiso8601 | todateiso8601) == $raw_cutoff) catch false))) as $cutoff_valid
 | (if $cutoff_valid then $raw_cutoff else "0000-00-00T00:00:00Z" end) as $cutoff
 | ($input
    # Preserve comments that existed at the cutoff. Request/result/answer uses

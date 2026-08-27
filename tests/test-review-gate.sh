@@ -109,6 +109,8 @@ run_state_case "a non-string evidence cutoff fails closed" \
   '.evidenceCutoffAt = false' failure
 run_state_case "an impossible evidence cutoff fails closed" \
   '.evidenceCutoffAt = "2026-99-99T99:99:99Z"' failure
+run_state_case "a normalized calendar-invalid cutoff fails closed" \
+  '.evidenceCutoffAt = "2026-09-31T00:00:00Z"' failure
 run_state_case "a pre-cutoff finding edited later remains blocking evidence" '
   .evidenceCutoffAt = "2026-08-20T10:25:00Z"
   | .issueComments = [.issueComments[0]]
