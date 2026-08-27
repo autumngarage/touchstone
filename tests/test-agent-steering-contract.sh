@@ -974,9 +974,53 @@ for boundary in \
   '":minimal" = "read"' \
   '":workspace_roots" = "read"' \
   'inherit = "core"' \
+  'GIT_CONFIG_NOSYSTEM = "1"' \
+  'GIT_CONFIG_GLOBAL = "/dev/null"' \
+  'GIT_CONFIG_SYSTEM = "/dev/null"' \
+  'GIT_CONFIG_COUNT = "0"' \
   '"~/Library/Keychains" = "deny"'; do
   assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" "$boundary"
 done
+
+echo "==> normal-review profile follows linked-worktree Git metadata read-only"
+REVIEW_REPOSITORY="$TEST_DIR/review-repository"
+REVIEW_WORKTREE="$TEST_DIR/review-linked-worktree"
+RENDERED_REVIEW_PROFILE="$TEST_DIR/review-linked.config.toml"
+git init -q "$REVIEW_REPOSITORY"
+git -C "$REVIEW_REPOSITORY" \
+  -c user.name=Touchstone -c user.email=touchstone@example.invalid \
+  commit --allow-empty -qm initial
+git -C "$REVIEW_REPOSITORY" worktree add --detach "$REVIEW_WORKTREE" HEAD >/dev/null
+REVIEW_WORKTREE_PHYSICAL="$(cd "$REVIEW_WORKTREE" && pwd -P)"
+touchstone_review_resolve_git_context "$REVIEW_WORKTREE" \
+  || fail "linked-worktree Git context did not resolve: $TOUCHSTONE_CODEX_ERROR"
+[ "$TOUCHSTONE_REVIEW_REPOSITORY_ROOT" = "$REVIEW_WORKTREE_PHYSICAL" ] \
+  || fail "linked-worktree root resolved to $TOUCHSTONE_REVIEW_REPOSITORY_ROOT"
+EXPECTED_REVIEW_GIT_DIR="$(git -C "$REVIEW_WORKTREE" rev-parse --absolute-git-dir)"
+EXPECTED_REVIEW_COMMON_DIR="$(
+  git -C "$REVIEW_WORKTREE" rev-parse --path-format=absolute --git-common-dir
+)"
+[ "$TOUCHSTONE_REVIEW_GIT_DIR" = "$EXPECTED_REVIEW_GIT_DIR" ] \
+  || fail "linked-worktree Git directory was not preserved"
+[ "$TOUCHSTONE_REVIEW_GIT_COMMON_DIR" = "$EXPECTED_REVIEW_COMMON_DIR" ] \
+  || fail "linked-worktree common directory was not preserved"
+touchstone_review_render_profile \
+  "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  "$RENDERED_REVIEW_PROFILE" \
+  "$TOUCHSTONE_REVIEW_GIT_DIR" "$TOUCHSTONE_REVIEW_GIT_COMMON_DIR" \
+  || fail "linked-worktree review profile did not render: $TOUCHSTONE_CODEX_ERROR"
+assert_contains "$RENDERED_REVIEW_PROFILE" \
+  "\"$EXPECTED_REVIEW_GIT_DIR\" = \"read\""
+assert_contains "$RENDERED_REVIEW_PROFILE" \
+  "\"$EXPECTED_REVIEW_COMMON_DIR\" = \"read\""
+assert_not_contains "$RENDERED_REVIEW_PROFILE" \
+  "\"$(dirname "$REVIEW_REPOSITORY")\" = \"read\""
+if touchstone_review_render_profile \
+  "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  "$TEST_DIR/unsafe-review.config.toml" \
+  "$EXPECTED_REVIEW_GIT_DIR\"unsafe" "$EXPECTED_REVIEW_COMMON_DIR"; then
+  fail "normal-review profile accepted an unsafe Git metadata path"
+fi
 
 review_command setup --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
   || fail "idempotent setup failed"

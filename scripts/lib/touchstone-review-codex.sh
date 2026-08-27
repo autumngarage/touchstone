@@ -9,6 +9,104 @@ touchstone_codex_fail() {
   return 1
 }
 
+touchstone_review_path_is_profile_safe() {
+  local path="$1"
+
+  case "$path" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  ! LC_ALL=C printf '%s' "$path" | grep -q '[[:cntrl:]"\\]'
+}
+
+touchstone_review_git() {
+  env \
+    -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+    -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+    -u GIT_CEILING_DIRECTORIES -u GIT_CONFIG -u GIT_CONFIG_PARAMETERS \
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_COUNT=0 \
+    git "$@"
+}
+
+touchstone_review_resolve_git_context() {
+  local invoking_dir="$1" repository_root git_dir git_common_dir
+
+  TOUCHSTONE_REVIEW_REPOSITORY_ROOT=""
+  TOUCHSTONE_REVIEW_GIT_DIR=""
+  TOUCHSTONE_REVIEW_GIT_COMMON_DIR=""
+
+  repository_root="$(
+    touchstone_review_git -C "$invoking_dir" rev-parse --show-toplevel 2>/dev/null
+  )" || {
+    touchstone_codex_fail "normal review must run inside a git repository"
+    return
+  }
+  repository_root="$(cd "$repository_root" && pwd -P)" || {
+    touchstone_codex_fail "normal review repository root is unreadable: $repository_root"
+    return
+  }
+  git_dir="$(
+    touchstone_review_git -C "$repository_root" rev-parse --absolute-git-dir 2>/dev/null
+  )" || {
+    touchstone_codex_fail "normal review could not resolve the repository Git directory"
+    return
+  }
+  git_common_dir="$(
+    touchstone_review_git -C "$repository_root" \
+      rev-parse --path-format=absolute --git-common-dir 2>/dev/null
+  )" || {
+    touchstone_codex_fail "normal review could not resolve the repository Git common directory"
+    return
+  }
+
+  for path in "$repository_root" "$git_dir" "$git_common_dir"; do
+    touchstone_review_path_is_profile_safe "$path" || {
+      touchstone_codex_fail "repository path cannot be represented safely in the isolated Codex trust boundary: $path"
+      return
+    }
+  done
+
+  # Returned globals are consumed by the sourced caller.
+  # shellcheck disable=SC2034
+  TOUCHSTONE_REVIEW_REPOSITORY_ROOT="$repository_root"
+  # shellcheck disable=SC2034
+  TOUCHSTONE_REVIEW_GIT_DIR="$git_dir"
+  # shellcheck disable=SC2034
+  TOUCHSTONE_REVIEW_GIT_COMMON_DIR="$git_common_dir"
+}
+
+touchstone_review_render_profile() {
+  local source="$1" destination="$2" git_dir="$3" git_common_dir="$4"
+  local staged="${destination}.tmp"
+
+  touchstone_review_path_is_profile_safe "$git_dir" \
+    && touchstone_review_path_is_profile_safe "$git_common_dir" || {
+    touchstone_codex_fail "Git metadata path cannot be represented safely in the isolated Codex trust boundary"
+    return
+  }
+  if ! awk -v git_dir="$git_dir" -v git_common_dir="$git_common_dir" '
+    $0 == "# touchstone:review-git-roots" {
+      print "\"" git_dir "\" = \"read\""
+      if (git_common_dir != git_dir) {
+        print "\"" git_common_dir "\" = \"read\""
+      }
+      rendered = 1
+    }
+    { print }
+    END { if (!rendered) exit 42 }
+  ' "$source" >"$staged"; then
+    rm -f "$staged"
+    touchstone_codex_fail "managed review profile is missing its Git metadata boundary marker"
+    return
+  fi
+  if ! mv "$staged" "$destination"; then
+    rm -f "$staged"
+    touchstone_codex_fail "could not stage the managed review profile in isolated Codex state"
+    return
+  fi
+}
+
 touchstone_codex_physical_directory() {
   local requested="$1" previous="$PWD" directory
 
