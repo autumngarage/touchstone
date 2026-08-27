@@ -89,6 +89,8 @@ run_state_case "a provisional quota notice keeps waiting for review" \
   '.issueComments = [.issueComments[0], {"id":101,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Security review usage limit reached"}]' waiting-review
 run_state_case "a current-head quota notice still keeps waiting for review" \
   '.issueComments = [.issueComments[0], {"id":101,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Security review quota reached","resolved_review_sha":"'"$HEAD_SHA"'"}]' waiting-review
+run_state_case "a quota-related review finding remains terminal evidence" \
+  '.issueComments[1].body = "Codex Review: [P1] Fix quota accounting\n\n**Reviewed commit:** `1111111111`"' failure
 run_state_case "invalid evidence never becomes a waiting state" \
   'del(.complete) | .issueComments = []' failure
 run_case "write permission can request" '.authorPermissions.henry = "write"' success

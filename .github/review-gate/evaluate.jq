@@ -26,6 +26,9 @@ def driver_action_authorized($permissions):
 def review_request:
   (.body // "") | test("^[[:space:]]*@codex[[:space:]]+review([[:space:]]|$)"; "i");
 
+def provisional_quota_notice:
+  (.body // "") | test("^[[:space:]]*Security review[[:space:]]+(usage limit|quota)([[:space:]:-]|$)"; "i");
+
 def reviewed_sha:
   (.body // "") as $body
   | (.resolved_review_sha // "") as $resolved
@@ -157,7 +160,7 @@ def answers_body_finding($id):
         or ((.body // "") | contains("Reviewed commit:"))
         or ((.body // "") | test("^[[:space:]]*Codex Review:"; "i"))
       )
-    | select(((.body // "") | test("usage limit|quota"; "i")) | not)
+    | select(provisional_quota_notice | not)
   ] as $result_candidates
 | [
     $result_candidates[]
@@ -269,7 +272,7 @@ def answers_body_finding($id):
       if any($root.issueComments[]?;
           trusted($trusted)
           and (.created_at // "") > $threshold
-          and ((.body // "") | test("usage limit|quota"; "i")))
+          and provisional_quota_notice)
       then "the security-review quota notice is provisional; continue waiting for trusted exact-head review evidence"
       else "no trusted exact-head review evidence postdates the bound request"
       end
