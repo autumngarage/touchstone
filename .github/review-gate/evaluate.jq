@@ -8,6 +8,9 @@
 # run from a pinned source in any repository with a read-only token. Version 3
 # authorizes driver requests and answers through effective repository
 # permission supplied by that workflow, not GitHub's contribution association.
+# The verdict's additive `state` field separates evidence that can still
+# arrive (`waiting-request` or `waiting-review`) from a terminal `failure`.
+# `conclusion` remains fail-closed for consumers that do not implement waiting.
 
 def trusted($authors):
   (.user.login // "") as $login
@@ -94,25 +97,35 @@ def answers_body_finding($id):
     | ((.body // "") | capture("<!-- touchstone:pr-open head=(?<head>[0-9a-fA-F]{40}) base=(?<ref>[^ ]+) base_sha=(?<base>[0-9a-fA-F]{40}) -->")? // null) as $marker
     # A comment that names the sequencer but carries no well-formed marker is
     # a corrupted explicit binding, never a bare request.
-    | select($marker != null or (((.body // "") | contains("touchstone:pr-open")) | not))
-    | select(
-        if $marker != null then
-          ($marker.head | ascii_downcase) == ($head | ascii_downcase)
-          and $marker.ref == ($root.pr.baseRef // "")
-          and (($marker.base | ascii_downcase) as $request_base | $acceptable_bases | any(. == $request_base))
-        else
-          # A bare request binds the head and base that were current when it
-          # was posted: only one posted after this SHA last became the head
-          # (its commit, or the force-push that restored it), and after the
-          # last base retarget, can be about this head on this base.
-          $head_current_since != "" and ((.updated_at // .created_at // "") > $head_current_since)
-          and ((.updated_at // .created_at // "") > $base_retargeted_at)
-        end)
+    | {
+        comment: $comment,
+        binds: (
+          if $marker != null then
+            ($marker.head | ascii_downcase) == ($head | ascii_downcase)
+            and $marker.ref == ($root.pr.baseRef // "")
+            and (($marker.base | ascii_downcase) as $request_base | $acceptable_bases | any(. == $request_base))
+          elif (($comment.body // "") | contains("touchstone:pr-open")) then false
+          else
+            # A bare request binds the head and base that were current when it
+            # was posted: only one posted after this SHA last became the head
+            # (its commit, or the force-push that restored it), and after the
+            # last base retarget, can be about this head on this base.
+            $head_current_since != "" and (($comment.updated_at // $comment.created_at // "") > $head_current_since)
+            and (($comment.updated_at // $comment.created_at // "") > $base_retargeted_at)
+          end
+        )
+      }
+  ] as $request_candidates
+| [
+    $request_candidates[]
+    | select(.binds)
+    | .comment
     # An edited request counts from its edit: comments are mutable, and a
     # request back-dated by editing an older comment must not make earlier
     # evidence look like it answered it.
     | {at: (.updated_at // .created_at), id: .id, author: .user.login}
   ] | unique_by(.id) | sort_by(.at) as $requests
+| [$request_candidates[] | select(.binds | not)] as $rejected_requests
 | ($requests[-1].at // "") as $threshold
 | [
     $root.reviews[]?
@@ -121,9 +134,25 @@ def answers_body_finding($id):
     | select((.state // "") != "DISMISSED")
   ] as $head_reviews
 | [
-    $head_reviews[]
+    $root.reviews[]?
+    | select(trusted($trusted))
     | select((.submitted_at // "") > $threshold)
+  ] as $review_candidates
+| [
+    $review_candidates[]
+    | select((.commit_id // "" | ascii_downcase) == ($head | ascii_downcase))
+    | select((.state // "") != "DISMISSED")
   ] as $reviews
+| [
+    $root.issueComments[]?
+    | select(trusted($trusted))
+    | select((.created_at // "") > $threshold)
+    | select(
+        ((.body // "") | contains("Reviewed commit:"))
+        or ((.body // "") | test("^[[:space:]]*Codex Review:"; "i"))
+      )
+    | select(((.body // "") | test("usage limit|quota"; "i")) | not)
+  ] as $result_candidates
 | [
     $root.issueComments[]?
     | select(trusted($trusted))
@@ -217,7 +246,9 @@ def answers_body_finding($id):
     if ($trusted | length) == 0 then "trusted reviewer allowlist is empty" else empty end,
     if ($root.pr.openHeadPulls // [] | length) != 1
       or (($root.pr.openHeadPulls[0] // 0) != $number)
-      then "head commit is not uniquely scoped to this open pull request" else empty end,
+      then "head commit is not uniquely scoped to this open pull request" else empty end
+  ] as $invariant_reasons
+| [
     if ($requests | length) == 0 then "no trusted review request binds this head to the current base" else empty end,
     if (($reviews | length) + ($result_comments | length)) == 0 then
       if any($root.issueComments[]?;
@@ -227,7 +258,19 @@ def answers_body_finding($id):
       then "the security-review quota notice is provisional; continue waiting for trusted exact-head review evidence"
       else "no trusted exact-head review evidence postdates the bound request"
       end
+    else empty end
+  ] as $progress_reasons
+| [
+    if ($requests | length) == 0 and ($rejected_requests | length) > 0 then
+      "authorized review request evidence does not bind the current head and base"
     else empty end,
+    if ($requests | length) > 0
+      and (($reviews | length) + ($result_comments | length)) == 0
+      and (($review_candidates | length) + ($result_candidates | length)) > 0
+      then "trusted review response evidence does not bind the exact head after the request"
+    else empty end
+  ] as $rejected_evidence_reasons
+| [
     if any($inline_findings[]; .answered | not) then
       "inline finding(s) "
         + ([$inline_findings[] | select(.answered | not) | (.id | tostring)] | join(", "))
@@ -238,23 +281,40 @@ def answers_body_finding($id):
         + ([$body_findings[] | select(.answered | not) | (.id | tostring)] | join(", "))
         + " have no later marked answer (`<!-- touchstone:review-answer id=FINDING_ID -->`) or re-review"
     else empty end
-  ] as $reasons
+  ] as $finding_reasons
+| ($invariant_reasons + $progress_reasons + $rejected_evidence_reasons + $finding_reasons) as $reasons
+| (if ($reasons | length) == 0 then "success"
+   elif (($invariant_reasons | length) + ($rejected_evidence_reasons | length) + ($finding_reasons | length)) > 0 then "failure"
+   elif ($requests | length) == 0 then "waiting-request"
+   else "waiting-review"
+   end) as $state
 | {
     contractVersion: 3,
+    state: $state,
     conclusion: (if ($reasons | length) == 0 then "success" else "failure" end),
-    title: (if ($reasons | length) == 0
+    title: (if $state == "success"
       then "Exact head reviewed; every finding answered"
-      else "Review gate is incomplete"
+      elif ($state | startswith("waiting-"))
+      then "Review gate is waiting for evidence"
+      else "Review gate failed closed"
       end),
-    summary: (if ($reasons | length) == 0
+    summary: (if $state == "success"
       then "Trusted review evidence covers head `\($head)` on base `\($base)` after request comment #\($requests[-1].id). All \($inline_findings | length) inline and \($body_findings | length) body-only finding(s) have later qualifying answers. Thread resolution is enforced independently by GitHub conversation resolution."
+      elif ($state | startswith("waiting-"))
+      then "Review gate is waiting:\n\n" + ($reasons | map("- " + .) | join("\n")) + "\n\nHead: `\($head)`\nBase: `\($base)`"
       else "Review gate failed closed:\n\n" + ($reasons | map("- " + .) | join("\n")) + "\n\nHead: `\($head)`\nBase: `\($base)`"
       end),
     reasons: $reasons,
     counts: {
       requests: ($requests | length),
+      rejectedRequests: ($rejected_requests | length),
       formalReviews: ($reviews | length),
       resultComments: ($result_comments | length),
+      rejectedReviewEvidence: (
+        if (($reviews | length) + ($result_comments | length)) == 0
+        then (($review_candidates | length) + ($result_candidates | length))
+        else 0
+        end),
       inlineFindings: ($inline_findings | length),
       unansweredInline: ([$inline_findings[] | select(.answered | not)] | length),
       bodyFindings: ($body_findings | length),
