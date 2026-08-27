@@ -84,7 +84,10 @@ taking this document's word for it.
   bounded policy-owned title and summary, plus the owning workflow-run id and
   attempt. The binding excludes same-named repository-local checks, requires
   the workflow run to name this pull request, and selects the job from the
-  current run attempt so a superseded rerun cannot look green. If the effective
+  current run attempt so a superseded rerun cannot look green. The selected run's
+  immutable GraphQL workflow file must also match the effective rule's source
+  repository, path, and exact verified revision; a historical run from a replaced
+  rule is reported as unbound rather than current. If the effective
   rules do not declare the central gate, status reports it as unconfigured and
   does not attribute historical same-named runs to policy. If GitHub reports
   no such CheckRun, `reviewGateCheck.present` is false; when a bound workflow run

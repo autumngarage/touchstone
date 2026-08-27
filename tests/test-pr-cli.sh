@@ -115,11 +115,13 @@ serve_rules() {
       evidence_sha="$GH_AHEAD_SHA"
     fi
     extra_workflows=""
+    ahead_workflows="$(printf ',{"path":".github/workflows/validate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"%s"},{"path":".github/workflows/review-gate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"%s"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"%s"}' "$GH_AHEAD_SHA" "$GH_AHEAD_SHA" "$GH_AHEAD_SHA")"
     if [ -f "$GH_STATE/overlapping-pins" ]; then
       pin_sha="$GH_MID_SHA"
       evidence_sha="$GH_MID_SHA"
-      extra_workflows=',{"path":".github/workflows/validate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$GH_AHEAD_SHA"'"},{"path":".github/workflows/review-gate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$GH_AHEAD_SHA"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$GH_AHEAD_SHA"'"}'
+      extra_workflows="$ahead_workflows"
     fi
+    [ ! -f "$GH_STATE/overlapping-exact-pins" ] || extra_workflows="$ahead_workflows"
     queue_rule=',{"type":"merge_queue"}'
     [ ! -f "$GH_STATE/no-queue-rule" ] || queue_rule=""
     status_rule=""
@@ -315,6 +317,13 @@ case "$1 ${2:-}" in
       else
         printf 'OPEN\thttps://example.test/pr/7\t%s\tfalse\t\n' "$GH_HEAD"
       fi
+    elif has '... on WorkflowRun' "$@"; then
+      run_node=""
+      for field in "$@"; do case "$field" in id=*) run_node="${field#id=}" ;; esac; done
+      run_id="${run_node#RUN_}"
+      source_revision="$GH_POLICY_SHA"
+      [ "${GH_MODE:-ok}" != status_gate_historical ] || source_revision="$GH_AHEAD_SHA"
+      jq -cn --argjson id "$run_id" --arg revision "$source_revision" '{data:{node:{databaseId:$id,file:{path:".github/workflows/review-gate.yml",repositoryName:"autumngarage/touchstone-workflows",repositoryFileUrl:("https://github.com/autumngarage/touchstone-workflows/blob/" + $revision + "/.github/workflows/review-gate.yml")}}}}'
     elif has 'resolveReviewThread' "$@"; then
       printf '%s\n' true
     elif has 'node(id:' "$@"; then
@@ -350,7 +359,7 @@ case "$1 ${2:-}" in
           printf '%s\n' '{"jobs":[{"id":81,"name":"review-gate","run_attempt":2,"status":"in_progress","conclusion":null}]}' ;;
         status_gate_failure | status_gate_collision)
           printf '%s\n' '{"jobs":[{"id":82,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"failure"}]}' ;;
-        status_gate_success)
+        status_gate_success | status_gate_historical)
           printf '%s\n' '{"jobs":[{"id":84,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"success"}]}' ;;
         status_gate_status_race)
           printf '%s\n' '{"jobs":[{"id":84,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"success"}]}' ;;
@@ -370,7 +379,7 @@ case "$1 ${2:-}" in
         status_gate_failure)
           jq -cn --arg head "$GH_HEAD" '{check_runs:[{id:82,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"failure",details_url:"https://example.test/runs/82",output:{title:"No request binds this head",summary:"Run touchstone pr open for the live head."}}]}'
           ;;
-        status_gate_success)
+        status_gate_success | status_gate_historical)
           jq -cn --arg head "$GH_HEAD" '{check_runs:[
             {id:83,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"failure",details_url:"https://example.test/runs/83",output:{title:"Superseded attempt",summary:"Old evidence."}},
             {id:84,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"success",details_url:"https://example.test/runs/84",output:{title:"Exact-head review accepted",summary:"All review feedback was answered."}}
@@ -667,7 +676,7 @@ case "$1 ${2:-}" in
         esac
         gate_started_at='2026-08-27T17:10:00Z'
         runs="{\"workflow_runs\":[
-          {\"id\":77,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":900,\"run_attempt\":$gate_attempt,\"event\":\"pull_request\",\"status\":\"$gate_status\",\"conclusion\":$gate_conclusion_json,\"workflow_id\":999,\"run_started_at\":\"$gate_started_at\",\"updated_at\":\"2026-08-27T17:30:00Z\",\"pull_requests\":[{\"number\":7}]},
+          {\"id\":77,\"node_id\":\"RUN_77\",\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":900,\"run_attempt\":$gate_attempt,\"event\":\"pull_request\",\"status\":\"$gate_status\",\"conclusion\":$gate_conclusion_json,\"workflow_id\":999,\"run_started_at\":\"$gate_started_at\",\"updated_at\":\"2026-08-27T17:30:00Z\",\"pull_requests\":[{\"number\":7}]},
           {\"id\":78,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":901,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":2,\"run_started_at\":\"2026-08-27T17:20:00Z\",\"updated_at\":\"2026-08-27T17:20:00Z\",\"pull_requests\":[{\"number\":7}]},
           {\"id\":79,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":902,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":999,\"run_started_at\":\"2026-08-27T17:20:00Z\",\"updated_at\":\"2026-08-27T17:20:00Z\",\"pull_requests\":[{\"number\":8}]},
           {\"id\":80,\"name\":\"delivery-evidence\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":903,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"${GH_EVIDENCE_CONCLUSION:-success}\",\"run_started_at\":\"${GH_EVIDENCE_STARTED_AT:-2026-08-26T22:20:00Z}\",\"workflow_id\":1000,\"pull_requests\":[{\"number\":7}]},
@@ -684,6 +693,7 @@ case "$1 ${2:-}" in
           fi
           runs="$(printf '%s' "$runs" | jq -c '.workflow_runs += [{
             id:88,
+            node_id:"RUN_88",
             name:"review-gate",
             head_sha:"'"$GH_HEAD"'",
             check_suite_id:906,
@@ -700,6 +710,7 @@ case "$1 ${2:-}" in
         if [ "${GH_MODE:-ok}" = status_gate_new_run_race ] && [ -f "$GH_STATE/status-new-run-started" ]; then
           runs="$(printf '%s' "$runs" | jq -c '.workflow_runs += [{
             id:88,
+            node_id:"RUN_88",
             name:"review-gate",
             head_sha:"'"$GH_HEAD"'",
             check_suite_id:906,
@@ -832,6 +843,16 @@ EOF
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"checkRunId":84,"status":"completed","conclusion":"success"'
   assert_not_has "$TMP/out" 'Superseded attempt'
+  GH_MODE=status_gate_historical run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"present":false,"head":"'"$HEAD_SHA"'","unbound":true,"workflowRunId":77'
+  assert_has "$TMP/out" '"revision":"'"$GH_AHEAD_SHA"'"'
+  assert_not_has "$GH_CALLS" '/attempts/2/jobs'
+  touch "$TMP/state/overlapping-exact-pins"
+  GH_MODE=status_gate_historical run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"checkRunId":84,"status":"completed","conclusion":"success"'
+  rm -f "$TMP/state/overlapping-exact-pins"
   touch "$TMP/state/no-review-gate-rule"
   GH_MODE=status_gate_success run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
