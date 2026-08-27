@@ -459,6 +459,8 @@ PR's bug.
    performance, or lifecycle failure. Fix it in the batch.
    A scope boundary never permits the PR to ship its own regression; fix or
    revert that behavior here even when it falls outside the planned change.
+   If the immediately preceding review fix created the regression, follow the
+   cascade rule below instead of stacking another fix onto it.
    A diff-created finding *below* that threshold takes disposition 4: answer
    it, route it to an issue, resolve the thread. Fixing every low-severity
    remark a reviewer raises is the expansion this budget exists to stop, and
@@ -478,7 +480,23 @@ or close the PR while preserving the findings. Do not grow the current PR one
 review comment at a time. Exact-head review remains required after any redesign;
 scope containment is never permission to skip review.
 
-**The loop.** If every finding resolves **without moving the head** (dispositions 3–4), answer every thread, prove none remain with the complete paginated thread check above, then merge — answered findings satisfy the gate (issue #751); do not request another review. If any fix lands as a commit (dispositions 1–2), batch ALL of them into ONE commit, answer every thread, push, and request one review for the new head.
+**A review-fix regression is a stop signal.** At the first defect created by the
+preceding review fix, stop patch-forward work: restore the last known-good
+behavior by reverting that fix, or replace it with a materially simpler design,
+then audit the weak-point class before another mutation. A regression test
+records the failure; it does not justify retaining the failed fix. At the
+second fix-created defect, or the third finding-bearing round, end same-shape
+mutation: genuinely split the approved capability or close and replan it.
+Exact-head review remains mandatory for any head that might merge; it does not
+authorize further mutation after this stop signal.
+
+**The loop.** If the cascade rule has fired, take its exit instead of continuing
+this loop. Otherwise, if every finding resolves **without moving the head**
+(dispositions 3–4), answer every thread, prove none remain with the complete
+paginated thread check above, then merge — answered findings satisfy the gate
+(issue #751); do not request another review. If any allowed fix lands as a
+commit (dispositions 1–2), batch ALL of them into ONE commit, answer every
+thread, push, and request one review for the new head.
 
 **The budget: three finding-bearing rounds per capability, never more than three
 on one PR.** This is a discipline, not an enforced limit — the wrapper that
@@ -487,7 +505,9 @@ decline to run was never a rule. Closing, renaming, restacking, or reopening the
 same acceptance criterion does not reset its count. Past three rounds, the
 legitimate exits are:
 
-- **Merge if answered** — all threads resolved satisfies the gate;
+- **Merge if answered** — only when no known high-severity defect remains; all
+  threads resolved satisfies the gate, but routing a low-severity or
+  out-of-scope finding is not permission to ship a known serious regression;
 - **Split the PR** — only genuinely independent acceptance criteria receive
   independent budgets; a mechanical split is not budget laundering;
 - **Close it, preserving the corpus** on the tracking issue (the #706 pattern) — correct when successive fixes keep creating defects.
