@@ -682,6 +682,47 @@ pin_behavior() {
 "
 }
 
+# Effective rules can contain overlapping workflow requirements from more
+# than one ruleset. Evaluate ancestry and behavior together across every
+# observed same-source/ref revision; iteration order must never decide whether
+# a compatible required gate counts as enforcement.
+PIN_ENFORCEMENT_VERDICT=""
+PIN_ENFORCEMENT_REASON=""
+resolve_pin_enforcement() {
+  local repository_id="$1" ref="$2" expected_sha="$3" actual_shas="$4"
+  local manifest_path="$5" expected_version="$6" sha
+  local lineage_reason="" behavior_reason=""
+  PIN_ENFORCEMENT_VERDICT=off-lineage
+  PIN_ENFORCEMENT_REASON=""
+  for sha in $actual_shas; do
+    pin_lineage "$repository_id" "$ref" "$expected_sha" "$sha"
+    case "$PIN_LINEAGE_VERDICT" in
+      at-or-ahead)
+        if [ -z "$manifest_path" ]; then
+          PIN_ENFORCEMENT_VERDICT=verified
+          return 0
+        fi
+        pin_behavior "$repository_id" "$PIN_LINEAGE_SHA" "$manifest_path" "$expected_version"
+        if [ "$PIN_BEHAVIOR_VERDICT" = verified ]; then
+          PIN_ENFORCEMENT_VERDICT=verified
+          return 0
+        fi
+        behavior_reason="${behavior_reason}${behavior_reason:+; }$PIN_BEHAVIOR_REASON"
+        ;;
+      unverified)
+        lineage_reason="${lineage_reason}${lineage_reason:+; }$PIN_LINEAGE_REASON"
+        ;;
+    esac
+  done
+  if [ -n "$behavior_reason" ]; then
+    PIN_ENFORCEMENT_VERDICT=unverified
+    PIN_ENFORCEMENT_REASON="$behavior_reason"
+  elif [ -n "$lineage_reason" ]; then
+    PIN_ENFORCEMENT_VERDICT=unverified
+    PIN_ENFORCEMENT_REASON="$lineage_reason"
+  fi
+}
+
 # What GitHub enforces on a branch, read once from its effective rules. A
 # consumer policy requires pinned workflows; a workflow-source policy requires
 # its source-contract status. The queue and native rules complete either set.
@@ -901,21 +942,27 @@ read_enforcement() {
         [ "$(printf '%s' "$expected" | jq --arg p "$gate_path" '[.[] | select(.path == $p)] | length')" = 1 ] \
           || fail_operation "$policy_file does not pin exactly one $gate_path" "Reinstall touchstone; the policy file is corrupt or incomplete."
       done
-      source_manifest_path="$(enforcement_policy_jq -er '.workflowSource.sourceContract.manifestPath')" \
-        || fail_operation "could not read the workflow source manifest path from $policy_file" "Reinstall touchstone; the policy file is corrupt or incomplete."
-      gate_behavior_version="$(enforcement_policy_jq -er '.workflowSource.sourceContract.gateBehaviorContractVersion')" \
-        || fail_operation "could not read the gate behavior contract from $policy_file" "Reinstall touchstone; the policy file is corrupt or incomplete."
-      if ! enforcement_policy_jq -e '
-        (.workflowSource.sourceContract | keys == ["gateBehaviorContractVersion", "manifestPath"])
-        and (.workflowSource.sourceContract.manifestPath
-          | type == "string"
-          and test("^[A-Za-z0-9._/-]+$")
-          and startswith("/") == false
-          and (split("/") | index("..") == null))
-        and (.workflowSource.sourceContract.gateBehaviorContractVersion
-          | type == "number" and floor == . and . >= 1)
-      ' >/dev/null; then
-        fail_operation "$policy_file has an invalid workflow source contract declaration" "Reinstall touchstone; the policy file is corrupt or incomplete."
+      # A base policy created before AUT-568 has no declaration. Keep that
+      # reviewed boundary readable so the policy PR introducing the contract
+      # can use the normal guarded merge path. Once the field exists, it is
+      # strict: malformed or unsupported declarations fail closed.
+      if enforcement_policy_jq -e '.workflowSource | has("sourceContract")' >/dev/null; then
+        source_manifest_path="$(enforcement_policy_jq -er '.workflowSource.sourceContract.manifestPath')" \
+          || fail_operation "could not read the workflow source manifest path from $policy_file" "Reinstall touchstone; the policy file is corrupt or incomplete."
+        gate_behavior_version="$(enforcement_policy_jq -er '.workflowSource.sourceContract.gateBehaviorContractVersion')" \
+          || fail_operation "could not read the gate behavior contract from $policy_file" "Reinstall touchstone; the policy file is corrupt or incomplete."
+        if ! enforcement_policy_jq -e '
+          (.workflowSource.sourceContract | keys == ["gateBehaviorContractVersion", "manifestPath"])
+          and (.workflowSource.sourceContract.manifestPath
+            | type == "string"
+            and test("^[A-Za-z0-9._/-]+$")
+            and startswith("/") == false
+            and (split("/") | index("..") == null))
+          and (.workflowSource.sourceContract.gateBehaviorContractVersion
+            | type == "number" and floor == . and . >= 1)
+        ' >/dev/null; then
+          fail_operation "$policy_file has an invalid workflow source contract declaration" "Reinstall touchstone; the policy file is corrupt or incomplete."
+        fi
       fi
       ;;
     workflow-source)
@@ -987,23 +1034,19 @@ read_enforcement() {
     esac
     case "$verdict" in
       pinned)
-        pin_behavior "$pin_repository_id" "$pin_expected" "$source_manifest_path" "$gate_behavior_version"
-        [ "$PIN_BEHAVIOR_VERDICT" = verified ] \
-          || missing_names+=("$name workflow (present but pinned at a revision this tool could not verify: $PIN_BEHAVIOR_REASON) [expected $pin_expected; observed $pin_actual]")
+        if [ -n "$source_manifest_path" ]; then
+          pin_behavior "$pin_repository_id" "$pin_expected" "$source_manifest_path" "$gate_behavior_version"
+          [ "$PIN_BEHAVIOR_VERDICT" = verified ] \
+            || missing_names+=("$name workflow (present but pinned at a revision this tool could not verify: $PIN_BEHAVIOR_REASON) [expected $pin_expected; observed $pin_actual]")
+        fi
         ;;
       absent) missing_names+=("$name workflow") ;;
       other-revision)
-        pin_lineage "$pin_repository_id" "$pin_ref" "$pin_expected" "$pin_actual"
-        case "$PIN_LINEAGE_VERDICT" in
-          # A revision on the policy's own lineage, at or ahead of the one
-          # the tool carries, enforces at least what the tool expects.
-          at-or-ahead)
-            pin_behavior "$pin_repository_id" "$PIN_LINEAGE_SHA" "$source_manifest_path" "$gate_behavior_version"
-            [ "$PIN_BEHAVIOR_VERDICT" = verified ] \
-              || missing_names+=("$name workflow (present but pinned at a revision this tool could not verify: $PIN_BEHAVIOR_REASON) [expected $pin_expected; observed ${PIN_LINEAGE_SHA:-$pin_actual}]")
-            ;;
+        resolve_pin_enforcement "$pin_repository_id" "$pin_ref" "$pin_expected" "$pin_actual" "$source_manifest_path" "$gate_behavior_version"
+        case "$PIN_ENFORCEMENT_VERDICT" in
+          verified) ;;
           unverified)
-            missing_names+=("$name workflow (present but pinned at a revision this tool could not verify: $(printf '%s' "$PIN_LINEAGE_REASON" | tr ',' ';')) [expected $pin_expected; observed ${pin_actual:-unreadable}]")
+            missing_names+=("$name workflow (present but pinned at a revision this tool could not verify: $(printf '%s' "$PIN_ENFORCEMENT_REASON" | tr ',' ';')) [expected $pin_expected; observed ${pin_actual:-unreadable}]")
             ;;
           *) missing_names+=("$name workflow (present but not pinned at the policy revision) [expected $pin_expected; observed ${pin_actual:-unreadable}]") ;;
         esac
