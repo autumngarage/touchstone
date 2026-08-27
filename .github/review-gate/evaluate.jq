@@ -191,9 +191,8 @@ def observed_at:
     | select($cutoff == null or observed_at <= $cutoff)
   ] as $result_comments
 | [
-    $root.issueComments[]?
-    | select($cutoff != null and trusted($trusted))
-    | select((.created_at // "") <= $cutoff and observed_at > $cutoff)
+    $result_candidates[]
+    | select($cutoff != null and (.created_at // "") <= $cutoff and observed_at > $cutoff)
     | {
         kind: "trusted result comment changed after evidence cutoff",
         id: .id,
