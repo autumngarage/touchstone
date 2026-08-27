@@ -147,24 +147,27 @@ case "$ACTION" in
     require_usable_key
     resolve_codex
     INVOKING_DIR="$(pwd -P)"
-    REPOSITORY_ROOT="$(env \
-      -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
-      git -C "$INVOKING_DIR" rev-parse --show-toplevel 2>/dev/null)" \
-      || die "normal review must run inside a git repository"
-    REPOSITORY_ROOT="$(cd "$REPOSITORY_ROOT" && pwd -P)"
-    case "$REPOSITORY_ROOT" in
-      *[\"\\]* | *$'\n'*)
-        die "repository path cannot be represented safely in the isolated Codex trust boundary: $REPOSITORY_ROOT"
-        ;;
-    esac
+    touchstone_review_resolve_git_context "$INVOKING_DIR" \
+      || die "$TOUCHSTONE_CODEX_ERROR"
+    REPOSITORY_ROOT="$TOUCHSTONE_REVIEW_REPOSITORY_ROOT"
+    REVIEW_GIT_DIR="$TOUCHSTONE_REVIEW_GIT_DIR"
+    REVIEW_GIT_COMMON_DIR="$TOUCHSTONE_REVIEW_GIT_COMMON_DIR"
     unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
-      GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES
+      GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES \
+      GIT_CONFIG GIT_CONFIG_PARAMETERS
+    GIT_CONFIG_NOSYSTEM=1
+    GIT_CONFIG_GLOBAL=/dev/null
+    GIT_CONFIG_SYSTEM=/dev/null
+    GIT_CONFIG_COUNT=0
+    export GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT
     cd "$REPOSITORY_ROOT"
     RUNTIME_HOME="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-review.XXXXXX")" \
       || die "could not create isolated Codex state for normal review"
     trap cleanup_runtime_home EXIT HUP INT TERM
-    cp "$PROFILE_SOURCE" "$RUNTIME_HOME/review-normal.config.toml" \
-      || die "could not stage the managed review profile in isolated Codex state"
+    touchstone_review_render_profile \
+      "$PROFILE_SOURCE" "$RUNTIME_HOME/review-normal.config.toml" \
+      "$REVIEW_GIT_DIR" "$REVIEW_GIT_COMMON_DIR" \
+      || die "$TOUCHSTONE_CODEX_ERROR"
     chmod 700 "$RUNTIME_HOME" \
       || die "could not restrict isolated Codex state"
     chmod 600 "$RUNTIME_HOME/review-normal.config.toml" \

@@ -14,9 +14,16 @@ default_permissions = "touchstone_review"
 ":minimal" = "read"
 ":workspace_roots" = "read"
 "~/Library/Keychains" = "deny"
+# touchstone:review-git-roots
 
 [shell_environment_policy]
 inherit = "core"
+
+[shell_environment_policy.set]
+GIT_CONFIG_NOSYSTEM = "1"
+GIT_CONFIG_GLOBAL = "/dev/null"
+GIT_CONFIG_SYSTEM = "/dev/null"
+GIT_CONFIG_COUNT = "0"
 
 [shell_environment_policy.filters]
 OPENROUTER_API_KEY = "exclude"
