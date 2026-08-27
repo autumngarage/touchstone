@@ -94,12 +94,14 @@ serve_rules() {
     # stays at the policy revision, so a variant names exactly two gates.
     pin_sha="$GH_POLICY_SHA"
     evidence_sha="$GH_POLICY_SHA"
+    evidence_source_id=1333343261
     source_id=1333343261
     [ ! -f "$GH_STATE/stale-pin" ] || pin_sha="$GH_DIVERGED_SHA"
     [ ! -f "$GH_STATE/behind-pin" ] || pin_sha="$GH_BEHIND_SHA"
     [ ! -f "$GH_STATE/offref-pin" ] || pin_sha="$GH_OFFREF_SHA"
     [ ! -f "$GH_STATE/unknown-pin" ] || pin_sha="$GH_UNKNOWN_SHA"
     [ ! -f "$GH_STATE/other-source-pin" ] || source_id=424242
+    [ ! -f "$GH_STATE/local-evidence-rule" ] || evidence_source_id=424243
     # The AUT-559 shape: the deployed ruleset pins the source branch head,
     # several revisions ahead of the policy the installed tool carries.
     if [ -f "$GH_STATE/ahead-pin" ]; then
@@ -110,7 +112,7 @@ serve_rules() {
     [ ! -f "$GH_STATE/no-queue-rule" ] || queue_rule=""
     status_rule=""
     [ ! -f "$GH_STATE/consumer-status" ] || status_rule=',{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"convoy/delivery-protocol"}]}}'
-    rules='['"$pr_rule"',{"type":"deletion"},{"type":"non_fast_forward"}'"$queue_rule"',{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":'"$source_id"',"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":'"$source_id"',"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$evidence_sha"'"}]}}'"$status_rule"']'
+    rules='['"$pr_rule"',{"type":"deletion"},{"type":"non_fast_forward"}'"$queue_rule"',{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":'"$source_id"',"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":'"$source_id"',"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":'"$evidence_source_id"',"ref":"refs/heads/main","sha":"'"$evidence_sha"'"}]}}'"$status_rule"']'
   elif [ -f "$GH_STATE/no-rules" ]; then
     rules='[]'
   else
@@ -121,9 +123,17 @@ serve_rules() {
   page1="$(printf '%s' "$rules" | jq -c '[.[] | select(.type != "workflows" and .type != "merge_queue")]')"
   page2="$(printf '%s' "$rules" | jq -c '[.[] | select(.type == "workflows" or .type == "merge_queue")]')"
   if has --jq "$@"; then
-    printf '%s' "$rules" | jq -r "$(value_after --jq "$@")"
+    if [ -f "$GH_STATE/required-workflow-later-page" ]; then
+      # Match gh api: without --paginate only page one exists; with it the
+      # inline filter runs once per page rather than over an aggregate.
+      printf '%s' "$page1" | jq -r "$(value_after --jq "$@")"
+      if has --paginate "$@"; then printf '%s' "$page2" | jq -r "$(value_after --jq "$@")"; fi
+    else
+      printf '%s' "$rules" | jq -r "$(value_after --jq "$@")"
+    fi
   else
-    printf '%s\n%s\n' "$page1" "$page2"
+    printf '%s\n' "$page1"
+    if has --paginate "$@"; then printf '%s\n' "$page2"; fi
   fi
 }
 
@@ -214,6 +224,7 @@ case "$1 ${2:-}" in
     fi
     if has '--json headRefOid,baseRefName,baseRefOid' "$@"; then
       if [ "${GH_MODE:-ok}" = binding_moved ] || [ "${GH_MODE:-ok}" = moved_during_gate ] \
+        || { [ "${GH_MODE:-ok}" = delivery_moved ] && [ -f "$GH_STATE/evidence-reruns" ]; } \
         || { [ "${GH_MODE:-ok}" = candidate_files_moved ] && [ -f "$GH_STATE/candidate-files-read" ]; }; then
         printf 'moved-head\t%s\t%s\n' "$GH_BASE_REF" "$GH_BASE_SHA"
       elif [ "${GH_MODE:-ok}" = base_advanced ]; then
@@ -232,7 +243,9 @@ case "$1 ${2:-}" in
       if [ -f "$GH_STATE/pr-body" ]; then body="$(cat "$GH_STATE/pr-body")"; else body="$(printf '%s\n' 'Change summary.' '' 'Closes #42')"; fi
       jq -cn --arg t "$title" --arg b "$body" '[$t, $b]'
     elif has '--json body' "$@"; then
-      if [ -f "$GH_STATE/pr-body" ]; then
+      if [ "${GH_MODE:-ok}" = delivery_body_moved ] && [ -f "$GH_STATE/gate-reruns" ]; then
+        printf 'Concurrent body mutation.\n'
+      elif [ -f "$GH_STATE/pr-body" ]; then
         cat "$GH_STATE/pr-body"
       else
         printf '%s\n' 'Change summary.' '' 'Closes #42'
@@ -433,6 +446,10 @@ case "$1 ${2:-}" in
       echo "rerun 77" >>"$GH_STATE/gate-reruns"
       # After a re-run the run is in progress until the fake says otherwise.
       [ -f "$GH_STATE/gate-after-rerun" ] || echo 2 >"$GH_STATE/gate-after-rerun"
+    elif has 'actions/runs/80/rerun' "$@"; then
+      [ "${GH_MODE:-ok}" != delivery_rerun_failure ] || exit 1
+      echo "rerun 80" >>"$GH_STATE/evidence-reruns"
+      [ -f "$GH_STATE/evidence-after-rerun" ] || echo 2 >"$GH_STATE/evidence-after-rerun"
     elif has 'actions/runs/77' "$@"; then
       # Single-run read. Before a re-run: attempt 1 completed. Right after a
       # re-run GitHub may still report attempt 1 completed (stale), then the
@@ -456,8 +473,27 @@ case "$1 ${2:-}" in
       else
         printf 'completed %s 2\n' "${GH_GATE_CONCLUSION:-success}"
       fi
+    elif has 'actions/runs/80' "$@"; then
+      if has '.run_attempt' "$@"; then
+        if [ -f "$GH_STATE/evidence-after-rerun" ]; then
+          left="$(cat "$GH_STATE/evidence-after-rerun")"
+          if [ "$left" -ge 2 ]; then echo 1 >"$GH_STATE/evidence-after-rerun"; printf '1\n'; else rm -f "$GH_STATE/evidence-after-rerun"; printf '2\n'; fi
+        else
+          printf '1\n'
+        fi
+      else
+        printf 'completed %s 1\n' "${GH_EVIDENCE_CONCLUSION:-success}"
+      fi
     elif has 'actions/workflows?' "$@"; then
-      printf '1\n2\n3\n'
+      first_workflow_page='{"workflows":[{"id":2,"path":".github/workflows/local-review-gate.yml"}]}'
+      expected_workflow_page='{"workflows":[{"id":3,"path":".github/workflows/local-delivery-evidence.yml"}]}'
+      all_workflow_page='{"workflows":[{"id":2,"path":".github/workflows/local-review-gate.yml"},{"id":3,"path":".github/workflows/local-delivery-evidence.yml"}]}'
+      if [ -f "$GH_STATE/required-workflow-later-page" ]; then
+        printf '%s\n' "$first_workflow_page"
+        if has --paginate "$@"; then printf '%s\n' "$expected_workflow_page"; fi
+      else
+        printf '%s\n' "$all_workflow_page"
+      fi
     elif has 'rules/branches/' "$@"; then
       serve_rules "$@"
     elif has 'actions/runs?head_sha=' "$@"; then
@@ -474,13 +510,37 @@ case "$1 ${2:-}" in
           gate_status=completed
         fi
         runs="{\"workflow_runs\":[
-          {\"id\":77,\"name\":\"review-gate\",\"event\":\"pull_request\",\"status\":\"$gate_status\",\"workflow_id\":999,\"pull_requests\":[{\"number\":7}]},
-          {\"id\":78,\"name\":\"review-gate\",\"event\":\"pull_request\",\"status\":\"completed\",\"workflow_id\":2,\"pull_requests\":[{\"number\":7}]},
-          {\"id\":79,\"name\":\"review-gate\",\"event\":\"pull_request\",\"status\":\"completed\",\"workflow_id\":999,\"pull_requests\":[{\"number\":8}]}]}"
+          {\"id\":77,\"name\":\"review-gate\",\"event\":\"pull_request\",\"status\":\"$gate_status\",\"conclusion\":\"${GH_GATE_CONCLUSION:-success}\",\"workflow_id\":999,\"pull_requests\":[{\"number\":7}]},
+          {\"id\":78,\"name\":\"review-gate\",\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":2,\"pull_requests\":[{\"number\":7}]},
+          {\"id\":79,\"name\":\"review-gate\",\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":999,\"pull_requests\":[{\"number\":8}]},
+          {\"id\":80,\"name\":\"delivery-evidence\",\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"${GH_EVIDENCE_CONCLUSION:-success}\",\"run_started_at\":\"${GH_EVIDENCE_STARTED_AT:-2026-08-26T22:20:00Z}\",\"workflow_id\":1000,\"pull_requests\":[{\"number\":7}]},
+          {\"id\":81,\"name\":\"delivery-evidence\",\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"failure\",\"workflow_id\":3,\"pull_requests\":[{\"number\":7}]},
+          {\"id\":82,\"name\":\"other-external-gate\",\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":1001,\"pull_requests\":[{\"number\":7}]},
+          {\"id\":83,\"name\":\"other-external-gate\",\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":1001,\"pull_requests\":[{\"number\":7}]}]}"
+        if [ -f "$GH_STATE/same-name-external-decoy" ]; then
+          runs="$(printf '%s' "$runs" | jq -c '.workflow_runs += [{"id":82,"name":"delivery-evidence","event":"pull_request","status":"completed","conclusion":"success","workflow_id":1001,"pull_requests":[{"number":7}]}]')"
+        fi
       else
         runs='{"workflow_runs":[]}'
       fi
-      printf '%s' "$runs" | jq -r "$(value_after --jq "$@")"
+      if [ -f "$GH_STATE/local-evidence-rule" ]; then
+        runs="$(printf '%s' "$runs" | jq -c '{workflow_runs: [.workflow_runs[] | select(.id != 80)]}')"
+      fi
+      if [ -f "$GH_STATE/required-run-later-page" ]; then
+        first_page="$(printf '%s' "$runs" | jq -c '{workflow_runs: [.workflow_runs[] | select(.id != 77 and .id != 80)]}')"
+        later_page="$(printf '%s' "$runs" | jq -c '{workflow_runs: [.workflow_runs[] | select(.id == 77 or .id == 80)]}')"
+        if has --jq "$@"; then
+          printf '%s' "$first_page" | jq -r "$(value_after --jq "$@")"
+          if has --paginate "$@"; then printf '%s' "$later_page" | jq -r "$(value_after --jq "$@")"; fi
+        else
+          printf '%s\n' "$first_page"
+          if has --paginate "$@"; then printf '%s\n' "$later_page"; fi
+        fi
+      elif has --jq "$@"; then
+        printf '%s' "$runs" | jq -r "$(value_after --jq "$@")"
+      else
+        printf '%s\n' "$runs"
+      fi
     elif has '/issues/comments/1' "$@"; then
       if [ "${GH_MODE:-ok}" = live_comment_invalid ]; then
         jq -cn '{id: 1, user: {login: "mallory"}, body: "not a review request", author_association: "OWNER"}'
@@ -606,6 +666,100 @@ EOF
   [ "$(grep -c 'actions/runs?head_sha=' "$GH_CALLS")" -ge 2 ] \
     || fail "open did not poll the in-progress gate run"
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns"
+
+  echo "==> open refreshes required delivery evidence after body convergence (AUT-481)"
+  # Put both the policy declaration and matching organization run on page two.
+  # Required-workflow decisions must aggregate the paginated API, not apply an
+  # inline filter independently to each page or stop after the first.
+  touch "$TMP/state/review-gate" "$TMP/state/pr-exists" \
+    "$TMP/state/required-workflow-later-page" "$TMP/state/required-run-later-page"
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/review-request"
+  printf 'Original evidence body.\n' >"$TMP/state/pr-body"
+  printf 'Corrected evidence body.\n' >"$TMP/body2"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 0
+  grep -q 'rerun 80' "$TMP/state/evidence-reruns" 2>/dev/null \
+    && ok "a corrected body re-ran the organization-required delivery-evidence run" \
+    || fail "a corrected body did not re-run delivery evidence"
+  assert_has "$TMP/out" 'Delivery evidence re-run requested for run 80.'
+
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun"
+  touch "$TMP/state/same-name-external-decoy"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'multiple external delivery-evidence workflow identities'
+  [ ! -f "$TMP/state/evidence-reruns" ] \
+    && ok "same-named external workflows fail closed instead of rerunning the wrong gate" \
+    || fail "an ambiguous external workflow was rerun"
+  rm -f "$TMP/state/same-name-external-decoy"
+
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun"
+  GH_EVIDENCE_CONCLUSION=failure run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'body: unchanged'
+  grep -q 'rerun 80' "$TMP/state/evidence-reruns" 2>/dev/null \
+    && ok "an unchanged corrected body can recover a prior failed evaluation" \
+    || fail "unchanged-body recovery did not re-run delivery evidence"
+
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/review-request"
+  printf 'Moved recovery body.\n' >"$TMP/body3"
+  GH_MODE=delivery_moved run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body3"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'PR coordinates moved before the review request was bound'
+  [ ! -f "$TMP/state/review-request" ] \
+    && ok "a moved PR is refused after the evidence request and before review mutation" \
+    || fail "a moved PR still posted a review request"
+
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/review-request"
+  printf 'Transport recovery body.\n' >"$TMP/body4"
+  GH_MODE=delivery_rerun_failure run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body4"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'could not re-run delivery-evidence run 80'
+  [ ! -f "$TMP/state/review-request" ] \
+    && ok "a required-workflow transport failure stops before the review request" \
+    || fail "a transport failure still posted a review request"
+
+  # The edit above survived even though its rerun request did not. On retry,
+  # the body is unchanged, but the older green attempt must not be reused.
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/review-request"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body4"
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'body: unchanged'
+  grep -q 'rerun 80' "$TMP/state/evidence-reruns" 2>/dev/null \
+    && ok "a retry re-runs evidence after a surviving body edit" \
+    || fail "a retry reused evidence from before the surviving body edit"
+
+  # GitHub exposes only a PR-wide update timestamp, so even a green result is
+  # re-run: comments and reviews cannot be mistaken for body-version evidence.
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body4"
+  assert_rc "$RUN_RC" 0
+  grep -q 'rerun 80' "$TMP/state/evidence-reruns" 2>/dev/null \
+    && ok "an unchanged green result is re-run against the surviving body" \
+    || fail "an unchanged green result was reused without body-version evidence"
+
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/gate-reruns" "$TMP/state/review-request"
+  printf 'Expected final body.\n' >"$TMP/body5"
+  GH_MODE=delivery_body_moved run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body5"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'body moved while delivery evidence was refreshed'
+  ok "a concurrent body mutation after request binding is refused before success"
+
+  # A same-path repository-local workflow is not the organization-required
+  # source declared by policy. Ignore it rather than waiting for an external
+  # run that cannot exist.
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" \
+    "$TMP/state/gate-reruns" "$TMP/state/required-workflow-later-page" "$TMP/state/required-run-later-page"
+  touch "$TMP/state/local-evidence-rule"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body5"
+  assert_rc "$RUN_RC" 0
+  [ ! -f "$TMP/state/evidence-reruns" ] \
+    && ok "a same-path local workflow is not mistaken for central delivery evidence" \
+    || fail "a same-path local workflow triggered an external evidence rerun"
+  rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns" "$TMP/state/evidence-reruns" \
+    "$TMP/state/evidence-after-rerun" "$TMP/state/review-request" "$TMP/state/pr-body" \
+    "$TMP/state/required-workflow-later-page" "$TMP/state/required-run-later-page" \
+    "$TMP/state/local-evidence-rule"
 
   echo "==> open converges a reused PR on the title and body given (AUT-437)"
   # The PR exists with the original body; a second open with a different

@@ -199,15 +199,34 @@ row_text() {
 }
 
 FAILURES=0
-report() {
-  printf '  missing: %s\n' "$*" >&2
+SUMMARY_STARTED=false
+record_failure() {
+  local kind="$1" message="$2" escaped summary_message
+  printf '  %s: %s\n' "$kind" "$message" >&2
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    if [ "$SUMMARY_STARTED" = false ]; then
+      printf '## Delivery evidence rejected\n\n' >>"$GITHUB_STEP_SUMMARY" \
+        || printf 'WARNING: could not write the delivery-evidence step summary\n' >&2
+      SUMMARY_STARTED=true
+    fi
+    summary_message="$(printf '%s' "$message" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+    printf -- '- **%s:** %s\n' "$kind" "$summary_message" >>"$GITHUB_STEP_SUMMARY" \
+      || printf 'WARNING: could not append to the delivery-evidence step summary\n' >&2
+  fi
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    escaped="$(printf '%s' "$message" | sed -e 's/%/%25/g' -e $'s/\r/%0D/g')"
+    printf '::error title=Delivery evidence %s::%s\n' "$kind" "$escaped" >&2
+  fi
   FAILURES=$((FAILURES + 1))
+}
+
+report() {
+  record_failure missing "$*"
 }
 # For a row that is present but not in the shape the gate reads: "missing"
 # would send the author hunting for an absent row (AUT-468).
 report_unreadable() {
-  printf '  unreadable: %s\n' "$*" >&2
-  FAILURES=$((FAILURES + 1))
+  record_failure unreadable "$*"
 }
 
 TIER_RAW="$(section "Review tier")"
