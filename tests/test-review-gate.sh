@@ -102,6 +102,8 @@ run_state_case "an older result still means the current request is waiting" \
   '.issueComments[1].created_at = "2026-08-20T10:01:00Z"' waiting-review
 run_state_case "a post-request result for another head is terminal failure" \
   '.issueComments[1].resolved_review_sha = "3333333333333333333333333333333333333333"' failure
+run_state_case "a stale post-request result identified by a blob URL is terminal failure" \
+  '.issueComments[1].resolved_review_sha = "" | .issueComments[1].body = "Review result: https://github.com/autumngarage/touchstone/blob/3333333333333333333333333333333333333333/file"' failure
 run_state_case "a malformed post-request result is terminal failure" \
   '.issueComments[1].resolved_review_sha = "" | .issueComments[1].body = "Codex Review: completed\n\n**Reviewed commit:** `not-a-sha`"' failure
 run_state_case "a post-request formal review for another head is terminal failure" '

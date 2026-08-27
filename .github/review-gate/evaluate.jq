@@ -145,14 +145,15 @@ def answers_body_finding($id):
   ] as $reviews
 | [
     $root.issueComments[]?
-    | select(trusted($trusted))
-    | select((.created_at // "") > $threshold)
-    | select(
-        ((.body // "") | contains("Reviewed commit:"))
-        or ((.body // "") | test("^[[:space:]]*Codex Review:"; "i"))
-      )
-    | select(((.body // "") | test("usage limit|quota"; "i")) | not)
-  ] as $result_candidates
+  | select(trusted($trusted))
+  | select((.created_at // "") > $threshold)
+  | select(
+      reviewed_sha != ""
+      or ((.body // "") | contains("Reviewed commit:"))
+      or ((.body // "") | test("^[[:space:]]*Codex Review:"; "i"))
+    )
+  | select(((.body // "") | test("usage limit|quota"; "i")) | not)
+] as $result_candidates
 | [
     $root.issueComments[]?
     | select(trusted($trusted))
