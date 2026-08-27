@@ -329,6 +329,8 @@ case "$1 ${2:-}" in
   "api --paginate")
     if has 'rules/branches/' "$@"; then
       serve_rules "$@"
+    elif has '/actions/runs/88/attempts/1/jobs?per_page=100' "$@"; then
+      printf '%s\n' '{"jobs":[{"id":89,"name":"review-gate","run_attempt":1,"status":"completed","conclusion":"failure"}]}'
     elif has '/actions/runs/77/attempts/3/jobs?per_page=100' "$@"; then
       if [ "${GH_MODE:-ok}" = status_gate_run_recency ]; then
         printf '%s\n' '{"jobs":[{"id":88,"name":"review-gate","run_attempt":3,"status":"completed","conclusion":"success"}]}'
@@ -367,6 +369,9 @@ case "$1 ${2:-}" in
           ;;
         status_gate_run_recency)
           jq -cn --arg head "$GH_HEAD" '{check_runs:[{id:88,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"success",details_url:"https://example.test/runs/88",output:{title:"Latest execution accepted",summary:"The rerun completed successfully."}}]}'
+          ;;
+        status_gate_run_overlap)
+          jq -cn --arg head "$GH_HEAD" '{check_runs:[{id:89,name:"review-gate",head_sha:$head,check_suite:{id:906},status:"completed",conclusion:"failure",details_url:"https://example.test/runs/89",output:{title:"Later attempt rejected",summary:"The later-started run completed first."}}]}'
           ;;
         status_gate_attempt_race)
           jq -cn --arg head "$GH_HEAD" '{check_runs:[
@@ -537,6 +542,8 @@ case "$1 ${2:-}" in
       [ "${GH_MODE:-ok}" != delivery_rerun_failure ] || exit 1
       echo "rerun 80" >>"$GH_STATE/evidence-reruns"
       [ -f "$GH_STATE/evidence-after-rerun" ] || echo 2 >"$GH_STATE/evidence-after-rerun"
+    elif has 'actions/runs/88' "$@"; then
+      printf '1\n'
     elif has 'actions/runs/77' "$@"; then
       # Single-run read. Before a re-run: attempt 1 completed. Right after a
       # re-run GitHub may still report attempt 1 completed (stale), then the
@@ -626,15 +633,21 @@ case "$1 ${2:-}" in
             fi
             ;;
         esac
+        gate_started_at='2026-08-27T17:10:00Z'
         runs="{\"workflow_runs\":[
-          {\"id\":77,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":900,\"run_attempt\":$gate_attempt,\"event\":\"pull_request\",\"status\":\"$gate_status\",\"conclusion\":$gate_conclusion_json,\"workflow_id\":999,\"updated_at\":\"2026-08-27T17:10:00Z\",\"pull_requests\":[{\"number\":7}]},
-          {\"id\":78,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":901,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":2,\"updated_at\":\"2026-08-27T17:20:00Z\",\"pull_requests\":[{\"number\":7}]},
-          {\"id\":79,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":902,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":999,\"updated_at\":\"2026-08-27T17:20:00Z\",\"pull_requests\":[{\"number\":8}]},
+          {\"id\":77,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":900,\"run_attempt\":$gate_attempt,\"event\":\"pull_request\",\"status\":\"$gate_status\",\"conclusion\":$gate_conclusion_json,\"workflow_id\":999,\"run_started_at\":\"$gate_started_at\",\"updated_at\":\"2026-08-27T17:30:00Z\",\"pull_requests\":[{\"number\":7}]},
+          {\"id\":78,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":901,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":2,\"run_started_at\":\"2026-08-27T17:20:00Z\",\"updated_at\":\"2026-08-27T17:20:00Z\",\"pull_requests\":[{\"number\":7}]},
+          {\"id\":79,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":902,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":999,\"run_started_at\":\"2026-08-27T17:20:00Z\",\"updated_at\":\"2026-08-27T17:20:00Z\",\"pull_requests\":[{\"number\":8}]},
           {\"id\":80,\"name\":\"delivery-evidence\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":903,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"${GH_EVIDENCE_CONCLUSION:-success}\",\"run_started_at\":\"${GH_EVIDENCE_STARTED_AT:-2026-08-26T22:20:00Z}\",\"workflow_id\":1000,\"pull_requests\":[{\"number\":7}]},
           {\"id\":81,\"name\":\"delivery-evidence\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":904,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"failure\",\"workflow_id\":3,\"pull_requests\":[{\"number\":7}]},
           {\"id\":82,\"name\":\"other-external-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":905,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":1001,\"pull_requests\":[{\"number\":7}]},
           {\"id\":83,\"name\":\"other-external-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":905,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":1001,\"pull_requests\":[{\"number\":7}]}]}"
-        if [ "${GH_MODE:-ok}" = status_gate_run_recency ]; then
+        if [ "${GH_MODE:-ok}" = status_gate_run_recency ] || [ "${GH_MODE:-ok}" = status_gate_run_overlap ]; then
+          extra_started_at='2026-08-27T17:00:00Z'
+          if [ "${GH_MODE:-ok}" = status_gate_run_overlap ]; then
+            runs="$(printf '%s' "$runs" | jq -c '(.workflow_runs[] | select(.id == 77) | .run_started_at) = "2026-08-27T17:00:00Z"')"
+            extra_started_at='2026-08-27T17:10:00Z'
+          fi
           runs="$(printf '%s' "$runs" | jq -c '.workflow_runs += [{
             id:88,
             name:"review-gate",
@@ -645,7 +658,8 @@ case "$1 ${2:-}" in
             status:"completed",
             conclusion:"failure",
             workflow_id:999,
-            updated_at:"2026-08-27T17:00:00Z",
+            run_started_at:"'"$extra_started_at"'",
+            updated_at:"2026-08-27T17:20:00Z",
             pull_requests:[{number:7}]
           }]')"
         fi
@@ -771,6 +785,11 @@ EOF
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"workflowRunId":77,"runAttempt":3'
   assert_not_has "$TMP/out" '"workflowRunId":88'
+  GH_MODE=status_gate_run_overlap run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"workflowRunId":88,"runAttempt":1'
+  assert_has "$TMP/out" '"checkRunId":89,"status":"completed","conclusion":"failure"'
+  assert_not_has "$TMP/out" '"workflowRunId":77'
   GH_MODE=status_gate_collision run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"checkRunId":82,"status":"completed","conclusion":"failure"'
