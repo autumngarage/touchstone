@@ -44,6 +44,8 @@ run_case() {
 }
 run_state_case() {
   local label="$1" filter="$2" expected_state="$3" verdict
+  local expected_conclusion="failure"
+  [ "$expected_state" = "success" ] && expected_conclusion="success"
   jq "$filter" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
   verdict="$(jq -f "$EVALUATOR" "$TMP_DIR/case.json")" || {
     fail "$label: evaluator crashed"
@@ -51,6 +53,27 @@ run_state_case() {
   }
   [ "$(jq -r .state <<<"$verdict")" = "$expected_state" ] || {
     fail "$label: expected state $expected_state, got $(jq -c '{state,conclusion,reasons}' <<<"$verdict")"
+    return
+  }
+  [ "$(jq -r .conclusion <<<"$verdict")" = "$expected_conclusion" ] || {
+    fail "$label: expected conclusion $expected_conclusion, got $(jq -c '{state,conclusion,reasons}' <<<"$verdict")"
+    return
+  }
+  ok "$label"
+}
+run_rejected_count_case() {
+  local label="$1" filter="$2" expected="$3" expected_state="$4" verdict
+  jq "$filter" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
+  verdict="$(jq -f "$EVALUATOR" "$TMP_DIR/case.json")" || {
+    fail "$label: evaluator crashed"
+    return
+  }
+  [ "$(jq -r .counts.rejectedReviewEvidence <<<"$verdict")" = "$expected" ] || {
+    fail "$label: expected $expected rejected review candidate(s), got $(jq -c '{state,conclusion,counts,reasons}' <<<"$verdict")"
+    return
+  }
+  [ "$(jq -r .state <<<"$verdict")" = "$expected_state" ] || {
+    fail "$label: expected state $expected_state, got $(jq -c '{state,conclusion,counts,reasons}' <<<"$verdict")"
     return
   }
   ok "$label"
@@ -64,6 +87,8 @@ run_state_case "a bound request waits for exact-head review evidence" \
   '.issueComments = [.issueComments[0]]' waiting-review
 run_state_case "a provisional quota notice keeps waiting for review" \
   '.issueComments = [.issueComments[0], {"id":101,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Security review usage limit reached"}]' waiting-review
+run_state_case "a current-head quota notice still keeps waiting for review" \
+  '.issueComments = [.issueComments[0], {"id":101,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Security review quota reached","resolved_review_sha":"'"$HEAD_SHA"'"}]' waiting-review
 run_state_case "invalid evidence never becomes a waiting state" \
   'del(.complete) | .issueComments = []' failure
 run_case "write permission can request" '.authorPermissions.henry = "write"' success
@@ -102,6 +127,8 @@ run_state_case "an older result still means the current request is waiting" \
   '.issueComments[1].created_at = "2026-08-20T10:01:00Z"' waiting-review
 run_state_case "a post-request result for another head is terminal failure" \
   '.issueComments[1].resolved_review_sha = "3333333333333333333333333333333333333333"' failure
+run_rejected_count_case "mixed accepted and stale results report the rejected evidence" '
+  .issueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Codex Review: stale result","resolved_review_sha":"3333333333333333333333333333333333333333"}]' 1 success
 run_state_case "a stale post-request result identified by a blob URL is terminal failure" \
   '.issueComments[1].resolved_review_sha = "" | .issueComments[1].body = "Review result: https://github.com/autumngarage/touchstone/blob/3333333333333333333333333333333333333333/file"' failure
 run_state_case "a malformed post-request result is terminal failure" \

@@ -145,21 +145,30 @@ def answers_body_finding($id):
   ] as $reviews
 | [
     $root.issueComments[]?
-  | select(trusted($trusted))
-  | select((.created_at // "") > $threshold)
-  | select(
-      reviewed_sha != ""
-      or ((.body // "") | contains("Reviewed commit:"))
-      or ((.body // "") | test("^[[:space:]]*Codex Review:"; "i"))
-    )
-  | select(((.body // "") | test("usage limit|quota"; "i")) | not)
-] as $result_candidates
-| [
-    $root.issueComments[]?
     | select(trusted($trusted))
     | select((.created_at // "") > $threshold)
+    | select(
+        reviewed_sha != ""
+        or ((.body // "") | contains("Reviewed commit:"))
+        or ((.body // "") | test("^[[:space:]]*Codex Review:"; "i"))
+      )
+    | select(((.body // "") | test("usage limit|quota"; "i")) | not)
+  ] as $result_candidates
+| [
+    $result_candidates[]
     | select(binds_head($head))
   ] as $result_comments
+| [
+    $review_candidates[]
+    | select(
+        ((.commit_id // "" | ascii_downcase) != ($head | ascii_downcase))
+        or ((.state // "") == "DISMISSED")
+      )
+  ] as $rejected_reviews
+| [
+    $result_candidates[]
+    | select(binds_head($head) | not)
+  ] as $rejected_result_comments
 | [
     $root.reviewComments[]? as $finding
     | select($finding.in_reply_to_id == null)
@@ -267,7 +276,7 @@ def answers_body_finding($id):
     else empty end,
     if ($requests | length) > 0
       and (($reviews | length) + ($result_comments | length)) == 0
-      and (($review_candidates | length) + ($result_candidates | length)) > 0
+      and (($rejected_reviews | length) + ($rejected_result_comments | length)) > 0
       then "trusted review response evidence does not bind the exact head after the request"
     else empty end
   ] as $rejected_evidence_reasons
@@ -311,11 +320,7 @@ def answers_body_finding($id):
       rejectedRequests: ($rejected_requests | length),
       formalReviews: ($reviews | length),
       resultComments: ($result_comments | length),
-      rejectedReviewEvidence: (
-        if (($reviews | length) + ($result_comments | length)) == 0
-        then (($review_candidates | length) + ($result_candidates | length))
-        else 0
-        end),
+      rejectedReviewEvidence: (($rejected_reviews | length) + ($rejected_result_comments | length)),
       inlineFindings: ($inline_findings | length),
       unansweredInline: ([$inline_findings[] | select(.answered | not)] | length),
       bodyFindings: ($body_findings | length),
