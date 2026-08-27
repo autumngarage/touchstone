@@ -330,10 +330,14 @@ case "$1 ${2:-}" in
     if has 'rules/branches/' "$@"; then
       serve_rules "$@"
     elif has '/actions/runs/77/attempts/3/jobs?per_page=100' "$@"; then
-      printf '%s\n' '{"jobs":[{"id":87,"name":"review-gate","run_attempt":3,"status":"in_progress","conclusion":null}]}'
+      if [ "${GH_MODE:-ok}" = status_gate_run_recency ]; then
+        printf '%s\n' '{"jobs":[{"id":88,"name":"review-gate","run_attempt":3,"status":"completed","conclusion":"success"}]}'
+      else
+        printf '%s\n' '{"jobs":[{"id":87,"name":"review-gate","run_attempt":3,"status":"in_progress","conclusion":null}]}'
+      fi
     elif has '/actions/runs/77/attempts/2/jobs?per_page=100' "$@"; then
       case "${GH_MODE:-ok}" in
-        status_gate_pending)
+        status_gate_pending | status_gate_run_recency)
           printf '%s\n' '{"jobs":[{"id":81,"name":"review-gate","run_attempt":2,"status":"in_progress","conclusion":null}]}' ;;
         status_gate_failure | status_gate_collision)
           printf '%s\n' '{"jobs":[{"id":82,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"failure"}]}' ;;
@@ -360,6 +364,9 @@ case "$1 ${2:-}" in
             {id:83,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"failure",details_url:"https://example.test/runs/83",output:{title:"Superseded attempt",summary:"Old evidence."}},
             {id:84,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"success",details_url:"https://example.test/runs/84",output:{title:"Exact-head review accepted",summary:"All review feedback was answered."}}
           ]}'
+          ;;
+        status_gate_run_recency)
+          jq -cn --arg head "$GH_HEAD" '{check_runs:[{id:88,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"success",details_url:"https://example.test/runs/88",output:{title:"Latest execution accepted",summary:"The rerun completed successfully."}}]}'
           ;;
         status_gate_attempt_race)
           jq -cn --arg head "$GH_HEAD" '{check_runs:[
@@ -535,7 +542,7 @@ case "$1 ${2:-}" in
       # re-run GitHub may still report attempt 1 completed (stale), then the
       # new attempt in progress, then attempt 2 completed.
       if has 'run_attempt | type' "$@"; then
-        if [ "${GH_MODE:-ok}" = status_gate_attempt_race ]; then
+        if [ "${GH_MODE:-ok}" = status_gate_attempt_race ] || [ "${GH_MODE:-ok}" = status_gate_run_recency ]; then
           touch "$GH_STATE/status-attempt-advanced"
           printf '3\n'
         else
@@ -604,6 +611,9 @@ case "$1 ${2:-}" in
             gate_status=in_progress
             gate_conclusion_json=null
             ;;
+          status_gate_run_recency)
+            gate_attempt=3
+            ;;
           status_gate_failure | status_gate_collision)
             gate_status=completed
             gate_conclusion_json='"failure"'
@@ -617,13 +627,28 @@ case "$1 ${2:-}" in
             ;;
         esac
         runs="{\"workflow_runs\":[
-          {\"id\":77,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":900,\"run_attempt\":$gate_attempt,\"event\":\"pull_request\",\"status\":\"$gate_status\",\"conclusion\":$gate_conclusion_json,\"workflow_id\":999,\"pull_requests\":[{\"number\":7}]},
-          {\"id\":78,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":901,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":2,\"pull_requests\":[{\"number\":7}]},
-          {\"id\":79,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":902,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":999,\"pull_requests\":[{\"number\":8}]},
+          {\"id\":77,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":900,\"run_attempt\":$gate_attempt,\"event\":\"pull_request\",\"status\":\"$gate_status\",\"conclusion\":$gate_conclusion_json,\"workflow_id\":999,\"updated_at\":\"2026-08-27T17:10:00Z\",\"pull_requests\":[{\"number\":7}]},
+          {\"id\":78,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":901,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":2,\"updated_at\":\"2026-08-27T17:20:00Z\",\"pull_requests\":[{\"number\":7}]},
+          {\"id\":79,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":902,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":999,\"updated_at\":\"2026-08-27T17:20:00Z\",\"pull_requests\":[{\"number\":8}]},
           {\"id\":80,\"name\":\"delivery-evidence\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":903,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"${GH_EVIDENCE_CONCLUSION:-success}\",\"run_started_at\":\"${GH_EVIDENCE_STARTED_AT:-2026-08-26T22:20:00Z}\",\"workflow_id\":1000,\"pull_requests\":[{\"number\":7}]},
           {\"id\":81,\"name\":\"delivery-evidence\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":904,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"failure\",\"workflow_id\":3,\"pull_requests\":[{\"number\":7}]},
           {\"id\":82,\"name\":\"other-external-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":905,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":1001,\"pull_requests\":[{\"number\":7}]},
           {\"id\":83,\"name\":\"other-external-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":905,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":1001,\"pull_requests\":[{\"number\":7}]}]}"
+        if [ "${GH_MODE:-ok}" = status_gate_run_recency ]; then
+          runs="$(printf '%s' "$runs" | jq -c '.workflow_runs += [{
+            id:88,
+            name:"review-gate",
+            head_sha:"'"$GH_HEAD"'",
+            check_suite_id:906,
+            run_attempt:1,
+            event:"pull_request",
+            status:"completed",
+            conclusion:"failure",
+            workflow_id:999,
+            updated_at:"2026-08-27T17:00:00Z",
+            pull_requests:[{number:7}]
+          }]')"
+        fi
         if [ "${GH_MODE:-ok}" = status_gate_unbound ]; then
           runs="$(printf '%s' "$runs" | jq -c '(.workflow_runs[] | select(.id == 77) | .pull_requests) = []')"
         fi
@@ -742,6 +767,10 @@ EOF
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"checkRunId":84,"status":"completed","conclusion":"success"'
   assert_not_has "$TMP/out" 'Superseded attempt'
+  GH_MODE=status_gate_run_recency run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"workflowRunId":77,"runAttempt":3'
+  assert_not_has "$TMP/out" '"workflowRunId":88'
   GH_MODE=status_gate_collision run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"checkRunId":82,"status":"completed","conclusion":"failure"'

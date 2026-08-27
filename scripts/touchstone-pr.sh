@@ -1567,7 +1567,9 @@ read_review_gate_check() {
       | [.[] | select(any(.pull_requests[]?; .number == $number))]
       | (map(.workflow_id) | unique) as $workflow_ids
       | if ($workflow_ids | length) > 1 then error("multiple external review-gate workflow identities")
-        else (sort_by(.id) | last // null)
+        elif any(.[]; (.id | type) != "number" or (.updated_at | type) != "string") then
+          error("review-gate run is missing its id or execution timestamp")
+        else (sort_by([.updated_at, .id]) | last // null)
         end
       | if . == null then null
         elif (.id | type) != "number" or (.run_attempt | type) != "number"
