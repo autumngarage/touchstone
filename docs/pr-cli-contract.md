@@ -79,14 +79,18 @@ taking this document's word for it.
   SHA, draft state, GitHub's merge-state observation, and whether GitHub's
   durable `autoMergeRequest` is armed. Armed state includes its `enabledAt`
   timestamp and the live PR head that state belongs to. It also reports the
-  newest exact-head CheckRun belonging to the externally required
+  newest exact-head CheckRun belonging to the effectively required
   `review-gate` workflow run: its id, status, conclusion, details URL, and
   bounded policy-owned title and summary, plus the owning workflow-run id and
   attempt. The binding excludes same-named repository-local checks, requires
   the workflow run to name this pull request, and selects the job from the
-  current run attempt so a superseded rerun cannot look green. If GitHub reports
+  current run attempt so a superseded rerun cannot look green. If the effective
+  rules do not declare the central gate, status reports it as unconfigured and
+  does not attribute historical same-named runs to policy. If GitHub reports
   no such CheckRun, `reviewGateCheck.present` is false; when a bound workflow run
-  already exists, its current status remains visible. Status does not infer a
+  already exists, its current status remains visible. If distinct runs share
+  GitHub's newest second-resolution attempt-start timestamp, status reports the
+  ambiguity and their run ids instead of inventing an order. Status does not infer a
   pending or passing verdict. It does not parse review requests, recognize a
   reviewer, reconstruct auto-merge from local wait conditions, or decide
   whether review is complete.
