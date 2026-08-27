@@ -128,11 +128,14 @@ workflow rule is still refused.
 
 The workflow repository owns the publisher name in its checked-in
 `.touchstone-source-contract.json`. Its tests bind every `.yml` or `.yaml` file
-under `.github/workflows/` to that manifest. Before any dry run, apply, or
-verify, `github-policy.sh` reads the manifest from the target branch and
-requires the policy's status rule to name the same context exactly once. This
-is the compatibility boundary for a job rename: change the workflow, manifest,
-and desired policy in a reviewable sequence; a partial change fails closed.
+under `.github/workflows/` to that manifest and guard the behavior version's
+invariants. Before any dry run, apply, or verify, `github-policy.sh` reads the
+manifest from the exact revision each consumer pins and refuses a behavior
+version its policy does not understand. For the source policy, it also reads
+the target branch manifest and requires the policy's status rule to name the
+same context exactly once. These are compatibility boundaries: change the
+workflow, manifest, and desired policy in a reviewable sequence; a partial
+change fails closed.
 
 The current source desired state is
 `workflow-sources/touchstone-workflows.json`. Apply it only after the manifest,

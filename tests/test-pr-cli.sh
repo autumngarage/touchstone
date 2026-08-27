@@ -373,7 +373,17 @@ case "$1 ${2:-}" in
     printf '%s\n' 71
     ;;
   api*)
-    if has '/contents/' "$@" && has '?ref=' "$@"; then
+    if has 'touchstone-workflows/contents/.touchstone-source-contract.json?ref=' "$@"; then
+      [ ! -f "$GH_STATE/behavior-manifest-unreadable" ] || { printf 'Not Found\n' >&2; exit 1; }
+      behavior_version=1
+      [ ! -f "$GH_STATE/behavior-version-newer" ] || behavior_version=2
+      if [ -f "$GH_STATE/behavior-version-missing" ]; then
+        printf '%s\n' '{"contractVersion":1}'
+      else
+        jq -cn --argjson version "$behavior_version" \
+          '{contractVersion:1,gateBehaviorContractVersion:$version}'
+      fi
+    elif has '/contents/' "$@" && has '?ref=' "$@"; then
       cat "$GH_CANDIDATE_POLICY"
     elif has 'actions/permissions --jq .enabled' "$@"; then
       # Repository Actions: on unless the fixture says otherwise. The
@@ -1126,7 +1136,7 @@ Closes #42'
   GH_FAKE_REPO=autumngarage/touchstone GH_BASE_SHA="$MAIN_SHA" run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" "\"candidatePolicy\":{\"source\":\"policy/github/touchstone-main.json\",\"revision\":\"$HEAD_SHA\",\"role\":\"absent-after-merge\"}"
-  assert_not_has "$GH_CALLS" '/contents/'
+  assert_not_has "$GH_CALLS" "/contents/policy/github/touchstone-main.json?ref=$HEAD_SHA"
   rm -f "$TMP/state/policy-removed"
   touch "$TMP/state/policy-renamed"
   GH_FAKE_REPO=autumngarage/touchstone GH_BASE_SHA="$MAIN_SHA" run_pr "$TMP/out" status 7 --json
@@ -1203,12 +1213,34 @@ Closes #42'
   # Three gates carry one pin between them: it is resolved once, not thrice.
   [ "$(grep -c 'repositories/1333343261' "$GH_CALLS")" -eq 1 ] \
     || fail "the workflow source was resolved once per gate instead of once per pin"
+  [ "$(grep -c "touchstone-workflows/contents/.touchstone-source-contract.json?ref=$GH_AHEAD_SHA" "$GH_CALLS")" -eq 1 ] \
+    || fail "the gate behavior contract was read once per gate instead of once per pin"
   : >"$GH_CALLS"
   rm -f "$TMP/state/merged" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
   run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/ahead-pin" "$TMP/state/merged" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
+
+  echo "==> pinned gate behavior is checked at the exact enforced revision (AUT-568)"
+  touch "$TMP/state/review-gate" "$TMP/state/ahead-pin" "$TMP/state/behavior-version-newer"
+  run_pr "$TMP/out" policy-status --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"partial"'
+  assert_has "$TMP/out" "does not declare supported gate behavior contract 1"
+  assert_has "$TMP/out" "observed $GH_AHEAD_SHA"
+  assert_has "$GH_CALLS" "touchstone-workflows/contents/.touchstone-source-contract.json?ref=$GH_AHEAD_SHA"
+  rm -f "$TMP/state/ahead-pin" "$TMP/state/behavior-version-newer"
+  touch "$TMP/state/behavior-version-missing"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"status":"partial"'
+  assert_has "$TMP/out" "does not declare supported gate behavior contract 1"
+  rm -f "$TMP/state/behavior-version-missing"
+  touch "$TMP/state/behavior-manifest-unreadable"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"status":"partial"'
+  assert_has "$TMP/out" ".touchstone-source-contract.json could not be read"
+  rm -f "$TMP/state/behavior-manifest-unreadable"
 
   echo "==> a pin behind, off the branch, from another source, or unreadable still fails closed"
   # Behind the tool's revision: the repository is enforcing less than the

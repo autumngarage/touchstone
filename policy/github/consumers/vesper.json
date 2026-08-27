@@ -4,6 +4,10 @@
   "repository": "vesper",
   "workflowSource": {
     "repository": "touchstone-workflows",
+    "sourceContract": {
+      "manifestPath": ".touchstone-source-contract.json",
+      "gateBehaviorContractVersion": 1
+    },
     "branchProtection": {
       "enforce_admins": true,
       "required_pull_request_reviews": true,
@@ -72,19 +76,19 @@
               "path": ".github/workflows/delivery-evidence.yml",
               "ref": "refs/heads/main",
               "repository_id": 1333343261,
-              "sha": "c590c0eaaabdbd16f6550320be40a211358a953d"
+              "sha": "4c5fdc6664633e2b54d729e5f9d0155c31a7bcf2"
             },
             {
               "path": ".github/workflows/review-gate.yml",
               "ref": "refs/heads/main",
               "repository_id": 1333343261,
-              "sha": "c590c0eaaabdbd16f6550320be40a211358a953d"
+              "sha": "4c5fdc6664633e2b54d729e5f9d0155c31a7bcf2"
             },
             {
               "path": ".github/workflows/validate.yml",
               "ref": "refs/heads/main",
               "repository_id": 1333343261,
-              "sha": "c590c0eaaabdbd16f6550320be40a211358a953d"
+              "sha": "4c5fdc6664633e2b54d729e5f9d0155c31a7bcf2"
             }
           ]
         }
