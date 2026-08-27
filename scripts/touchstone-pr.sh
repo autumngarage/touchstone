@@ -14,6 +14,10 @@ PR_HEAD_ATTEMPTS=11
 GATE_ATTEMPTS="${TOUCHSTONE_GATE_ATTEMPTS:-60}"
 GATE_RETRY_DELAY="${TOUCHSTONE_GATE_RETRY_DELAY:-5}"
 REQUEST_ATTEMPTS="${TOUCHSTONE_REQUEST_ATTEMPTS:-15}"
+# Check output is operator-facing diagnostic context, not an unbounded log
+# transport. Keep enough of the policy-owned title and summary to make the
+# remedy visible while keeping the status document compact.
+REVIEW_GATE_OUTPUT_MAX_CHARS=1000
 JSON_MODE=false
 PROJECT_ARG=""
 TITLE=""
@@ -688,24 +692,34 @@ pin_behavior() {
 # a compatible required gate counts as enforcement.
 PIN_ENFORCEMENT_VERDICT=""
 PIN_ENFORCEMENT_REASON=""
+PIN_ENFORCEMENT_REVISIONS="[]"
 resolve_pin_enforcement() {
   local repository_id="$1" ref="$2" expected_sha="$3" actual_shas="$4"
   local manifest_path="$5" expected_version="$6" sha
   local lineage_reason="" behavior_reason=""
   PIN_ENFORCEMENT_VERDICT=off-lineage
   PIN_ENFORCEMENT_REASON=""
+  PIN_ENFORCEMENT_REVISIONS="[]"
   for sha in $actual_shas; do
-    pin_lineage "$repository_id" "$ref" "$expected_sha" "$sha"
+    if [ "$sha" = "$expected_sha" ]; then
+      PIN_LINEAGE_VERDICT=at-or-ahead
+      PIN_LINEAGE_REASON=""
+      PIN_LINEAGE_SHA="$sha"
+    else
+      pin_lineage "$repository_id" "$ref" "$expected_sha" "$sha"
+    fi
     case "$PIN_LINEAGE_VERDICT" in
       at-or-ahead)
         if [ -z "$manifest_path" ]; then
           PIN_ENFORCEMENT_VERDICT=verified
-          return 0
+          PIN_ENFORCEMENT_REVISIONS="$(printf '%s' "$PIN_ENFORCEMENT_REVISIONS" | jq -c --arg sha "$PIN_LINEAGE_SHA" '. + [$sha] | unique')"
+          continue
         fi
         pin_behavior "$repository_id" "$PIN_LINEAGE_SHA" "$manifest_path" "$expected_version"
         if [ "$PIN_BEHAVIOR_VERDICT" = verified ]; then
           PIN_ENFORCEMENT_VERDICT=verified
-          return 0
+          PIN_ENFORCEMENT_REVISIONS="$(printf '%s' "$PIN_ENFORCEMENT_REVISIONS" | jq -c --arg sha "$PIN_LINEAGE_SHA" '. + [$sha] | unique')"
+          continue
         fi
         behavior_reason="${behavior_reason}${behavior_reason:+; }$PIN_BEHAVIOR_REASON"
         ;;
@@ -714,6 +728,7 @@ resolve_pin_enforcement() {
         ;;
     esac
   done
+  [ "$PIN_ENFORCEMENT_VERDICT" != verified ] || return 0
   if [ -n "$behavior_reason" ]; then
     PIN_ENFORCEMENT_VERDICT=unverified
     PIN_ENFORCEMENT_REASON="$behavior_reason"
@@ -741,6 +756,26 @@ ENFORCEMENT_CANDIDATE_ROLE=""
 ENFORCEMENT_POLICY_TYPE=""
 ENFORCEMENT_EXPECTS_QUEUE=true
 ENFORCEMENT_EXPECTS_REVIEW_GATE=true
+ENFORCEMENT_REVIEW_GATE_APPLIED=false
+ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY=""
+ENFORCEMENT_REVIEW_GATE_REF=""
+ENFORCEMENT_REVIEW_GATE_REVISIONS="[]"
+
+record_review_gate_enforcement() {
+  local repository_id="$1" ref="$2" revisions="$3"
+  resolve_workflow_source_repository "$repository_id" \
+    || fail_operation "could not bind the enforced review-gate source repository $repository_id" "Retry after GitHub can resolve the effective workflow source."
+  if [ -n "$ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY" ] \
+    && { [ "$ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY" != "$WORKFLOW_SOURCE_REPOSITORY" ] \
+      || [ "$ENFORCEMENT_REVIEW_GATE_REF" != "$ref" ]; }; then
+    fail_operation "effective rules bind review-gate to multiple source identities" "Remove the overlapping review-gate rules before trusting status."
+  fi
+  ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY="$WORKFLOW_SOURCE_REPOSITORY"
+  ENFORCEMENT_REVIEW_GATE_REF="$ref"
+  ENFORCEMENT_REVIEW_GATE_REVISIONS="$(jq -cn \
+    --argjson current "$ENFORCEMENT_REVIEW_GATE_REVISIONS" \
+    --argjson additions "$revisions" '$current + $additions | unique')"
+}
 
 select_enforcement_policy() {
   local base_ref="$1" defer_branch="${2:-false}" name="${REPO##*/}" candidate candidate_repo source_policy="" policy_branch tool_git_root dirty_inventory
@@ -907,6 +942,10 @@ read_enforcement() {
   local base_ref="$1" policy_revision="${2:-}" candidate_revision="${3:-}" candidate_repo="${4:-}" pr_number="${5:-}"
   local encoded expected expected_statuses expected_count policy_file policy_type policy_branch
   local source_manifest_path="" gate_behavior_version=""
+  ENFORCEMENT_REVIEW_GATE_APPLIED=false
+  ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY=""
+  ENFORCEMENT_REVIEW_GATE_REF=""
+  ENFORCEMENT_REVIEW_GATE_REVISIONS="[]"
   encoded="$(uri_encode "$base_ref")"
   # The expected pins travel with the tool: a workflow at the right path but
   # from another repository, another ref, or a stale revision is not the
@@ -1000,7 +1039,8 @@ read_enforcement() {
           | ($found | map(select(.repository_id == $e.repository_id and .ref == $e.ref))) as $same
           | ($e.path | split("/") | last | sub("[.]yml$"; "")) as $name
           | if ($found | length) == 0 then ["gate", $name, "absent", ($e.repository_id | tostring), $e.ref, ($e.sha | ascii_downcase), ""]
-            elif any($same[]; ((.sha // "") | ascii_downcase) == ($e.sha | ascii_downcase)) then ["gate", $name, "pinned", ($e.repository_id | tostring), $e.ref, ($e.sha | ascii_downcase), ($e.sha | ascii_downcase)]
+            elif any($same[]; ((.sha // "") | ascii_downcase) == ($e.sha | ascii_downcase)) then ["gate", $name, "pinned", ($e.repository_id | tostring), $e.ref, ($e.sha | ascii_downcase),
+                  ([$same[] | (.sha // "") | ascii_downcase | select(. != "")] | unique | join(" "))]
             elif ($same | length) == 0 then ["gate", $name, "other-source", ($e.repository_id | tostring), $e.ref, ($e.sha | ascii_downcase),
                   ([$found[] | "repo=" + ((.repository_id // "") | tostring) + " ref=" + (.ref // "") + " sha=" + ((.sha // "") | ascii_downcase)] | unique | join(" "))]
             else ["gate", $name, "other-revision", ($e.repository_id | tostring), $e.ref, ($e.sha | ascii_downcase),
@@ -1034,17 +1074,33 @@ read_enforcement() {
     esac
     case "$verdict" in
       pinned)
-        if [ -n "$source_manifest_path" ]; then
-          pin_behavior "$pin_repository_id" "$pin_expected" "$source_manifest_path" "$gate_behavior_version"
-          [ "$PIN_BEHAVIOR_VERDICT" = verified ] \
-            || missing_names+=("$name workflow (present but pinned at a revision this tool could not verify: $PIN_BEHAVIOR_REASON) [expected $pin_expected; observed $pin_actual]")
-        fi
+        # An exact pin can overlap a compatible descendant. Verify every
+        # effective same-source/ref revision and retain the full compatible
+        # set, so the run binding does not reject a gate GitHub really requires.
+        resolve_pin_enforcement "$pin_repository_id" "$pin_ref" "$pin_expected" "$pin_actual" "$source_manifest_path" "$gate_behavior_version"
+        case "$PIN_ENFORCEMENT_VERDICT" in
+          verified)
+            if [ "$name" = review-gate ]; then
+              ENFORCEMENT_REVIEW_GATE_APPLIED=true
+              record_review_gate_enforcement "$pin_repository_id" "$pin_ref" "$PIN_ENFORCEMENT_REVISIONS"
+            fi
+            ;;
+          unverified)
+            missing_names+=("$name workflow (present but pinned at a revision this tool could not verify: $(printf '%s' "$PIN_ENFORCEMENT_REASON" | tr ',' ';')) [expected $pin_expected; observed ${pin_actual:-unreadable}]")
+            ;;
+          *) missing_names+=("$name workflow (present but not pinned at the policy revision) [expected $pin_expected; observed ${pin_actual:-unreadable}]") ;;
+        esac
         ;;
       absent) missing_names+=("$name workflow") ;;
       other-revision)
         resolve_pin_enforcement "$pin_repository_id" "$pin_ref" "$pin_expected" "$pin_actual" "$source_manifest_path" "$gate_behavior_version"
         case "$PIN_ENFORCEMENT_VERDICT" in
-          verified) ;;
+          verified)
+            if [ "$name" = review-gate ]; then
+              ENFORCEMENT_REVIEW_GATE_APPLIED=true
+              record_review_gate_enforcement "$pin_repository_id" "$pin_ref" "$PIN_ENFORCEMENT_REVISIONS"
+            fi
+            ;;
           unverified)
             missing_names+=("$name workflow (present but pinned at a revision this tool could not verify: $(printf '%s' "$PIN_ENFORCEMENT_REASON" | tr ',' ';')) [expected $pin_expected; observed ${pin_actual:-unreadable}]")
             ;;
@@ -1525,6 +1581,237 @@ auto_merge_text() {
   fi
 }
 
+REVIEW_GATE_RUN_IDENTITY="null"
+select_review_gate_run_identity() {
+  local head="$1" number="$2" local_workflow_ids="$3" run_pages
+  read_with_retry gh api --hostname "$REPO_HOST" --paginate \
+    "repos/$REPO/actions/runs?head_sha=$head&per_page=100" \
+    || fail_operation "could not inspect review-gate runs for $head: $READ_OUTPUT" "Retry after GitHub recovers."
+  run_pages="$READ_OUTPUT"
+  REVIEW_GATE_RUN_IDENTITY="$(printf '%s\n' "$run_pages" | jq -sc \
+    --arg head "$head" --argjson number "$number" --argjson local_ids "$local_workflow_ids" '
+      if length == 0 then error("expected at least one workflow-run response page")
+      elif any(.[]; (.workflow_runs | type) != "array") then error("expected workflow_runs arrays")
+      else [.[].workflow_runs[]? | select(
+        .name == "review-gate"
+        and .head_sha == $head
+        and .workflow_id != null
+        and (.workflow_id as $id | $local_ids | index($id)) == null
+        and (.event == "pull_request" or .event == "merge_group")
+      )]
+      end
+      | [.[] | select(any(.pull_requests[]?; .number == $number))]
+      | (map(.workflow_id) | unique) as $workflow_ids
+      | if ($workflow_ids | length) > 1 then error("multiple external review-gate workflow identities")
+        elif any(.[]; (.id | type) != "number" or (.node_id | type) != "string"
+          or (.run_started_at | type) != "string"
+          or (.run_attempt | type) != "number" or (.status | type) != "string") then
+          error("review-gate run is missing its id, node id, attempt, status, or attempt start timestamp")
+        else .
+        end
+      | if length == 0 then null
+        else (map(.run_started_at) | max) as $latest_start
+          | [.[] | select(.run_started_at == $latest_start)] as $latest_runs
+          | if ($latest_runs | length) > 1 then {
+              ambiguous:true,
+              runStartedAt:$latest_start,
+              workflowRunIds:($latest_runs | map(.id) | sort)
+            }
+            else $latest_runs[0] | {
+              runId:.id,
+              runNodeId:.node_id,
+              runAttempt:.run_attempt,
+              status:.status,
+              conclusion:(.conclusion // null)
+            }
+            end
+        end')" \
+    || fail_operation "GitHub returned malformed or ambiguous review-gate run data for $head" "Remove same-named external workflow ambiguity or retry after GitHub returns complete workflow-run pages."
+}
+
+REVIEW_GATE_RUN_BINDING="null"
+read_review_gate_run_binding() {
+  local run_identity="$1" run_id run_node
+  run_id="$(printf '%s' "$run_identity" | jq -r .runId)"
+  run_node="$(printf '%s' "$run_identity" | jq -r .runNodeId)"
+  read_with_retry gh api graphql --hostname "$REPO_HOST" \
+    -f query='query($id:ID!){node(id:$id){... on WorkflowRun{databaseId file{path repositoryName repositoryFileUrl}}}}' \
+    -F id="$run_node" \
+    || fail_operation "could not read the source identity of review-gate run $run_id: $READ_OUTPUT" "Retry after GitHub can resolve the workflow-run file."
+  REVIEW_GATE_RUN_BINDING="$(printf '%s' "$READ_OUTPUT" | jq -ce \
+    --argjson run_id "$run_id" \
+    --arg expected_repo "$ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY" \
+    --arg expected_path ".github/workflows/review-gate.yml" \
+    --argjson expected_revisions "$ENFORCEMENT_REVIEW_GATE_REVISIONS" '
+      .data.node as $run
+      | if ($run.databaseId | type) != "number" or $run.databaseId != $run_id
+          or ($run.file.repositoryName | type) != "string"
+          or ($run.file.path | type) != "string"
+          or ($run.file.repositoryFileUrl | type) != "string" then
+          error("workflow run has no exact source file identity")
+        else ($run.file.repositoryFileUrl | capture("/blob/(?<revision>[0-9a-fA-F]{40})/").revision | ascii_downcase) as $revision
+          | {
+              bound:($run.file.repositoryName == $expected_repo
+                and $run.file.path == $expected_path
+                and ($expected_revisions | index($revision)) != null),
+              repository:$run.file.repositoryName,
+              path:$run.file.path,
+              revision:$revision
+            }
+        end')" \
+    || fail_operation "GitHub returned malformed source identity for review-gate run $run_id" "Retry after GitHub returns its exact workflow file."
+}
+
+read_review_gate_check() {
+  local head="$1" number="$2" consistency_read="${3:-1}" seeded_run_identity="${4:-}"
+  local workflow_pages local_workflow_ids run_identity run_id run_attempt
+  local job_pages job_identity raw_check current_run_identity run_binding
+  # A check name is not an identity: a repository-local workflow can publish
+  # the same name as the organization-required workflow. Resolve the external
+  # workflow run first, then bind its CheckRun through the current attempt's
+  # job id. A rerun keeps its suite but receives new jobs, so suite-only
+  # binding can transiently expose the superseded attempt's success.
+  read_with_retry gh api --hostname "$REPO_HOST" --paginate \
+    "repos/$REPO/actions/workflows?per_page=100" \
+    || fail_operation "could not list repository-local workflows in $REPO: $READ_OUTPUT" "Retry after GitHub recovers."
+  workflow_pages="$READ_OUTPUT"
+  local_workflow_ids="$(printf '%s\n' "$workflow_pages" | jq -sec '
+    if length == 0 then error("expected at least one workflow response page")
+    elif any(.[]; (.workflows | type) != "array") then error("expected workflows arrays")
+    else [.[].workflows[]?.id] | unique
+    end')" \
+    || fail_operation "GitHub returned malformed workflow pages for $REPO" "Retry after GitHub returns complete workflow pages."
+  if [ -n "$seeded_run_identity" ]; then
+    run_identity="$seeded_run_identity"
+  else
+    select_review_gate_run_identity "$head" "$number" "$local_workflow_ids"
+    run_identity="$REVIEW_GATE_RUN_IDENTITY"
+  fi
+
+  if [ "$run_identity" = null ]; then
+    REVIEW_GATE_CHECK_JSON="$(jq -cn --arg head "$head" '{present:false, head:$head}')"
+    return 0
+  fi
+  if [ "$(printf '%s' "$run_identity" | jq -r '.ambiguous // false')" = true ]; then
+    REVIEW_GATE_CHECK_JSON="$(printf '%s' "$run_identity" | jq -c --arg head "$head" \
+      '{present:false, head:$head, ambiguous:true, workflowRunIds:.workflowRunIds, runStartedAt:.runStartedAt}')"
+    return 0
+  fi
+  run_id="$(printf '%s' "$run_identity" | jq -r .runId)"
+  run_attempt="$(printf '%s' "$run_identity" | jq -r .runAttempt)"
+  read_review_gate_run_binding "$run_identity"
+  run_binding="$REVIEW_GATE_RUN_BINDING"
+  if [ "$(printf '%s' "$run_binding" | jq -r .bound)" != true ]; then
+    # Do not return a stale diagnosis when a new policy-bound execution began
+    # while GraphQL was resolving the selected run's immutable workflow file.
+    select_review_gate_run_identity "$head" "$number" "$local_workflow_ids"
+    current_run_identity="$REVIEW_GATE_RUN_IDENTITY"
+    if [ "$(printf '%s' "$current_run_identity" | jq -cS .)" \
+      != "$(printf '%s' "$run_identity" | jq -cS .)" ]; then
+      [ "$consistency_read" -lt 3 ] \
+        || fail_operation "the review-gate execution for $head changed repeatedly while status was being read" "Retry status after the workflow settles."
+      read_review_gate_check "$head" "$number" "$((consistency_read + 1))" "$current_run_identity"
+      return
+    fi
+    REVIEW_GATE_CHECK_JSON="$(printf '%s' "$run_binding" | jq -c \
+      --arg head "$head" --argjson run_id "$run_id" \
+      '{present:false, head:$head, unbound:true, workflowRunId:$run_id, workflowSource:{repository, path, revision}}')"
+    return 0
+  fi
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" \
+    "repos/$REPO/actions/runs/$run_id/attempts/$run_attempt/jobs?per_page=100" \
+    || fail_operation "could not read the current review-gate attempt for $head: $READ_OUTPUT" "Retry after GitHub recovers."
+  job_pages="$READ_OUTPUT"
+  job_identity="$(printf '%s' "$job_pages" | jq -sc \
+    --argjson run "$run_identity" '
+      if length == 0 then error("expected at least one job response page")
+      elif any(.[]; (.jobs | type) != "array") then error("expected jobs arrays")
+      else [.[].jobs[]? | select(
+        .name == "review-gate" and .run_attempt == $run.runAttempt
+      )] | sort_by(.id) | last // null
+      end
+      | if . == null then null
+        elif (.id | type) != "number" then error("current review-gate job has no id")
+        else {checkRunId:.id}
+        end')" \
+    || fail_operation "GitHub returned malformed current-attempt jobs for $head" "Retry after GitHub returns complete workflow-job pages."
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" \
+    "repos/$REPO/commits/$head/check-runs?check_name=review-gate&filter=all&per_page=100" \
+    || fail_operation "could not read the review-gate check for $head: $READ_OUTPUT" "Retry after GitHub recovers."
+  raw_check="$READ_OUTPUT"
+  REVIEW_GATE_CHECK_JSON="$(printf '%s' "$raw_check" | jq -sce \
+    --arg head "$head" --argjson run "$run_identity" --argjson job "$job_identity" \
+    --argjson max_chars "$REVIEW_GATE_OUTPUT_MAX_CHARS" '
+      if length == 0 then error("expected at least one CheckRun response page")
+      elif any(.[]; (.check_runs | type) != "array") then error("expected check_runs arrays")
+      elif $job == null then null
+      else [.[].check_runs[]? | select(
+        .name == "review-gate"
+        and .head_sha == $head
+        and .id == $job.checkRunId
+      )] | sort_by(.id) | last // null
+      end
+      | if . == null then {
+          present:false,
+          head:$head,
+          workflowRunId:$run.runId,
+          runAttempt:$run.runAttempt,
+          workflowStatus:$run.status,
+          workflowConclusion:$run.conclusion
+        }
+        elif (.id | type) != "number" or (.status | type) != "string" then
+          error("latest review-gate check is missing its id or status")
+        else {
+          present:true,
+          head:$head,
+          workflowRunId:$run.runId,
+          runAttempt:$run.runAttempt,
+          workflowStatus:$run.status,
+          workflowConclusion:$run.conclusion,
+          checkRunId:.id,
+          status:.status,
+          conclusion:(.conclusion // null),
+          detailsUrl:(.details_url // .html_url // null),
+          title:((.output.title // "")[0:$max_chars]),
+          summary:((.output.summary // "")[0:$max_chars])
+        }
+        end')" \
+    || fail_operation "GitHub returned malformed review-gate check data for $head" "Retry after GitHub returns a complete CheckRun."
+
+  # Linearize the observation after the job and CheckRun reads. Re-select the
+  # full newest identity: reruns advance run_attempt, while a fresh PR event
+  # can create a different workflow run without changing the old one at all.
+  select_review_gate_run_identity "$head" "$number" "$local_workflow_ids"
+  current_run_identity="$REVIEW_GATE_RUN_IDENTITY"
+  if [ "$(printf '%s' "$current_run_identity" | jq -cS .)" \
+    != "$(printf '%s' "$run_identity" | jq -cS .)" ]; then
+    [ "$consistency_read" -lt 3 ] \
+      || fail_operation "the review-gate execution for $head changed repeatedly while status was being read" "Retry status after the workflow settles."
+    read_review_gate_check "$head" "$number" "$((consistency_read + 1))" "$current_run_identity"
+    return
+  fi
+}
+
+review_gate_check_text() {
+  printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '
+    if .ambiguous == true then
+      "ambiguous: workflow runs \(.workflowRunIds | join(", ")) share newest attempt start \(.runStartedAt); rerun the gate"
+    elif .unbound == true then
+      "unbound workflow run \(.workflowRunId) from \(.workflowSource.repository)@\(.workflowSource.revision):\(.workflowSource.path)"
+    elif .present == false and .workflowRunId != null then
+      "not yet present for workflow run \(.workflowRunId) attempt \(.runAttempt) (\(.workflowStatus)" +
+      (if .workflowConclusion == null then "" else "/\(.workflowConclusion)" end) + ")"
+    elif .configured == false then "not configured by the effective policy for \(.head)"
+    elif .present == false then "absent for \(.head)"
+    else
+      "\(.status)" +
+      (if .conclusion == null then "" else "/\(.conclusion)" end) +
+      " (check run \(.checkRunId))" +
+      (if .title == "" then "" else ": \(.title | gsub("[\\r\\n\\t]+"; " "))" end) +
+      (if .detailsUrl == null then "" else " — \(.detailsUrl)" end)
+    end'
+}
+
 status_pr() {
   local number state url head head_repo base base_sha merge_state draft
   read_pr_row
@@ -1534,6 +1821,11 @@ status_pr() {
   # error document, not a truncated status followed by another object.
   read_auto_merge_state "$number" "$head"
   read_enforcement "$base" "$base_sha" "$head" "$head_repo" "$number"
+  if [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ]; then
+    read_review_gate_check "$head" "$number"
+  else
+    REVIEW_GATE_CHECK_JSON="$(jq -cn --arg head "$head" '{present:false, head:$head, configured:false}')"
+  fi
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"status","status":"observed","pullRequest":%s,"state":' "$OUTPUT_SCHEMA" "$number"
     json_string "$state"
@@ -1549,13 +1841,14 @@ status_pr() {
     json_string "$merge_state"
     printf ',"draft":%s,"autoMerge":' "$draft"
     auto_merge_json
+    printf ',"reviewGateCheck":%s' "$REVIEW_GATE_CHECK_JSON"
     printf ',"enforcement":'
     enforcement_json
     policy_binding_json_fields
     printf '}\n'
   else
-    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  merge state: %s\n  draft: %s\n  auto-merge: %s\n  policy: %s at %s\n  enforcement on %s: %s\n' \
-      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$merge_state" "$draft" "$(auto_merge_text)" "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" "$base" "$(enforcement_text)"
+    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  merge state: %s\n  draft: %s\n  auto-merge: %s\n  review gate: %s\n  policy: %s at %s\n  enforcement on %s: %s\n' \
+      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$merge_state" "$draft" "$(auto_merge_text)" "$(review_gate_check_text)" "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" "$base" "$(enforcement_text)"
     [ -z "$ENFORCEMENT_CANDIDATE_REVISION" ] \
       || printf '  candidate policy: %s at %s (%s)\n' "$ENFORCEMENT_CANDIDATE_SOURCE" "$ENFORCEMENT_CANDIDATE_REVISION" "$ENFORCEMENT_CANDIDATE_ROLE"
   fi

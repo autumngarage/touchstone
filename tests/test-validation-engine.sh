@@ -1953,6 +1953,18 @@ case "${1:-} ${2:-}" in
   'repo view') printf '%s\n' $'autumngarage/consumer\thttps://github.com/autumngarage/consumer' ;;
   'pr view') printf '%s\n' $'1\tOPEN\thttps://example.invalid/pr/1\t1111111111111111111111111111111111111111\tautumngarage/consumer\tmain\t2222222222222222222222222222222222222222\tCLEAN\tfalse' ;;
   'api graphql') printf '%s\t\n' '1111111111111111111111111111111111111111' ;;
+  'api --hostname')
+    if [[ "$*" == *'actions/workflows?per_page=100'* ]]; then
+      printf '%s\n' '{"workflows":[]}'
+    elif [[ "$*" == *'actions/runs?head_sha='* ]]; then
+      printf '%s\n' '{"workflow_runs":[]}'
+    fi
+    ;;
+  'api --paginate')
+    if [[ "$*" == *'check-runs?check_name=review-gate&filter=all&per_page=100'* ]]; then
+      printf '%s\n' '{"check_runs":[]}'
+    fi
+    ;;
 esac
 EOF
   chmod +x "$TMP/mock-bin/gh"
