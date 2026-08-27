@@ -329,6 +329,8 @@ case "$1 ${2:-}" in
   "api --paginate")
     if has 'rules/branches/' "$@"; then
       serve_rules "$@"
+    elif has '/actions/runs/77/attempts/3/jobs?per_page=100' "$@"; then
+      printf '%s\n' '{"jobs":[{"id":87,"name":"review-gate","run_attempt":3,"status":"in_progress","conclusion":null}]}'
     elif has '/actions/runs/77/attempts/2/jobs?per_page=100' "$@"; then
       case "${GH_MODE:-ok}" in
         status_gate_pending)
@@ -336,6 +338,8 @@ case "$1 ${2:-}" in
         status_gate_failure | status_gate_collision)
           printf '%s\n' '{"jobs":[{"id":82,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"failure"}]}' ;;
         status_gate_success)
+          printf '%s\n' '{"jobs":[{"id":84,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"success"}]}' ;;
+        status_gate_attempt_race)
           printf '%s\n' '{"jobs":[{"id":84,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"success"}]}' ;;
         status_gate_stale_attempt)
           printf '%s\n' '{"jobs":[{"id":86,"name":"review-gate","run_attempt":2,"status":"in_progress","conclusion":null}]}' ;;
@@ -355,6 +359,12 @@ case "$1 ${2:-}" in
           jq -cn --arg head "$GH_HEAD" '{check_runs:[
             {id:83,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"failure",details_url:"https://example.test/runs/83",output:{title:"Superseded attempt",summary:"Old evidence."}},
             {id:84,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"success",details_url:"https://example.test/runs/84",output:{title:"Exact-head review accepted",summary:"All review feedback was answered."}}
+          ]}'
+          ;;
+        status_gate_attempt_race)
+          jq -cn --arg head "$GH_HEAD" '{check_runs:[
+            {id:84,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"success",details_url:"https://example.test/runs/84",output:{title:"Superseded success",summary:"Previous attempt."}},
+            {id:87,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"in_progress",conclusion:null,details_url:"https://example.test/runs/87",output:{title:"Evaluating rerun",summary:"Current attempt."}}
           ]}'
           ;;
         status_gate_collision)
@@ -524,7 +534,14 @@ case "$1 ${2:-}" in
       # Single-run read. Before a re-run: attempt 1 completed. Right after a
       # re-run GitHub may still report attempt 1 completed (stale), then the
       # new attempt in progress, then attempt 2 completed.
-      if has '.run_attempt' "$@" && ! has 'status' "$@"; then
+      if has 'run_attempt | type' "$@"; then
+        if [ "${GH_MODE:-ok}" = status_gate_attempt_race ]; then
+          touch "$GH_STATE/status-attempt-advanced"
+          printf '3\n'
+        else
+          printf '2\n'
+        fi
+      elif has '.run_attempt' "$@" && ! has 'status' "$@"; then
         if [ -f "$GH_STATE/gate-after-rerun" ]; then
           left="$(cat "$GH_STATE/gate-after-rerun")"
           if [ "$left" -ge 2 ]; then echo 1 >"$GH_STATE/gate-after-rerun"; printf '1\n'; else rm -f "$GH_STATE/gate-after-rerun"; printf '2\n'; fi
@@ -580,6 +597,7 @@ case "$1 ${2:-}" in
         else
           gate_status=completed
         fi
+        gate_attempt=2
         gate_conclusion_json="\"${GH_GATE_CONCLUSION:-success}\""
         case "${GH_MODE:-ok}" in
           status_gate_pending | status_gate_stale_attempt)
@@ -590,9 +608,16 @@ case "$1 ${2:-}" in
             gate_status=completed
             gate_conclusion_json='"failure"'
             ;;
+          status_gate_attempt_race)
+            if [ -f "$GH_STATE/status-attempt-advanced" ]; then
+              gate_attempt=3
+              gate_status=in_progress
+              gate_conclusion_json=null
+            fi
+            ;;
         esac
         runs="{\"workflow_runs\":[
-          {\"id\":77,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":900,\"run_attempt\":2,\"event\":\"pull_request\",\"status\":\"$gate_status\",\"conclusion\":$gate_conclusion_json,\"workflow_id\":999,\"pull_requests\":[{\"number\":7}]},
+          {\"id\":77,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":900,\"run_attempt\":$gate_attempt,\"event\":\"pull_request\",\"status\":\"$gate_status\",\"conclusion\":$gate_conclusion_json,\"workflow_id\":999,\"pull_requests\":[{\"number\":7}]},
           {\"id\":78,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":901,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":2,\"pull_requests\":[{\"number\":7}]},
           {\"id\":79,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":902,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":999,\"pull_requests\":[{\"number\":8}]},
           {\"id\":80,\"name\":\"delivery-evidence\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":903,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"${GH_EVIDENCE_CONCLUSION:-success}\",\"run_started_at\":\"${GH_EVIDENCE_STARTED_AT:-2026-08-26T22:20:00Z}\",\"workflow_id\":1000,\"pull_requests\":[{\"number\":7}]},
@@ -725,6 +750,13 @@ EOF
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"runAttempt":2,"workflowStatus":"in_progress","workflowConclusion":null,"checkRunId":86'
   assert_not_has "$TMP/out" 'Superseded success'
+  rm -f "$TMP/state/status-attempt-advanced"
+  GH_MODE=status_gate_attempt_race run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"runAttempt":3,"workflowStatus":"in_progress","workflowConclusion":null,"checkRunId":87'
+  assert_not_has "$TMP/out" 'Superseded success'
+  [ "$(grep -c 'actions/runs?head_sha=' "$GH_CALLS")" -eq 2 ] \
+    || fail "status did not retry the binding after a concurrent gate rerun"
   GH_MODE=status_gate_unbound run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" "\"reviewGateCheck\":{\"present\":false,\"head\":\"$HEAD_SHA\"}"

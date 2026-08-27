@@ -1530,8 +1530,9 @@ auto_merge_text() {
 }
 
 read_review_gate_check() {
-  local head="$1" number="$2" workflow_pages local_workflow_ids run_pages run_identity
-  local job_pages job_identity raw_check
+  local head="$1" number="$2" consistency_read="${3:-1}"
+  local workflow_pages local_workflow_ids run_pages run_identity run_id run_attempt
+  local job_pages job_identity raw_check current_run_attempt
   # A check name is not an identity: a repository-local workflow can publish
   # the same name as the organization-required workflow. Resolve the external
   # workflow run first, then bind its CheckRun through the current attempt's
@@ -1585,8 +1586,10 @@ read_review_gate_check() {
     REVIEW_GATE_CHECK_JSON="$(jq -cn --arg head "$head" '{present:false, head:$head}')"
     return 0
   fi
+  run_id="$(printf '%s' "$run_identity" | jq -r .runId)"
+  run_attempt="$(printf '%s' "$run_identity" | jq -r .runAttempt)"
   read_with_retry gh api --paginate --hostname "$REPO_HOST" \
-    "repos/$REPO/actions/runs/$(printf '%s' "$run_identity" | jq -r .runId)/attempts/$(printf '%s' "$run_identity" | jq -r .runAttempt)/jobs?per_page=100" \
+    "repos/$REPO/actions/runs/$run_id/attempts/$run_attempt/jobs?per_page=100" \
     || fail_operation "could not read the current review-gate attempt for $head: $READ_OUTPUT" "Retry after GitHub recovers."
   job_pages="$READ_OUTPUT"
   job_identity="$(printf '%s' "$job_pages" | jq -sc \
@@ -1644,6 +1647,25 @@ read_review_gate_check() {
         }
         end')" \
     || fail_operation "GitHub returned malformed review-gate check data for $head" "Retry after GitHub returns a complete CheckRun."
+
+  # Linearize the observation after the job and CheckRun reads. GitHub keeps
+  # the workflow-run id across reruns but increments run_attempt; if that
+  # happened while we were collecting the attempt, retry the whole binding so
+  # a superseded green CheckRun can never be returned as current.
+  read_with_retry gh api --hostname "$REPO_HOST" \
+    "repos/$REPO/actions/runs/$run_id" \
+    --jq 'if (.run_attempt | type) == "number" then .run_attempt else empty end' \
+    || fail_operation "could not recheck the current review-gate attempt for $head: $READ_OUTPUT" "Retry after GitHub recovers."
+  current_run_attempt="$READ_OUTPUT"
+  case "$current_run_attempt" in '' | *[!0-9]*)
+    fail_operation "GitHub returned a malformed current review-gate attempt for $head" "Retry after GitHub returns a numeric run_attempt."
+    ;;
+  esac
+  if [ "$current_run_attempt" != "$run_attempt" ]; then
+    [ "$consistency_read" -lt 3 ] \
+      || fail_operation "the review-gate attempt for $head changed repeatedly while status was being read" "Retry status after the rerun settles."
+    read_review_gate_check "$head" "$number" "$((consistency_read + 1))"
+  fi
 }
 
 review_gate_check_text() {
