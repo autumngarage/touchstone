@@ -111,10 +111,10 @@ run_case "bare request before the SHA was restored by force-push does not bind" 
 run_case "a malformed sequencer marker is not a bare request" '.issueComments[0].body = "@codex review\n\n<!-- touchstone:pr-open head=1111 base=main -->"' failure "no trusted review request"
 run_state_case "a malformed sequencer marker is terminal failure" \
   '.issueComments[0].body = "@codex review\n\n<!-- touchstone:pr-open head=1111 base=main -->"' failure
-run_case "read permission cannot request" '.authorPermissions.henry = "read"' failure "no trusted review request"
-run_case "triage permission cannot request" '.authorPermissions.henry = "triage"' failure "no trusted review request"
-run_case "no repository permission cannot request" '.authorPermissions.henry = "none"' failure "no trusted review request"
-run_case "unknown permission cannot request" '.authorPermissions.henry = "owner"' failure "no trusted review request"
+run_state_case "read permission is a terminal request failure" '.authorPermissions.henry = "read"' failure
+run_state_case "triage permission is a terminal request failure" '.authorPermissions.henry = "triage"' failure
+run_state_case "no repository permission is a terminal request failure" '.authorPermissions.henry = "none"' failure
+run_state_case "unknown permission is a terminal request failure" '.authorPermissions.henry = "owner"' failure
 run_case "missing permission fails closed" 'del(.authorPermissions.henry)' failure "permission evidence is missing"
 run_case "author association is not an authorization fast path" 'del(.authorPermissions.henry) | .issueComments[0].author_association = "OWNER"' failure "permission evidence is missing"
 run_case "unrelated commenters need no permission lookup" '

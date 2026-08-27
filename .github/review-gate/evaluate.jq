@@ -92,6 +92,11 @@ def answers_body_finding($id):
 | ($root.pr.baseRetargetedAt // "") as $base_retargeted_at
 | [
     $root.issueComments[]?
+    | select(review_request)
+    | select(driver_action_authorized($permissions) | not)
+  ] as $unauthorized_requests
+| [
+    $root.issueComments[]?
     | select(driver_action_authorized($permissions) and review_request)
     | . as $comment
     | ((.body // "") | capture("<!-- touchstone:pr-open head=(?<head>[0-9a-fA-F]{40}) base=(?<ref>[^ ]+) base_sha=(?<base>[0-9a-fA-F]{40}) -->")? // null) as $marker
@@ -125,7 +130,7 @@ def answers_body_finding($id):
     # evidence look like it answered it.
     | {at: (.updated_at // .created_at), id: .id, author: .user.login}
   ] | unique_by(.id) | sort_by(.at) as $requests
-| [$request_candidates[] | select(.binds | not)] as $rejected_requests
+| ([$request_candidates[] | select(.binds | not)] + $unauthorized_requests) as $rejected_requests
 | ($requests[-1].at // "") as $threshold
 | [
     $root.reviews[]?
