@@ -14,6 +14,10 @@ PR_HEAD_ATTEMPTS=11
 GATE_ATTEMPTS="${TOUCHSTONE_GATE_ATTEMPTS:-60}"
 GATE_RETRY_DELAY="${TOUCHSTONE_GATE_RETRY_DELAY:-5}"
 REQUEST_ATTEMPTS="${TOUCHSTONE_REQUEST_ATTEMPTS:-15}"
+# Check output is operator-facing diagnostic context, not an unbounded log
+# transport. Keep enough of the policy-owned title and summary to make the
+# remedy visible while keeping the status document compact.
+REVIEW_GATE_OUTPUT_MAX_CHARS=1000
 JSON_MODE=false
 PROJECT_ARG=""
 TITLE=""
@@ -1525,6 +1529,138 @@ auto_merge_text() {
   fi
 }
 
+read_review_gate_check() {
+  local head="$1" number="$2" workflow_pages local_workflow_ids run_pages run_identity
+  local job_pages job_identity raw_check
+  # A check name is not an identity: a repository-local workflow can publish
+  # the same name as the organization-required workflow. Resolve the external
+  # workflow run first, then bind its CheckRun through the current attempt's
+  # job id. A rerun keeps its suite but receives new jobs, so suite-only
+  # binding can transiently expose the superseded attempt's success.
+  read_with_retry gh api --hostname "$REPO_HOST" --paginate \
+    "repos/$REPO/actions/workflows?per_page=100" \
+    || fail_operation "could not list repository-local workflows in $REPO: $READ_OUTPUT" "Retry after GitHub recovers."
+  workflow_pages="$READ_OUTPUT"
+  local_workflow_ids="$(printf '%s\n' "$workflow_pages" | jq -sec '
+    if length == 0 then error("expected at least one workflow response page")
+    elif any(.[]; (.workflows | type) != "array") then error("expected workflows arrays")
+    else [.[].workflows[]?.id] | unique
+    end')" \
+    || fail_operation "GitHub returned malformed workflow pages for $REPO" "Retry after GitHub returns complete workflow pages."
+  read_with_retry gh api --hostname "$REPO_HOST" --paginate \
+    "repos/$REPO/actions/runs?head_sha=$head&per_page=100" \
+    || fail_operation "could not inspect review-gate runs for $head: $READ_OUTPUT" "Retry after GitHub recovers."
+  run_pages="$READ_OUTPUT"
+  run_identity="$(printf '%s\n' "$run_pages" | jq -sc \
+    --arg head "$head" --argjson number "$number" --argjson local_ids "$local_workflow_ids" '
+      if length == 0 then error("expected at least one workflow-run response page")
+      elif any(.[]; (.workflow_runs | type) != "array") then error("expected workflow_runs arrays")
+      else [.[].workflow_runs[]? | select(
+        .name == "review-gate"
+        and .head_sha == $head
+        and .workflow_id != null
+        and (.workflow_id as $id | $local_ids | index($id)) == null
+        and (.event == "pull_request" or .event == "merge_group")
+      )]
+      end
+      | [.[] | select(any(.pull_requests[]?; .number == $number))]
+      | (map(.workflow_id) | unique) as $workflow_ids
+      | if ($workflow_ids | length) > 1 then error("multiple external review-gate workflow identities")
+        else (sort_by(.id) | last // null)
+        end
+      | if . == null then null
+        elif (.id | type) != "number" or (.run_attempt | type) != "number"
+          or (.status | type) != "string" then
+          error("latest review-gate run is missing its id, attempt, or status")
+        else {
+          runId:.id,
+          runAttempt:.run_attempt,
+          status:.status,
+          conclusion:(.conclusion // null)
+        }
+        end')" \
+    || fail_operation "GitHub returned malformed or ambiguous review-gate run data for $head" "Remove same-named external workflow ambiguity or retry after GitHub returns complete workflow-run pages."
+
+  if [ "$run_identity" = null ]; then
+    REVIEW_GATE_CHECK_JSON="$(jq -cn --arg head "$head" '{present:false, head:$head}')"
+    return 0
+  fi
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" \
+    "repos/$REPO/actions/runs/$(printf '%s' "$run_identity" | jq -r .runId)/attempts/$(printf '%s' "$run_identity" | jq -r .runAttempt)/jobs?per_page=100" \
+    || fail_operation "could not read the current review-gate attempt for $head: $READ_OUTPUT" "Retry after GitHub recovers."
+  job_pages="$READ_OUTPUT"
+  job_identity="$(printf '%s' "$job_pages" | jq -sc \
+    --argjson run "$run_identity" '
+      if length == 0 then error("expected at least one job response page")
+      elif any(.[]; (.jobs | type) != "array") then error("expected jobs arrays")
+      else [.[].jobs[]? | select(
+        .name == "review-gate" and .run_attempt == $run.runAttempt
+      )] | sort_by(.id) | last // null
+      end
+      | if . == null then null
+        elif (.id | type) != "number" then error("current review-gate job has no id")
+        else {checkRunId:.id}
+        end')" \
+    || fail_operation "GitHub returned malformed current-attempt jobs for $head" "Retry after GitHub returns complete workflow-job pages."
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" \
+    "repos/$REPO/commits/$head/check-runs?check_name=review-gate&filter=all&per_page=100" \
+    || fail_operation "could not read the review-gate check for $head: $READ_OUTPUT" "Retry after GitHub recovers."
+  raw_check="$READ_OUTPUT"
+  REVIEW_GATE_CHECK_JSON="$(printf '%s' "$raw_check" | jq -sce \
+    --arg head "$head" --argjson run "$run_identity" --argjson job "$job_identity" \
+    --argjson max_chars "$REVIEW_GATE_OUTPUT_MAX_CHARS" '
+      if length == 0 then error("expected at least one CheckRun response page")
+      elif any(.[]; (.check_runs | type) != "array") then error("expected check_runs arrays")
+      elif $job == null then null
+      else [.[].check_runs[]? | select(
+        .name == "review-gate"
+        and .head_sha == $head
+        and .id == $job.checkRunId
+      )] | sort_by(.id) | last // null
+      end
+      | if . == null then {
+          present:false,
+          head:$head,
+          workflowRunId:$run.runId,
+          runAttempt:$run.runAttempt,
+          workflowStatus:$run.status,
+          workflowConclusion:$run.conclusion
+        }
+        elif (.id | type) != "number" or (.status | type) != "string" then
+          error("latest review-gate check is missing its id or status")
+        else {
+          present:true,
+          head:$head,
+          workflowRunId:$run.runId,
+          runAttempt:$run.runAttempt,
+          workflowStatus:$run.status,
+          workflowConclusion:$run.conclusion,
+          checkRunId:.id,
+          status:.status,
+          conclusion:(.conclusion // null),
+          detailsUrl:(.details_url // .html_url // null),
+          title:((.output.title // "")[0:$max_chars]),
+          summary:((.output.summary // "")[0:$max_chars])
+        }
+        end')" \
+    || fail_operation "GitHub returned malformed review-gate check data for $head" "Retry after GitHub returns a complete CheckRun."
+}
+
+review_gate_check_text() {
+  printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '
+    if .present == false and .workflowRunId != null then
+      "not yet present for workflow run \(.workflowRunId) attempt \(.runAttempt) (\(.workflowStatus)" +
+      (if .workflowConclusion == null then "" else "/\(.workflowConclusion)" end) + ")"
+    elif .present == false then "absent for \(.head)"
+    else
+      "\(.status)" +
+      (if .conclusion == null then "" else "/\(.conclusion)" end) +
+      " (check run \(.checkRunId))" +
+      (if .title == "" then "" else ": \(.title | gsub("[\\r\\n\\t]+"; " "))" end) +
+      (if .detailsUrl == null then "" else " — \(.detailsUrl)" end)
+    end'
+}
+
 status_pr() {
   local number state url head head_repo base base_sha merge_state draft
   read_pr_row
@@ -1533,6 +1669,7 @@ status_pr() {
   # Read before the first byte of output: a failed read must produce one
   # error document, not a truncated status followed by another object.
   read_auto_merge_state "$number" "$head"
+  read_review_gate_check "$head" "$number"
   read_enforcement "$base" "$base_sha" "$head" "$head_repo" "$number"
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"status","status":"observed","pullRequest":%s,"state":' "$OUTPUT_SCHEMA" "$number"
@@ -1549,13 +1686,14 @@ status_pr() {
     json_string "$merge_state"
     printf ',"draft":%s,"autoMerge":' "$draft"
     auto_merge_json
+    printf ',"reviewGateCheck":%s' "$REVIEW_GATE_CHECK_JSON"
     printf ',"enforcement":'
     enforcement_json
     policy_binding_json_fields
     printf '}\n'
   else
-    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  merge state: %s\n  draft: %s\n  auto-merge: %s\n  policy: %s at %s\n  enforcement on %s: %s\n' \
-      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$merge_state" "$draft" "$(auto_merge_text)" "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" "$base" "$(enforcement_text)"
+    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  merge state: %s\n  draft: %s\n  auto-merge: %s\n  review gate: %s\n  policy: %s at %s\n  enforcement on %s: %s\n' \
+      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$merge_state" "$draft" "$(auto_merge_text)" "$(review_gate_check_text)" "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" "$base" "$(enforcement_text)"
     [ -z "$ENFORCEMENT_CANDIDATE_REVISION" ] \
       || printf '  candidate policy: %s at %s (%s)\n' "$ENFORCEMENT_CANDIDATE_SOURCE" "$ENFORCEMENT_CANDIDATE_REVISION" "$ENFORCEMENT_CANDIDATE_ROLE"
   fi

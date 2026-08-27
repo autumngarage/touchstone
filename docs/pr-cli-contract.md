@@ -78,11 +78,26 @@ taking this document's word for it.
 - `status` is a read-only observation of state, URL, exact head, base ref/base
   SHA, draft state, GitHub's merge-state observation, and whether GitHub's
   durable `autoMergeRequest` is armed. Armed state includes its `enabledAt`
-  timestamp and the live PR head that state belongs to. It does not reconstruct
-  auto-merge from local wait conditions or decide whether review is complete.
+  timestamp and the live PR head that state belongs to. It also reports the
+  newest exact-head CheckRun belonging to the externally required
+  `review-gate` workflow run: its id, status, conclusion, details URL, and
+  bounded policy-owned title and summary, plus the owning workflow-run id and
+  attempt. The binding excludes same-named repository-local checks, requires
+  the workflow run to name this pull request, and selects the job from the
+  current run attempt so a superseded rerun cannot look green. If GitHub reports
+  no such CheckRun, `reviewGateCheck.present` is false; when a bound workflow run
+  already exists, its current status remains visible. Status does not infer a
+  pending or passing verdict. It does not parse review requests, recognize a
+  reviewer, reconstruct auto-merge from local wait conditions, or decide
+  whether review is complete.
   Raw equivalent: `gh pr view --json
   number,state,url,headRefOid,baseRefName,baseRefOid,mergeStateStatus,isDraft`
-  plus `autoMergeRequest { enabledAt }` from GitHub's GraphQL API.
+  plus `autoMergeRequest { enabledAt }` from GitHub's GraphQL API and
+  `gh api repos/O/R/commits/HEAD/check-runs?check_name=review-gate&filter=all`
+  plus the matching external workflow run and its current-attempt jobs, with
+  exact-head and job-id filtering. The CheckRun endpoint belongs to the consumer
+  commit, so this observation also works when the required workflow definition
+  lives in the central policy repository.
 
   Why not the raw sequence: over the raw call it adds bounded retries and the
   versioned `touchstone.pr/v1` field names, so an agent parses one stable
