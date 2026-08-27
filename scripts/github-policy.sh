@@ -356,10 +356,23 @@ verify_required_workflow_source_protection() {
 
 verify_required_workflow_source() {
   local workflow repository_id path ref sha actual_id actual_sha count source_refs
+  local manifest_path expected_behavior_version manifest pinned_shas
   count="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]] | length' "$POLICY")"
   [ "$count" -ge 1 ] || die "policy requires at least one required workflow"
   [ "$WORKFLOW_SOURCE_REPOSITORY" != "$REPOSITORY" ] \
     || die "required workflow source repository must differ from the target repository"
+  jq -e '
+    (.workflowSource.sourceContract | keys == ["gateBehaviorContractVersion", "manifestPath"])
+    and (.workflowSource.sourceContract.manifestPath
+      | type == "string"
+      and test("^[A-Za-z0-9._/-]+$")
+      and startswith("/") == false
+      and (split("/") | index("..") == null))
+    and (.workflowSource.sourceContract.gateBehaviorContractVersion
+      | type == "number" and floor == . and . >= 1)
+  ' "$POLICY" >/dev/null || die "consumer policy has an invalid workflow source contract declaration"
+  manifest_path="$(policy_value .workflowSource.sourceContract.manifestPath)"
+  expected_behavior_version="$(policy_value .workflowSource.sourceContract.gateBehaviorContractVersion)"
   actual_id="$(api "repos/$ORG/$WORKFLOW_SOURCE_REPOSITORY" --jq .id)"
   # Every required workflow is checked the same way: pinned to a full SHA
   # that exists, carries the file, and is reachable from the source branch.
@@ -377,6 +390,17 @@ verify_required_workflow_source() {
       | grep -qx true \
       || die "required workflow SHA $sha for $path is not reachable from $ref"
   done < <(jq -c '.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]' "$POLICY")
+  pinned_shas="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[].sha] | unique[]' "$POLICY")"
+  while IFS= read -r sha; do
+    [ -n "$sha" ] || continue
+    manifest="$(api_raw "repos/$ORG/$WORKFLOW_SOURCE_REPOSITORY/contents/$manifest_path?ref=$sha")" \
+      || die "could not read workflow source contract manifest at pinned revision $sha: $manifest_path"
+    jq -e --argjson expected "$expected_behavior_version" '
+      .contractVersion == 1
+      and .gateBehaviorContractVersion == $expected
+    ' <<<"$manifest" >/dev/null \
+      || die "workflow source contract at pinned revision $sha does not declare supported gate behavior contract $expected_behavior_version"
+  done <<<"$pinned_shas"
   source_refs="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[].ref] | unique[]' "$POLICY")"
   while IFS= read -r ref; do
     [ -n "$ref" ] || continue
@@ -388,21 +412,24 @@ verify_required_workflow_source() {
 }
 
 verify_workflow_source_contract() {
-  local canonical_policy manifest_path manifest context workflow_count status_context_count source_tree declared_workflows live_workflows
+  local canonical_policy manifest_path expected_behavior_version manifest context workflow_count status_context_count source_tree declared_workflows live_workflows
   canonical_policy="$(workflow_source_policy_path "$REPOSITORY" "$BRANCH")" \
     || die "workflow-source target must have exactly one checked-in policy inventory entry: $ORG/$REPOSITORY@$BRANCH"
   diff -q <(jq -S . "$canonical_policy") <(jq -S . "$POLICY") >/dev/null \
     || die "workflow-source policy differs from its checked-in inventory entry: $canonical_policy"
 
   manifest_path="$(policy_value .sourceContract.manifestPath)"
+  expected_behavior_version="$(policy_value .sourceContract.gateBehaviorContractVersion)"
   jq -e '
     .policyType == "workflow-source"
-    and (.sourceContract | keys == ["manifestPath"])
+    and (.sourceContract | keys == ["gateBehaviorContractVersion", "manifestPath"])
     and (.sourceContract.manifestPath
       | type == "string"
       and test("^[A-Za-z0-9._/-]+$")
       and startswith("/") == false
       and (split("/") | index("..") == null))
+    and (.sourceContract.gateBehaviorContractVersion
+      | type == "number" and floor == . and . >= 1)
   ' "$POLICY" >/dev/null || die "workflow-source policy has an invalid source contract declaration"
 
   workflow_count="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]?] | length' "$POLICY")"
@@ -421,9 +448,10 @@ verify_workflow_source_contract() {
 
   manifest="$(api_raw "repos/$ORG/$REPOSITORY/contents/$manifest_path?ref=$BRANCH")" \
     || die "could not read workflow source contract manifest: $manifest_path"
-  jq -e --arg repository "$ORG/$REPOSITORY" '
+  jq -e --arg repository "$ORG/$REPOSITORY" --argjson expected "$expected_behavior_version" '
     . as $contract
     | .contractVersion == 1
+    and .gateBehaviorContractVersion == $expected
     and (.requiredStatusCheck | type == "string" and length > 0)
     and .sourceRepository == $repository
     and (.statusJob | type == "string" and test("^[A-Za-z_][A-Za-z0-9_-]*$"))

@@ -4,7 +4,8 @@
   "organization": "autumngarage",
   "repository": "touchstone-workflows",
   "sourceContract": {
-    "manifestPath": ".touchstone-source-contract.json"
+    "manifestPath": ".touchstone-source-contract.json",
+    "gateBehaviorContractVersion": 1
   },
   "branch": "main",
   "rollbackPrerequisites": {

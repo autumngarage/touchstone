@@ -108,8 +108,10 @@ case "$method $endpoint" in
     emit '{"type":"file","sha":"0f30e59859b936ca16a8d6f4dd8cb1e8960eb917"}'
     ;;
   "GET repos/autumngarage/touchstone/contents/.touchstone-source-contract.json?ref=main")
-    jq -n --arg context "${GH_FAKE_SOURCE_STATUS_CONTEXT:-source contract}" '{
+    jq -n --arg context "${GH_FAKE_SOURCE_STATUS_CONTEXT:-source contract}" \
+      --argjson behaviorVersion "${GH_FAKE_GATE_BEHAVIOR_VERSION:-1}" '{
       contractVersion: 1,
+      gateBehaviorContractVersion: $behaviorVersion,
       requiredStatusCheck: $context,
       sourceRepository: "autumngarage/touchstone-workflows",
       statusJob: "source-contract",
@@ -121,10 +123,13 @@ case "$method $endpoint" in
       ]
     }'
     ;;
-  "GET repos/autumngarage/touchstone-workflows/contents/.touchstone-source-contract.json?ref=main")
+  "GET repos/autumngarage/touchstone-workflows/contents/.touchstone-source-contract.json?ref=main" | \
+  "GET repos/autumngarage/touchstone-workflows/contents/.touchstone-source-contract.json?ref=$WORKFLOWS_PIN")
     jq -n --arg context "${GH_FAKE_SOURCE_STATUS_CONTEXT:-source contract}" \
-      --arg nested "${GH_FAKE_SOURCE_NESTED_WORKFLOW:-}" '{
+      --arg nested "${GH_FAKE_SOURCE_NESTED_WORKFLOW:-}" \
+      --argjson behaviorVersion "${GH_FAKE_GATE_BEHAVIOR_VERSION:-1}" '{
       contractVersion: 1,
+      gateBehaviorContractVersion: $behaviorVersion,
       requiredStatusCheck: $context,
       sourceRepository: "autumngarage/touchstone-workflows",
       statusJob: "source-contract",
@@ -459,6 +464,10 @@ jq -e '
   .contractVersion == 1
   and .managedRuleset.name == "Touchstone policy v1: autumngarage/touchstone@main"
   and .workflowSource.repository == "touchstone-workflows"
+  and .workflowSource.sourceContract == {
+    manifestPath: ".touchstone-source-contract.json",
+    gateBehaviorContractVersion: 1
+  }
   and .workflowSource.repository != .repository
   and .rollbackPrerequisites.repositoryFiles == [
     {path: ".github/workflows/validate.yml", sha: "c2dc082e0702090f3fc9de095d78a85ddde902a5"},
@@ -561,7 +570,10 @@ jq -e '
   and .policyType == "workflow-source"
   and .repository == "touchstone-workflows"
   and (has("workflowSource") | not)
-  and .sourceContract == {manifestPath: ".touchstone-source-contract.json"}
+  and .sourceContract == {
+    manifestPath: ".touchstone-source-contract.json",
+    gateBehaviorContractVersion: 1
+  }
   and .rollbackPrerequisites.repositoryFiles == []
   and any(.managedRuleset.rules[]; .type == "deletion")
   and any(.managedRuleset.rules[]; .type == "non_fast_forward")
@@ -602,6 +614,9 @@ cp "$SOURCE_POLICY" "$RUNNER_SOURCE_POLICY"
 GH_FAKE_SOURCE_STATUS_CONTEXT="renamed source contract" \
   run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null 2>&1 \
   && fail "workflow source policy accepted a status context that drifted from its manifest"
+GH_FAKE_GATE_BEHAVIOR_VERSION=2 \
+  run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null 2>&1 \
+  && fail "workflow source policy accepted a gate behavior contract it does not declare"
 GH_FAKE_SOURCE_EXTRA_WORKFLOW=".github/workflows/undeclared.yaml" \
   run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null 2>&1 \
   && fail "workflow source policy accepted a live workflow omitted from its manifest"
@@ -623,6 +638,12 @@ jq 'del(.managedRuleset.rules[] | select(.type == "workflows"))' \
   "$POLICY" >"$TMP_DIR/consumer-policy-no-workflows.json"
 run_policy dry-run "$TMP_DIR/consumer-policy-no-workflows.json" >/dev/null 2>&1 \
   && fail "consumer policy without a required workflow was accepted"
+jq 'del(.workflowSource.sourceContract.gateBehaviorContractVersion)' \
+  "$POLICY" >"$TMP_DIR/consumer-policy-no-behavior-contract.json"
+run_policy dry-run "$TMP_DIR/consumer-policy-no-behavior-contract.json" >/dev/null 2>&1 \
+  && fail "consumer policy without a gate behavior contract was accepted"
+GH_FAKE_GATE_BEHAVIOR_VERSION=2 run_policy dry-run "$POLICY" >/dev/null 2>&1 \
+  && fail "consumer policy accepted a pinned source revision with an unsupported gate behavior contract"
 ok "workflow source uses its manifest status while consumers still require external workflows"
 
 echo "==> Checked-in consumer policies equal their derivation"
@@ -2428,7 +2449,7 @@ echo "==> Every policy file pins the required workflows at one touchstone-workfl
 # same revision for all three workflows, and that revision is the one the
 # suite's own fixtures are written against -- so a revert or a partial bump
 # is a visible, reviewed change here, never a silent divergence.
-PINNED_WORKFLOWS_REVISION="c590c0eaaabdbd16f6550320be40a211358a953d"
+PINNED_WORKFLOWS_REVISION="4c5fdc6664633e2b54d729e5f9d0155c31a7bcf2"
 for policy_file in "$ROOT"/policy/github/touchstone-main.json "$ROOT"/policy/github/consumers/*.json; do
   pins="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | .sha] | unique | join(" ")' "$policy_file")"
   [ "$pins" = "$PINNED_WORKFLOWS_REVISION" ] \

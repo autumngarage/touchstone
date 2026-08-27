@@ -52,7 +52,13 @@ ok() {
   git -C "$TMP/project" push -qu origin main
   git -C "$TMP/project" remote set-head origin main
   MAIN_SHA="$(git -C "$TMP/project" rev-parse HEAD)"
-  git -C "$TMP/project" switch -qc feat/test
+  git -C "$TMP/project" switch -qc legacy-policy
+  jq 'del(.workflowSource.sourceContract)' "$TMP/project/policy/github/touchstone-main.json" >"$TMP/legacy-policy.json"
+  mv "$TMP/legacy-policy.json" "$TMP/project/policy/github/touchstone-main.json"
+  git -C "$TMP/project" add policy/github/touchstone-main.json
+  git -C "$TMP/project" commit -qm 'legacy policy fixture'
+  GH_LEGACY_POLICY_SHA="$(git -C "$TMP/project" rev-parse HEAD)"
+  git -C "$TMP/project" switch -qc feat/test "$MAIN_SHA"
   printf 'change\n' >>"$TMP/project/README.md"
   jq '(.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[].sha) = "9ab13f0c5d2e47bb8c6a1f30d94e7c2b5a08d613"' \
     "$TMP/project/policy/github/touchstone-main.json" >"$TMP/project/policy/github/touchstone-main.next.json"
@@ -108,11 +114,17 @@ serve_rules() {
       pin_sha="$GH_AHEAD_SHA"
       evidence_sha="$GH_AHEAD_SHA"
     fi
+    extra_workflows=""
+    if [ -f "$GH_STATE/overlapping-pins" ]; then
+      pin_sha="$GH_MID_SHA"
+      evidence_sha="$GH_MID_SHA"
+      extra_workflows=',{"path":".github/workflows/validate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$GH_AHEAD_SHA"'"},{"path":".github/workflows/review-gate.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$GH_AHEAD_SHA"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":1333343261,"ref":"refs/heads/main","sha":"'"$GH_AHEAD_SHA"'"}'
+    fi
     queue_rule=',{"type":"merge_queue"}'
     [ ! -f "$GH_STATE/no-queue-rule" ] || queue_rule=""
     status_rule=""
     [ ! -f "$GH_STATE/consumer-status" ] || status_rule=',{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"convoy/delivery-protocol"}]}}'
-    rules='['"$pr_rule"',{"type":"deletion"},{"type":"non_fast_forward"}'"$queue_rule"',{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":'"$source_id"',"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":'"$source_id"',"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":'"$evidence_source_id"',"ref":"refs/heads/main","sha":"'"$evidence_sha"'"}]}}'"$status_rule"']'
+    rules='['"$pr_rule"',{"type":"deletion"},{"type":"non_fast_forward"}'"$queue_rule"',{"type":"workflows","parameters":{"workflows":[{"path":".github/workflows/validate.yml","repository_id":'"$source_id"',"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/review-gate.yml","repository_id":'"$source_id"',"ref":"refs/heads/main","sha":"'"$pin_sha"'"},{"path":".github/workflows/delivery-evidence.yml","repository_id":'"$evidence_source_id"',"ref":"refs/heads/main","sha":"'"$evidence_sha"'"}'"$extra_workflows"']}}'"$status_rule"']'
   elif [ -f "$GH_STATE/no-rules" ]; then
     rules='[]'
   else
@@ -373,7 +385,18 @@ case "$1 ${2:-}" in
     printf '%s\n' 71
     ;;
   api*)
-    if has '/contents/' "$@" && has '?ref=' "$@"; then
+    if has 'touchstone-workflows/contents/.touchstone-source-contract.json?ref=' "$@"; then
+      [ ! -f "$GH_STATE/behavior-manifest-unreadable" ] || { printf 'Not Found\n' >&2; exit 1; }
+      behavior_version=1
+      [ ! -f "$GH_STATE/behavior-version-newer" ] || behavior_version=2
+      if [ -f "$GH_STATE/overlapping-pins" ] && has "?ref=$GH_MID_SHA" "$@"; then behavior_version=2; fi
+      if [ -f "$GH_STATE/behavior-version-missing" ]; then
+        printf '%s\n' '{"contractVersion":1}'
+      else
+        jq -cn --argjson version "$behavior_version" \
+          '{contractVersion:1,gateBehaviorContractVersion:$version}'
+      fi
+    elif has '/contents/' "$@" && has '?ref=' "$@"; then
       cat "$GH_CANDIDATE_POLICY"
     elif has 'actions/permissions --jq .enabled' "$@"; then
       # Repository Actions: on unless the fixture says otherwise. The
@@ -410,7 +433,7 @@ case "$1 ${2:-}" in
       head="${spec##*...}"
       for sha in "$base" "$head"; do
         case "$sha" in
-          "$GH_BEHIND_SHA" | "$GH_POLICY_SHA" | "$GH_AHEAD_SHA" | "$GH_OFFREF_SHA" | "$GH_DIVERGED_SHA") ;;
+          "$GH_BEHIND_SHA" | "$GH_POLICY_SHA" | "$GH_MID_SHA" | "$GH_AHEAD_SHA" | "$GH_OFFREF_SHA" | "$GH_DIVERGED_SHA") ;;
           *)
             printf 'No common ancestor between %s and %s.\n' "$base" "$head" >&2
             exit 1
@@ -421,7 +444,8 @@ case "$1 ${2:-}" in
         case "$1" in
           "$GH_BEHIND_SHA") printf '1\n' ;;
           "$GH_POLICY_SHA") printf '2\n' ;;
-          "$GH_AHEAD_SHA") printf '3\n' ;;
+          "$GH_MID_SHA") printf '3\n' ;;
+          "$GH_AHEAD_SHA") printf '4\n' ;;
           *) printf '0\n' ;;
         esac
       }
@@ -574,6 +598,7 @@ EOF
   # OFFREF descends from POLICY but is not on the branch; DIVERGED shares no
   # lineage; UNKNOWN is not a commit in the source repository at all.
   GH_BEHIND_SHA=7c2e48d21b8031df4e607a3f0935cc37f363fcd5
+  GH_MID_SHA=8ab13f0c5d2e47bb8c6a1f30d94e7c2b5a08d612
   GH_AHEAD_SHA=9ab13f0c5d2e47bb8c6a1f30d94e7c2b5a08d613
   GH_OFFREF_SHA=3d5c7e91b02a4f68d17c9ae5b436f0c82d197ae4
   GH_DIVERGED_SHA=1f0b9d4c8e37a25610cd9f8b47e3a05c6d21f9b8
@@ -581,7 +606,8 @@ EOF
   GH_SOURCE_HEAD="$GH_AHEAD_SHA"
   export PATH="$TMP/bin:$PATH" GH_CALLS="$TMP/calls" GH_STATE="$TMP/state" GH_HEAD="$HEAD_SHA" GH_POLICY_SHA
   export GH_CANDIDATE_POLICY="$TMP/project/policy/github/touchstone-main.json"
-  export GH_BEHIND_SHA GH_AHEAD_SHA GH_OFFREF_SHA GH_DIVERGED_SHA GH_UNKNOWN_SHA GH_SOURCE_HEAD
+  export GH_BEHIND_SHA GH_MID_SHA GH_AHEAD_SHA GH_OFFREF_SHA GH_DIVERGED_SHA GH_UNKNOWN_SHA GH_SOURCE_HEAD
+  export GH_LEGACY_POLICY_SHA
   export GH_BASE_REF=main GH_BASE_SHA=base-sha
   export TOUCHSTONE_READ_ATTEMPTS=2 TOUCHSTONE_REQUEST_ATTEMPTS=2 TOUCHSTONE_RETRY_DELAY=0 TOUCHSTONE_GATE_RETRY_DELAY=0
 
@@ -1095,6 +1121,11 @@ Closes #42'
   assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
   assert_has "$TMP/out" "\"policy\":{\"source\":\"policy/github/touchstone-main.json\",\"revision\":\"$MAIN_SHA\"}"
   assert_has "$TMP/out" "\"candidatePolicy\":{\"source\":\"policy/github/touchstone-main.json\",\"revision\":\"$HEAD_SHA\",\"role\":\"desired-after-merge\"}"
+  GH_FAKE_REPO=autumngarage/touchstone GH_BASE_SHA="$GH_LEGACY_POLICY_SHA" run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  assert_has "$TMP/out" "\"revision\":\"$GH_LEGACY_POLICY_SHA\""
+  assert_not_has "$GH_CALLS" 'touchstone-workflows/contents/.touchstone-source-contract.json'
   jq '.branch = "release"' "$GH_CANDIDATE_POLICY" >"$TMP/candidate-invalid-branch.json"
   GH_CANDIDATE_POLICY="$TMP/candidate-invalid-branch.json" GH_FAKE_REPO=autumngarage/touchstone \
     GH_BASE_SHA="$MAIN_SHA" run_pr "$TMP/out" status 7 --json
@@ -1126,7 +1157,7 @@ Closes #42'
   GH_FAKE_REPO=autumngarage/touchstone GH_BASE_SHA="$MAIN_SHA" run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" "\"candidatePolicy\":{\"source\":\"policy/github/touchstone-main.json\",\"revision\":\"$HEAD_SHA\",\"role\":\"absent-after-merge\"}"
-  assert_not_has "$GH_CALLS" '/contents/'
+  assert_not_has "$GH_CALLS" "/contents/policy/github/touchstone-main.json?ref=$HEAD_SHA"
   rm -f "$TMP/state/policy-removed"
   touch "$TMP/state/policy-renamed"
   GH_FAKE_REPO=autumngarage/touchstone GH_BASE_SHA="$MAIN_SHA" run_pr "$TMP/out" status 7 --json
@@ -1203,12 +1234,43 @@ Closes #42'
   # Three gates carry one pin between them: it is resolved once, not thrice.
   [ "$(grep -c 'repositories/1333343261' "$GH_CALLS")" -eq 1 ] \
     || fail "the workflow source was resolved once per gate instead of once per pin"
+  [ "$(grep -c "touchstone-workflows/contents/.touchstone-source-contract.json?ref=$GH_AHEAD_SHA" "$GH_CALLS")" -eq 1 ] \
+    || fail "the gate behavior contract was read once per gate instead of once per pin"
   : >"$GH_CALLS"
   rm -f "$TMP/state/merged" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
   run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/ahead-pin" "$TMP/state/merged" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
+
+  echo "==> overlapping pins accept any compatible enforced descendant (AUT-568)"
+  touch "$TMP/state/overlapping-pins"
+  run_pr "$TMP/out" policy-status --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  assert_has "$GH_CALLS" "touchstone-workflows/contents/.touchstone-source-contract.json?ref=$GH_MID_SHA"
+  assert_has "$GH_CALLS" "touchstone-workflows/contents/.touchstone-source-contract.json?ref=$GH_AHEAD_SHA"
+  rm -f "$TMP/state/overlapping-pins"
+
+  echo "==> pinned gate behavior is checked at the exact enforced revision (AUT-568)"
+  touch "$TMP/state/review-gate" "$TMP/state/ahead-pin" "$TMP/state/behavior-version-newer"
+  run_pr "$TMP/out" policy-status --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"partial"'
+  assert_has "$TMP/out" "does not declare supported gate behavior contract 1"
+  assert_has "$TMP/out" "observed $GH_AHEAD_SHA"
+  assert_has "$GH_CALLS" "touchstone-workflows/contents/.touchstone-source-contract.json?ref=$GH_AHEAD_SHA"
+  rm -f "$TMP/state/ahead-pin" "$TMP/state/behavior-version-newer"
+  touch "$TMP/state/behavior-version-missing"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"status":"partial"'
+  assert_has "$TMP/out" "does not declare supported gate behavior contract 1"
+  rm -f "$TMP/state/behavior-version-missing"
+  touch "$TMP/state/behavior-manifest-unreadable"
+  run_pr "$TMP/out" policy-status --json
+  assert_has "$TMP/out" '"status":"partial"'
+  assert_has "$TMP/out" ".touchstone-source-contract.json could not be read"
+  rm -f "$TMP/state/behavior-manifest-unreadable"
 
   echo "==> a pin behind, off the branch, from another source, or unreadable still fails closed"
   # Behind the tool's revision: the repository is enforcing less than the

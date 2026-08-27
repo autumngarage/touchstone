@@ -154,9 +154,13 @@ taking this document's word for it.
   a newer workflow revision as unguarded and blocked every merge until the
   next release (AUT-559). Lineage is read from the source repository — the
   repository resolved by the id the pin carries, its branch head as the
-  ceiling — never assumed from the SHA. A revision behind, diverged, off that
-  branch, or from another source is missing, and a lineage that cannot be
-  resolved at all is reported as unverified and stays closed.
+  ceiling — never assumed from the SHA. Provenance is necessary but not
+  sufficient: the exact enforced revision must also carry the source manifest
+  and declare the gate-behavior contract version the installed policy
+  understands. A revision behind, diverged, off that branch, from another
+  source, missing that behavior contract, or declaring an unsupported version
+  is missing; a lineage or manifest that cannot be resolved is reported as
+  unverified and stays closed.
   `applied` means the policy's pinned workflows or required source status and
   the native pull-request, force-push, and deletion rules are present, plus
   the merge queue where declared; `partial` and `none` name what is missing.
