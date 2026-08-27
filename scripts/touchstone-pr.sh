@@ -1406,7 +1406,7 @@ verify_live_body() {
 }
 
 wait_for_request_binding() {
-  local number="$1" head="$2" base_ref="$3" base_sha="$4" request_url="$5" request_author="$6"
+  local number="$1" head="$2" base_ref="$3" base_sha="$4" request_url="$5" request_author="$6" request_already_existed="${7:-false}"
   local comment_id live_comment request_marker active_reuse_seconds
   if review_gate_required "$base_ref"; then
     # The package policy expresses intent, but only GitHub's effective pin can
@@ -1414,7 +1414,13 @@ wait_for_request_binding() {
     # the behavior-v1 wait-and-refresh path instead of trusting local bytes.
     read_enforcement "$base_ref" "$base_sha"
     active_reuse_seconds=0
-    effective_review_gate_accepts_active && active_reuse_seconds="$GATE_V2_REQUEST_REUSE_SECONDS"
+    if effective_review_gate_accepts_active; then
+      if [ "$request_already_existed" = true ]; then
+        active_reuse_seconds="$GATE_V2_REVIEW_REUSE_SECONDS"
+      else
+        active_reuse_seconds="$GATE_V2_REQUEST_REUSE_SECONDS"
+      fi
+    fi
     rerun_declared_review_gate "$number" "$head" "$active_reuse_seconds"
     verify_live_coordinates "$number" "$head" "$base_ref" "$base_sha"
     if [ "$JSON_MODE" = false ]; then
@@ -1581,7 +1587,7 @@ open_pr() {
     '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
   if [ -n "$existing_request" ]; then
     request_url="$(printf '%s\n' "$existing_request" | sed -n '1p')"
-    wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url" "$request_author"
+    wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url" "$request_author" true
     verify_live_body "$number" "$wanted_body"
     emit_open_result "$state" "$number" "$url" "$local_head" "existing:$request_url" "$branch"
     return 0
@@ -1608,7 +1614,7 @@ $request_marker"
     '$1 == url && $2 == author && index($3, "@codex review") && index($3, marker) { found=1 } END { exit !found }' \
     || fail_operation "review request returned $request_url but was not verified" \
       "Inspect comments before retrying; a rerun will reuse a surviving exact-binding request."
-  wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url" "$request_author"
+  wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url" "$request_author" false
   verify_live_body "$number" "$wanted_body"
   emit_open_result "$state" "$number" "$url" "$local_head" "posted:$request_url" "$branch"
 }

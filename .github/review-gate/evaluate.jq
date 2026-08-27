@@ -80,7 +80,9 @@ def observed_at:
        and (try (($raw_cutoff | fromdateiso8601) | type == "number") catch false))) as $cutoff_valid
 | (if $cutoff_valid then $raw_cutoff else "0000-00-00T00:00:00Z" end) as $cutoff
 | ($input
-   | .issueComments = [(.issueComments // [])[] | select($cutoff == null or observed_at <= $cutoff)]
+   # Preserve comments that existed at the cutoff. Request/result/answer uses
+   # below still require their mutable body to have settled by the cutoff.
+   | .issueComments = [(.issueComments // [])[] | select($cutoff == null or (.created_at // "") <= $cutoff)]
    # A review or inline finding that existed by the cutoff remains evidence
    # even if GitHub reports a later edit. Its post-cutoff updated_at then keeps
    # answers from laundering the mutation. Removing it would hide a finding.
@@ -115,11 +117,13 @@ def observed_at:
 | [
     $root.issueComments[]?
     | select(review_request)
+    | select($cutoff == null or observed_at <= $cutoff)
     | select(driver_action_authorized($permissions) | not)
   ] as $unauthorized_requests
 | [
     $root.issueComments[]?
     | select(driver_action_authorized($permissions) and review_request)
+    | select($cutoff == null or observed_at <= $cutoff)
     | . as $comment
     | ((.body // "") | capture("<!-- touchstone:pr-open head=(?<head>[0-9a-fA-F]{40}) base=(?<ref>[^ ]+) base_sha=(?<base>[0-9a-fA-F]{40}) -->")? // null) as $marker
     # A comment that names the sequencer but carries no well-formed marker is
@@ -184,7 +188,19 @@ def observed_at:
 | [
     $result_candidates[]
     | select(binds_head($head))
+    | select($cutoff == null or observed_at <= $cutoff)
   ] as $result_comments
+| [
+    $root.issueComments[]?
+    | select($cutoff != null and trusted($trusted))
+    | select((.created_at // "") <= $cutoff and observed_at > $cutoff)
+    | {
+        kind: "trusted result comment changed after evidence cutoff",
+        id: .id,
+        at: observed_at,
+        answered: false
+      }
+  ] as $cutoff_mutated_result_comments
 | [
     $review_candidates[]
     | select(
@@ -234,6 +250,7 @@ def observed_at:
         answered: (
           any($root.issueComments[]?;
             (.created_at // "") > $finding_at
+            and ($cutoff == null or observed_at <= $cutoff)
             and driver_action_authorized($permissions)
             and answers_body_finding($finding.id))
           or any($reviews[]?;
@@ -261,6 +278,7 @@ def observed_at:
         answered: (
           any($root.issueComments[]?;
             (.created_at // "") > $finding_at
+            and ($cutoff == null or observed_at <= $cutoff)
             and driver_action_authorized($permissions)
             and answers_body_finding($finding.id))
           or any($reviews[]?;
@@ -270,7 +288,7 @@ def observed_at:
         )
       }
   ] as $comment_body_findings
-| ($review_body_findings + $comment_body_findings) as $body_findings
+| ($review_body_findings + $comment_body_findings + $cutoff_mutated_result_comments) as $body_findings
 | [
     if ($root.contractVersion // 0) != 3 then "unsupported or missing evidence contract version" else empty end,
     if ($root.complete // false) != true then "GitHub evidence collection was incomplete" else empty end,

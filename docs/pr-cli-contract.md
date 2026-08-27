@@ -59,7 +59,9 @@ taking this document's word for it.
   review evidence window, is preserved and reported instead of making the
   client poll it for up to five minutes. A run outside that conservative
   lower-bound window follows the behavior-v1 finish-and-refresh path so newly
-  posted evidence cannot be stranded beyond its cutoff.
+  posted evidence cannot be stranded beyond its cutoff. A newly posted request
+  uses the short request window; an idempotent retry that finds the exact
+  request already present uses the longer review window.
   Raw equivalent: compare `git rev-parse HEAD` with `git ls-remote`, inspect
   `gh pr list`, create with `gh pr create`, re-read, then inspect comments
   before `gh pr comment --body "@codex review"`, then re-run a completed gate

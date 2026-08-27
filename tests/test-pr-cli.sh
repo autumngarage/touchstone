@@ -676,6 +676,9 @@ case "$1 ${2:-}" in
         esac
         gate_started_at='2026-08-27T17:10:00Z'
         [ ! -f "$GH_STATE/gate-fresh-active" ] || gate_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        if [ -f "$GH_STATE/gate-review-window-active" ]; then
+          gate_started_at="$(jq -nr --argjson started "$(( $(date -u +%s) - 300 ))" '$started | todateiso8601')"
+        fi
         runs="{\"workflow_runs\":[
           {\"id\":77,\"node_id\":\"RUN_77\",\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":900,\"run_attempt\":$gate_attempt,\"event\":\"pull_request\",\"status\":\"$gate_status\",\"conclusion\":$gate_conclusion_json,\"workflow_id\":999,\"run_started_at\":\"$gate_started_at\",\"updated_at\":\"2026-08-27T17:30:00Z\",\"pull_requests\":[{\"number\":7}]},
           {\"id\":78,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":901,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":2,\"run_started_at\":\"2026-08-27T17:20:00Z\",\"updated_at\":\"2026-08-27T17:20:00Z\",\"pull_requests\":[{\"number\":7}]},
@@ -998,6 +1001,14 @@ EOF
   [ "$(grep -c 'actions/runs?head_sha=' "$GH_CALLS")" -le 2 ] \
     || fail "behavior v2 open repeatedly polled an active evaluation instead of returning control"
   rm -f "$TMP/state/gate-in-progress" "$TMP/state/gate-reruns" "$TMP/state/gate-fresh-active"
+  touch "$TMP/state/gate-review-window-active"
+  echo 30 >"$TMP/state/gate-in-progress"
+  run_pr_v2 "$TMP/out" open --title 'Gate v2 existing request' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"already-active"}'
+  [ ! -f "$TMP/state/gate-reruns" ] \
+    || fail "behavior v2 open did not reuse an existing request's active review window"
+  rm -f "$TMP/state/gate-in-progress" "$TMP/state/gate-review-window-active"
   run_pr_v2 "$TMP/out" open --title 'Gate v2' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"rerun-requested"}'
