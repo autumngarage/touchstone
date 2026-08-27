@@ -192,6 +192,7 @@ def observed_at:
   ] as $result_comments
 | [
     $result_candidates[]
+    | select(binds_head($head))
     | select($cutoff != null and (.created_at // "") <= $cutoff and observed_at > $cutoff)
     | {
         kind: "trusted result comment changed after evidence cutoff",

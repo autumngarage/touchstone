@@ -103,6 +103,9 @@ run_state_case "a later edited result cannot hide behind an earlier clean result
 run_state_case "an edited quota notice remains provisional at the cutoff" '
   .evidenceCutoffAt = "2026-08-20T10:25:00Z"
   | .issueComments = [.issueComments[0], {"id":102,"created_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Security review quota reached"}]' waiting-review
+run_state_case "an edited stale-head result remains diagnostic at the cutoff" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .issueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Codex Review: stale edited result\n\n**Reviewed commit:** `3333333333`","resolved_review_sha":"3333333333333333333333333333333333333333"}]' success
 run_state_case "an invalid evidence cutoff fails closed" \
   '.evidenceCutoffAt = "2026-08-20 10:20:00"' failure
 run_state_case "a non-string evidence cutoff fails closed" \
