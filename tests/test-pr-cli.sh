@@ -489,6 +489,7 @@ case "$1 ${2:-}" in
       [ ! -f "$GH_STATE/behavior-manifest-unreadable" ] || { printf 'Not Found\n' >&2; exit 1; }
       behavior_version=1
       [ ! -f "$GH_STATE/behavior-version-newer" ] || behavior_version=2
+      [ ! -f "$GH_STATE/behavior-version-unsupported" ] || behavior_version=3
       if [ -f "$GH_STATE/overlapping-pins" ] && has "?ref=$GH_MID_SHA" "$@"; then behavior_version=2; fi
       if [ -f "$GH_STATE/behavior-version-missing" ]; then
         printf '%s\n' '{"contractVersion":1}'
@@ -1030,6 +1031,18 @@ EOF
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
     || fail "behavior v2 open reused a run whose request-evidence window had expired"
   rm -f "$TMP/state/behavior-version-newer" "$TMP/state/gate-in-progress"
+  jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 3' \
+    "$TMP/tool-v2/policy/github/touchstone-main.json" >"$TMP/tool-v2/policy/github/touchstone-main.next"
+  mv "$TMP/tool-v2/policy/github/touchstone-main.next" "$TMP/tool-v2/policy/github/touchstone-main.json"
+  touch "$TMP/state/behavior-version-unsupported"
+  run_pr_v2 "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'invalid workflow source contract declaration'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 2' \
+    "$TMP/tool-v2/policy/github/touchstone-main.json" >"$TMP/tool-v2/policy/github/touchstone-main.next"
+  mv "$TMP/tool-v2/policy/github/touchstone-main.next" "$TMP/tool-v2/policy/github/touchstone-main.json"
+  rm -f "$TMP/state/behavior-version-unsupported"
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns"
 
   echo "==> open refreshes required delivery evidence after body convergence (AUT-481)"

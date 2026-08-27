@@ -1007,7 +1007,6 @@ read_enforcement() {
           || fail_operation "could not read the workflow source manifest path from $policy_file" "Reinstall touchstone; the policy file is corrupt or incomplete."
         gate_behavior_version="$(enforcement_policy_jq -er '.workflowSource.sourceContract.gateBehaviorContractVersion')" \
           || fail_operation "could not read the gate behavior contract from $policy_file" "Reinstall touchstone; the policy file is corrupt or incomplete."
-        ENFORCEMENT_GATE_BEHAVIOR_VERSION="$gate_behavior_version"
         if ! enforcement_policy_jq -e '
           (.workflowSource.sourceContract | keys == ["gateBehaviorContractVersion", "manifestPath"])
           and (.workflowSource.sourceContract.manifestPath
@@ -1016,10 +1015,11 @@ read_enforcement() {
             and startswith("/") == false
             and (split("/") | index("..") == null))
           and (.workflowSource.sourceContract.gateBehaviorContractVersion
-            | type == "number" and floor == . and . >= 1)
+            | type == "number" and floor == . and (. == 1 or . == 2))
         ' >/dev/null; then
           fail_operation "$policy_file has an invalid workflow source contract declaration" "Reinstall touchstone; the policy file is corrupt or incomplete."
         fi
+        ENFORCEMENT_GATE_BEHAVIOR_VERSION="$gate_behavior_version"
       fi
       ;;
     workflow-source)
