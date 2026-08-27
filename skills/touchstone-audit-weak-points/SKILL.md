@@ -7,6 +7,8 @@ description: Use after finding a structural bug to systematically audit the code
 
 When you find a structural bug, the same pattern is almost certainly repeated elsewhere. The copies you don't find now will surface later — usually in a worse place.
 
+When the preceding review fix created the defect, stop before editing again: revert or simplify to the last known-good design, then search and classify the weak-point class. This audit is not permission to patch the failed implementation forward or absorb every sibling into the current PR.
+
 ## When to invoke
 
 This skill activates when a bug points at a *class* of problem rather than a single instance:

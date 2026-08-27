@@ -68,6 +68,8 @@ for file in \
   assert_contains "$file" "bounded stalled-request recovery"
   assert_contains "$file" "Keep review subordinate to scope"
   assert_contains "$file" "review cannot amend approved scope"
+  assert_contains "$file" "A review-fix defect stops patching"
+  assert_contains "$file" "A second ends same-shape work"
   assert_contains "$file" "Answering is not implementing"
   assert_contains "$file" "answer and route whatever you are not fixing"
   # The bounded-review rule: severity decides what gets implemented, and the
@@ -79,12 +81,13 @@ for file in \
   assert_contains "$file" "principles/local-review.md"
   assert_contains "$file" "deterministic gates first"
   assert_contains "$file" "Exact-head review after a fix commit is never skipped"
+  assert_contains "$file" "never authorizes mutation past a stop"
   assert_contains "$file" "never reopen the design space"
   # Review is automatic on PR open; a hand-typed request wedges the PR.
   assert_contains "$file" "the exact head and base"
   assert_contains "$file" "Never put the sequencer's marker in a comment you write yourself"
-  assert_contains "$file" "Stop widened work and requests on that shape"
-  assert_contains "$file" "in-scope fixes still proceed to exact-head review"
+  assert_contains "$file" "Stop widened work"
+  assert_contains "$file" "allowed fixes follow the cascade and exact-head rules"
   assert_contains "$file" "follow the capability across replacement PRs"
   assert_contains "$file" "closing or renaming never resets the budget"
   # A parent deleted two clean worktrees while their workers were still live;
@@ -324,6 +327,13 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "PR's bug"
 assert_contains "$GIT_WORKFLOW_GUIDE" "A scope"
 assert_contains "$GIT_WORKFLOW_GUIDE" "boundary never permits the PR to ship its own regression"
 assert_contains "$GIT_WORKFLOW_GUIDE" "Repeated widening is a design signal"
+assert_contains "$GIT_WORKFLOW_GUIDE" "A review-fix regression is a stop signal"
+assert_contains "$GIT_WORKFLOW_GUIDE" "At the first defect created by the"
+assert_contains "$GIT_WORKFLOW_GUIDE" "second fix-created defect"
+assert_contains "$GIT_WORKFLOW_GUIDE" "regression test"
+assert_contains "$GIT_WORKFLOW_GUIDE" "does not justify retaining the failed fix"
+assert_contains "$GIT_WORKFLOW_GUIDE" "only when no known high-severity defect remains"
+assert_contains "$GIT_WORKFLOW_GUIDE" "authorize further mutation after this stop signal"
 assert_contains "$GIT_WORKFLOW_GUIDE" "Do not grow the current PR one"
 assert_contains "$GIT_WORKFLOW_GUIDE" "scope containment is never permission to skip review"
 assert_contains "$GIT_WORKFLOW_GUIDE" "do not post a fourth request on the same"
@@ -337,6 +347,21 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "gets one validation round"
 assert_contains "$GIT_WORKFLOW_GUIDE" "Exact-head review makes moving stacks multiply work"
 assert_contains "$GIT_WORKFLOW_GUIDE" "Do not open dependent"
 assert_contains "$GIT_WORKFLOW_GUIDE" "while a parent is still finding-bearing"
+
+echo "==> adjacent review guidance cannot reopen a fix-created cascade"
+assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" \
+  "Every retained fix gets a test"
+assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" \
+  "does not justify retaining a review fix"
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "does not earn another local review loop"
+assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "run another only if a fix materially changed the risk surface"
+assert_contains "$TOUCHSTONE_ROOT/principles/audit-weak-points.md" \
+  "search and classify the weak-point class before further edits"
+assert_contains "$GIT_WORKFLOW_SKILL" "A review-fix regression is a stop signal"
+assert_contains "$TOUCHSTONE_ROOT/skills/touchstone-audit-weak-points/SKILL.md" \
+  "This audit is not permission to patch the failed implementation forward"
 
 echo "==> dirty PR recovery preserves authored work and re-ships the new head"
 assert_contains "$GIT_WORKFLOW_GUIDE" '## Recovering a `DIRTY` PR'
