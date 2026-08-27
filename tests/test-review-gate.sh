@@ -89,6 +89,25 @@ run_state_case "a provisional quota notice keeps waiting for review" \
   '.issueComments = [.issueComments[0], {"id":101,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Security review usage limit reached"}]' waiting-review
 run_state_case "a current-head quota notice still keeps waiting for review" \
   '.issueComments = [.issueComments[0], {"id":101,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Security review quota reached","resolved_review_sha":"'"$HEAD_SHA"'"}]' waiting-review
+run_state_case "a cutoff before the request observes no request" \
+  '.evidenceCutoffAt = "2026-08-20T10:04:59Z"' waiting-request
+run_state_case "a cutoff after the request but before review waits for review" \
+  '.evidenceCutoffAt = "2026-08-20T10:10:00Z"' waiting-review
+run_state_case "evidence exactly at the cutoff is accepted" \
+  '.evidenceCutoffAt = "2026-08-20T10:20:00Z"' success
+run_state_case "a result edited after the cutoff is not accepted" \
+  '.evidenceCutoffAt = "2026-08-20T10:20:00Z" | .issueComments[1].updated_at = "2026-08-20T10:20:01Z"' waiting-review
+run_state_case "an invalid evidence cutoff fails closed" \
+  '.evidenceCutoffAt = "2026-08-20 10:20:00"' failure
+run_state_case "a non-string evidence cutoff fails closed" \
+  '.evidenceCutoffAt = false' failure
+run_state_case "an impossible evidence cutoff fails closed" \
+  '.evidenceCutoffAt = "2026-99-99T99:99:99Z"' failure
+run_state_case "a pre-cutoff finding edited later remains blocking evidence" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .issueComments = [.issueComments[0]]
+  | .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 edited finding"}]' failure
 run_state_case "a quota-related review finding remains terminal evidence" \
   '.issueComments[1].body = "Codex Review: [P1] Fix quota accounting\n\n**Reviewed commit:** `1111111111`"' failure
 run_state_case "invalid evidence never becomes a waiting state" \

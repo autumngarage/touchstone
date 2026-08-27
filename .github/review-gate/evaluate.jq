@@ -11,6 +11,9 @@
 # The verdict's additive `state` field separates evidence that can still
 # arrive (`waiting-request` or `waiting-review`) from a terminal `failure`.
 # `conclusion` remains fail-closed for consumers that do not implement waiting.
+# An optional `evidenceCutoffAt` evaluates the collected GitHub evidence as of
+# that UTC instant. This lets polling workflows enforce a deadline without
+# accepting evidence posted or edited after it.
 
 def trusted($authors):
   (.user.login // "") as $login
@@ -66,7 +69,23 @@ def edited_after_submission($root):
 def answers_body_finding($id):
   (.body // "") | contains("<!-- touchstone:review-answer id=\($id) -->");
 
-. as $root
+def observed_at:
+  .updated_at // .submitted_at // .created_at // "";
+
+. as $input
+| (if ($input | has("evidenceCutoffAt")) then $input.evidenceCutoffAt else null end) as $raw_cutoff
+| ($raw_cutoff == null
+   or (($raw_cutoff | type) == "string"
+       and ($raw_cutoff | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+       and (try (($raw_cutoff | fromdateiso8601) | type == "number") catch false))) as $cutoff_valid
+| (if $cutoff_valid then $raw_cutoff else "0000-00-00T00:00:00Z" end) as $cutoff
+| ($input
+   | .issueComments = [(.issueComments // [])[] | select($cutoff == null or observed_at <= $cutoff)]
+   # A review or inline finding that existed by the cutoff remains evidence
+   # even if GitHub reports a later edit. Its post-cutoff updated_at then keeps
+   # answers from laundering the mutation. Removing it would hide a finding.
+   | .reviews = [(.reviews // [])[] | select($cutoff == null or (.submitted_at // "") <= $cutoff)]
+   | .reviewComments = [(.reviewComments // [])[] | select($cutoff == null or (.created_at // "") <= $cutoff)]) as $root
 | ($root.trustedAuthors // []) as $trusted
 | (($root.authorPermissions // {}) | if type == "object" then . else {} end) as $permissions
 | (([
@@ -255,6 +274,7 @@ def answers_body_finding($id):
 | [
     if ($root.contractVersion // 0) != 3 then "unsupported or missing evidence contract version" else empty end,
     if ($root.complete // false) != true then "GitHub evidence collection was incomplete" else empty end,
+    if $cutoff_valid | not then "evidence cutoff is not a UTC whole-second timestamp" else empty end,
     if ($root.authorPermissions | type) != "object"
       or any($driver_authors[]; . as $author | ($permissions | has($author) | not))
       then "effective permission evidence is missing for one or more driver comment authors" else empty end,
@@ -308,6 +328,7 @@ def answers_body_finding($id):
    end) as $state
 | {
     contractVersion: 3,
+    evidenceCutoffAt: $raw_cutoff,
     state: $state,
     conclusion: (if ($reasons | length) == 0 then "success" else "failure" end),
     title: (if $state == "success"
