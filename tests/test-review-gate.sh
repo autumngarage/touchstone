@@ -116,6 +116,10 @@ run_state_case "a pre-cutoff finding edited later remains blocking evidence" '
   | .issueComments = [.issueComments[0]]
   | .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
   | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 edited finding"}]' failure
+run_state_case "a pre-cutoff formal finding cleared later remains blocking evidence" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .issueComments = [.issueComments[0]]
+  | .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:30:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]' failure
 run_state_case "a quota-related review finding remains terminal evidence" \
   '.issueComments[1].body = "Codex Review: [P1] Fix quota accounting\n\n**Reviewed commit:** `1111111111`"' failure
 run_state_case "invalid evidence never becomes a waiting state" \

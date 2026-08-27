@@ -208,6 +208,17 @@ def observed_at:
       )
   ] as $rejected_reviews
 | [
+    $reviews[]
+    | select($cutoff != null)
+    | select((.submitted_at // "") <= $cutoff and (.updated_at // .submitted_at // "") > $cutoff)
+    | {
+        kind: "formal review changed after evidence cutoff",
+        id: .id,
+        at: (.updated_at // .submitted_at),
+        answered: false
+      }
+  ] as $cutoff_mutated_reviews
+| [
     $result_candidates[]
     | select(binds_head($head) | not)
   ] as $rejected_result_comments
@@ -287,7 +298,7 @@ def observed_at:
         )
       }
   ] as $comment_body_findings
-| ($review_body_findings + $comment_body_findings + $cutoff_mutated_result_comments) as $body_findings
+| ($review_body_findings + $comment_body_findings + $cutoff_mutated_reviews + $cutoff_mutated_result_comments) as $body_findings
 | [
     if ($root.contractVersion // 0) != 3 then "unsupported or missing evidence contract version" else empty end,
     if ($root.complete // false) != true then "GitHub evidence collection was incomplete" else empty end,
