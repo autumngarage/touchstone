@@ -42,26 +42,81 @@ run_case() {
   fi
   ok "$label"
 }
+run_state_case() {
+  local label="$1" filter="$2" expected_state="$3" verdict
+  local expected_conclusion="failure"
+  [ "$expected_state" = "success" ] && expected_conclusion="success"
+  jq "$filter" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
+  verdict="$(jq -f "$EVALUATOR" "$TMP_DIR/case.json")" || {
+    fail "$label: evaluator crashed"
+    return
+  }
+  [ "$(jq -r .state <<<"$verdict")" = "$expected_state" ] || {
+    fail "$label: expected state $expected_state, got $(jq -c '{state,conclusion,reasons}' <<<"$verdict")"
+    return
+  }
+  [ "$(jq -r .conclusion <<<"$verdict")" = "$expected_conclusion" ] || {
+    fail "$label: expected conclusion $expected_conclusion, got $(jq -c '{state,conclusion,reasons}' <<<"$verdict")"
+    return
+  }
+  ok "$label"
+}
+run_rejected_count_case() {
+  local label="$1" filter="$2" expected="$3" expected_state="$4" verdict
+  jq "$filter" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
+  verdict="$(jq -f "$EVALUATOR" "$TMP_DIR/case.json")" || {
+    fail "$label: evaluator crashed"
+    return
+  }
+  [ "$(jq -r .counts.rejectedReviewEvidence <<<"$verdict")" = "$expected" ] || {
+    fail "$label: expected $expected rejected review candidate(s), got $(jq -c '{state,conclusion,counts,reasons}' <<<"$verdict")"
+    return
+  }
+  [ "$(jq -r .state <<<"$verdict")" = "$expected_state" ] || {
+    fail "$label: expected state $expected_state, got $(jq -c '{state,conclusion,counts,reasons}' <<<"$verdict")"
+    return
+  }
+  ok "$label"
+}
 echo "==> Requests come from the driver's comments"
 run_case "org-only admin request + clean exact-head result passes" '.' success
+run_state_case "a complete clean review is terminal success" '.' success
+run_state_case "a PR opened before its request waits for the request" \
+  '.issueComments = []' waiting-request
+run_state_case "a bound request waits for exact-head review evidence" \
+  '.issueComments = [.issueComments[0]]' waiting-review
+run_state_case "a provisional quota notice keeps waiting for review" \
+  '.issueComments = [.issueComments[0], {"id":101,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Security review usage limit reached"}]' waiting-review
+run_state_case "a current-head quota notice still keeps waiting for review" \
+  '.issueComments = [.issueComments[0], {"id":101,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Security review quota reached","resolved_review_sha":"'"$HEAD_SHA"'"}]' waiting-review
+run_state_case "a quota-related review finding remains terminal evidence" \
+  '.issueComments[1].body = "Codex Review: [P1] Fix quota accounting\n\n**Reviewed commit:** `1111111111`"' failure
+run_state_case "invalid evidence never becomes a waiting state" \
+  'del(.complete) | .issueComments = []' failure
 run_case "write permission can request" '.authorPermissions.henry = "write"' success
 run_case "maintain permission can request" '.authorPermissions.henry = "maintain"' success
 run_case "direct collaborator with write permission can request" '.authorPermissions.henry = "write" | .issueComments[0].author_association = "COLLABORATOR"' success
 run_case "bare request after the head was pushed binds it" '.issueComments[0].body = "@codex review"' success
 run_case "bare request before the head was pushed does not" '.issueComments[0].body = "@codex review" | .issueComments[0].created_at = "2026-08-20T09:00:00Z"' failure "no trusted review request"
+run_state_case "a stale authorized bare request is terminal failure" \
+  '.issueComments[0].body = "@codex review" | .issueComments[0].created_at = "2026-08-20T09:00:00Z"' failure
 run_case "bare request before a base retarget does not bind" '.issueComments[0].body = "@codex review" | .pr.baseRetargetedAt = "2026-08-20T10:10:00Z"' failure "no trusted review request"
 run_case "bare request after a base retarget binds" '.issueComments[0].body = "@codex review" | .pr.baseRetargetedAt = "2026-08-20T10:01:00Z"' success
 run_case "marker for another head does not bind" '.issueComments[0].body |= sub("head=1111111111111111111111111111111111111111"; "head=3333333333333333333333333333333333333333")' failure "no trusted review request"
+run_state_case "a request marker for another head is terminal failure" \
+  '.issueComments[0].body |= sub("head=1111111111111111111111111111111111111111"; "head=3333333333333333333333333333333333333333")' failure
 run_case "marker base must be the tip or an ancestor" '.pr.acceptableBaseShas = ["3333333333333333333333333333333333333333"]' failure "no trusted review request"
 run_case "an advanced base keeps the request" '.pr.baseSha = "3333333333333333333333333333333333333333" | .pr.acceptableBaseShas = ["3333333333333333333333333333333333333333", "'"$BASE_SHA"'"]' success
 run_case "retargeted base ref invalidates the marker" '.pr.baseRef = "release"' failure "no trusted review request"
 run_case "an edited request counts from its edit, not its creation" '.issueComments[0].updated_at = "2026-08-20T10:30:00Z"' failure "no trusted exact-head"
 run_case "bare request before the SHA was restored by force-push does not bind" '.issueComments[0].body = "@codex review" | .pr.headCurrentSince = "2026-08-20T10:10:00Z"' failure "no trusted review request"
 run_case "a malformed sequencer marker is not a bare request" '.issueComments[0].body = "@codex review\n\n<!-- touchstone:pr-open head=1111 base=main -->"' failure "no trusted review request"
-run_case "read permission cannot request" '.authorPermissions.henry = "read"' failure "no trusted review request"
-run_case "triage permission cannot request" '.authorPermissions.henry = "triage"' failure "no trusted review request"
-run_case "no repository permission cannot request" '.authorPermissions.henry = "none"' failure "no trusted review request"
-run_case "unknown permission cannot request" '.authorPermissions.henry = "owner"' failure "no trusted review request"
+run_state_case "a malformed sequencer marker is terminal failure" \
+  '.issueComments[0].body = "@codex review\n\n<!-- touchstone:pr-open head=1111 base=main -->"' failure
+run_state_case "read permission is a terminal request failure" '.authorPermissions.henry = "read"' failure
+run_state_case "triage permission is a terminal request failure" '.authorPermissions.henry = "triage"' failure
+run_state_case "no repository permission is a terminal request failure" '.authorPermissions.henry = "none"' failure
+run_state_case "unknown permission is a terminal request failure" '.authorPermissions.henry = "owner"' failure
 run_case "missing permission fails closed" 'del(.authorPermissions.henry)' failure "permission evidence is missing"
 run_case "author association is not an authorization fast path" 'del(.authorPermissions.henry) | .issueComments[0].author_association = "OWNER"' failure "permission evidence is missing"
 run_case "unrelated commenters need no permission lookup" '
@@ -70,12 +125,28 @@ run_case "unrelated commenters need no permission lookup" '
 run_case "every potential reply author needs permission evidence" '
   .reviewComments += [{"id":11,"in_reply_to_id":9,"created_at":"2026-08-20T10:25:00Z","user":{"login":"reader"},"body":"A possible answer"}]' failure "permission evidence is missing"
 run_case "the result must postdate the request" '.issueComments[1].created_at = "2026-08-20T10:01:00Z"' failure "no trusted exact-head"
+run_state_case "an older result still means the current request is waiting" \
+  '.issueComments[1].created_at = "2026-08-20T10:01:00Z"' waiting-review
+run_state_case "a post-request result for another head is terminal failure" \
+  '.issueComments[1].resolved_review_sha = "3333333333333333333333333333333333333333"' failure
+run_rejected_count_case "mixed accepted and stale results report the rejected evidence" '
+  .issueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Codex Review: stale result","resolved_review_sha":"3333333333333333333333333333333333333333"}]' 1 success
+run_state_case "a stale post-request result identified by a blob URL is terminal failure" \
+  '.issueComments[1].resolved_review_sha = "" | .issueComments[1].body = "Review result: https://github.com/autumngarage/touchstone/blob/3333333333333333333333333333333333333333/file"' failure
+run_state_case "a malformed post-request result is terminal failure" \
+  '.issueComments[1].resolved_review_sha = "" | .issueComments[1].body = "Codex Review: completed\n\n**Reviewed commit:** `not-a-sha`"' failure
+run_state_case "a post-request formal review for another head is terminal failure" '
+  .issueComments = [.issueComments[0]]
+  | .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"3333333333333333333333333333333333333333","user":{"login":"chatgpt-codex-connector[bot]"}}]' failure
 run_case "moved head invalidates evidence" '.pr.headSha = "3333333333333333333333333333333333333333"' failure "no trusted exact-head"
 run_case "contract version is enforced" '.contractVersion = 2' failure "contract version"
 echo "==> Findings still need answers"
 run_case "an unanswered inline finding blocks" '
   .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
   | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"}]' failure "inline finding"
+run_state_case "an unanswered inline finding is terminal failure" '
+  .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"}]' failure
 run_case "an answered inline finding passes" '
   .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
   | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
