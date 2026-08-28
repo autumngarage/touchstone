@@ -22,6 +22,10 @@ Every command accepts `--project DIR`; every command except `answer` accepts `--
 requires a new schema. Exit 0 means the reported state was verified, exit 1 is
 an operational or transport failure, and exit 2 is invalid or unsafe input. No
 command runs a daemon, stores credentials, or persists derived PR state.
+When `open` or `merge` touches a policy-declared review gate, its JSON result
+includes `reviewGate.runId` and `reviewGate.action`. `rerun-requested` means the
+client refreshed a completed attempt; `already-active` means a behavior-v2 run
+is the authoritative evaluator and the client returned while that run waits.
 
 ## Operations and raw equivalents
 
@@ -48,11 +52,20 @@ taking this document's word for it.
   comment marker (`<!-- touchstone:pr-open head=… base=… base_sha=… -->`)
   is what a pinned `review-gate` reads as the request, and it makes partial
   reruns idempotent. It reports success only after any policy-declared gate
-  has been asked to re-run and a fresh PR read still matches the head and base.
+  has been asked to evaluate the new request and a fresh PR read still matches
+  the head and base. Under behavior v1, an active run is allowed to finish and
+  then re-run. Under behavior v2, the run owns the bounded evidence poll, so an
+  already queued exact-head run, or one still inside the relevant request or
+  review evidence window, is preserved and reported instead of making the
+  client poll it for up to five minutes. A run outside that conservative
+  lower-bound window follows the behavior-v1 finish-and-refresh path so newly
+  posted evidence cannot be stranded beyond its cutoff. A newly posted request
+  uses the short request window; an idempotent retry that finds the exact
+  request already present uses the longer review window.
   Raw equivalent: compare `git rev-parse HEAD` with `git ls-remote`, inspect
   `gh pr list`, create with `gh pr create`, re-read, then inspect comments
-  before `gh pr comment --body "@codex review"`, then re-run the gate's run
-  for the head.
+  before `gh pr comment --body "@codex review"`, then re-run a completed gate
+  attempt for the head or leave its behavior-v2 polling run active.
 
   `--expect-branch` binds the caller's intent to the branch the resolved
   project actually has checked out, the way `merge --head` binds the reviewed
@@ -67,9 +80,11 @@ taking this document's word for it.
   request from the driver's comment and its marker grammar; a driver that
   posts `@codex review` and moves on can have the provider review the correct
   head while the gate, evaluated before that review landed, stays red
-  (autumngarage/touchstone#833). `open` therefore asks the gate to re-run for
-  the exact head and confirms the coordinates still hold before reporting
-  success. The invisible marker additionally makes a retry after a timeout
+  (autumngarage/touchstone#833). `open` therefore asks the gate to evaluate the
+  exact head and confirms the coordinates still hold before reporting success.
+  A behavior-v2 gate waits for the evidence itself; the client does not wait
+  for that long-running workflow or start a competing attempt. The invisible
+  marker additionally makes a retry after a timeout
   reuse the existing request instead of posting a second one. Where no pinned
   gate protects the base, `open` verifies the authenticated author's exact
   request comment and coordinates. It names an enforcement gap where one
@@ -91,7 +106,11 @@ taking this document's word for it.
   rules do not declare the central gate, status reports it as unconfigured and
   does not attribute historical same-named runs to policy. If GitHub reports
   no such CheckRun, `reviewGateCheck.present` is false; when a bound workflow run
-  already exists, its current status remains visible. If distinct runs share
+  already exists, its current status remains visible. The adjacent
+  `reviewGateBehaviorContractVersion` is the version verified at the effective
+  exact pinned revision, or `null` when that live binding is not verified; PR
+  clients use this field instead of inferring behavior from local policy bytes.
+  If distinct runs share
   GitHub's newest second-resolution attempt-start timestamp, status reports the
   ambiguity and their run ids instead of inventing an order. Status does not infer a
   pending or passing verdict. It does not parse review requests, recognize a
@@ -129,12 +148,13 @@ taking this document's word for it.
   `--match-head-commit`, and re-reads state and head after the mutation. It
   accepts merged, queued, or auto-merge-enabled only while the reconciled head
   still equals the reviewed head. Where the base branch requires the pinned
-  `review-gate` workflow, it first asks that gate to re-evaluate the evidence
-  present now (a required workflow cannot see a review that lands after the
-  request) and then asks GitHub to merge; auto-merge arms while the run is
-  pending and the queue admits the PR when it passes — the verdict stays
-  GitHub's. Raw equivalent: `gh api -X POST
-  repos/O/R/actions/runs/ID/rerun` on the gate's run for the head, then
+  `review-gate` workflow, it first asks that gate to evaluate the evidence
+  present now and then asks GitHub to merge. A completed attempt is re-run;
+  an active behavior-v2 attempt remains authoritative because it polls the
+  same exact-head evidence. Auto-merge arms while the run is pending and the
+  queue admits the PR when it passes — the verdict stays GitHub's. Raw
+  equivalent: if the run is completed, `gh api -X POST
+  repos/O/R/actions/runs/ID/rerun` on the gate's run for the head; then
   `gh pr merge --squash --match-head-commit SHA`, then re-read `state`,
   `headRefOid`, merge queue, and auto-merge state.
 
@@ -192,9 +212,10 @@ taking this document's word for it.
   checkouts bind it to the commit containing those exact bytes; packaged tools
   bind it to their release tag. A remedy names that same revision so following
   it cannot silently apply a newer source policy than the verdict assessed.
-  `applied` → re-run any declared gate, request the merge — with `--auto` where the
+  `applied` → refresh a completed declared gate or preserve its active
+  behavior-v2 evaluation, then request the merge — with `--auto` where the
   policy carries no queue, since there is nothing to enter and GitHub refuses
-  a plain merge while the re-run is pending.
+  a plain merge while the gate is pending.
   Anything else → refuse with the remedy (apply the consumer policy, then
   close/reopen open PRs), or with `--unguarded` record on the PR — once per
   head, by marker — that an unguarded merge was requested and exactly what
@@ -214,7 +235,11 @@ checks the shape of the rows, so a generator that asserts "validation ran"
 without running it passes the gate with a claim — the failure the rule
 exists to prevent (vesper `ship-pr.sh`, 2026-08-21).
 - `answer` replies to a review finding by its root comment ID, resolves its
-  thread, and asks the pinned gate to re-evaluate the head once; its
+  thread, and asks the pinned gate to evaluate the answer; a completed attempt
+  is re-run, while an active behavior-v2 run observes the answer on its next
+  poll and the client immediately returns control. If full policy status needs
+  unavailable administration reads, `answer` reports that limitation and
+  conservatively refreshes through the behavior-v1 path. Its
   `--all-resolved-check` form proves no thread remains. `--fix-commit SHA`
   appends "Fixed in SHA." only after GitHub resolves the revision and proves it
   is reachable from the captured PR head; the reply records the canonical full

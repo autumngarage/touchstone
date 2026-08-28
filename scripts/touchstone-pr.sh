@@ -9,10 +9,17 @@ RETRY_DELAY="${TOUCHSTONE_RETRY_DELAY:-2}"
 # One initial PR-head read plus ten default 2-second waits covers the observed
 # post-push lag without turning a real mismatch into success.
 PR_HEAD_ATTEMPTS=11
-# A required-workflow run takes a minute or two; waiting for one before
-# re-running it has its own budget, separate from transport retries.
+# Behavior-v1 required workflows finish before the client can re-run them, so
+# that compatibility path has its own wait budget. Behavior v2 review-gate
+# runs own the evidence wait themselves; clients recognize an active run and
+# return control instead of polling the poller.
 GATE_ATTEMPTS="${TOUCHSTONE_GATE_ATTEMPTS:-60}"
 GATE_RETRY_DELAY="${TOUCHSTONE_GATE_RETRY_DELAY:-5}"
+# Behavior v2 guarantees these minimum observation windows from workflow
+# start. Reusing a run only inside the relevant lower bound is conservative:
+# setup and state transitions can move the actual deadline later, never sooner.
+GATE_V2_REQUEST_REUSE_SECONDS=120
+GATE_V2_REVIEW_REUSE_SECONDS=3600
 REQUEST_ATTEMPTS="${TOUCHSTONE_REQUEST_ATTEMPTS:-15}"
 # Check output is operator-facing diagnostic context, not an unbounded log
 # transport. Keep enough of the policy-owned title and summary to make the
@@ -434,6 +441,13 @@ emit_open_result() {
     json_string "$head"
     printf ',"reviewRequest":'
     json_string "$request"
+    if [ -n "$REVIEW_GATE_RUN_ID" ]; then
+      printf ',"reviewGate":{"runId":'
+      json_string "$REVIEW_GATE_RUN_ID"
+      printf ',"action":'
+      json_string "$REVIEW_GATE_ACTION"
+      printf '}'
+    fi
     if [ -n "$BODY_APPLIED" ]; then
       printf ',"body":'
       json_string "$BODY_APPLIED"
@@ -452,9 +466,10 @@ emit_open_result() {
 # re-run the gate's run for this head. The driver can request an evaluation;
 # it cannot set the result. Detection reads the effective ruleset, not the
 # run list, so a run that has not appeared yet is never mistaken for the
-# absence of the gate. A run still in progress is waited for, then re-run:
-# it may have read the evidence before the request landed.
+# absence of the gate. Behavior v1 waits for an active run and refreshes it;
+# behavior v2 leaves its authoritative polling run active.
 REVIEW_GATE_RUN_ID=""
+REVIEW_GATE_ACTION=""
 # Percent-encode one path segment with the base tool surface only: a branch
 # name may carry "/" or other bytes the rules endpoint cannot take raw.
 uri_encode() {
@@ -760,6 +775,7 @@ ENFORCEMENT_REVIEW_GATE_APPLIED=false
 ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY=""
 ENFORCEMENT_REVIEW_GATE_REF=""
 ENFORCEMENT_REVIEW_GATE_REVISIONS="[]"
+ENFORCEMENT_GATE_BEHAVIOR_VERSION=""
 
 record_review_gate_enforcement() {
   local repository_id="$1" ref="$2" revisions="$3"
@@ -946,6 +962,7 @@ read_enforcement() {
   ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY=""
   ENFORCEMENT_REVIEW_GATE_REF=""
   ENFORCEMENT_REVIEW_GATE_REVISIONS="[]"
+  ENFORCEMENT_GATE_BEHAVIOR_VERSION=""
   encoded="$(uri_encode "$base_ref")"
   # The expected pins travel with the tool: a workflow at the right path but
   # from another repository, another ref, or a stale revision is not the
@@ -998,10 +1015,11 @@ read_enforcement() {
             and startswith("/") == false
             and (split("/") | index("..") == null))
           and (.workflowSource.sourceContract.gateBehaviorContractVersion
-            | type == "number" and floor == . and . >= 1)
+            | type == "number" and floor == . and (. == 1 or . == 2))
         ' >/dev/null; then
           fail_operation "$policy_file has an invalid workflow source contract declaration" "Reinstall touchstone; the policy file is corrupt or incomplete."
         fi
+        ENFORCEMENT_GATE_BEHAVIOR_VERSION="$gate_behavior_version"
       fi
       ;;
     workflow-source)
@@ -1246,11 +1264,14 @@ wait_for_new_attempt() {
 
 REQUIRED_WORKFLOW_RUN_ID=""
 REQUIRED_WORKFLOW_RERAN=false
+REQUIRED_WORKFLOW_ALREADY_ACTIVE=false
 rerun_required_workflow() {
-  local number="$1" head="$2" workflow_name="$3" local_workflow_ids="$4"
-  local attempt=1 run_id status prior_attempt run_pages run_row workflow_ids workflow_id_count
+  local number="$1" head="$2" workflow_name="$3" local_workflow_ids="$4" active_reuse_seconds="${5:-0}"
+  local attempt=1 run_id run_node status run_started_at run_started_epoch now prior_attempt run_pages run_row workflow_ids workflow_id_count
+  local run_identity active_run_bound
   REQUIRED_WORKFLOW_RUN_ID=""
   REQUIRED_WORKFLOW_RERAN=false
+  REQUIRED_WORKFLOW_ALREADY_ACTIVE=false
   while :; do
     # Scoped to this pull request: two open PRs can share a head SHA, and
     # re-running the other one's gate would prove nothing about this request.
@@ -1277,11 +1298,51 @@ rerun_required_workflow() {
           | [.[] | select(.run_started_at == $latest_start)] as $latest_runs
           | if ($latest_runs | length) > 1 then
               error("multiple workflow runs share the newest execution timestamp")
-            else $latest_runs[0] | "\(.id) \(.status)"
+            else $latest_runs[0] | "\(.id) \(.status) \(.run_started_at)"
             end
         end')" \
       || fail_operation "GitHub returned malformed $workflow_name run pages for $head" "Retry after GitHub returns complete workflow-run pages."
-    read -r run_id status <<<"$run_row"
+    read -r run_id status run_started_at <<<"$run_row"
+    if [ -n "$run_id" ] && [ "$active_reuse_seconds" -gt 0 ]; then
+      active_run_bound=false
+      case "$status" in
+        queued | requested | waiting | pending | in_progress)
+          run_node="$(printf '%s\n' "$run_pages" | jq -ser --argjson run_id "$run_id" \
+            '[.[].workflow_runs[]? | select(.id == $run_id) | .node_id] | unique | if length == 1 and (.[0] | type) == "string" and (.[0] | length) > 0 then .[0] else error("active run has no unique node id") end')" \
+            || fail_operation "GitHub returned malformed source identity coordinates for $workflow_name run $run_id" "Retry after GitHub returns the run's node id."
+          run_identity="$(jq -cn --argjson run_id "$run_id" --arg run_node "$run_node" \
+            '{runId:$run_id, runNodeId:$run_node}')"
+          read_review_gate_run_binding "$run_identity"
+          [ "$(printf '%s' "$REVIEW_GATE_RUN_BINDING" | jq -r .bound)" != true ] || active_run_bound=true
+          ;;
+        completed) ;;
+        *) fail_operation "$workflow_name run $run_id reported unsupported active status '${status:-empty}'" "Inspect the run in the Actions tab before retrying." ;;
+      esac
+      if [ "$active_run_bound" = true ]; then
+        case "$status" in
+          queued | requested | waiting | pending)
+            REQUIRED_WORKFLOW_RUN_ID="$run_id"
+            REQUIRED_WORKFLOW_ALREADY_ACTIVE=true
+            return 0
+            ;;
+          in_progress)
+            run_started_epoch="$(jq -ner --arg started "$run_started_at" '$started | fromdateiso8601')" 2>/dev/null || run_started_epoch=""
+            now="$(date -u +%s)"
+            case "$run_started_epoch$now" in
+              '' | *[!0-9]*) ;;
+              *)
+                if [ "$now" -ge "$run_started_epoch" ] \
+                  && [ "$now" -lt "$((run_started_epoch + active_reuse_seconds))" ]; then
+                  REQUIRED_WORKFLOW_RUN_ID="$run_id"
+                  REQUIRED_WORKFLOW_ALREADY_ACTIVE=true
+                  return 0
+                fi
+                ;;
+            esac
+            ;;
+        esac
+      fi
+    fi
     if [ -n "$run_id" ] && [ "$status" = completed ]; then
       REQUIRED_WORKFLOW_RUN_ID="$run_id"
       # A re-run keeps the run id and increments run_attempt. GitHub can keep
@@ -1312,11 +1373,28 @@ rerun_required_workflow() {
   done
 }
 
+effective_review_gate_accepts_active() {
+  [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ] \
+    && [ "$ENFORCEMENT_GATE_BEHAVIOR_VERSION" = 2 ]
+}
+
+rerun_declared_review_gate() {
+  local active_reuse_seconds="$3"
+  rerun_required_workflow "$1" "$2" review-gate "$REQUIRED_WORKFLOW_LOCAL_IDS" "$active_reuse_seconds"
+  REVIEW_GATE_RUN_ID="$REQUIRED_WORKFLOW_RUN_ID"
+  if [ "$REQUIRED_WORKFLOW_ALREADY_ACTIVE" = true ]; then
+    REVIEW_GATE_ACTION=already-active
+  else
+    REVIEW_GATE_ACTION=rerun-requested
+  fi
+}
+
 rerun_review_gate() {
+  local active_reuse_seconds=0
   review_gate_required "$3" \
     || fail_operation "the applied policy no longer declares the central review gate" "Re-assess the live base policy before retrying."
-  rerun_required_workflow "$1" "$2" review-gate "$REQUIRED_WORKFLOW_LOCAL_IDS"
-  REVIEW_GATE_RUN_ID="$REQUIRED_WORKFLOW_RUN_ID"
+  effective_review_gate_accepts_active && active_reuse_seconds="$GATE_V2_REVIEW_REUSE_SECONDS"
+  rerun_declared_review_gate "$1" "$2" "$active_reuse_seconds"
 }
 
 verify_live_head_and_base() {
@@ -1368,14 +1446,31 @@ verify_live_body() {
 }
 
 wait_for_request_binding() {
-  local number="$1" head="$2" base_ref="$3" base_sha="$4" request_url="$5" request_author="$6"
-  local comment_id live_comment request_marker
+  local number="$1" head="$2" base_ref="$3" base_sha="$4" request_url="$5" request_author="$6" request_already_existed="${7:-false}"
+  local comment_id live_comment request_marker active_reuse_seconds
   if review_gate_required "$base_ref"; then
     refuse_conflicting_open_pr "$number" "$head" "$base_ref" "$base_sha"
-    rerun_required_workflow "$number" "$head" review-gate "$REQUIRED_WORKFLOW_LOCAL_IDS"
-    REVIEW_GATE_RUN_ID="$REQUIRED_WORKFLOW_RUN_ID"
+    # The package policy expresses intent, but only GitHub's effective pin can
+    # prove the run actually implements behavior v2. A rollout mismatch keeps
+    # the behavior-v1 wait-and-refresh path instead of trusting local bytes.
+    read_enforcement "$base_ref" "$base_sha"
+    active_reuse_seconds=0
+    if effective_review_gate_accepts_active; then
+      if [ "$request_already_existed" = true ]; then
+        active_reuse_seconds="$GATE_V2_REVIEW_REUSE_SECONDS"
+      else
+        active_reuse_seconds="$GATE_V2_REQUEST_REUSE_SECONDS"
+      fi
+    fi
+    rerun_declared_review_gate "$number" "$head" "$active_reuse_seconds"
     verify_live_coordinates "$number" "$head" "$base_ref" "$base_sha"
-    [ "$JSON_MODE" = true ] || printf 'Review gate re-run requested for run %s.\n' "$REVIEW_GATE_RUN_ID" >&2
+    if [ "$JSON_MODE" = false ]; then
+      if [ "$REVIEW_GATE_ACTION" = already-active ]; then
+        printf 'Review gate run %s is already evaluating this head; returning control while it waits for review evidence.\n' "$REVIEW_GATE_RUN_ID" >&2
+      else
+        printf 'Review gate re-run requested for run %s.\n' "$REVIEW_GATE_RUN_ID" >&2
+      fi
+    fi
     return 0
   fi
   comment_id="${request_url##*issuecomment-}"
@@ -1534,7 +1629,7 @@ open_pr() {
     '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
   if [ -n "$existing_request" ]; then
     request_url="$(printf '%s\n' "$existing_request" | sed -n '1p')"
-    wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url" "$request_author"
+    wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url" "$request_author" true
     verify_live_body "$number" "$wanted_body"
     emit_open_result "$state" "$number" "$url" "$local_head" "existing:$request_url" "$branch"
     return 0
@@ -1564,7 +1659,7 @@ $request_marker"
     '$1 == url && $2 == author && index($3, "@codex review") && index($3, marker) { found=1 } END { exit !found }' \
     || fail_operation "review request returned $request_url but was not verified" \
       "Inspect comments before retrying; a rerun will reuse a surviving exact-binding request."
-  wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url" "$request_author"
+  wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url" "$request_author" false
   verify_live_body "$number" "$wanted_body"
   emit_open_result "$state" "$number" "$url" "$local_head" "posted:$request_url" "$branch"
 }
@@ -1874,6 +1969,12 @@ status_pr() {
     printf ',"draft":%s,"autoMerge":' "$draft"
     auto_merge_json
     printf ',"reviewGateCheck":%s' "$REVIEW_GATE_CHECK_JSON"
+    printf ',"reviewGateBehaviorContractVersion":'
+    if [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ] && [ -n "$ENFORCEMENT_GATE_BEHAVIOR_VERSION" ]; then
+      printf '%s' "$ENFORCEMENT_GATE_BEHAVIOR_VERSION"
+    else
+      printf 'null'
+    fi
     printf ',"enforcement":'
     enforcement_json
     policy_binding_json_fields
@@ -1919,7 +2020,13 @@ merge_pr() {
     if [ "$ENFORCEMENT_STATUS" = applied ]; then
       if [ "$ENFORCEMENT_EXPECTS_REVIEW_GATE" = true ]; then
         rerun_review_gate "$number" "$head" "$base"
-        [ "$JSON_MODE" = true ] || printf 'Review gate re-run requested for run %s; GitHub merges when it passes.\n' "$REVIEW_GATE_RUN_ID" >&2
+        if [ "$JSON_MODE" = false ]; then
+          if [ "$REVIEW_GATE_ACTION" = already-active ]; then
+            printf 'Review gate run %s is already evaluating this head; GitHub merges when it passes.\n' "$REVIEW_GATE_RUN_ID" >&2
+          else
+            printf 'Review gate re-run requested for run %s; GitHub merges when it passes.\n' "$REVIEW_GATE_RUN_ID" >&2
+          fi
+        fi
       elif [ "$JSON_MODE" != true ]; then
         printf 'Workflow-source policy applied; GitHub merges when its required source check passes.\n' >&2
       fi
@@ -1992,6 +2099,13 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
     json_string "$EXPECTED_HEAD"
     if [ -n "$ENFORCEMENT_POLICY_REVISION" ]; then
       policy_binding_json_fields
+    fi
+    if [ -n "$REVIEW_GATE_RUN_ID" ]; then
+      printf ',"reviewGate":{"runId":'
+      json_string "$REVIEW_GATE_RUN_ID"
+      printf ',"action":'
+      json_string "$REVIEW_GATE_ACTION"
+      printf '}'
     fi
     printf '}\n'
   else

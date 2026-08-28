@@ -30,11 +30,13 @@ set -euo pipefail
 
 GRAPHQL_ATTEMPTS=3
 GRAPHQL_RETRY_DELAY="${TOUCHSTONE_GRAPHQL_RETRY_DELAY:-2}"
-# A review-gate run takes a minute or two; waiting for one to finish so the
-# next evaluation includes this answer needs its own budget, not the short
-# GraphQL transport retry.
+# Behavior-v1 gates must finish before they can be refreshed. Behavior v2
+# gates own the evidence wait; the answer client returns immediately when the
+# exact run is already active instead of polling the poller.
 GATE_ATTEMPTS="${TOUCHSTONE_GATE_ATTEMPTS:-60}"
 GATE_RETRY_DELAY="${TOUCHSTONE_GATE_RETRY_DELAY:-5}"
+GATE_V2_REVIEW_REUSE_SECONDS=3600
+TOOL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 usage() {
   sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'
@@ -260,8 +262,9 @@ VERIFY="$(graphql_with_retry \
 # review request of the same head (PR #755 review, round 8).
 # An answer is evidence the pinned review-gate has not seen. Where the base
 # branch requires that workflow, ask GitHub to re-run its run for this head;
-# a run still in progress is waited for first, because it may have read the
-# evidence before this answer. Where the repository still runs the
+# a behavior-v1 run still in progress is waited for first, because it may have
+# read the evidence before this answer. A behavior-v2 run owns that wait and
+# will observe the answer on its next poll. Where the repository still runs the
 # status-publishing review-gate, its own event handlers pick the answer up.
 # The head must not have moved since capture: the hint below and the gate
 # re-run are bound to the head this answer addressed, never a later push.
@@ -269,6 +272,24 @@ LIVE_HEAD="$(gh_read pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" \
   || fail "could not re-read the PR head after answering: $LIVE_HEAD"
 [ "$LIVE_HEAD" = "$HEAD_SHA" ] \
   || fail "PR head moved from $HEAD_SHA to $LIVE_HEAD while answering; the reply and resolution stand, but request review for the new head before merging."
+# Ask the shared PR observer which behavior GitHub's effective, exact pinned
+# workflow implements. Local policy bytes alone are rollout intent and cannot
+# authorize the behavior-v2 early return.
+GATE_BEHAVIOR_VERSION=1
+BOUND_GATE_RUN_ID=""
+if PR_STATUS="$(bash "$TOOL_ROOT/scripts/touchstone-pr.sh" status "$PR_NUMBER" --json)"; then
+  GATE_BEHAVIOR_VERSION="$(printf '%s' "$PR_STATUS" | jq -er '.reviewGateBehaviorContractVersion // 1')" \
+    || fail "effective review-gate status reported an invalid behavior contract."
+  if [ "$GATE_BEHAVIOR_VERSION" = 2 ]; then
+    BOUND_GATE_RUN_ID="$(printf '%s' "$PR_STATUS" | jq -r \
+      '.reviewGateCheck | select(.present == true and ((.unbound // false) | not)) | .workflowRunId // empty')"
+    if [ -z "$BOUND_GATE_RUN_ID" ]; then
+      echo "WARNING: behavior v2 has no verified policy-bound review-gate run; conservatively refreshing through the behavior-v1 path." >&2
+    fi
+  fi
+else
+  echo "WARNING: could not verify behavior v2; conservatively refreshing the gate through the behavior-v1 path." >&2
+fi
 # Percent-encode one path segment with the base tool surface only: a branch
 # name may carry "/" or other bytes the rules endpoint cannot take raw.
 uri_encode() {
@@ -307,11 +328,35 @@ if [ "$GATE_REQUIRED" = true ]; then
             | [.[] | select(.run_started_at == $latest_start)] as $latest_runs
             | if ($latest_runs | length) > 1 then
                 error("multiple workflow runs share the newest execution timestamp")
-              else $latest_runs[0] | "\(.id) \(.status)"
+              else $latest_runs[0] | "\(.id) \(.status) \(.run_started_at)"
               end
           end')" \
       || fail "GitHub returned malformed or ambiguous review-gate run data"
-    read -r GATE_RUN GATE_STATUS <<<"$GATE_ROW"
+    read -r GATE_RUN GATE_STATUS GATE_STARTED_AT <<<"$GATE_ROW"
+    if [ -n "$GATE_RUN" ] && [ "$GATE_BEHAVIOR_VERSION" = 2 ] && [ "$GATE_RUN" = "$BOUND_GATE_RUN_ID" ]; then
+      case "$GATE_STATUS" in
+        queued | requested | waiting | pending)
+          echo "==> Review gate run $GATE_RUN is already evaluating this head; returning control while it waits for review evidence."
+          break
+          ;;
+        in_progress)
+          GATE_STARTED_EPOCH="$(jq -ner --arg started "$GATE_STARTED_AT" '$started | fromdateiso8601')" 2>/dev/null || GATE_STARTED_EPOCH=""
+          GATE_NOW="$(date -u +%s)"
+          case "$GATE_STARTED_EPOCH$GATE_NOW" in
+            '' | *[!0-9]*) ;;
+            *)
+              if [ "$GATE_NOW" -ge "$GATE_STARTED_EPOCH" ] \
+                && [ "$GATE_NOW" -lt "$((GATE_STARTED_EPOCH + GATE_V2_REVIEW_REUSE_SECONDS))" ]; then
+                echo "==> Review gate run $GATE_RUN is already evaluating this head; returning control while it waits for review evidence."
+                break
+              fi
+              ;;
+          esac
+          ;;
+        completed) ;;
+        *) fail "review-gate run $GATE_RUN reported unsupported active status '${GATE_STATUS:-empty}'; inspect it in the Actions tab." ;;
+      esac
+    fi
     if [ -n "$GATE_RUN" ] && [ "$GATE_STATUS" = completed ]; then
       gh api -X POST "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$GATE_RUN/rerun" >/dev/null \
         || fail "could not re-run review-gate run $GATE_RUN; re-run it from the Actions tab."

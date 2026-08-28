@@ -27,7 +27,7 @@ cat >"$TMP_DIR/base.json" <<EOF2
 EOF2
 run_case() {
   local label="$1" filter="$2" expected="$3" reason="${4:-}" verdict
-  jq "$filter" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
+  jq ".priorIssueComments = .issueComments | .priorReviewComments = .reviewComments | ($filter)" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
   verdict="$(jq -f "$EVALUATOR" "$TMP_DIR/case.json")" || {
     fail "$label: evaluator crashed"
     return
@@ -46,7 +46,7 @@ run_state_case() {
   local label="$1" filter="$2" expected_state="$3" verdict
   local expected_conclusion="failure"
   [ "$expected_state" = "success" ] && expected_conclusion="success"
-  jq "$filter" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
+  jq ".priorIssueComments = .issueComments | .priorReviewComments = .reviewComments | ($filter)" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
   verdict="$(jq -f "$EVALUATOR" "$TMP_DIR/case.json")" || {
     fail "$label: evaluator crashed"
     return
@@ -63,7 +63,7 @@ run_state_case() {
 }
 run_rejected_count_case() {
   local label="$1" filter="$2" expected="$3" expected_state="$4" verdict
-  jq "$filter" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
+  jq ".priorIssueComments = .issueComments | .priorReviewComments = .reviewComments | ($filter)" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
   verdict="$(jq -f "$EVALUATOR" "$TMP_DIR/case.json")" || {
     fail "$label: evaluator crashed"
     return
@@ -89,6 +89,65 @@ run_state_case "a provisional quota notice keeps waiting for review" \
   '.issueComments = [.issueComments[0], {"id":101,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Security review usage limit reached"}]' waiting-review
 run_state_case "a current-head quota notice still keeps waiting for review" \
   '.issueComments = [.issueComments[0], {"id":101,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Security review quota reached","resolved_review_sha":"'"$HEAD_SHA"'"}]' waiting-review
+run_state_case "a cutoff before the request observes no request" \
+  '.evidenceCutoffAt = "2026-08-20T10:04:59Z"' waiting-request
+run_state_case "a cutoff after the request but before review waits for review" \
+  '.evidenceCutoffAt = "2026-08-20T10:10:00Z"' waiting-review
+run_state_case "evidence exactly at the cutoff is accepted" \
+  '.evidenceCutoffAt = "2026-08-20T10:20:00Z"' success
+run_state_case "a clean result edited after the cutoff is restored from the snapshot" \
+  '.evidenceCutoffAt = "2026-08-20T10:20:00Z" | .issueComments[1].updated_at = "2026-08-20T10:20:01Z"' success
+run_state_case "a later result finding cleared after the cutoff remains blocking" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .priorIssueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Codex Review: P1 result finding\n\n**Reviewed commit:** `1111111111`","resolved_review_sha":"1111111111111111111111111111111111111111"}]
+  | .issueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"unrelated edited body"}]' failure
+run_state_case "a later request edited after the cutoff supersedes older review evidence" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .priorIssueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","author_association":"NONE","user":{"login":"henry"},"body":"@codex review\n\n<!-- touchstone:pr-open head=1111111111111111111111111111111111111111 base=main base_sha=2222222222222222222222222222222222222222 -->"}]
+  | .issueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","updated_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"@codex review\n\n<!-- touchstone:pr-open head=1111111111111111111111111111111111111111 base=main base_sha=2222222222222222222222222222222222222222 -->"}]' waiting-review
+run_state_case "an edited quota notice remains provisional at the cutoff" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .issueComments = [.issueComments[0], {"id":102,"created_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Security review quota reached"}]
+  | .priorIssueComments = [.issueComments[0], (.issueComments[1] | del(.updated_at))]' waiting-review
+run_state_case "an edited stale-head result remains diagnostic at the cutoff" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .priorIssueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Codex Review: stale edited result\n\n**Reviewed commit:** `3333333333`","resolved_review_sha":"3333333333333333333333333333333333333333"}]
+  | .issueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Codex Review: stale edited result\n\n**Reviewed commit:** `3333333333`","resolved_review_sha":"3333333333333333333333333333333333333333"}]' success
+run_state_case "a post-cutoff mutation without a snapshot fails closed" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .issueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"cleared body"}]' failure
+run_state_case "a qualifying comment deleted before the cutoff cannot be restored" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .issueComments = [.issueComments[0]]' failure
+run_state_case "a cutoff without a prior issue-comment snapshot fails closed" \
+  '.evidenceCutoffAt = "2026-08-20T10:25:00Z" | del(.priorIssueComments)' failure
+run_state_case "a cutoff without a prior review-comment snapshot fails closed" \
+  '.evidenceCutoffAt = "2026-08-20T10:25:00Z" | del(.priorReviewComments)' failure
+run_state_case "an invalid evidence cutoff fails closed" \
+  '.evidenceCutoffAt = "2026-08-20 10:20:00"' failure
+run_state_case "a non-string evidence cutoff fails closed" \
+  '.evidenceCutoffAt = false' failure
+run_state_case "an impossible evidence cutoff fails closed" \
+  '.evidenceCutoffAt = "2026-99-99T99:99:99Z"' failure
+run_state_case "a normalized calendar-invalid cutoff fails closed" \
+  '.evidenceCutoffAt = "2026-09-31T00:00:00Z"' failure
+run_state_case "a pre-cutoff finding edited later remains blocking evidence" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .issueComments = [.issueComments[0]]
+  | .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 edited finding"}]' failure
+run_state_case "a pre-cutoff inline finding deleted later cannot disappear" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .priorReviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"}]
+  | .reviewComments = []' failure
+run_state_case "a pre-cutoff formal finding cleared later remains blocking evidence" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .issueComments = [.issueComments[0]]
+  | .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:30:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]' failure
+run_state_case "a pre-cutoff formal finding dismissed later remains blocking evidence" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .reviews = [{"id":7,"body":"P1 formal finding","state":"DISMISSED","submitted_at":"2026-08-20T10:21:00Z","updated_at":"2026-08-20T10:30:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]' failure
 run_state_case "a quota-related review finding remains terminal evidence" \
   '.issueComments[1].body = "Codex Review: [P1] Fix quota accounting\n\n**Reviewed commit:** `1111111111`"' failure
 run_state_case "invalid evidence never becomes a waiting state" \
