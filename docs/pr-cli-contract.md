@@ -158,7 +158,10 @@ taking this document's word for it.
   review, or inline review comment was created or edited at or after that gate
   completed; this prevents same-head feedback from arriving behind the
   verdict. Review is requested by `open` and refreshed by `answer`; `merge`
-  never starts or waits for review. Raw equivalent: verify the policy-bound
+  never starts or waits for review. A review-gated policy without a merge
+  queue is reported as partial and requires the explicit audited `--unguarded`
+  path: only the merge group's fresh gate run makes review evidence atomic with
+  admission. Raw equivalent: verify the policy-bound
   gate is successful and fresh for the exact head, then `gh pr merge --squash
   --match-head-commit SHA`, then re-read `state`, `headRefOid`, merge queue,
   and auto-merge state.

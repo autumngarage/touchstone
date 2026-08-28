@@ -487,8 +487,8 @@ case "$1 ${2:-}" in
           "@codex review\\n\\n<!-- touchstone:pr-open head=$saved_head base=$saved_base base_sha=$saved_base_sha -->"
       fi
     elif has '/reviews?per_page=100' "$@"; then
-      if has 'submitted_at // empty' "$@"; then
-        if [ "${GH_MODE:-ok}" = status_gate_stale_review ]; then
+      if has 'submitted_at' "$@"; then
+        if [ "${GH_MODE:-ok}" = status_gate_stale_review ] && has 'updated_at // .submitted_at' "$@"; then
           printf '%s\n' '2026-08-27T17:35:00Z'
         else
           printf '%s\n' '2026-08-27T17:06:00Z'
@@ -1857,8 +1857,8 @@ Closes #42'
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-never-runs" "$TMP/state/actions-disabled-after-preflight" "$TMP/state/actions-preflight-seen" "$TMP/state/review-request"
   touch "$TMP/state/review-gate"
   # A consumer derived --no-queue expects no queue: the tool consults the
-  # repository's own shipped policy, reports applied without a queue rule,
-  # and merges by arming auto-merge (there is no queue to enter).
+  # repository's own shipped policy, reports the missing atomic queue boundary,
+  # and requires an audited override before arming auto-merge.
   mkdir -p "$TMP/tool2/policy/github/consumers" "$TMP/tool2/policy/github/workflow-sources"
   cp -R "$ROOT/bin" "$ROOT/scripts" "$TMP/tool2/"
   cp "$ROOT/VERSION" "$TMP/tool2/VERSION"
@@ -1874,21 +1874,28 @@ Closes #42'
   set -e
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"policy":"policy/github/consumers/current.json"'
-  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  assert_has "$TMP/out" '"enforcement":{"status":"partial","missing":["merge queue"]}'
   : >"$GH_CALLS"
   rm -f "$TMP/state/merged" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
   set +e
   GH_MODE=auto_merge bash "$TMP/tool2/bin/touchstone" pr merge 7 --head "$HEAD_SHA" --project "$TMP/project" --json >"$TMP/out" 2>&1
   RUN_RC=$?
   set -e
+  assert_rc "$RUN_RC" 2
+  assert_not_has "$GH_CALLS" 'pr merge'
+  assert_has "$TMP/out" 'merge queue'
+  set +e
+  GH_MODE=auto_merge bash "$TMP/tool2/bin/touchstone" pr merge 7 --head "$HEAD_SHA" --project "$TMP/project" --unguarded --json >"$TMP/out" 2>&1
+  RUN_RC=$?
+  set -e
   assert_rc "$RUN_RC" 0
-  grep -q '^pr merge.*--auto' "$GH_CALLS" || fail "a queue-less consumer merge did not arm auto-merge: $(grep '^pr merge' "$GH_CALLS")"
+  grep -q '^pr merge.*--auto' "$GH_CALLS" || fail "an explicitly unguarded queue-less merge did not arm auto-merge: $(grep '^pr merge' "$GH_CALLS")"
   assert_has "$TMP/out" '"status":"auto-merge-enabled"'
   touch "$TMP/state/auto-merge-off"
   set +e
   bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
   set -e
-  assert_has "$TMP/out" '"missing":["auto-merge setting"]'
+  assert_has "$TMP/out" '"missing":["auto-merge setting","merge queue"]'
   rm -f "$TMP/state/auto-merge-off" "$TMP/state/no-queue-rule"
   run_pr "$TMP/out" status 7 --json
   assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
@@ -1903,10 +1910,10 @@ Closes #42'
     "$ROOT/policy/github/consumers/convoy.json" >"$TMP/tool2/policy/github/consumers/current.json"
   touch "$TMP/state/review-gate" "$TMP/state/no-queue-rule" "$TMP/state/consumer-status"
   bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
-  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  assert_has "$TMP/out" '"enforcement":{"status":"partial","missing":["merge queue"]}'
   rm -f "$TMP/state/consumer-status"
   bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
-  assert_has "$TMP/out" '"enforcement":{"status":"partial","missing":["convoy/delivery-protocol status"]}'
+  assert_has "$TMP/out" '"enforcement":{"status":"partial","missing":["convoy/delivery-protocol status","merge queue"]}'
   rm -f "$TMP/state/no-queue-rule" "$TMP/state/review-gate"
 
   echo "==> workflow-source policy uses its required status without inventing a review gate (AUT-531)"

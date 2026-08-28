@@ -769,7 +769,7 @@ ENFORCEMENT_CANDIDATE_REVISION=""
 ENFORCEMENT_CANDIDATE_SOURCE=""
 ENFORCEMENT_CANDIDATE_ROLE=""
 ENFORCEMENT_POLICY_TYPE=""
-ENFORCEMENT_EXPECTS_QUEUE=true
+ENFORCEMENT_QUEUE_APPLIED=false
 ENFORCEMENT_EXPECTS_REVIEW_GATE=true
 ENFORCEMENT_REVIEW_GATE_APPLIED=false
 ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY=""
@@ -971,7 +971,7 @@ read_enforcement() {
   # policy or a private consumer derived --no-queue), else the canonical one.
   # Required gates/statuses must be complete, or the read fails rather than
   # silently expecting nothing.
-  local expect_queue
+  local expect_queue expects_review_gate
   if [ "$REPO" = "autumngarage/touchstone" ] && [ -n "$policy_revision" ]; then
     select_enforcement_policy "$base_ref" true
   else
@@ -1029,10 +1029,15 @@ read_enforcement() {
       ;;
     *) fail_operation "$policy_file has unsupported policy type '$policy_type'" "Reinstall touchstone." ;;
   esac
-  expect_queue="$(enforcement_policy_jq -r 'if .managedRepositoryRuleset == null then "false" else "true" end')"
+  expects_review_gate="$(printf '%s' "$expected" | jq 'any(.path == ".github/workflows/review-gate.yml")')"
+  # A pull-request gate can be green before later same-head feedback arrives.
+  # Only merge-group re-evaluation makes the final review verdict atomic with
+  # admission, so a review-gated policy without a queue is an enforcement gap
+  # even when its checked-in declaration intentionally omitted the companion.
+  expect_queue="$(enforcement_policy_jq -r --argjson review_gate "$expects_review_gate" '
+    if $review_gate or .managedRepositoryRuleset != null then "true" else "false" end')"
   ENFORCEMENT_POLICY_TYPE="$policy_type"
-  ENFORCEMENT_EXPECTS_QUEUE="$expect_queue"
-  ENFORCEMENT_EXPECTS_REVIEW_GATE="$(printf '%s' "$expected" | jq 'any(.path == ".github/workflows/review-gate.yml")')"
+  ENFORCEMENT_EXPECTS_REVIEW_GATE="$expects_review_gate"
   # Pull requests land through auto-merge in both policy shapes (the queue
   # admits through it; without a queue `merge` arms it), so a repository with
   # it disabled is not fully enforced either.
@@ -1044,6 +1049,8 @@ read_enforcement() {
   # array per page, merged here before evaluation.
   read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/rules/branches/$encoded?per_page=100" \
     || fail_operation "could not read the effective rules for $base_ref: $READ_OUTPUT" "Retry after GitHub recovers."
+  ENFORCEMENT_QUEUE_APPLIED="$(printf '%s' "$READ_OUTPUT" | jq -s 'add // [] | any(.[]; .type == "merge_queue")')" \
+    || fail_operation "could not read the effective merge-queue rule for $base_ref" "Retry after GitHub returns complete effective rules."
   # jq classifies each gate against the policy's pin and names the rules that
   # are simply absent; only a gate present at some *other* revision of the
   # same source and ref needs GitHub asked about lineage, so the rules
@@ -1953,7 +1960,7 @@ read_review_surface_latest_at() {
   issue_comment_times="$READ_OUTPUT"
   read_with_retry gh api --paginate --hostname "$REPO_HOST" \
     "repos/$REPO/pulls/$number/reviews?per_page=100" \
-    --jq '.[] | (.submitted_at // empty)' \
+    --jq '.[] | (.updated_at // .submitted_at // empty)' \
     || fail_operation "could not read formal review timestamps: $READ_OUTPUT" "Retry after GitHub recovers."
   review_times="$READ_OUTPUT"
   read_with_retry gh api --paginate --hostname "$REPO_HOST" \
@@ -2133,7 +2140,7 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
     # merge while required checks are still running, so arm auto-merge and
     # let it land when they pass (the state `auto-merge-enabled` below).
     merge_auto=()
-    [ "$ENFORCEMENT_EXPECTS_QUEUE" = true ] || merge_auto=(--auto)
+    [ "$ENFORCEMENT_QUEUE_APPLIED" = true ] || merge_auto=(--auto)
     merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash ${merge_auto[@]+"${merge_auto[@]}"} \
       --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
     merge_diagnostic="$(clean_diagnostic "$merge_output")"

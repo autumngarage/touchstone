@@ -195,6 +195,9 @@ conversation resolution separately requires every inline thread closed.
 `touchstone pr merge` additionally refuses a green gate when the review surface
 changed at or after that gate completed; refresh through `open` or `answer`
 instead of treating a stale same-head verdict as current.
+The merge queue is the atomic boundary: its merge-group run re-evaluates the
+complete surface. A review-gated policy without that run is an enforcement gap,
+not a guarded auto-merge path.
 
 ## Answering findings
 
