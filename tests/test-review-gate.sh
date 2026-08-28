@@ -27,7 +27,7 @@ cat >"$TMP_DIR/base.json" <<EOF2
 EOF2
 run_case() {
   local label="$1" filter="$2" expected="$3" reason="${4:-}" verdict
-  jq "$filter" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
+  jq ".priorIssueComments = .issueComments | ($filter)" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
   verdict="$(jq -f "$EVALUATOR" "$TMP_DIR/case.json")" || {
     fail "$label: evaluator crashed"
     return
@@ -46,7 +46,7 @@ run_state_case() {
   local label="$1" filter="$2" expected_state="$3" verdict
   local expected_conclusion="failure"
   [ "$expected_state" = "success" ] && expected_conclusion="success"
-  jq "$filter" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
+  jq ".priorIssueComments = .issueComments | ($filter)" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
   verdict="$(jq -f "$EVALUATOR" "$TMP_DIR/case.json")" || {
     fail "$label: evaluator crashed"
     return
@@ -63,7 +63,7 @@ run_state_case() {
 }
 run_rejected_count_case() {
   local label="$1" filter="$2" expected="$3" expected_state="$4" verdict
-  jq "$filter" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
+  jq ".priorIssueComments = .issueComments | ($filter)" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
   verdict="$(jq -f "$EVALUATOR" "$TMP_DIR/case.json")" || {
     fail "$label: evaluator crashed"
     return
@@ -95,17 +95,29 @@ run_state_case "a cutoff after the request but before review waits for review" \
   '.evidenceCutoffAt = "2026-08-20T10:10:00Z"' waiting-review
 run_state_case "evidence exactly at the cutoff is accepted" \
   '.evidenceCutoffAt = "2026-08-20T10:20:00Z"' success
-run_state_case "a result edited after the cutoff remains blocking evidence" \
-  '.evidenceCutoffAt = "2026-08-20T10:20:00Z" | .issueComments[1].updated_at = "2026-08-20T10:20:01Z"' failure
-run_state_case "a later edited result cannot hide behind an earlier clean result" '
+run_state_case "a clean result edited after the cutoff is restored from the snapshot" \
+  '.evidenceCutoffAt = "2026-08-20T10:20:00Z" | .issueComments[1].updated_at = "2026-08-20T10:20:01Z"' success
+run_state_case "a later result finding cleared after the cutoff remains blocking" '
   .evidenceCutoffAt = "2026-08-20T10:25:00Z"
-  | .issueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Codex Review: P1 edited result finding\n\n**Reviewed commit:** `1111111111`","resolved_review_sha":"1111111111111111111111111111111111111111"}]' failure
+  | .priorIssueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Codex Review: P1 result finding\n\n**Reviewed commit:** `1111111111`","resolved_review_sha":"1111111111111111111111111111111111111111"}]
+  | .issueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"unrelated edited body"}]' failure
+run_state_case "a later request edited after the cutoff supersedes older review evidence" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .priorIssueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","author_association":"NONE","user":{"login":"henry"},"body":"@codex review\n\n<!-- touchstone:pr-open head=1111111111111111111111111111111111111111 base=main base_sha=2222222222222222222222222222222222222222 -->"}]
+  | .issueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","updated_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"@codex review\n\n<!-- touchstone:pr-open head=1111111111111111111111111111111111111111 base=main base_sha=2222222222222222222222222222222222222222 -->"}]' waiting-review
 run_state_case "an edited quota notice remains provisional at the cutoff" '
   .evidenceCutoffAt = "2026-08-20T10:25:00Z"
-  | .issueComments = [.issueComments[0], {"id":102,"created_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Security review quota reached"}]' waiting-review
+  | .issueComments = [.issueComments[0], {"id":102,"created_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Security review quota reached"}]
+  | .priorIssueComments = [.issueComments[0], (.issueComments[1] | del(.updated_at))]' waiting-review
 run_state_case "an edited stale-head result remains diagnostic at the cutoff" '
   .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .priorIssueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Codex Review: stale edited result\n\n**Reviewed commit:** `3333333333`","resolved_review_sha":"3333333333333333333333333333333333333333"}]
   | .issueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"Codex Review: stale edited result\n\n**Reviewed commit:** `3333333333`","resolved_review_sha":"3333333333333333333333333333333333333333"}]' success
+run_state_case "a post-cutoff mutation without a snapshot fails closed" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .issueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"cleared body"}]' failure
+run_state_case "a cutoff without a prior issue-comment snapshot fails closed" \
+  '.evidenceCutoffAt = "2026-08-20T10:25:00Z" | del(.priorIssueComments)' failure
 run_state_case "an invalid evidence cutoff fails closed" \
   '.evidenceCutoffAt = "2026-08-20 10:20:00"' failure
 run_state_case "a non-string evidence cutoff fails closed" \

@@ -79,10 +79,37 @@ def observed_at:
        and ($raw_cutoff | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
        and (try (($raw_cutoff | fromdateiso8601 | todateiso8601) == $raw_cutoff) catch false))) as $cutoff_valid
 | (if $cutoff_valid then $raw_cutoff else "0000-00-00T00:00:00Z" end) as $cutoff
+| (($input.issueComments // []) | if type == "array" then . else [] end) as $current_issue_comments
+| (($input.priorIssueComments // []) | if type == "array" then . else [] end) as $prior_issue_comments
 | ($input
-   # Preserve comments that existed at the cutoff. Request/result/answer uses
-   # below still require their mutable body to have settled by the cutoff.
-   | .issueComments = [(.issueComments // [])[] | select($cutoff == null or (.created_at // "") <= $cutoff)]
+   # GitHub's issue-comment API exposes only the current mutable body. At a
+   # cutoff, reconstruct every post-cutoff edit from the workflow's last
+   # complete pre-cutoff snapshot and retain comments deleted after it. If no
+   # prior version exists, keep an explicit uncertainty marker so the result
+   # fails closed instead of silently accepting older evidence.
+   | .issueComments = ([
+       $current_issue_comments[]?
+       | select($cutoff == null or (.created_at // "") <= $cutoff)
+       | . as $current
+       | if $cutoff != null and observed_at > $cutoff then
+           ([
+              $prior_issue_comments[]?
+              | select((.id | tostring) == ($current.id | tostring))
+              | select((.created_at // "") <= $cutoff and observed_at <= $cutoff)
+            ] | sort_by(observed_at) | last) as $prior
+           | if $prior == null
+             then ($current | ._touchstoneCutoffUncertain = true)
+             else $prior
+             end
+         else $current
+         end
+     ] + [
+       $prior_issue_comments[]?
+       | . as $prior
+       | select($cutoff != null)
+       | select((.created_at // "") <= $cutoff and observed_at <= $cutoff)
+       | select(any($current_issue_comments[]?; (.id | tostring) == ($prior.id | tostring)) | not)
+     ] | unique_by(.id))
    # A review or inline finding that existed by the cutoff remains evidence
    # even if GitHub reports a later edit. Its post-cutoff updated_at then keeps
    # answers from laundering the mutation. Removing it would hide a finding.
@@ -191,17 +218,6 @@ def observed_at:
     | select($cutoff == null or observed_at <= $cutoff)
   ] as $result_comments
 | [
-    $result_candidates[]
-    | select(binds_head($head))
-    | select($cutoff != null and (.created_at // "") <= $cutoff and observed_at > $cutoff)
-    | {
-        kind: "trusted result comment changed after evidence cutoff",
-        id: .id,
-        at: observed_at,
-        answered: false
-      }
-  ] as $cutoff_mutated_result_comments
-| [
     $review_candidates[]
     | select(
         ((.commit_id // "" | ascii_downcase) != ($head | ascii_downcase))
@@ -299,11 +315,17 @@ def observed_at:
         )
       }
   ] as $comment_body_findings
-| ($review_body_findings + $comment_body_findings + $cutoff_mutated_reviews + $cutoff_mutated_result_comments) as $body_findings
+| ($review_body_findings + $comment_body_findings + $cutoff_mutated_reviews) as $body_findings
 | [
     if ($root.contractVersion // 0) != 3 then "unsupported or missing evidence contract version" else empty end,
     if ($root.complete // false) != true then "GitHub evidence collection was incomplete" else empty end,
     if $cutoff_valid | not then "evidence cutoff is not a UTC whole-second timestamp" else empty end,
+    if $cutoff != null and (($input | has("priorIssueComments")) | not)
+      then "evidence cutoff requires a prior issue-comment snapshot" else empty end,
+    if $cutoff != null and (($input.priorIssueComments | type) != "array")
+      then "prior issue-comment snapshot is not an array" else empty end,
+    if any($root.issueComments[]?; ._touchstoneCutoffUncertain == true)
+      then "issue-comment state at the evidence cutoff cannot be reconstructed" else empty end,
     if ($root.authorPermissions | type) != "object"
       or any($driver_authors[]; . as $author | ($permissions | has($author) | not))
       then "effective permission evidence is missing for one or more driver comment authors" else empty end,
