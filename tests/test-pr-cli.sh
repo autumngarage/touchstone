@@ -323,6 +323,7 @@ case "$1 ${2:-}" in
       run_id="${run_node#RUN_}"
       source_revision="$GH_POLICY_SHA"
       [ "${GH_MODE:-ok}" != status_gate_historical ] || source_revision="$GH_AHEAD_SHA"
+      [ ! -f "$GH_STATE/gate-run-unbound" ] || source_revision="$GH_AHEAD_SHA"
       jq -cn --argjson id "$run_id" --arg revision "$source_revision" '{data:{node:{databaseId:$id,file:{path:".github/workflows/review-gate.yml",repositoryName:"autumngarage/touchstone-workflows",repositoryFileUrl:("https://github.com/autumngarage/touchstone-workflows/blob/" + $revision + "/.github/workflows/review-gate.yml")}}}}'
     elif has 'resolveReviewThread' "$@"; then
       printf '%s\n' true
@@ -1002,6 +1003,15 @@ EOF
   [ "$(grep -c 'actions/runs?head_sha=' "$GH_CALLS")" -le 2 ] \
     || fail "behavior v2 open repeatedly polled an active evaluation instead of returning control"
   rm -f "$TMP/state/gate-in-progress" "$TMP/state/gate-reruns" "$TMP/state/gate-fresh-active"
+  touch "$TMP/state/gate-fresh-active" "$TMP/state/gate-run-unbound"
+  echo 3 >"$TMP/state/gate-in-progress"
+  run_pr_v2 "$TMP/out" open --title 'Gate v2 rollout' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"rerun-requested"}'
+  assert_not_has "$TMP/out" '"action":"already-active"'
+  grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
+    || fail "behavior v2 open reused an active run from an unbound source revision"
+  rm -f "$TMP/state/gate-in-progress" "$TMP/state/gate-reruns" "$TMP/state/gate-fresh-active" "$TMP/state/gate-run-unbound"
   touch "$TMP/state/gate-review-window-active"
   echo 30 >"$TMP/state/gate-in-progress"
   run_pr_v2 "$TMP/out" open --title 'Gate v2 existing request' --body-file "$TMP/body" --json
@@ -2066,7 +2076,9 @@ set -euo pipefail
 version=null
 [ ! -f "$GH_STATE/status-fails" ] || exit 1
 [ ! -f "$GH_STATE/effective-behavior-v2" ] || version=2
-printf '{"schema":"touchstone.pr/v1","operation":"status","reviewGateBehaviorContractVersion":%s}\n' "$version"
+gate_check='{"present":true,"workflowRunId":77}'
+[ ! -f "$GH_STATE/status-run-unbound" ] || gate_check='{"present":false,"unbound":true,"workflowRunId":77}'
+printf '{"schema":"touchstone.pr/v1","operation":"status","reviewGateBehaviorContractVersion":%s,"reviewGateCheck":%s}\n' "$version" "$gate_check"
 STATUS_STUB
 
   printf 'Fixed.\n' >"$RR/body"
@@ -2171,6 +2183,15 @@ STATUS_STUB
   [ "$(cat "$GH_STATE/gate-in-progress")" = 29 ] \
     || fail "behavior v2 answer polled an active evaluation instead of returning control"
   rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/gate-fresh-active"
+  touch "$GH_STATE/gate-fresh-active" "$GH_STATE/status-run-unbound"
+  echo 3 >"$GH_STATE/gate-in-progress"
+  run_v2 7 --comment-id 51 --body-file "$RR/body"
+  [ "$RUN_RC" -eq 0 ] || fail "behavior v2 answer failed to refresh an unbound gate (rc=$RUN_RC)"
+  grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null \
+    || fail "behavior v2 answer reused an active run from an unbound source revision"
+  grep -q 'no verified policy-bound review-gate run' "$RR/out" \
+    || fail "behavior v2 answer did not explain its conservative unbound-run refresh"
+  rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/gate-fresh-active" "$GH_STATE/status-run-unbound"
   run_v2 7 --comment-id 51 --body-file "$RR/body"
   [ "$RUN_RC" -eq 0 ] || fail "behavior v2 answer failed to refresh a completed gate (rc=$RUN_RC)"
   grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null \

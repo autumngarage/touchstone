@@ -1267,7 +1267,8 @@ REQUIRED_WORKFLOW_RERAN=false
 REQUIRED_WORKFLOW_ALREADY_ACTIVE=false
 rerun_required_workflow() {
   local number="$1" head="$2" workflow_name="$3" local_workflow_ids="$4" active_reuse_seconds="${5:-0}"
-  local attempt=1 run_id status run_started_at run_started_epoch now prior_attempt run_pages run_row workflow_ids workflow_id_count
+  local attempt=1 run_id run_node status run_started_at run_started_epoch now prior_attempt run_pages run_row workflow_ids workflow_id_count
+  local run_identity active_run_bound
   REQUIRED_WORKFLOW_RUN_ID=""
   REQUIRED_WORKFLOW_RERAN=false
   REQUIRED_WORKFLOW_ALREADY_ACTIVE=false
@@ -1291,32 +1292,44 @@ rerun_required_workflow() {
       || fail_operation "GitHub returned malformed $workflow_name run pages for $head" "Retry after GitHub returns complete workflow-run pages."
     IFS="$(printf '\t')" read -r run_id status run_started_at <<<"$run_row"
     if [ -n "$run_id" ] && [ "$active_reuse_seconds" -gt 0 ]; then
+      active_run_bound=false
       case "$status" in
-        queued | requested | waiting | pending)
-          REQUIRED_WORKFLOW_RUN_ID="$run_id"
-          REQUIRED_WORKFLOW_ALREADY_ACTIVE=true
-          return 0
-          ;;
-        in_progress)
-          run_started_epoch="$(jq -ner --arg started "$run_started_at" '$started | fromdateiso8601')" 2>/dev/null || run_started_epoch=""
-          now="$(date -u +%s)"
-          case "$run_started_epoch$now" in
-            '' | *[!0-9]*) ;;
-            *)
-              if [ "$now" -ge "$run_started_epoch" ] \
-                && [ "$now" -lt "$((run_started_epoch + active_reuse_seconds))" ]; then
-                REQUIRED_WORKFLOW_RUN_ID="$run_id"
-                REQUIRED_WORKFLOW_ALREADY_ACTIVE=true
-                return 0
-              fi
-              ;;
-          esac
+        queued | requested | waiting | pending | in_progress)
+          run_node="$(printf '%s\n' "$run_pages" | jq -ser --argjson run_id "$run_id" \
+            '[.[].workflow_runs[]? | select(.id == $run_id) | .node_id] | unique | if length == 1 and (.[0] | type) == "string" and (.[0] | length) > 0 then .[0] else error("active run has no unique node id") end')" \
+            || fail_operation "GitHub returned malformed source identity coordinates for $workflow_name run $run_id" "Retry after GitHub returns the run's node id."
+          run_identity="$(jq -cn --argjson run_id "$run_id" --arg run_node "$run_node" \
+            '{runId:$run_id, runNodeId:$run_node}')"
+          read_review_gate_run_binding "$run_identity"
+          [ "$(printf '%s' "$REVIEW_GATE_RUN_BINDING" | jq -r .bound)" != true ] || active_run_bound=true
           ;;
         completed) ;;
-        *)
-          fail_operation "$workflow_name run $run_id reported unsupported active status '${status:-empty}'" "Inspect the run in the Actions tab before retrying."
-          ;;
+        *) fail_operation "$workflow_name run $run_id reported unsupported active status '${status:-empty}'" "Inspect the run in the Actions tab before retrying." ;;
       esac
+      if [ "$active_run_bound" = true ]; then
+        case "$status" in
+          queued | requested | waiting | pending)
+            REQUIRED_WORKFLOW_RUN_ID="$run_id"
+            REQUIRED_WORKFLOW_ALREADY_ACTIVE=true
+            return 0
+            ;;
+          in_progress)
+            run_started_epoch="$(jq -ner --arg started "$run_started_at" '$started | fromdateiso8601')" 2>/dev/null || run_started_epoch=""
+            now="$(date -u +%s)"
+            case "$run_started_epoch$now" in
+              '' | *[!0-9]*) ;;
+              *)
+                if [ "$now" -ge "$run_started_epoch" ] \
+                  && [ "$now" -lt "$((run_started_epoch + active_reuse_seconds))" ]; then
+                  REQUIRED_WORKFLOW_RUN_ID="$run_id"
+                  REQUIRED_WORKFLOW_ALREADY_ACTIVE=true
+                  return 0
+                fi
+                ;;
+            esac
+            ;;
+        esac
+      fi
     fi
     if [ -n "$run_id" ] && [ "$status" = completed ]; then
       REQUIRED_WORKFLOW_RUN_ID="$run_id"

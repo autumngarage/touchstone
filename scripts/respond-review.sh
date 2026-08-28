@@ -276,9 +276,17 @@ LIVE_HEAD="$(gh_read pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" \
 # workflow implements. Local policy bytes alone are rollout intent and cannot
 # authorize the behavior-v2 early return.
 GATE_BEHAVIOR_VERSION=1
+BOUND_GATE_RUN_ID=""
 if PR_STATUS="$(bash "$TOOL_ROOT/scripts/touchstone-pr.sh" status "$PR_NUMBER" --json)"; then
   GATE_BEHAVIOR_VERSION="$(printf '%s' "$PR_STATUS" | jq -er '.reviewGateBehaviorContractVersion // 1')" \
     || fail "effective review-gate status reported an invalid behavior contract."
+  if [ "$GATE_BEHAVIOR_VERSION" = 2 ]; then
+    BOUND_GATE_RUN_ID="$(printf '%s' "$PR_STATUS" | jq -r \
+      '.reviewGateCheck | select(.present == true and ((.unbound // false) | not)) | .workflowRunId // empty')"
+    if [ -z "$BOUND_GATE_RUN_ID" ]; then
+      echo "WARNING: behavior v2 has no verified policy-bound review-gate run; conservatively refreshing through the behavior-v1 path." >&2
+    fi
+  fi
 else
   echo "WARNING: could not verify behavior v2; conservatively refreshing the gate through the behavior-v1 path." >&2
 fi
@@ -310,7 +318,7 @@ if [ "$GATE_REQUIRED" = true ]; then
       --jq "[.workflow_runs[] | select(.name == \"review-gate\" and any(.pull_requests[]?; .number == $PR_NUMBER) and ((.workflow_id as \$w | $LOCAL_WORKFLOW_IDS | index(\$w)) == null))] | sort_by(.id) | last | [(.id // \"\"), (.status // \"\"), (.run_started_at // \"\")] | @tsv")" \
       || fail "could not inspect review-gate runs: $GATE_ROW"
     IFS="$(printf '\t')" read -r GATE_RUN GATE_STATUS GATE_STARTED_AT <<<"$GATE_ROW"
-    if [ -n "$GATE_RUN" ] && [ "$GATE_BEHAVIOR_VERSION" = 2 ]; then
+    if [ -n "$GATE_RUN" ] && [ "$GATE_BEHAVIOR_VERSION" = 2 ] && [ "$GATE_RUN" = "$BOUND_GATE_RUN_ID" ]; then
       case "$GATE_STATUS" in
         queued | requested | waiting | pending)
           echo "==> Review gate run $GATE_RUN is already evaluating this head; returning control while it waits for review evidence."
