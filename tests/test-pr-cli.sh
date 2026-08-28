@@ -685,12 +685,12 @@ case "$1 ${2:-}" in
           {\"id\":81,\"name\":\"delivery-evidence\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":904,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"failure\",\"workflow_id\":3,\"pull_requests\":[{\"number\":7}]},
           {\"id\":82,\"name\":\"other-external-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":905,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":1001,\"pull_requests\":[{\"number\":7}]},
           {\"id\":83,\"name\":\"other-external-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":905,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":1001,\"pull_requests\":[{\"number\":7}]}]}"
-        if [ "${GH_MODE:-ok}" = status_gate_run_recency ] || [ "${GH_MODE:-ok}" = status_gate_run_overlap ] || [ "${GH_MODE:-ok}" = status_gate_run_tie ] || [ "${GH_MODE:-ok}" = required_run_recency ]; then
+        if [ "${GH_MODE:-ok}" = status_gate_run_recency ] || [ "${GH_MODE:-ok}" = status_gate_run_overlap ] || [ "${GH_MODE:-ok}" = status_gate_run_tie ] || [ "${GH_MODE:-ok}" = required_run_recency ] || [ "${GH_MODE:-ok}" = required_run_tie ]; then
           extra_started_at='2026-08-27T17:00:00Z'
           if [ "${GH_MODE:-ok}" = status_gate_run_overlap ]; then
             runs="$(printf '%s' "$runs" | jq -c '(.workflow_runs[] | select(.id == 77) | .run_started_at) = "2026-08-27T17:00:00Z"')"
             extra_started_at='2026-08-27T17:10:00Z'
-          elif [ "${GH_MODE:-ok}" = status_gate_run_tie ]; then
+          elif [ "${GH_MODE:-ok}" = status_gate_run_tie ] || [ "${GH_MODE:-ok}" = required_run_tie ]; then
             extra_started_at='2026-08-27T17:10:00Z'
           fi
           runs="$(printf '%s' "$runs" | jq -c '.workflow_runs += [{
@@ -1310,6 +1310,12 @@ Closes #42'
   assert_has "$TMP/out" 'GitHub returned malformed review-gate run pages'
   [ ! -e "$TMP/state/gate-reruns" ] \
     || fail "merge reran a workflow whose execution recency was malformed"
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
+  GH_MODE=required_run_tie run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'GitHub returned malformed review-gate run pages'
+  [ ! -e "$TMP/state/gate-reruns" ] \
+    || fail "merge broke an execution-time tie by creation id"
   rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
   GH_MODE=moved_during_gate run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 2
@@ -1962,15 +1968,22 @@ case "$1 $2" in
       runs="{\"workflow_runs\":[
         {\"id\":77,\"name\":\"review-gate\",\"status\":\"$gate_status\",\"run_attempt\":2,\"run_started_at\":\"2026-08-27T17:30:00Z\",\"workflow_id\":999,\"pull_requests\":[{\"number\":7}]},
         {\"id\":78,\"name\":\"review-gate\",\"status\":\"completed\",\"run_attempt\":1,\"run_started_at\":\"2026-08-27T17:20:00Z\",\"workflow_id\":2,\"pull_requests\":[{\"number\":7}]}]}"
-      if [ "${GH_MODE:-ok}" = run_recency ]; then
+      if [ "${GH_MODE:-ok}" = run_recency ] || [ "${GH_MODE:-ok}" = run_recency_later_page ]; then
         runs="$(printf '%s' "$runs" | jq -c '.workflow_runs += [{id:88,name:"review-gate",status:"completed",run_attempt:1,run_started_at:"2026-08-27T17:20:00Z",workflow_id:999,pull_requests:[{number:7}]}]')"
+      elif [ "${GH_MODE:-ok}" = run_recency_tie ]; then
+        runs="$(printf '%s' "$runs" | jq -c '.workflow_runs += [{id:88,name:"review-gate",status:"completed",run_attempt:1,run_started_at:"2026-08-27T17:30:00Z",workflow_id:999,pull_requests:[{number:7}]}]')"
       elif [ "${GH_MODE:-ok}" = malformed_run_recency ]; then
         runs="$(printf '%s' "$runs" | jq -c '(.workflow_runs[] | select(.id == 77)) |= del(.run_started_at)')"
       fi
     else
       runs='{"workflow_runs":[]}'
     fi
-    printf '%s' "$runs" | jq -r "$(value_after --jq "$@")" || exit $?
+    if [ "${GH_MODE:-ok}" = run_recency_later_page ]; then
+      printf '%s\n' "$runs" | jq -c '{workflow_runs:[.workflow_runs[] | select(.id != 77)]}'
+      printf '%s\n' "$runs" | jq -c '{workflow_runs:[.workflow_runs[] | select(.id == 77)]}'
+    else
+      printf '%s\n' "$runs"
+    fi
     ;;
   "api -X")
     # POST .../actions/runs/77/rerun
@@ -2063,8 +2076,20 @@ STUB
     && ok "answer selected the lower-id workflow run rerun most recently" \
     || fail "answer selected the wrong workflow run by creation id"
   rm -f "$GH_STATE/gate-reruns"
+  GH_MODE=run_recency_later_page run 7 --comment-id 51 --body-file "$RR/body"
+  [ "$RUN_RC" -eq 0 ] && grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null \
+    && ! grep -q 'rerun 88' "$GH_STATE/gate-reruns" 2>/dev/null \
+    && ok "answer ranked workflow execution recency across every API page" \
+    || fail "answer ignored a later workflow-run page"
+  rm -f "$GH_STATE/gate-reruns"
+  GH_MODE=run_recency_tie run 7 --comment-id 51 --body-file "$RR/body"
+  [ "$RUN_RC" -ne 0 ] && grep -q 'malformed or ambiguous review-gate run data' "$RR/out" \
+    && [ ! -e "$GH_STATE/gate-reruns" ] \
+    && ok "answer failed closed on tied workflow execution timestamps" \
+    || fail "answer broke an execution-time tie by creation id (rc=$RUN_RC)"
+  rm -f "$GH_STATE/gate-reruns"
   GH_MODE=malformed_run_recency run 7 --comment-id 51 --body-file "$RR/body"
-  [ "$RUN_RC" -ne 0 ] && grep -q 'could not inspect review-gate runs' "$RR/out" \
+  [ "$RUN_RC" -ne 0 ] && grep -q 'malformed or ambiguous review-gate run data' "$RR/out" \
     && [ ! -e "$GH_STATE/gate-reruns" ] \
     && ok "answer failed closed on a workflow run without execution recency" \
     || fail "answer accepted malformed workflow-run recency data (rc=$RUN_RC)"

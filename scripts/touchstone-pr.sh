@@ -1273,9 +1273,12 @@ rerun_required_workflow() {
           or (.run_started_at | type) != "string" or .run_started_at == ""
           or (.status | type) != "string") then
           error("workflow run is missing its id, attempt, status, or execution timestamp")
-        else sort_by([.run_started_at, .run_attempt, .id])
-          | last
-          | "\(.id) \(.status)"
+        else (map(.run_started_at) | max) as $latest_start
+          | [.[] | select(.run_started_at == $latest_start)] as $latest_runs
+          | if ($latest_runs | length) > 1 then
+              error("multiple workflow runs share the newest execution timestamp")
+            else $latest_runs[0] | "\(.id) \(.status)"
+            end
         end')" \
       || fail_operation "GitHub returned malformed $workflow_name run pages for $head" "Retry after GitHub returns complete workflow-run pages."
     read -r run_id status <<<"$run_row"

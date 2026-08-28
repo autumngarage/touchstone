@@ -293,18 +293,24 @@ if [ "$GATE_REQUIRED" = true ]; then
     || fail "could not list the repository's workflows: $LOCAL_WORKFLOW_IDS"
   attempt=1
   while :; do
-    GATE_ROW="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/actions/runs?head_sha=$HEAD_SHA&per_page=100" \
-      --jq "[.workflow_runs[] | select(.name == \"review-gate\" and any(.pull_requests[]?; .number == $PR_NUMBER) and ((.workflow_id as \$w | $LOCAL_WORKFLOW_IDS | index(\$w)) == null))]
-        | if length == 0 then \"\"
-          elif any(.[]; (.id | type) != \"number\" or (.run_attempt | type) != \"number\"
-            or (.run_started_at | type) != \"string\" or .run_started_at == \"\"
-            or (.status | type) != \"string\") then
-            error(\"workflow run is missing its id, attempt, status, or execution timestamp\")
-          else sort_by([.run_started_at, .run_attempt, .id])
-            | last
-            | \"\(.id) \(.status)\"
-          end")" \
-      || fail "could not inspect review-gate runs: $GATE_ROW"
+    GATE_PAGES="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/actions/runs?head_sha=$HEAD_SHA&per_page=100" --paginate)" \
+      || fail "could not inspect review-gate runs: $GATE_PAGES"
+    GATE_ROW="$(printf '%s\n' "$GATE_PAGES" | jq -ser \
+      --argjson number "$PR_NUMBER" --argjson local_ids "$LOCAL_WORKFLOW_IDS" '
+        [.[].workflow_runs[]? | select(.name == "review-gate" and any(.pull_requests[]?; .number == $number) and ((.workflow_id as $w | $local_ids | index($w)) == null))]
+        | if length == 0 then ""
+          elif any(.[]; (.id | type) != "number" or (.run_attempt | type) != "number"
+            or (.run_started_at | type) != "string" or .run_started_at == ""
+            or (.status | type) != "string") then
+            error("workflow run is missing its id, attempt, status, or execution timestamp")
+          else (map(.run_started_at) | max) as $latest_start
+            | [.[] | select(.run_started_at == $latest_start)] as $latest_runs
+            | if ($latest_runs | length) > 1 then
+                error("multiple workflow runs share the newest execution timestamp")
+              else $latest_runs[0] | "\(.id) \(.status)"
+              end
+          end')" \
+      || fail "GitHub returned malformed or ambiguous review-gate run data"
     read -r GATE_RUN GATE_STATUS <<<"$GATE_ROW"
     if [ -n "$GATE_RUN" ] && [ "$GATE_STATUS" = completed ]; then
       gh api -X POST "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$GATE_RUN/rerun" >/dev/null \
