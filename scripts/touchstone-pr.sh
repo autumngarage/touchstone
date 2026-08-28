@@ -769,7 +769,7 @@ ENFORCEMENT_CANDIDATE_REVISION=""
 ENFORCEMENT_CANDIDATE_SOURCE=""
 ENFORCEMENT_CANDIDATE_ROLE=""
 ENFORCEMENT_POLICY_TYPE=""
-ENFORCEMENT_EXPECTS_QUEUE=true
+ENFORCEMENT_QUEUE_APPLIED=false
 ENFORCEMENT_EXPECTS_REVIEW_GATE=true
 ENFORCEMENT_REVIEW_GATE_APPLIED=false
 ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY=""
@@ -971,7 +971,7 @@ read_enforcement() {
   # policy or a private consumer derived --no-queue), else the canonical one.
   # Required gates/statuses must be complete, or the read fails rather than
   # silently expecting nothing.
-  local expect_queue
+  local expect_queue expects_review_gate
   if [ "$REPO" = "autumngarage/touchstone" ] && [ -n "$policy_revision" ]; then
     select_enforcement_policy "$base_ref" true
   else
@@ -1029,10 +1029,15 @@ read_enforcement() {
       ;;
     *) fail_operation "$policy_file has unsupported policy type '$policy_type'" "Reinstall touchstone." ;;
   esac
-  expect_queue="$(enforcement_policy_jq -r 'if .managedRepositoryRuleset == null then "false" else "true" end')"
+  expects_review_gate="$(printf '%s' "$expected" | jq 'any(.path == ".github/workflows/review-gate.yml")')"
+  # A pull-request gate can be green before later same-head feedback arrives.
+  # Only merge-group re-evaluation makes the final review verdict atomic with
+  # admission, so a review-gated policy without a queue is an enforcement gap
+  # even when its checked-in declaration intentionally omitted the companion.
+  expect_queue="$(enforcement_policy_jq -r --argjson review_gate "$expects_review_gate" '
+    if $review_gate or .managedRepositoryRuleset != null then "true" else "false" end')"
   ENFORCEMENT_POLICY_TYPE="$policy_type"
-  ENFORCEMENT_EXPECTS_QUEUE="$expect_queue"
-  ENFORCEMENT_EXPECTS_REVIEW_GATE="$(printf '%s' "$expected" | jq 'any(.path == ".github/workflows/review-gate.yml")')"
+  ENFORCEMENT_EXPECTS_REVIEW_GATE="$expects_review_gate"
   # Pull requests land through auto-merge in both policy shapes (the queue
   # admits through it; without a queue `merge` arms it), so a repository with
   # it disabled is not fully enforced either.
@@ -1044,6 +1049,8 @@ read_enforcement() {
   # array per page, merged here before evaluation.
   read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/rules/branches/$encoded?per_page=100" \
     || fail_operation "could not read the effective rules for $base_ref: $READ_OUTPUT" "Retry after GitHub recovers."
+  ENFORCEMENT_QUEUE_APPLIED="$(printf '%s' "$READ_OUTPUT" | jq -s 'add // [] | any(.[]; .type == "merge_queue")')" \
+    || fail_operation "could not read the effective merge-queue rule for $base_ref" "Retry after GitHub returns complete effective rules."
   # jq classifies each gate against the policy's pin and names the rules that
   # are simply absent; only a gate present at some *other* revision of the
   # same source and ref needs GitHub asked about lineage, so the rules
@@ -1748,6 +1755,7 @@ select_review_gate_run_identity() {
               runId:.id,
               runNodeId:.node_id,
               runAttempt:.run_attempt,
+              runStartedAt:.run_started_at,
               status:.status,
               conclusion:(.conclusion // null)
             }
@@ -1883,6 +1891,7 @@ read_review_gate_check() {
           head:$head,
           workflowRunId:$run.runId,
           runAttempt:$run.runAttempt,
+          runStartedAt:$run.runStartedAt,
           workflowStatus:$run.status,
           workflowConclusion:$run.conclusion
         }
@@ -1893,11 +1902,13 @@ read_review_gate_check() {
           head:$head,
           workflowRunId:$run.runId,
           runAttempt:$run.runAttempt,
+          runStartedAt:$run.runStartedAt,
           workflowStatus:$run.status,
           workflowConclusion:$run.conclusion,
           checkRunId:.id,
           status:.status,
           conclusion:(.conclusion // null),
+          completedAt:(.completed_at // null),
           detailsUrl:(.details_url // .html_url // null),
           title:((.output.title // "")[0:$max_chars]),
           summary:((.output.summary // "")[0:$max_chars])
@@ -1937,6 +1948,70 @@ review_gate_check_text() {
       (if .title == "" then "" else ": \(.title | gsub("[\\r\\n\\t]+"; " "))" end) +
       (if .detailsUrl == null then "" else " — \(.detailsUrl)" end)
     end'
+}
+
+REVIEW_SURFACE_LATEST_AT=""
+read_review_surface_latest_at() {
+  local number="$1" issue_comment_times review_times review_comment_times
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" \
+    "repos/$REPO/issues/$number/comments?per_page=100" \
+    --jq '.[] | (.updated_at // .created_at // empty)' \
+    || fail_operation "could not read PR conversation timestamps: $READ_OUTPUT" "Retry after GitHub recovers."
+  issue_comment_times="$READ_OUTPUT"
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" \
+    "repos/$REPO/pulls/$number/reviews?per_page=100" \
+    --jq '.[] | (.updated_at // .submitted_at // empty)' \
+    || fail_operation "could not read formal review timestamps: $READ_OUTPUT" "Retry after GitHub recovers."
+  review_times="$READ_OUTPUT"
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" \
+    "repos/$REPO/pulls/$number/comments?per_page=100" \
+    --jq '.[] | (.updated_at // .created_at // empty)' \
+    || fail_operation "could not read inline review timestamps: $READ_OUTPUT" "Retry after GitHub recovers."
+  review_comment_times="$READ_OUTPUT"
+  REVIEW_SURFACE_LATEST_AT="$(printf '%s\n%s\n%s\n' \
+    "$issue_comment_times" "$review_times" "$review_comment_times" | jq -Rrsc '
+      split("\n") | map(select(. != ""))
+      | if any(.[]; (fromdateiso8601? // null) == null)
+        then error("review timestamp is not ISO-8601 UTC")
+        else max // ""
+        end')" \
+    || fail_operation "GitHub returned a malformed review-surface timestamp" "Retry after GitHub returns complete review data."
+}
+
+require_review_gate_success() {
+  local head="$1" number="$2" gate_status gate_conclusion gate_completed_at gate_text
+  read_review_gate_check "$head" "$number"
+  gate_status="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.status // .workflowStatus // "absent"')"
+  gate_conclusion="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.conclusion // .workflowConclusion // ""')"
+  gate_completed_at="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.completedAt // empty')"
+  gate_text="$(review_gate_check_text)"
+  REVIEW_GATE_RUN_ID="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.workflowRunId // empty')"
+
+  if [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.present == true')" = true ] \
+    && [ "$gate_status" = completed ] && [ "$gate_conclusion" = success ]; then
+    [ -n "$gate_completed_at" ] \
+      || fail_operation "successful review gate $REVIEW_GATE_RUN_ID has no completion timestamp" "Retry after GitHub returns complete check data."
+    read_review_surface_latest_at "$number"
+    if [ -n "$REVIEW_SURFACE_LATEST_AT" ] \
+      && ! jq -ne --arg latest "$REVIEW_SURFACE_LATEST_AT" --arg completed "$gate_completed_at" \
+        '($latest | fromdateiso8601) < ($completed | fromdateiso8601)' >/dev/null; then
+      fail_input "review evidence is stale: the PR review surface changed at $REVIEW_SURFACE_LATEST_AT, at or after gate run $REVIEW_GATE_RUN_ID completed at $gate_completed_at" \
+        "Use touchstone pr open to refresh a clean review, or touchstone pr answer for a finding, then retry after the exact-head gate succeeds."
+    fi
+    REVIEW_GATE_ACTION=verified-success
+    return 0
+  fi
+
+  case "$gate_status" in
+    queued | requested | waiting | pending | in_progress)
+      fail_input "review gate for $head is still evaluating: $gate_text" \
+        "Wait for touchstone pr status to report a successful exact-head gate, then retry this merge command."
+      ;;
+    *)
+      fail_input "review gate for $head is not successful: $gate_text" \
+        "Use touchstone pr open for an unbound head or answer the reported findings, then wait for a successful exact-head gate."
+      ;;
+  esac
 }
 
 status_pr() {
@@ -2001,10 +2076,10 @@ merge_pr() {
     final_state=already-merged
   else
     [ "$state" = OPEN ] || fail_input "PR #$PR_NUMBER is $state" "Only an open or merged PR is supported."
-    # A required workflow cannot see a review that lands after the request.
-    # Ask it to evaluate what is on the PR now, then ask GitHub to merge:
-    # auto-merge arms while the run is pending and the queue admits the PR
-    # when it is green. The verdict is GitHub's; this only requests it.
+    # Queue admission is the final delivery mutation, not a way to wait for
+    # review. The open/answer paths request the policy-owned evaluation. Merge
+    # observes that exact-head verdict and refuses without arming auto-merge or
+    # entering the queue until it is already successful.
     # The guarded path is taken only when enforcement is fully applied --
     # the gate present at the policy's repository and ref, at the policy's
     # revision or a descendant of it published there, with the queue and
@@ -2019,20 +2094,15 @@ merge_pr() {
     fi
     if [ "$ENFORCEMENT_STATUS" = applied ]; then
       if [ "$ENFORCEMENT_EXPECTS_REVIEW_GATE" = true ]; then
-        rerun_review_gate "$number" "$head" "$base"
+        require_review_gate_success "$head" "$number"
         if [ "$JSON_MODE" = false ]; then
-          if [ "$REVIEW_GATE_ACTION" = already-active ]; then
-            printf 'Review gate run %s is already evaluating this head; GitHub merges when it passes.\n' "$REVIEW_GATE_RUN_ID" >&2
-          else
-            printf 'Review gate re-run requested for run %s; GitHub merges when it passes.\n' "$REVIEW_GATE_RUN_ID" >&2
-          fi
+          printf 'Review gate run %s already accepts this exact head.\n' "$REVIEW_GATE_RUN_ID" >&2
         fi
       elif [ "$JSON_MODE" != true ]; then
         printf 'Workflow-source policy applied; GitHub merges when its required source check passes.\n' >&2
       fi
-      # A gate re-run may wait for an in-progress run. The source-policy path
-      # has no gate to re-run, but both paths must still merge the head and
-      # exact base policy whose enforcement was just inspected.
+      # Both paths must still merge the head and exact base policy whose
+      # enforcement was just inspected.
       verify_live_head_and_base "$number" "$head" "$base" "$base_sha"
     else
       # Enforcement is not fully applied on this base: merging here would not
@@ -2070,7 +2140,7 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
     # merge while required checks are still running, so arm auto-merge and
     # let it land when they pass (the state `auto-merge-enabled` below).
     merge_auto=()
-    [ "$ENFORCEMENT_EXPECTS_QUEUE" = true ] || merge_auto=(--auto)
+    [ "$ENFORCEMENT_QUEUE_APPLIED" = true ] || merge_auto=(--auto)
     merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash ${merge_auto[@]+"${merge_auto[@]}"} \
       --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
     merge_diagnostic="$(clean_diagnostic "$merge_output")"

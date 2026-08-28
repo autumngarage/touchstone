@@ -332,6 +332,7 @@ case "$1 ${2:-}" in
       for field in "$@"; do case "$field" in id=*) run_node="${field#id=}" ;; esac; done
       run_id="${run_node#RUN_}"
       source_revision="$GH_POLICY_SHA"
+      [ ! -f "$GH_STATE/ahead-pin" ] || source_revision="$GH_AHEAD_SHA"
       [ "${GH_MODE:-ok}" != status_gate_historical ] || source_revision="$GH_AHEAD_SHA"
       [ ! -f "$GH_STATE/gate-run-unbound" ] || source_revision="$GH_AHEAD_SHA"
       jq -cn --argjson id "$run_id" --arg revision "$source_revision" '{data:{node:{databaseId:$id,file:{path:".github/workflows/review-gate.yml",repositoryName:"autumngarage/touchstone-workflows",repositoryFileUrl:("https://github.com/autumngarage/touchstone-workflows/blob/" + $revision + "/.github/workflows/review-gate.yml")}}}}'
@@ -380,7 +381,7 @@ case "$1 ${2:-}" in
           printf '%s\n' '{"jobs":[{"id":86,"name":"review-gate","run_attempt":2,"status":"in_progress","conclusion":null}]}' ;;
         status_gate_stale)
           printf '%s\n' '{"jobs":[{"id":85,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"success"}]}' ;;
-        *) printf '%s\n' '{"jobs":[]}' ;;
+        *) printf '%s\n' '{"jobs":[{"id":84,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"success"}]}' ;;
       esac
     elif has 'check-runs?check_name=review-gate&filter=all&per_page=100' "$@"; then
       case "${GH_MODE:-ok}" in
@@ -393,7 +394,7 @@ case "$1 ${2:-}" in
         status_gate_success | status_gate_historical)
           jq -cn --arg head "$GH_HEAD" '{check_runs:[
             {id:83,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"failure",details_url:"https://example.test/runs/83",output:{title:"Superseded attempt",summary:"Old evidence."}},
-            {id:84,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"success",details_url:"https://example.test/runs/84",output:{title:"Exact-head review accepted",summary:"All review feedback was answered."}}
+            {id:84,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"success",completed_at:"2026-08-27T17:30:00Z",details_url:"https://example.test/runs/84",output:{title:"Exact-head review accepted",summary:"All review feedback was answered."}}
           ]}'
           ;;
         status_gate_status_race)
@@ -438,7 +439,9 @@ case "$1 ${2:-}" in
           jq -cn --arg head "$GH_HEAD" '{check_runs:[{id:85,name:"review-gate",head_sha:"stale-head",check_suite:{id:900},status:"completed",conclusion:"success",details_url:"https://example.test/runs/85",output:{title:"Stale success",summary:"Wrong head."}}]}'
           ;;
         status_gate_malformed) : ;;
-        *) printf '%s\n' '{"check_runs":[]}' ;;
+        *)
+          jq -cn --arg head "$GH_HEAD" '{check_runs:[{id:84,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"success",completed_at:"2026-08-27T17:30:00Z",details_url:"https://example.test/runs/84",output:{title:"Exact-head review accepted",summary:"All review feedback was answered."}}]}'
+          ;;
       esac
     elif has '/pulls/7/files?per_page=100' "$@"; then
       [ "${GH_MODE:-ok}" != candidate_files_moved ] || touch "$GH_STATE/candidate-files-read"
@@ -457,7 +460,9 @@ case "$1 ${2:-}" in
       # second.
       if [ -f "$GH_STATE/unguarded-recorded" ]; then printf '0\n1\n'; else printf '0\n0\n'; fi
     elif has '/issues/7/comments' "$@"; then
-      if [ "${GH_MODE:-ok}" = many_requests ]; then
+      if has 'updated_at // .created_at' "$@"; then
+        printf '%s\n' '2026-08-27T17:05:00Z'
+      elif [ "${GH_MODE:-ok}" = many_requests ]; then
         for index in $(awk 'BEGIN { for (i = 1; i <= 4000; i++) print i }'); do
           printf 'https://example.test/pr/7#issuecomment-%s\talice\t%s\n' "$index" \
             "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
@@ -482,13 +487,21 @@ case "$1 ${2:-}" in
           "@codex review\\n\\n<!-- touchstone:pr-open head=$saved_head base=$saved_base base_sha=$saved_base_sha -->"
       fi
     elif has '/reviews?per_page=100' "$@"; then
-      if has 'reviewId:.id' "$@"; then
+      if has 'submitted_at' "$@"; then
+        if [ "${GH_MODE:-ok}" = status_gate_stale_review ] && has 'updated_at // .submitted_at' "$@"; then
+          printf '%s\n' '2026-08-27T17:35:00Z'
+        else
+          printf '%s\n' '2026-08-27T17:06:00Z'
+        fi
+      elif has 'reviewId:.id' "$@"; then
         printf '%s\n' '[{"reviewId":61,"state":"COMMENTED","body":"body finding","url":"https://example.test/review","commit":"old-head"}]'
       else
         printf '%s\n' '  review 61 [COMMENTED] at old-head'
       fi
     elif has '/pulls/7/comments' "$@"; then
-      if [ -f "$GH_STATE/reply" ]; then printf '%s\n' '<!-- touchstone:respond-review comment=51 -->'; fi
+      if has 'updated_at // .created_at' "$@"; then
+        printf '%s\n' '2026-08-27T17:07:00Z'
+      elif [ -f "$GH_STATE/reply" ]; then printf '%s\n' '<!-- touchstone:respond-review comment=51 -->'; fi
     fi
     ;;
   "api repos/autumngarage/current/pulls/7/comments/51/replies")
@@ -929,19 +942,19 @@ EOF
   assert_not_has "$TMP/out" 'Local look-alike passed'
   GH_MODE=status_gate_stale_attempt run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"runAttempt":2,"workflowStatus":"in_progress","workflowConclusion":null,"checkRunId":86'
+  assert_has "$TMP/out" '"runAttempt":2,"runStartedAt":"2026-08-27T17:10:00Z","workflowStatus":"in_progress","workflowConclusion":null,"checkRunId":86'
   assert_not_has "$TMP/out" 'Superseded success'
   rm -f "$TMP/state/status-attempt-advanced"
   GH_MODE=status_gate_attempt_race run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"runAttempt":3,"workflowStatus":"in_progress","workflowConclusion":null,"checkRunId":87'
+  assert_has "$TMP/out" '"runAttempt":3,"runStartedAt":"2026-08-27T17:10:00Z","workflowStatus":"in_progress","workflowConclusion":null,"checkRunId":87'
   assert_not_has "$TMP/out" 'Superseded success'
   [ "$(grep -c 'actions/runs?head_sha=' "$GH_CALLS")" -eq 3 ] \
     || fail "status did not retry the binding after a concurrent gate rerun"
   rm -f "$TMP/state/status-new-run-started"
   GH_MODE=status_gate_new_run_race run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"workflowRunId":88,"runAttempt":1,"workflowStatus":"in_progress","workflowConclusion":null,"checkRunId":89'
+  assert_has "$TMP/out" '"workflowRunId":88,"runAttempt":1,"runStartedAt":"2026-08-27T17:20:00Z","workflowStatus":"in_progress","workflowConclusion":null,"checkRunId":89'
   assert_not_has "$TMP/out" 'Superseded success'
   [ "$(grep -c 'actions/runs?head_sha=' "$GH_CALLS")" -eq 3 ] \
     || fail "status did not retry the binding after a concurrent new gate run"
@@ -1464,38 +1477,38 @@ Closes #42'
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'touchstone pr open'
 
-  echo "==> merge asks the pinned gate to re-evaluate, then asks GitHub to merge"
+  echo "==> merge admits only a head the pinned gate already accepts"
   touch "$TMP/state/review-gate" "$TMP/state/pr-exists"
   rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
   run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 0
-  grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
-    || fail "merge did not ask the review gate to re-evaluate before requesting the merge"
+  [ ! -e "$TMP/state/gate-reruns" ] \
+    || fail "merge re-ran review instead of observing the existing verdict"
   assert_has "$GH_CALLS" 'pr merge'
-  # The stale superseded attempt was visible once after the POST; merge waited
-  # for attempt 2 to appear before asking GitHub to merge.
-  [ "$(grep -c "actions/runs/77 --jq .run_attempt" "$GH_CALLS")" -ge 3 ] \
-    || fail "merge did not wait for the new gate attempt to be visible: $(grep -c 'actions/runs/77 ' "$GH_CALLS") run reads"
+  assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"verified-success"}'
+  rm -f "$TMP/state/merged"
+  : >"$GH_CALLS"
+  GH_MODE=status_gate_stale_review run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'review evidence is stale'
+  assert_has "$TMP/out" '2026-08-27T17:35:00Z'
+  assert_not_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
-  GH_MODE=required_run_recency run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
-  assert_rc "$RUN_RC" 0
-  grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
-    || fail "merge did not select the lower-id workflow run rerun most recently"
-  grep -q 'rerun 88' "$TMP/state/gate-reruns" 2>/dev/null \
-    && fail "merge selected a newer-created but older-executed workflow run" || true
-  rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
-  GH_MODE=required_run_malformed run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
-  assert_rc "$RUN_RC" 1
-  assert_has "$TMP/out" 'GitHub returned malformed review-gate run pages'
+  : >"$GH_CALLS"
+  GH_MODE=status_gate_pending run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'is still evaluating'
+  assert_not_has "$GH_CALLS" 'pr merge'
   [ ! -e "$TMP/state/gate-reruns" ] \
-    || fail "merge reran a workflow whose execution recency was malformed"
-  rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
-  GH_MODE=required_run_tie run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
-  assert_rc "$RUN_RC" 1
-  assert_has "$TMP/out" 'GitHub returned malformed review-gate run pages'
+    || fail "merge mutated a pending review evaluation"
+  : >"$GH_CALLS"
+  GH_MODE=status_gate_failure run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'is not successful'
+  assert_not_has "$GH_CALLS" 'pr merge'
   [ ! -e "$TMP/state/gate-reruns" ] \
-    || fail "merge broke an execution-time tie by creation id"
-  rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
+    || fail "merge mutated a failed review evaluation"
+  : >"$GH_CALLS"
   GH_MODE=moved_during_gate run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'moved (head moved-head'
@@ -1504,29 +1517,19 @@ Closes #42'
   GH_MODE=base_advanced run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'pr merge'
-  # The verdict is GitHub's: merge is requested regardless of what the gate
-  # will conclude; GitHub arms auto-merge or enqueues.
-  rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
-  GH_GATE_CONCLUSION=failure run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
-  assert_rc "$RUN_RC" 0
-  assert_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
 
-  echo "==> behavior v2 merge preserves an active authoritative evaluation"
+  echo "==> behavior v2 merge returns control without arming an active evaluation"
   touch "$TMP/state/review-gate"
   rm -f "$TMP/state/merged" "$TMP/state/gate-reruns"
-  touch "$TMP/state/gate-fresh-active"
-  echo 30 >"$TMP/state/gate-in-progress"
-  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
-  assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"already-active"}'
-  assert_has "$GH_CALLS" 'pr merge'
+  : >"$GH_CALLS"
+  GH_MODE=status_gate_pending run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'is still evaluating'
+  assert_not_has "$GH_CALLS" 'pr merge'
   [ ! -f "$TMP/state/gate-reruns" ] \
     || fail "behavior v2 merge re-ran an evaluation that was already active"
-  [ "$(cat "$TMP/state/gate-in-progress")" = 29 ] \
-    || fail "behavior v2 merge polled an active evaluation instead of returning control"
-  rm -f "$TMP/state/review-gate" \
-    "$TMP/state/gate-in-progress" "$TMP/state/gate-fresh-active" "$TMP/state/merged"
+  rm -f "$TMP/state/review-gate" "$TMP/state/merged"
 
   echo "==> without a pinned gate, merge fails closed unless --unguarded, which records the gap"
   rm -f "$TMP/state/review-gate" "$TMP/state/merged"
@@ -1854,8 +1857,8 @@ Closes #42'
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-never-runs" "$TMP/state/actions-disabled-after-preflight" "$TMP/state/actions-preflight-seen" "$TMP/state/review-request"
   touch "$TMP/state/review-gate"
   # A consumer derived --no-queue expects no queue: the tool consults the
-  # repository's own shipped policy, reports applied without a queue rule,
-  # and merges by arming auto-merge (there is no queue to enter).
+  # repository's own shipped policy, reports the missing atomic queue boundary,
+  # and requires an audited override before arming auto-merge.
   mkdir -p "$TMP/tool2/policy/github/consumers" "$TMP/tool2/policy/github/workflow-sources"
   cp -R "$ROOT/bin" "$ROOT/scripts" "$TMP/tool2/"
   cp "$ROOT/VERSION" "$TMP/tool2/VERSION"
@@ -1871,21 +1874,28 @@ Closes #42'
   set -e
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"policy":"policy/github/consumers/current.json"'
-  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  assert_has "$TMP/out" '"enforcement":{"status":"partial","missing":["merge queue"]}'
   : >"$GH_CALLS"
   rm -f "$TMP/state/merged" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
   set +e
   GH_MODE=auto_merge bash "$TMP/tool2/bin/touchstone" pr merge 7 --head "$HEAD_SHA" --project "$TMP/project" --json >"$TMP/out" 2>&1
   RUN_RC=$?
   set -e
+  assert_rc "$RUN_RC" 2
+  assert_not_has "$GH_CALLS" 'pr merge'
+  assert_has "$TMP/out" 'merge queue'
+  set +e
+  GH_MODE=auto_merge bash "$TMP/tool2/bin/touchstone" pr merge 7 --head "$HEAD_SHA" --project "$TMP/project" --unguarded --json >"$TMP/out" 2>&1
+  RUN_RC=$?
+  set -e
   assert_rc "$RUN_RC" 0
-  grep -q '^pr merge.*--auto' "$GH_CALLS" || fail "a queue-less consumer merge did not arm auto-merge: $(grep '^pr merge' "$GH_CALLS")"
+  grep -q '^pr merge.*--auto' "$GH_CALLS" || fail "an explicitly unguarded queue-less merge did not arm auto-merge: $(grep '^pr merge' "$GH_CALLS")"
   assert_has "$TMP/out" '"status":"auto-merge-enabled"'
   touch "$TMP/state/auto-merge-off"
   set +e
   bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
   set -e
-  assert_has "$TMP/out" '"missing":["auto-merge setting"]'
+  assert_has "$TMP/out" '"missing":["auto-merge setting","merge queue"]'
   rm -f "$TMP/state/auto-merge-off" "$TMP/state/no-queue-rule"
   run_pr "$TMP/out" status 7 --json
   assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
@@ -1900,10 +1910,10 @@ Closes #42'
     "$ROOT/policy/github/consumers/convoy.json" >"$TMP/tool2/policy/github/consumers/current.json"
   touch "$TMP/state/review-gate" "$TMP/state/no-queue-rule" "$TMP/state/consumer-status"
   bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
-  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  assert_has "$TMP/out" '"enforcement":{"status":"partial","missing":["merge queue"]}'
   rm -f "$TMP/state/consumer-status"
   bash "$TMP/tool2/bin/touchstone" pr policy-status --project "$TMP/project" --json >"$TMP/out" 2>&1
-  assert_has "$TMP/out" '"enforcement":{"status":"partial","missing":["convoy/delivery-protocol status"]}'
+  assert_has "$TMP/out" '"enforcement":{"status":"partial","missing":["convoy/delivery-protocol status","merge queue"]}'
   rm -f "$TMP/state/no-queue-rule" "$TMP/state/review-gate"
 
   echo "==> workflow-source policy uses its required status without inventing a review gate (AUT-531)"
