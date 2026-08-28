@@ -294,7 +294,16 @@ if [ "$GATE_REQUIRED" = true ]; then
   attempt=1
   while :; do
     GATE_ROW="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/actions/runs?head_sha=$HEAD_SHA&per_page=100" \
-      --jq "[.workflow_runs[] | select(.name == \"review-gate\" and any(.pull_requests[]?; .number == $PR_NUMBER) and ((.workflow_id as \$w | $LOCAL_WORKFLOW_IDS | index(\$w)) == null))] | sort_by(.id) | last | \"\(.id // \"\") \(.status // \"\")\"")" \
+      --jq "[.workflow_runs[] | select(.name == \"review-gate\" and any(.pull_requests[]?; .number == $PR_NUMBER) and ((.workflow_id as \$w | $LOCAL_WORKFLOW_IDS | index(\$w)) == null))]
+        | if length == 0 then \"\"
+          elif any(.[]; (.id | type) != \"number\" or (.run_attempt | type) != \"number\"
+            or (.run_started_at | type) != \"string\" or .run_started_at == \"\"
+            or (.status | type) != \"string\") then
+            error(\"workflow run is missing its id, attempt, status, or execution timestamp\")
+          else sort_by([.run_started_at, .run_attempt, .id])
+            | last
+            | \"\(.id) \(.status)\"
+          end")" \
       || fail "could not inspect review-gate runs: $GATE_ROW"
     read -r GATE_RUN GATE_STATUS <<<"$GATE_ROW"
     if [ -n "$GATE_RUN" ] && [ "$GATE_STATUS" = completed ]; then

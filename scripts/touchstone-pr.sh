@@ -1267,7 +1267,16 @@ rerun_required_workflow() {
       || fail_operation "multiple external $workflow_name workflow identities ran for PR #$number at $head" "Remove the same-named required-workflow ambiguity, then retry."
     run_row="$(printf '%s\n' "$run_pages" | jq -ser \
       --arg workflow "$workflow_name" --argjson workflow_ids "$workflow_ids" --argjson number "$number" \
-      '[.[].workflow_runs[]? | select(.name == $workflow and (.workflow_id as $id | $workflow_ids | index($id)) != null and (.event == "pull_request" or .event == "merge_group") and any(.pull_requests[]?; .number == $number))] | sort_by(.id) | last | "\(.id // "") \(.status // "")"')" \
+      '[.[].workflow_runs[]? | select(.name == $workflow and (.workflow_id as $id | $workflow_ids | index($id)) != null and (.event == "pull_request" or .event == "merge_group") and any(.pull_requests[]?; .number == $number))]
+      | if length == 0 then ""
+        elif any(.[]; (.id | type) != "number" or (.run_attempt | type) != "number"
+          or (.run_started_at | type) != "string" or .run_started_at == ""
+          or (.status | type) != "string") then
+          error("workflow run is missing its id, attempt, status, or execution timestamp")
+        else sort_by([.run_started_at, .run_attempt, .id])
+          | last
+          | "\(.id) \(.status)"
+        end')" \
       || fail_operation "GitHub returned malformed $workflow_name run pages for $head" "Retry after GitHub returns complete workflow-run pages."
     read -r run_id status <<<"$run_row"
     if [ -n "$run_id" ] && [ "$status" = completed ]; then
