@@ -498,10 +498,14 @@ case "$1 ${2:-}" in
   api*)
     if has 'touchstone-workflows/contents/.touchstone-source-contract.json?ref=' "$@"; then
       [ ! -f "$GH_STATE/behavior-manifest-unreadable" ] || { printf 'Not Found\n' >&2; exit 1; }
-      behavior_version=1
-      [ ! -f "$GH_STATE/behavior-version-newer" ] || behavior_version=2
+      # The source tree's own policies declare gate behavior 2, so a GitHub
+      # that agrees with them is the default; each flag below is one drifted
+      # world -- the pre-rollout gate, an unsupported future one, or an
+      # overlapping pin whose other enforced revision is the compatible one.
+      behavior_version=2
+      [ ! -f "$GH_STATE/behavior-version-legacy" ] || behavior_version=1
       [ ! -f "$GH_STATE/behavior-version-unsupported" ] || behavior_version=3
-      if [ -f "$GH_STATE/overlapping-pins" ] && has "?ref=$GH_MID_SHA" "$@"; then behavior_version=2; fi
+      if [ -f "$GH_STATE/overlapping-pins" ] && has "?ref=$GH_MID_SHA" "$@"; then behavior_version=1; fi
       if [ -f "$GH_STATE/behavior-version-missing" ]; then
         printf '%s\n' '{"contractVersion":1}'
       else
@@ -828,21 +832,28 @@ EOF
     set -e
   }
 
-  # A packaged v2 client fixture exercises the staged rollout without
-  # changing the source tree's still-live v1 consumer policies.
-  mkdir -p "$TMP/tool-v2/bin" "$TMP/tool-v2/scripts" "$TMP/tool-v2/policy/github"
-  cp "$ROOT/bin/touchstone" "$TMP/tool-v2/bin/touchstone"
-  cp "$ROOT/scripts/touchstone-pr.sh" "$TMP/tool-v2/scripts/touchstone-pr.sh"
-  cp -R "$ROOT/policy/github/." "$TMP/tool-v2/policy/github/"
-  printf '3.7.3\n' >"$TMP/tool-v2/VERSION"
-  jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 2' \
-    "$ROOT/policy/github/touchstone-main.json" >"$TMP/tool-v2/policy/github/touchstone-main.json"
-  run_pr_v2() {
+  # The source tree's policies now declare gate behavior 2, so the packaged
+  # fixture is the older client: an installed release that still declares v1
+  # must keep working while the pin rolls out repository by repository.
+  mkdir -p "$TMP/tool-v1/bin" "$TMP/tool-v1/scripts" "$TMP/tool-v1/policy/github"
+  cp "$ROOT/bin/touchstone" "$TMP/tool-v1/bin/touchstone"
+  cp "$ROOT/scripts/touchstone-pr.sh" "$TMP/tool-v1/scripts/touchstone-pr.sh"
+  cp -R "$ROOT/policy/github/." "$TMP/tool-v1/policy/github/"
+  printf '3.7.6\n' >"$TMP/tool-v1/VERSION"
+  # A released client carries the whole previous policy, not just its behavior
+  # version: 3.7.6 pins the revision this one supersedes. GH_BEHIND_SHA is that
+  # relationship in the fixture lineage, so the fixture reproduces the real
+  # rollout shape -- GitHub enforcing a descendant of what the client pins.
+  jq --arg sha "$GH_BEHIND_SHA" '
+      .workflowSource.sourceContract.gateBehaviorContractVersion = 1
+      | (.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | .sha) = $sha' \
+    "$ROOT/policy/github/touchstone-main.json" >"$TMP/tool-v1/policy/github/touchstone-main.json"
+  run_pr_v1() {
     local output="$1"
     shift
     : >"$GH_CALLS"
     set +e
-    bash "$TMP/tool-v2/bin/touchstone" pr "$@" --project "$TMP/project" >"$output" 2>&1
+    bash "$TMP/tool-v1/bin/touchstone" pr "$@" --project "$TMP/project" >"$output" 2>&1
     RUN_RC=$?
     set -e
   }
@@ -1001,28 +1012,49 @@ EOF
   rm -f "$TMP/state/pr-exists"
 
   echo "==> open re-runs the pinned review gate where the repository has one"
-  touch "$TMP/state/review-gate"
+  touch "$TMP/state/review-gate" "$TMP/state/behavior-version-legacy"
   rm -f "$TMP/state/gate-reruns" "$TMP/state/review-request"
-  run_pr "$TMP/out" open --title 'Gate' --body-file "$TMP/body" --json
+  run_pr_v1 "$TMP/out" open --title 'Gate' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   [ -f "$TMP/state/gate-reruns" ] && grep -q 'rerun 77' "$TMP/state/gate-reruns" \
     || fail "open did not re-run the review-gate run for the head"
   rm -f "$TMP/state/gate-reruns"
   echo 3 >"$TMP/state/gate-in-progress"
-  run_pr "$TMP/out" open --title 'Gate' --body-file "$TMP/body" --json
+  run_pr_v1 "$TMP/out" open --title 'Gate' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
     || fail "open did not wait for an in-progress gate run before re-running it"
   [ "$(grep -c 'actions/runs?head_sha=' "$GH_CALLS")" -ge 2 ] \
     || fail "open did not poll the in-progress gate run"
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-in-progress" "$TMP/state/behavior-version-legacy"
+  # The rollout state this pin creates: GitHub enforces the waiting gate while
+  # an installed release still declares v1. The older client keeps its own
+  # semantics -- it re-runs rather than trusting an evaluation it cannot
+  # reason about -- instead of inheriting v2 behavior from the repository.
+  touch "$TMP/state/gate-fresh-active"
+  echo 30 >"$TMP/state/gate-in-progress"
+  run_pr_v1 "$TMP/out" open --title 'Gate v1 against v2 GitHub' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"rerun-requested"}'
+  assert_not_has "$TMP/out" '"action":"already-active"'
+  grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
+    || fail "a v1 client adopted v2 waiting semantics from the repository"
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-in-progress" "$TMP/state/gate-fresh-active"
+  # ...and its guarded merge fails closed rather than certifying that gate. The
+  # released tool must be upgraded before the pin is applied to a consumer;
+  # this is the failure that ordering exists to avoid.
+  rm -f "$TMP/state/merged"
+  run_pr_v1 "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'does not declare supported gate behavior contract 1'
+  assert_not_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/gate-reruns"
-  touch "$TMP/state/behavior-version-newer"
-  run_pr_v2 "$TMP/out" status 7 --json
+  run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGateBehaviorContractVersion":2'
   touch "$TMP/state/gate-fresh-active"
   echo 30 >"$TMP/state/gate-in-progress"
-  run_pr_v2 "$TMP/out" open --title 'Gate v2' --body-file "$TMP/body" --json
+  run_pr "$TMP/out" open --title 'Gate v2' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"already-active"}'
   [ ! -f "$TMP/state/gate-reruns" ] \
@@ -1032,7 +1064,7 @@ EOF
   rm -f "$TMP/state/gate-in-progress" "$TMP/state/gate-reruns" "$TMP/state/gate-fresh-active"
   touch "$TMP/state/gate-fresh-active" "$TMP/state/gate-run-unbound"
   echo 3 >"$TMP/state/gate-in-progress"
-  run_pr_v2 "$TMP/out" open --title 'Gate v2 rollout' --body-file "$TMP/body" --json
+  run_pr "$TMP/out" open --title 'Gate v2 rollout' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"rerun-requested"}'
   assert_not_has "$TMP/out" '"action":"already-active"'
@@ -1041,44 +1073,44 @@ EOF
   rm -f "$TMP/state/gate-in-progress" "$TMP/state/gate-reruns" "$TMP/state/gate-fresh-active" "$TMP/state/gate-run-unbound"
   touch "$TMP/state/gate-review-window-active"
   echo 30 >"$TMP/state/gate-in-progress"
-  run_pr_v2 "$TMP/out" open --title 'Gate v2 existing request' --body-file "$TMP/body" --json
+  run_pr "$TMP/out" open --title 'Gate v2 existing request' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"already-active"}'
   [ ! -f "$TMP/state/gate-reruns" ] \
     || fail "behavior v2 open did not reuse an existing request's active review window"
   rm -f "$TMP/state/gate-in-progress" "$TMP/state/gate-review-window-active"
-  run_pr_v2 "$TMP/out" open --title 'Gate v2' --body-file "$TMP/body" --json
+  run_pr "$TMP/out" open --title 'Gate v2' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"rerun-requested"}'
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
     || fail "behavior v2 open did not refresh a completed evaluation"
-  rm -f "$TMP/state/behavior-version-newer" "$TMP/state/gate-reruns"
+  rm -f "$TMP/state/gate-reruns"
+  touch "$TMP/state/behavior-version-legacy"
   echo 3 >"$TMP/state/gate-in-progress"
-  run_pr_v2 "$TMP/out" open --title 'Gate rollout mismatch' --body-file "$TMP/body" --json
+  run_pr "$TMP/out" open --title 'Gate rollout mismatch' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"rerun-requested"}'
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
     || fail "open trusted local behavior v2 intent while GitHub still enforced v1"
-  rm -f "$TMP/state/gate-reruns"
-  touch "$TMP/state/behavior-version-newer"
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/behavior-version-legacy"
   echo 3 >"$TMP/state/gate-in-progress"
-  run_pr_v2 "$TMP/out" open --title 'Expired gate v2' --body-file "$TMP/body" --json
+  run_pr "$TMP/out" open --title 'Expired gate v2' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"rerun-requested"}'
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
     || fail "behavior v2 open reused a run whose request-evidence window had expired"
-  rm -f "$TMP/state/behavior-version-newer" "$TMP/state/gate-in-progress"
+  rm -f "$TMP/state/gate-in-progress"
   jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 3' \
-    "$TMP/tool-v2/policy/github/touchstone-main.json" >"$TMP/tool-v2/policy/github/touchstone-main.next"
-  mv "$TMP/tool-v2/policy/github/touchstone-main.next" "$TMP/tool-v2/policy/github/touchstone-main.json"
+    "$TMP/tool-v1/policy/github/touchstone-main.json" >"$TMP/tool-v1/policy/github/touchstone-main.next"
+  mv "$TMP/tool-v1/policy/github/touchstone-main.next" "$TMP/tool-v1/policy/github/touchstone-main.json"
   touch "$TMP/state/behavior-version-unsupported"
-  run_pr_v2 "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  run_pr_v1 "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" 'invalid workflow source contract declaration'
   assert_not_has "$GH_CALLS" 'pr merge'
-  jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 2' \
-    "$TMP/tool-v2/policy/github/touchstone-main.json" >"$TMP/tool-v2/policy/github/touchstone-main.next"
-  mv "$TMP/tool-v2/policy/github/touchstone-main.next" "$TMP/tool-v2/policy/github/touchstone-main.json"
+  jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 1' \
+    "$TMP/tool-v1/policy/github/touchstone-main.json" >"$TMP/tool-v1/policy/github/touchstone-main.next"
+  mv "$TMP/tool-v1/policy/github/touchstone-main.next" "$TMP/tool-v1/policy/github/touchstone-main.json"
   rm -f "$TMP/state/behavior-version-unsupported"
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns"
 
@@ -1481,11 +1513,11 @@ Closes #42'
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
 
   echo "==> behavior v2 merge preserves an active authoritative evaluation"
-  touch "$TMP/state/review-gate" "$TMP/state/behavior-version-newer"
+  touch "$TMP/state/review-gate"
   rm -f "$TMP/state/merged" "$TMP/state/gate-reruns"
   touch "$TMP/state/gate-fresh-active"
   echo 30 >"$TMP/state/gate-in-progress"
-  run_pr_v2 "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"already-active"}'
   assert_has "$GH_CALLS" 'pr merge'
@@ -1493,7 +1525,7 @@ Closes #42'
     || fail "behavior v2 merge re-ran an evaluation that was already active"
   [ "$(cat "$TMP/state/gate-in-progress")" = 29 ] \
     || fail "behavior v2 merge polled an active evaluation instead of returning control"
-  rm -f "$TMP/state/review-gate" "$TMP/state/behavior-version-newer" \
+  rm -f "$TMP/state/review-gate" \
     "$TMP/state/gate-in-progress" "$TMP/state/gate-fresh-active" "$TMP/state/merged"
 
   echo "==> without a pinned gate, merge fails closed unless --unguarded, which records the gap"
@@ -1712,18 +1744,18 @@ Closes #42'
   rm -f "$TMP/state/overlapping-pins"
 
   echo "==> pinned gate behavior is checked at the exact enforced revision (AUT-568)"
-  touch "$TMP/state/review-gate" "$TMP/state/ahead-pin" "$TMP/state/behavior-version-newer"
+  touch "$TMP/state/review-gate" "$TMP/state/ahead-pin" "$TMP/state/behavior-version-legacy"
   run_pr "$TMP/out" policy-status --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"partial"'
-  assert_has "$TMP/out" "does not declare supported gate behavior contract 1"
+  assert_has "$TMP/out" "does not declare supported gate behavior contract 2"
   assert_has "$TMP/out" "observed $GH_AHEAD_SHA"
   assert_has "$GH_CALLS" "touchstone-workflows/contents/.touchstone-source-contract.json?ref=$GH_AHEAD_SHA"
-  rm -f "$TMP/state/ahead-pin" "$TMP/state/behavior-version-newer"
+  rm -f "$TMP/state/ahead-pin" "$TMP/state/behavior-version-legacy"
   touch "$TMP/state/behavior-version-missing"
   run_pr "$TMP/out" policy-status --json
   assert_has "$TMP/out" '"status":"partial"'
-  assert_has "$TMP/out" "does not declare supported gate behavior contract 1"
+  assert_has "$TMP/out" "does not declare supported gate behavior contract 2"
   rm -f "$TMP/state/behavior-version-missing"
   touch "$TMP/state/behavior-manifest-unreadable"
   run_pr "$TMP/out" policy-status --json

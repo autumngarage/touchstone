@@ -6,7 +6,7 @@
     "repository": "touchstone-workflows",
     "sourceContract": {
       "manifestPath": ".touchstone-source-contract.json",
-      "gateBehaviorContractVersion": 1
+      "gateBehaviorContractVersion": 2
     },
     "branchProtection": {
       "enforce_admins": true,
@@ -93,19 +93,19 @@
               "path": ".github/workflows/delivery-evidence.yml",
               "ref": "refs/heads/main",
               "repository_id": 1333343261,
-              "sha": "cc4b073657beb1ce9f18a880e40293ddb92d0541"
+              "sha": "118f04bd43e8b75a5175ec84c495d7abf3dc908c"
             },
             {
               "path": ".github/workflows/review-gate.yml",
               "ref": "refs/heads/main",
               "repository_id": 1333343261,
-              "sha": "cc4b073657beb1ce9f18a880e40293ddb92d0541"
+              "sha": "118f04bd43e8b75a5175ec84c495d7abf3dc908c"
             },
             {
               "path": ".github/workflows/validate.yml",
               "ref": "refs/heads/main",
               "repository_id": 1333343261,
-              "sha": "cc4b073657beb1ce9f18a880e40293ddb92d0541"
+              "sha": "118f04bd43e8b75a5175ec84c495d7abf3dc908c"
             }
           ]
         }
