@@ -98,8 +98,9 @@ taking this document's word for it.
   timestamp and the live PR head that state belongs to. It also reports the
   newest exact-head CheckRun belonging to the effectively required
   `review-gate` workflow run: its id, status, conclusion, details URL, and
-  bounded policy-owned title and summary, plus the owning workflow-run id and
-  attempt. The binding excludes same-named repository-local checks, requires
+  bounded policy-owned title and summary, plus the owning workflow-run id,
+  attempt, attempt-start timestamp, and CheckRun completion timestamp. The
+  binding excludes same-named repository-local checks, requires
   the workflow run to name this pull request, and selects the job from the
   current run attempt so a superseded rerun cannot look green. The selected run's
   immutable GraphQL workflow file must also match the effective rule's source
@@ -153,9 +154,12 @@ taking this document's word for it.
   `review-gate` workflow, it requires the current policy-bound CheckRun to be
   complete and successful for that head before asking GitHub to merge. A
   pending, failed, absent, unbound, or ambiguous gate causes no merge or queue
-  mutation. Review is requested by `open` and refreshed by `answer`; `merge`
+  mutation. A green gate is also refused when any conversation comment, formal
+  review, or inline review comment was created or edited at or after that gate
+  completed; this prevents same-head feedback from arriving behind the
+  verdict. Review is requested by `open` and refreshed by `answer`; `merge`
   never starts or waits for review. Raw equivalent: verify the policy-bound
-  gate is successful for the exact head, then `gh pr merge --squash
+  gate is successful and fresh for the exact head, then `gh pr merge --squash
   --match-head-commit SHA`, then re-read `state`, `headRefOid`, merge queue,
   and auto-merge state.
 

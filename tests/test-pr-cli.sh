@@ -394,7 +394,7 @@ case "$1 ${2:-}" in
         status_gate_success | status_gate_historical)
           jq -cn --arg head "$GH_HEAD" '{check_runs:[
             {id:83,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"failure",details_url:"https://example.test/runs/83",output:{title:"Superseded attempt",summary:"Old evidence."}},
-            {id:84,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"success",details_url:"https://example.test/runs/84",output:{title:"Exact-head review accepted",summary:"All review feedback was answered."}}
+            {id:84,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"success",completed_at:"2026-08-27T17:30:00Z",details_url:"https://example.test/runs/84",output:{title:"Exact-head review accepted",summary:"All review feedback was answered."}}
           ]}'
           ;;
         status_gate_status_race)
@@ -440,7 +440,7 @@ case "$1 ${2:-}" in
           ;;
         status_gate_malformed) : ;;
         *)
-          jq -cn --arg head "$GH_HEAD" '{check_runs:[{id:84,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"success",details_url:"https://example.test/runs/84",output:{title:"Exact-head review accepted",summary:"All review feedback was answered."}}]}'
+          jq -cn --arg head "$GH_HEAD" '{check_runs:[{id:84,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"success",completed_at:"2026-08-27T17:30:00Z",details_url:"https://example.test/runs/84",output:{title:"Exact-head review accepted",summary:"All review feedback was answered."}}]}'
           ;;
       esac
     elif has '/pulls/7/files?per_page=100' "$@"; then
@@ -460,7 +460,9 @@ case "$1 ${2:-}" in
       # second.
       if [ -f "$GH_STATE/unguarded-recorded" ]; then printf '0\n1\n'; else printf '0\n0\n'; fi
     elif has '/issues/7/comments' "$@"; then
-      if [ "${GH_MODE:-ok}" = many_requests ]; then
+      if has 'updated_at // .created_at' "$@"; then
+        printf '%s\n' '2026-08-27T17:05:00Z'
+      elif [ "${GH_MODE:-ok}" = many_requests ]; then
         for index in $(awk 'BEGIN { for (i = 1; i <= 4000; i++) print i }'); do
           printf 'https://example.test/pr/7#issuecomment-%s\talice\t%s\n' "$index" \
             "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
@@ -485,13 +487,21 @@ case "$1 ${2:-}" in
           "@codex review\\n\\n<!-- touchstone:pr-open head=$saved_head base=$saved_base base_sha=$saved_base_sha -->"
       fi
     elif has '/reviews?per_page=100' "$@"; then
-      if has 'reviewId:.id' "$@"; then
+      if has 'submitted_at // empty' "$@"; then
+        if [ "${GH_MODE:-ok}" = status_gate_stale_review ]; then
+          printf '%s\n' '2026-08-27T17:35:00Z'
+        else
+          printf '%s\n' '2026-08-27T17:06:00Z'
+        fi
+      elif has 'reviewId:.id' "$@"; then
         printf '%s\n' '[{"reviewId":61,"state":"COMMENTED","body":"body finding","url":"https://example.test/review","commit":"old-head"}]'
       else
         printf '%s\n' '  review 61 [COMMENTED] at old-head'
       fi
     elif has '/pulls/7/comments' "$@"; then
-      if [ -f "$GH_STATE/reply" ]; then printf '%s\n' '<!-- touchstone:respond-review comment=51 -->'; fi
+      if has 'updated_at // .created_at' "$@"; then
+        printf '%s\n' '2026-08-27T17:07:00Z'
+      elif [ -f "$GH_STATE/reply" ]; then printf '%s\n' '<!-- touchstone:respond-review comment=51 -->'; fi
     fi
     ;;
   "api repos/autumngarage/current/pulls/7/comments/51/replies")
@@ -932,19 +942,19 @@ EOF
   assert_not_has "$TMP/out" 'Local look-alike passed'
   GH_MODE=status_gate_stale_attempt run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"runAttempt":2,"workflowStatus":"in_progress","workflowConclusion":null,"checkRunId":86'
+  assert_has "$TMP/out" '"runAttempt":2,"runStartedAt":"2026-08-27T17:10:00Z","workflowStatus":"in_progress","workflowConclusion":null,"checkRunId":86'
   assert_not_has "$TMP/out" 'Superseded success'
   rm -f "$TMP/state/status-attempt-advanced"
   GH_MODE=status_gate_attempt_race run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"runAttempt":3,"workflowStatus":"in_progress","workflowConclusion":null,"checkRunId":87'
+  assert_has "$TMP/out" '"runAttempt":3,"runStartedAt":"2026-08-27T17:10:00Z","workflowStatus":"in_progress","workflowConclusion":null,"checkRunId":87'
   assert_not_has "$TMP/out" 'Superseded success'
   [ "$(grep -c 'actions/runs?head_sha=' "$GH_CALLS")" -eq 3 ] \
     || fail "status did not retry the binding after a concurrent gate rerun"
   rm -f "$TMP/state/status-new-run-started"
   GH_MODE=status_gate_new_run_race run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"workflowRunId":88,"runAttempt":1,"workflowStatus":"in_progress","workflowConclusion":null,"checkRunId":89'
+  assert_has "$TMP/out" '"workflowRunId":88,"runAttempt":1,"runStartedAt":"2026-08-27T17:20:00Z","workflowStatus":"in_progress","workflowConclusion":null,"checkRunId":89'
   assert_not_has "$TMP/out" 'Superseded success'
   [ "$(grep -c 'actions/runs?head_sha=' "$GH_CALLS")" -eq 3 ] \
     || fail "status did not retry the binding after a concurrent new gate run"
@@ -1476,6 +1486,13 @@ Closes #42'
     || fail "merge re-ran review instead of observing the existing verdict"
   assert_has "$GH_CALLS" 'pr merge'
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"verified-success"}'
+  rm -f "$TMP/state/merged"
+  : >"$GH_CALLS"
+  GH_MODE=status_gate_stale_review run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'review evidence is stale'
+  assert_has "$TMP/out" '2026-08-27T17:35:00Z'
+  assert_not_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
   : >"$GH_CALLS"
   GH_MODE=status_gate_pending run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json

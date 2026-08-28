@@ -1748,6 +1748,7 @@ select_review_gate_run_identity() {
               runId:.id,
               runNodeId:.node_id,
               runAttempt:.run_attempt,
+              runStartedAt:.run_started_at,
               status:.status,
               conclusion:(.conclusion // null)
             }
@@ -1883,6 +1884,7 @@ read_review_gate_check() {
           head:$head,
           workflowRunId:$run.runId,
           runAttempt:$run.runAttempt,
+          runStartedAt:$run.runStartedAt,
           workflowStatus:$run.status,
           workflowConclusion:$run.conclusion
         }
@@ -1893,11 +1895,13 @@ read_review_gate_check() {
           head:$head,
           workflowRunId:$run.runId,
           runAttempt:$run.runAttempt,
+          runStartedAt:$run.runStartedAt,
           workflowStatus:$run.status,
           workflowConclusion:$run.conclusion,
           checkRunId:.id,
           status:.status,
           conclusion:(.conclusion // null),
+          completedAt:(.completed_at // null),
           detailsUrl:(.details_url // .html_url // null),
           title:((.output.title // "")[0:$max_chars]),
           summary:((.output.summary // "")[0:$max_chars])
@@ -1939,16 +1943,54 @@ review_gate_check_text() {
     end'
 }
 
+REVIEW_SURFACE_LATEST_AT=""
+read_review_surface_latest_at() {
+  local number="$1" issue_comment_times review_times review_comment_times
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" \
+    "repos/$REPO/issues/$number/comments?per_page=100" \
+    --jq '.[] | (.updated_at // .created_at // empty)' \
+    || fail_operation "could not read PR conversation timestamps: $READ_OUTPUT" "Retry after GitHub recovers."
+  issue_comment_times="$READ_OUTPUT"
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" \
+    "repos/$REPO/pulls/$number/reviews?per_page=100" \
+    --jq '.[] | (.submitted_at // empty)' \
+    || fail_operation "could not read formal review timestamps: $READ_OUTPUT" "Retry after GitHub recovers."
+  review_times="$READ_OUTPUT"
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" \
+    "repos/$REPO/pulls/$number/comments?per_page=100" \
+    --jq '.[] | (.updated_at // .created_at // empty)' \
+    || fail_operation "could not read inline review timestamps: $READ_OUTPUT" "Retry after GitHub recovers."
+  review_comment_times="$READ_OUTPUT"
+  REVIEW_SURFACE_LATEST_AT="$(printf '%s\n%s\n%s\n' \
+    "$issue_comment_times" "$review_times" "$review_comment_times" | jq -Rrsc '
+      split("\n") | map(select(. != ""))
+      | if any(.[]; (fromdateiso8601? // null) == null)
+        then error("review timestamp is not ISO-8601 UTC")
+        else max // ""
+        end')" \
+    || fail_operation "GitHub returned a malformed review-surface timestamp" "Retry after GitHub returns complete review data."
+}
+
 require_review_gate_success() {
-  local head="$1" number="$2" gate_status gate_conclusion gate_text
+  local head="$1" number="$2" gate_status gate_conclusion gate_completed_at gate_text
   read_review_gate_check "$head" "$number"
   gate_status="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.status // .workflowStatus // "absent"')"
   gate_conclusion="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.conclusion // .workflowConclusion // ""')"
+  gate_completed_at="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.completedAt // empty')"
   gate_text="$(review_gate_check_text)"
   REVIEW_GATE_RUN_ID="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.workflowRunId // empty')"
 
   if [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.present == true')" = true ] \
     && [ "$gate_status" = completed ] && [ "$gate_conclusion" = success ]; then
+    [ -n "$gate_completed_at" ] \
+      || fail_operation "successful review gate $REVIEW_GATE_RUN_ID has no completion timestamp" "Retry after GitHub returns complete check data."
+    read_review_surface_latest_at "$number"
+    if [ -n "$REVIEW_SURFACE_LATEST_AT" ] \
+      && ! jq -ne --arg latest "$REVIEW_SURFACE_LATEST_AT" --arg completed "$gate_completed_at" \
+        '($latest | fromdateiso8601) < ($completed | fromdateiso8601)' >/dev/null; then
+      fail_input "review evidence is stale: the PR review surface changed at $REVIEW_SURFACE_LATEST_AT, at or after gate run $REVIEW_GATE_RUN_ID completed at $gate_completed_at" \
+        "Use touchstone pr open to refresh a clean review, or touchstone pr answer for a finding, then retry after the exact-head gate succeeds."
+    fi
     REVIEW_GATE_ACTION=verified-success
     return 0
   fi
