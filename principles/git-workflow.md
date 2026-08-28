@@ -279,11 +279,11 @@ state that masks a discarded fixture or precondition.
 touchstone pr merge <n> --head <reviewed-sha>
 ```
 
-It re-runs the pinned gate where policy declares one, asks GitHub to merge
-bound to that head, and reports merged, queued, or auto-merge-enabled only
-while the head still equals the reviewed one. Where the CLI is absent, re-run
-any declared gate for the reviewed head (`gh api -X POST
-repos/<owner>/<repo>/actions/runs/<id>/rerun`), then
+It requires the policy-owned gate to have already succeeded for that exact
+head, asks GitHub to merge bound to it, and reports merged, queued, or
+auto-merge-enabled only while the head still equals the reviewed one. It never
+starts or waits for review. Where the CLI is absent, verify the declared gate
+is successful for the reviewed head, then
 
 ```bash
 gh pr merge <n> --squash --match-head-commit <reviewed-sha>

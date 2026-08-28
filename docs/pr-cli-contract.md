@@ -18,14 +18,16 @@ touchstone pr answer PR --all-resolved-check
 ```
 
 Every command accepts `--project DIR`; every command except `answer` accepts `--json` (`answer` has no observation to report and refuses it). JSON has schema
-`touchstone.pr/v1`; adding fields is compatible, while changing field meaning
-requires a new schema. Exit 0 means the reported state was verified, exit 1 is
+`touchstone.pr/v1`; adding fields or enum values is compatible, while changing
+an existing value's meaning requires a new schema. Exit 0 means the reported state was verified, exit 1 is
 an operational or transport failure, and exit 2 is invalid or unsafe input. No
 command runs a daemon, stores credentials, or persists derived PR state.
-When `open` or `merge` touches a policy-declared review gate, its JSON result
-includes `reviewGate.runId` and `reviewGate.action`. `rerun-requested` means the
-client refreshed a completed attempt; `already-active` means a behavior-v2 run
-is the authoritative evaluator and the client returned while that run waits.
+When `open` requests a policy-declared review gate, its JSON result includes
+`reviewGate.runId` and `reviewGate.action`. `rerun-requested` means the client
+refreshed a completed attempt; `already-active` means a behavior-v2 run is the
+authoritative evaluator and the client returned while that run waits. A
+successful guarded `merge` reports `verified-success`: it observed an existing
+policy-bound successful gate and did not request another evaluation.
 
 ## Operations and raw equivalents
 
@@ -148,20 +150,20 @@ taking this document's word for it.
   `--match-head-commit`, and re-reads state and head after the mutation. It
   accepts merged, queued, or auto-merge-enabled only while the reconciled head
   still equals the reviewed head. Where the base branch requires the pinned
-  `review-gate` workflow, it first asks that gate to evaluate the evidence
-  present now and then asks GitHub to merge. A completed attempt is re-run;
-  an active behavior-v2 attempt remains authoritative because it polls the
-  same exact-head evidence. Auto-merge arms while the run is pending and the
-  queue admits the PR when it passes — the verdict stays GitHub's. Raw
-  equivalent: if the run is completed, `gh api -X POST
-  repos/O/R/actions/runs/ID/rerun` on the gate's run for the head; then
-  `gh pr merge --squash --match-head-commit SHA`, then re-read `state`,
-  `headRefOid`, merge queue, and auto-merge state.
+  `review-gate` workflow, it requires the current policy-bound CheckRun to be
+  complete and successful for that head before asking GitHub to merge. A
+  pending, failed, absent, unbound, or ambiguous gate causes no merge or queue
+  mutation. Review is requested by `open` and refreshed by `answer`; `merge`
+  never starts or waits for review. Raw equivalent: verify the policy-bound
+  gate is successful for the exact head, then `gh pr merge --squash
+  --match-head-commit SHA`, then re-read `state`, `headRefOid`, merge queue,
+  and auto-merge state.
 
   Why not the raw sequence: `gh pr merge` exit codes lie in both directions —
   nonzero after a merge that actually succeeded, and zero having merely *armed*
-  auto-merge while a check is still red (`principles/git-workflow.md`). A driver
-  that trusts the exit code misreports the outcome either way, and the raw
+  auto-merge while a check is still red (`principles/git-workflow.md`). The
+  Touchstone command refuses that mutation until review is already green. A
+  driver that trusts the exit code misreports the outcome either way, and the raw
   recovery is a four-part reconciliation that is easy to skip precisely when it
   matters. Binding the reviewed head to both the mutation and the reconciliation
   is one step here and two easily-forgotten flags there.

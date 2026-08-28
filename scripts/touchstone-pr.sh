@@ -1939,6 +1939,32 @@ review_gate_check_text() {
     end'
 }
 
+require_review_gate_success() {
+  local head="$1" number="$2" gate_status gate_conclusion gate_text
+  read_review_gate_check "$head" "$number"
+  gate_status="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.status // .workflowStatus // "absent"')"
+  gate_conclusion="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.conclusion // .workflowConclusion // ""')"
+  gate_text="$(review_gate_check_text)"
+  REVIEW_GATE_RUN_ID="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.workflowRunId // empty')"
+
+  if [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.present == true')" = true ] \
+    && [ "$gate_status" = completed ] && [ "$gate_conclusion" = success ]; then
+    REVIEW_GATE_ACTION=verified-success
+    return 0
+  fi
+
+  case "$gate_status" in
+    queued | requested | waiting | pending | in_progress)
+      fail_input "review gate for $head is still evaluating: $gate_text" \
+        "Wait for touchstone pr status to report a successful exact-head gate, then retry this merge command."
+      ;;
+    *)
+      fail_input "review gate for $head is not successful: $gate_text" \
+        "Use touchstone pr open for an unbound head or answer the reported findings, then wait for a successful exact-head gate."
+      ;;
+  esac
+}
+
 status_pr() {
   local number state url head head_repo base base_sha merge_state draft
   read_pr_row
@@ -2001,10 +2027,10 @@ merge_pr() {
     final_state=already-merged
   else
     [ "$state" = OPEN ] || fail_input "PR #$PR_NUMBER is $state" "Only an open or merged PR is supported."
-    # A required workflow cannot see a review that lands after the request.
-    # Ask it to evaluate what is on the PR now, then ask GitHub to merge:
-    # auto-merge arms while the run is pending and the queue admits the PR
-    # when it is green. The verdict is GitHub's; this only requests it.
+    # Queue admission is the final delivery mutation, not a way to wait for
+    # review. The open/answer paths request the policy-owned evaluation. Merge
+    # observes that exact-head verdict and refuses without arming auto-merge or
+    # entering the queue until it is already successful.
     # The guarded path is taken only when enforcement is fully applied --
     # the gate present at the policy's repository and ref, at the policy's
     # revision or a descendant of it published there, with the queue and
@@ -2019,20 +2045,15 @@ merge_pr() {
     fi
     if [ "$ENFORCEMENT_STATUS" = applied ]; then
       if [ "$ENFORCEMENT_EXPECTS_REVIEW_GATE" = true ]; then
-        rerun_review_gate "$number" "$head" "$base"
+        require_review_gate_success "$head" "$number"
         if [ "$JSON_MODE" = false ]; then
-          if [ "$REVIEW_GATE_ACTION" = already-active ]; then
-            printf 'Review gate run %s is already evaluating this head; GitHub merges when it passes.\n' "$REVIEW_GATE_RUN_ID" >&2
-          else
-            printf 'Review gate re-run requested for run %s; GitHub merges when it passes.\n' "$REVIEW_GATE_RUN_ID" >&2
-          fi
+          printf 'Review gate run %s already accepts this exact head.\n' "$REVIEW_GATE_RUN_ID" >&2
         fi
       elif [ "$JSON_MODE" != true ]; then
         printf 'Workflow-source policy applied; GitHub merges when its required source check passes.\n' >&2
       fi
-      # A gate re-run may wait for an in-progress run. The source-policy path
-      # has no gate to re-run, but both paths must still merge the head and
-      # exact base policy whose enforcement was just inspected.
+      # Both paths must still merge the head and exact base policy whose
+      # enforcement was just inspected.
       verify_live_head_and_base "$number" "$head" "$base" "$base_sha"
     else
       # Enforcement is not fully applied on this base: merging here would not
