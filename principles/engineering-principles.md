@@ -19,8 +19,8 @@ Every exception is either re-raised or logged with enough context to debug from 
 
 **The rule:** if something fails, the failure must be visible to someone — an operator, a log aggregator, a monitoring dashboard. A failure that nobody can see is the most dangerous kind.
 
-## Every fix gets a test
-Bug fixes must include a test that reproduces the exact failure mode, and the test must run in CI — not just locally. A bug fix without a regression test means the bug can recur silently the next time someone refactors nearby. The test should fail on the old code and pass on the new code — if it passes on both, it isn't testing the right thing.
+## Every retained fix gets a test
+Retained bug fixes must include a test that reproduces the exact failure mode, and the test must run in CI — not just locally. A bug fix without a regression test means the bug can recur silently the next time someone refactors nearby. The test should fail on the old code and pass on the new code — if it passes on both, it isn't testing the right thing. A regression test proves a failure; it does not justify retaining a review fix that created another defect. Revert or simplify that fix before making another mutation.
 
 ## Think in invariants
 For nontrivial logic, name at least one invariant and assert it — either in a test or as a runtime boundary check. What must always be true? What relationship between values must hold? Happy-path outputs tell you the code worked for one input; invariants tell you it can't be wrong for any input in the covered space.

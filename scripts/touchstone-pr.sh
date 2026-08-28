@@ -1288,9 +1288,21 @@ rerun_required_workflow() {
       || fail_operation "multiple external $workflow_name workflow identities ran for PR #$number at $head" "Remove the same-named required-workflow ambiguity, then retry."
     run_row="$(printf '%s\n' "$run_pages" | jq -ser \
       --arg workflow "$workflow_name" --argjson workflow_ids "$workflow_ids" --argjson number "$number" \
-      '[.[].workflow_runs[]? | select(.name == $workflow and (.workflow_id as $id | $workflow_ids | index($id)) != null and (.event == "pull_request" or .event == "merge_group") and any(.pull_requests[]?; .number == $number))] | sort_by(.id) | last | [(.id // ""), (.status // ""), (.run_started_at // "")] | @tsv')" \
+      '[.[].workflow_runs[]? | select(.name == $workflow and (.workflow_id as $id | $workflow_ids | index($id)) != null and (.event == "pull_request" or .event == "merge_group") and any(.pull_requests[]?; .number == $number))]
+      | if length == 0 then ""
+        elif any(.[]; (.id | type) != "number" or (.run_attempt | type) != "number"
+          or (.run_started_at | type) != "string" or .run_started_at == ""
+          or (.status | type) != "string") then
+          error("workflow run is missing its id, attempt, status, or execution timestamp")
+        else (map(.run_started_at) | max) as $latest_start
+          | [.[] | select(.run_started_at == $latest_start)] as $latest_runs
+          | if ($latest_runs | length) > 1 then
+              error("multiple workflow runs share the newest execution timestamp")
+            else $latest_runs[0] | "\(.id) \(.status) \(.run_started_at)"
+            end
+        end')" \
       || fail_operation "GitHub returned malformed $workflow_name run pages for $head" "Retry after GitHub returns complete workflow-run pages."
-    IFS="$(printf '\t')" read -r run_id status run_started_at <<<"$run_row"
+    read -r run_id status run_started_at <<<"$run_row"
     if [ -n "$run_id" ] && [ "$active_reuse_seconds" -gt 0 ]; then
       active_run_bound=false
       case "$status" in

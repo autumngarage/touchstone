@@ -202,7 +202,9 @@ Afterwards: triage each finding as valid, false positive, duplicate, or out of
 scope; apply valid **high-severity** fixes and answer-and-route valid findings
 below the bar, exactly as the delivery contract does on the PR side; do not
 re-run the pass to confirm the reviewer is now quiet; never expand the slice
-to address adjacent or pre-existing findings.
+to address adjacent or pre-existing findings. If a review fix creates another
+defect, stop patching forward and follow the review-fix cascade rule in
+`principles/git-workflow.md`.
 
 ## Repository policy still runs
 
@@ -261,18 +263,19 @@ is met:
 After a bounded pass, fix the valid findings, **re-run every applicable
 deterministic check and the intended validation scenario** — a valid fix can
 break what already passed — and stop. Do not run a
-confirming local pass to see whether the reviewer is satisfied; run another
-only if a fix materially changed the risk surface — a new serialization
-format, ownership or threading change, security boundary, or public
-contract.
+confirming local pass to see whether the reviewer is satisfied. If a fix
+materially changes the risk surface — a new serialization format, ownership or
+threading change, security boundary, or public contract — stop and replan; it
+does not earn another local review loop.
 
 **A fix commit moves the head, and exact-head review of the merged head is
 never optional.** What this document bounds is how much you *implement* and
 how many *initiated* passes you run — never whether the head that merges was
 reviewed. After a fix commit, follow `principles/git-workflow.md`: batch every
-fix into one commit, push once, and take one review for that head. Do not run
+allowed fix into one commit, push once, and take one review for that head. Do not run
 an extra initiated pass merely because the previous round found something;
-that is a different thing from the exact-head review the gate requires.
+that is a different thing from the exact-head review the gate requires, and
+exact-head review does not authorize another mutation after a cascade stop.
 
 ## Commit discipline
 

@@ -2,6 +2,8 @@
 
 When you find a structural bug, don't just fix the one you noticed. The same pattern is almost certainly repeated elsewhere in the codebase — and the copies you don't find will bite you later.
 
+When the preceding review fix created the defect, the audit is a stop-before-edit step. Revert or simplify to the last known-good design, then search and classify the weak-point class before further edits. The audit does not authorize patching the failed implementation forward or absorbing every sibling into the current PR.
+
 ## The methodology
 
 1. **Identify the pattern.** Name it precisely. Examples: "stale data contamination," "hardcoded resource list instead of registry lookup," "file-persisted state on a read-only filesystem," "hardcoded absolute values instead of ratios."
