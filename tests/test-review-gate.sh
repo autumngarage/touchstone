@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Behavioral fixtures for the review-gate evidence contract, version 3.
+# Behavioral fixtures for the review-gate evidence contract, version 4.
 # The request is derived from the driver's own comments -- the pr-open marker,
 # or a bare request posted after the head was pushed -- so the evaluator can
 # run from a pinned required workflow with a read-only token.
@@ -17,8 +17,9 @@ ok() { echo "  OK: $*"; }
 HEAD_SHA="1111111111111111111111111111111111111111"
 BASE_SHA="2222222222222222222222222222222222222222"
 cat >"$TMP_DIR/base.json" <<EOF2
-{"contractVersion":3,"complete":true,"trustedAuthors":["chatgpt-codex-connector[bot]"],
+{"contractVersion":4,"complete":true,"trustedAuthors":["chatgpt-codex-connector[bot]"],
  "authorPermissions":{"henry":"admin"},
+ "fixCommitReachability":{"3333333333333333333333333333333333333333":true,"4444444444444444444444444444444444444444":false},
  "pr":{"number":42,"state":"open","headSha":"$HEAD_SHA","baseRef":"main","baseSha":"$BASE_SHA","acceptableBaseShas":["$BASE_SHA"],"headCurrentSince":"2026-08-20T10:00:00Z","openHeadPulls":[42]},
  "issueComments":[
   {"id":100,"created_at":"2026-08-20T10:05:00Z","author_association":"NONE","user":{"login":"henry"},"body":"@codex review\n\n<!-- touchstone:pr-open head=$HEAD_SHA base=main base_sha=$BASE_SHA -->"},
@@ -198,7 +199,7 @@ run_state_case "a post-request formal review for another head is terminal failur
   .issueComments = [.issueComments[0]]
   | .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"3333333333333333333333333333333333333333","user":{"login":"chatgpt-codex-connector[bot]"}}]' failure
 run_case "moved head invalidates evidence" '.pr.headSha = "3333333333333333333333333333333333333333"' failure "no trusted exact-head"
-run_case "contract version is enforced" '.contractVersion = 2' failure "contract version"
+run_case "contract version is enforced" '.contractVersion = 3' failure "contract version"
 echo "==> Findings still need answers"
 run_case "an unanswered inline finding blocks" '
   .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
@@ -209,7 +210,7 @@ run_state_case "an unanswered inline finding is terminal failure" '
 run_case "an answered inline finding passes" '
   .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
   | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
-                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed."}]' success
+                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer v=1 id=9 disposition=fixed fix=3333333333333333333333333333333333333333 -->"}]' success
 run_case "same-head recovery cannot erase an earlier unanswered inline finding" '
   .issueComments = [
     .issueComments[0],
@@ -222,37 +223,93 @@ run_case "read permission cannot answer an inline finding" '
   .authorPermissions.henry = "read"
   | .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
   | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
-                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"OWNER","user":{"login":"henry"},"body":"Fixed."}]' failure "inline finding"
+                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"OWNER","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer v=1 id=9 disposition=fixed fix=3333333333333333333333333333333333333333 -->"}]' failure "inline finding"
+echo "==> An answer records a verified disposition, never prose (AUT-800)"
+# Vesper PR #1047: the driver replied "fixed in <sha>" without recording the
+# disposition, so the gate accepted the answer and GitHub queued a head that
+# did not contain the commit. The commit object exists; only the marker is
+# missing, and that alone must keep the finding unanswered.
+run_case "prose claiming a fix, with no disposition marker, does not answer (AUT-800)" '
+  .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
+                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed in 4444444444444444444444444444444444444444."}]' failure "inline finding"
+# Contract 4 reads the reply body, so an edit is now able to change a verdict.
+# A reply created before the deadline but observed after it could otherwise
+# gain its disposition once the gate had stopped collecting.
+run_case "a disposition observed after the evidence cutoff does not answer" '
+  .evidenceCutoffAt = "2026-08-20T10:35:00Z"
+  | .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
+                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","updated_at":"2026-08-20T10:40:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer v=1 id=9 disposition=fixed fix=3333333333333333333333333333333333333333 -->"}]' failure "inline finding"
+run_case "a disposition observed before the evidence cutoff answers" '
+  .evidenceCutoffAt = "2026-08-20T10:35:00Z"
+  | .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
+                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","updated_at":"2026-08-20T10:31:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer v=1 id=9 disposition=fixed fix=3333333333333333333333333333333333333333 -->"}]' success
+run_case "a fixed disposition naming an unreachable commit does not answer" '
+  .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
+                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer v=1 id=9 disposition=fixed fix=4444444444444444444444444444444444444444 -->"}]' failure "inline finding"
+run_case "a no-code-change disposition answers without naming a commit" '
+  .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
+                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Not a defect: the caller already guards this. <!-- touchstone:review-answer v=1 id=9 disposition=no-code-change -->"}]' success
+run_case "an unsupported disposition does not answer" '
+  .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
+                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Later. <!-- touchstone:review-answer v=1 id=9 disposition=wontfix -->"}]' failure "inline finding"
+run_case "a marker for another finding does not answer this one" '
+  .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
+                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer v=1 id=99 disposition=no-code-change -->"}]' failure "inline finding"
+run_case "a fix SHA that is not a full commit id does not answer" '
+  .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
+                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer v=1 id=9 disposition=fixed fix=3333333 -->"}]' failure "inline finding"
+run_case "an unversioned legacy marker does not answer" '
+  .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
+                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer id=9 -->"}]' failure "inline finding"
+run_case "one answer may dispose of several findings" '
+  .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
+                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Both handled. <!-- touchstone:review-answer v=1 id=8 disposition=no-code-change --> <!-- touchstone:review-answer v=1 id=9 disposition=fixed fix=3333333333333333333333333333333333333333 -->"}]' success
+run_case "missing reachability evidence fails closed" '
+  del(.fixCommitReachability)
+  | .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
+                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer v=1 id=9 disposition=fixed fix=3333333333333333333333333333333333333333 -->"}]' failure "fix-commit reachability evidence is missing"
+
 echo "==> A review body stamped by GitHub's inline attachment is not a finding; any later edit is"
 STANDARD_BODY="### 💡 Codex Review\\n\\nHere are some automated review suggestions for this pull request.\\n\\n**Reviewed commit:** \`1111111111\`"
 run_case "the attachment stamp (updated_at equals the last inline comment) passes" '
   .reviews = [{"id":7,"body":"'"$STANDARD_BODY"'","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:01Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
   | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:01Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
-                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed."}]' success
+                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer v=1 id=9 disposition=fixed fix=3333333333333333333333333333333333333333 -->"}]' success
 run_case "a standard review body edited two seconds after its last attachment is a body finding" '
   .reviews = [{"id":7,"body":"'"$STANDARD_BODY"'","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:03Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
   | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"},
-                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed."}]' failure "body-only finding"
+                       {"id":10,"in_reply_to_id":9,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer v=1 id=9 disposition=fixed fix=3333333333333333333333333333333333333333 -->"}]' failure "body-only finding"
 for permission in write maintain admin; do
   run_case "$permission permission can answer a review-body finding" '
     .authorPermissions.henry = "'"$permission"'"
     | .reviews = [{"id":7,"body":"P1 body finding","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
-    | .issueComments += [{"id":102,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer id=7 -->"}]' success
+    | .issueComments += [{"id":102,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer v=1 id=7 disposition=no-code-change -->"}]' success
 done
 run_case "read permission cannot answer a review-body finding" '
   .authorPermissions.henry = "read"
   | .reviews = [{"id":7,"body":"P1 body finding","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
-  | .issueComments += [{"id":102,"created_at":"2026-08-20T10:30:00Z","author_association":"OWNER","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer id=7 -->"}]' failure "body-only finding"
+  | .issueComments += [{"id":102,"created_at":"2026-08-20T10:30:00Z","author_association":"OWNER","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer v=1 id=7 disposition=no-code-change -->"}]' failure "body-only finding"
 for permission in write maintain admin; do
   run_case "$permission permission can answer a result-comment finding" '
     .authorPermissions.henry = "'"$permission"'"
     | .issueComments[1].body = "Codex Review: P1 result finding\n\n**Reviewed commit:** `1111111111`"
-    | .issueComments += [{"id":102,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer id=101 -->"}]' success
+    | .issueComments += [{"id":102,"created_at":"2026-08-20T10:30:00Z","author_association":"NONE","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer v=1 id=101 disposition=no-code-change -->"}]' success
 done
 run_case "read permission cannot answer a result-comment finding" '
   .authorPermissions.henry = "read"
   | .issueComments[1].body = "Codex Review: P1 result finding\n\n**Reviewed commit:** `1111111111`"
-  | .issueComments += [{"id":102,"created_at":"2026-08-20T10:30:00Z","author_association":"OWNER","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer id=101 -->"}]' failure "body-only finding"
+  | .issueComments += [{"id":102,"created_at":"2026-08-20T10:30:00Z","author_association":"OWNER","user":{"login":"henry"},"body":"Fixed. <!-- touchstone:review-answer v=1 id=101 disposition=no-code-change -->"}]' failure "body-only finding"
 [ "$ERRORS" -eq 0 ] || {
   echo "==> FAIL: $ERRORS review-gate assertion(s) failed" >&2
   exit 1

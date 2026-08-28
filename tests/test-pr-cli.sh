@@ -2090,6 +2090,7 @@ value_after() { local wanted="$1"; shift; while [ "$#" -gt 0 ]; do if [ "$1" = "
 field_value() { local wanted="$1"; shift; for arg in "$@"; do case "$arg" in "$wanted"=*) printf '%s\n' "${arg#*=}"; return 0 ;; esac; done; return 1; }
 case "$1 $2" in
   "repo view")
+    if [ "${GH_MODE:-}" = fail_repo ]; then echo "gh: not a git repository" >&2; exit 1; fi
     echo "autumngarage/current"
     ;;
   "api user")
@@ -2146,6 +2147,8 @@ case "$1 $2" in
       printf '1\n2\n3\n'
     elif [ -f "$GH_STATE/replies" ]; then
       echo "<!-- touchstone:respond-review comment=51 -->"
+      [ -f "$GH_STATE/legacy-reply-only" ] \
+        || echo "<!-- touchstone:review-answer v=1 id=51 disposition=no-code-change -->"
     fi
     ;;
   "api repos/autumngarage/current/rules/branches/main")
@@ -2246,7 +2249,7 @@ STATUS_STUB
   rm -f "$GH_STATE/replies" "$GH_STATE/reply-body" "$GH_STATE/resolved"
 
   echo "==> a reply is posted once and the id is parsed from stdout alone"
-  run 7 --comment-id 51 --body-file "$RR/body"
+  run 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 0 ] || {
     fail "first run exited $RUN_RC"
     cat "$RR/out"
@@ -2265,7 +2268,7 @@ STATUS_STUB
 
   echo "==> a head that moves while answering is refused before any hint or gate re-run"
   touch "$GH_STATE/moved-head"
-  run 7 --comment-id 51 --body-file "$RR/body"
+  run 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -ne 0 ] && grep -qF 'PR head moved from abcdef0123456789abcdef0123456789abcdef01 to feedface' "$RR/out" \
     && ok "moved head refused with both SHAs named" \
     || fail "moved head was not refused (rc=$RUN_RC): $(tail -2 "$RR/out")"
@@ -2273,7 +2276,7 @@ STATUS_STUB
   rm -f "$GH_STATE/moved-head"
 
   echo "==> a rerun recognises its own reply despite stderr noise on the login read"
-  run 7 --comment-id 51 --body-file "$RR/body"
+  run 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 0 ] || fail "rerun exited $RUN_RC"
   replies="$(wc -l <"$GH_STATE/replies" | tr -d ' ')"
   [ "$replies" -eq 1 ] && ok "no duplicate reply posted" \
@@ -2281,34 +2284,88 @@ STATUS_STUB
   grep -qF 'matched our own reply as @alice' "$RR/out" && ok "author parsed as alice" \
     || fail "author was not parsed cleanly: $(grep 'matched' "$RR/out")"
 
+  echo "==> an answer must record exactly one disposition (AUT-800)"
+  # Vesper PR #1047 resolved a finding with prose alone. Refusal comes before
+  # any read of the PR, so nothing is replied to, resolved, or re-run.
+  rm -f "$GH_STATE/replies" "$GH_STATE/reply-body" "$GH_STATE/resolved" "$GH_STATE/gate-reruns"
+  run 7 --comment-id 51 --body-file "$RR/body"
+  [ "$RUN_RC" -eq 2 ] && grep -qF 'an answer must record its disposition' "$RR/out" \
+    && [ ! -e "$GH_STATE/replies" ] && [ ! -e "$GH_STATE/resolved" ] \
+    && ok "an answer without a disposition is invalid input, refused before any mutation" \
+    || fail "an answer without a disposition mutated the PR or misreported (rc=$RUN_RC): $(tail -2 "$RR/out")"
+  run 7 --comment-id 51 --body-file "$RR/body" --fix-commit abc123 --no-code-change
+  [ "$RUN_RC" -eq 2 ] && grep -qF 'pass exactly one' "$RR/out" \
+    && [ ! -e "$GH_STATE/replies" ] && [ ! -e "$GH_STATE/resolved" ] \
+    && ok "two dispositions are invalid input, refused before any mutation" \
+    || fail "two dispositions were accepted or misreported (rc=$RUN_RC): $(tail -2 "$RR/out")"
+  run 7 --all-resolved-check --no-code-change
+  [ "$RUN_RC" -eq 2 ] && grep -qF 'takes no disposition' "$RR/out" \
+    && ok "the read-only check refuses a disposition as invalid input" \
+    || fail "--all-resolved-check accepted a disposition (rc=$RUN_RC): $(tail -2 "$RR/out")"
+  # Invalid input precedes every transport: with no repository resolvable at
+  # all, a missing disposition still reads as a missing disposition.
+  GH_MODE=fail_repo run 7 --comment-id 51 --body-file "$RR/body"
+  [ "$RUN_RC" -eq 2 ] && grep -qF 'an answer must record its disposition' "$RR/out" \
+    && ok "the disposition is validated before the repository is resolved" \
+    || fail "a missing disposition reported a transport failure (rc=$RUN_RC): $(tail -2 "$RR/out")"
+
+  echo "==> the recorded disposition is what the gate reads, never the prose"
+  rm -f "$GH_STATE/replies" "$GH_STATE/reply-body" "$GH_STATE/resolved"
+  run 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] \
+    && grep -qF '<!-- touchstone:review-answer v=1 id=51 disposition=no-code-change -->' "$GH_STATE/reply-body" \
+    && ! grep -qF 'disposition=fixed' "$GH_STATE/reply-body" \
+    && ok "a no-code-change answer records that disposition and invents no commit" \
+    || fail "no-code-change did not record its disposition: $(cat "$GH_STATE/reply-body")"
+  rm -f "$GH_STATE/replies" "$GH_STATE/reply-body" "$GH_STATE/resolved"
+  run 7 --comment-id 51 --body-file "$RR/body" --fix-commit abc123
+  [ "$RUN_RC" -eq 0 ] \
+    && grep -qF '<!-- touchstone:review-answer v=1 id=51 disposition=fixed fix=abcdef0123456789abcdef0123456789abcdef01 -->' "$GH_STATE/reply-body" \
+    && ok "a fixed answer records the canonical SHA GitHub resolved" \
+    || fail "fixed disposition did not record the canonical SHA: $(cat "$GH_STATE/reply-body")"
+
+  echo "==> an answer written before dispositions existed is re-recorded, not skipped"
+  # Backward compatibility for an already-open PR: the legacy reply is ours and
+  # carries the old marker, so the idempotency check must not read it as this
+  # answer -- otherwise the finding could never gain the disposition its gate
+  # now requires.
+  rm -f "$GH_STATE/reply-body" "$GH_STATE/resolved"
+  touch "$GH_STATE/legacy-reply-only"
+  run 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] \
+    && grep -qF 'disposition=no-code-change' "$GH_STATE/reply-body" \
+    && ok "a legacy answer is re-recorded with its disposition" \
+    || fail "a legacy answer was treated as already disposed (rc=$RUN_RC): $(tail -2 "$RR/out")"
+  rm -f "$GH_STATE/legacy-reply-only" "$GH_STATE/replies" "$GH_STATE/reply-body" "$GH_STATE/resolved"
+
   echo "==> an answer re-runs the pinned review gate where the repository has one"
   touch "$GH_STATE/review-gate"
   rm -f "$GH_STATE/gate-reruns"
-  run 7 --comment-id 51 --body-file "$RR/body"
+  run 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 0 ] || fail "answer with a review gate exited $RUN_RC"
   grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null && ok "answer re-ran the review gate" \
     || fail "answer did not re-run the review gate"
   rm -f "$GH_STATE/gate-reruns"
-  GH_MODE=run_recency run 7 --comment-id 51 --body-file "$RR/body"
+  GH_MODE=run_recency run 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 0 ] || fail "answer rejected valid workflow-run recency data (rc=$RUN_RC)"
   grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null \
     && ! grep -q 'rerun 88' "$GH_STATE/gate-reruns" 2>/dev/null \
     && ok "answer selected the lower-id workflow run rerun most recently" \
     || fail "answer selected the wrong workflow run by creation id"
   rm -f "$GH_STATE/gate-reruns"
-  GH_MODE=run_recency_later_page run 7 --comment-id 51 --body-file "$RR/body"
+  GH_MODE=run_recency_later_page run 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 0 ] && grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null \
     && ! grep -q 'rerun 88' "$GH_STATE/gate-reruns" 2>/dev/null \
     && ok "answer ranked workflow execution recency across every API page" \
     || fail "answer ignored a later workflow-run page"
   rm -f "$GH_STATE/gate-reruns"
-  GH_MODE=run_recency_tie run 7 --comment-id 51 --body-file "$RR/body"
+  GH_MODE=run_recency_tie run 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -ne 0 ] && grep -q 'malformed or ambiguous review-gate run data' "$RR/out" \
     && [ ! -e "$GH_STATE/gate-reruns" ] \
     && ok "answer failed closed on tied workflow execution timestamps" \
     || fail "answer broke an execution-time tie by creation id (rc=$RUN_RC)"
   rm -f "$GH_STATE/gate-reruns"
-  GH_MODE=malformed_run_recency run 7 --comment-id 51 --body-file "$RR/body"
+  GH_MODE=malformed_run_recency run 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -ne 0 ] && grep -q 'malformed or ambiguous review-gate run data' "$RR/out" \
     && [ ! -e "$GH_STATE/gate-reruns" ] \
     && ok "answer failed closed on a workflow run without execution recency" \
@@ -2317,14 +2374,14 @@ STATUS_STUB
   # The run stays in progress for longer than the GraphQL transport retry
   # would tolerate; the gate wait has its own budget.
   echo 6 >"$GH_STATE/gate-in-progress"
-  TOUCHSTONE_GATE_RETRY_DELAY=0 run 7 --comment-id 51 --body-file "$RR/body"
+  TOUCHSTONE_GATE_RETRY_DELAY=0 run 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 0 ] || fail "answer gave up on a gate run that was still in progress (rc=$RUN_RC)"
   grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null && ok "answer waited for an in-progress gate run" \
     || fail "answer skipped the refresh while the gate run was in progress"
   rm -f "$GH_STATE/gate-reruns"
   touch "$GH_STATE/gate-fresh-active"
   echo 30 >"$GH_STATE/gate-in-progress"
-  run_v2 7 --comment-id 51 --body-file "$RR/body"
+  run_v2 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 0 ] || fail "behavior v2 answer failed while its gate was active (rc=$RUN_RC)"
   grep -qF 'Review gate run 77 is already evaluating this head; returning control' "$RR/out" \
     && ok "behavior v2 answer returned control to the agent" \
@@ -2336,27 +2393,27 @@ STATUS_STUB
   rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/gate-fresh-active"
   touch "$GH_STATE/gate-fresh-active" "$GH_STATE/status-run-unbound"
   echo 3 >"$GH_STATE/gate-in-progress"
-  run_v2 7 --comment-id 51 --body-file "$RR/body"
+  run_v2 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 0 ] || fail "behavior v2 answer failed to refresh an unbound gate (rc=$RUN_RC)"
   grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null \
     || fail "behavior v2 answer reused an active run from an unbound source revision"
   grep -q 'no verified policy-bound review-gate run' "$RR/out" \
     || fail "behavior v2 answer did not explain its conservative unbound-run refresh"
   rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/gate-fresh-active" "$GH_STATE/status-run-unbound"
-  run_v2 7 --comment-id 51 --body-file "$RR/body"
+  run_v2 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 0 ] || fail "behavior v2 answer failed to refresh a completed gate (rc=$RUN_RC)"
   grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null \
     && ok "behavior v2 answer refreshed a completed evaluation" \
     || fail "behavior v2 answer skipped a completed evaluation"
   rm -f "$GH_STATE/gate-reruns"
   echo 3 >"$GH_STATE/gate-in-progress"
-  run_v2 7 --comment-id 51 --body-file "$RR/body"
+  run_v2 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 0 ] || fail "behavior v2 answer failed to recover an expired active gate (rc=$RUN_RC)"
   grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null \
     || fail "behavior v2 answer reused a run whose review-evidence window had expired"
   rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns"
   touch "$GH_STATE/status-fails"
-  run_v2 7 --comment-id 51 --body-file "$RR/body"
+  run_v2 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 0 ] || fail "answer failed instead of falling back when full status needed unavailable admin access (rc=$RUN_RC)"
   grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null \
     || fail "answer did not conservatively refresh after behavior verification failed"
@@ -2374,7 +2431,7 @@ STATUS_STUB
   }
 
   echo "==> a failed read still surfaces its diagnostics"
-  GH_MODE=fail_user run 7 --comment-id 51 --body-file "$RR/body"
+  GH_MODE=fail_user run 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 1 ] || fail "failed login read exited $RUN_RC, expected 1"
   grep -qF 'bad credentials' "$RR/out" && ok "failure keeps the stderr detail" \
     || fail "failure diagnostic was dropped"

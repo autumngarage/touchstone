@@ -305,6 +305,17 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "gh pr create"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "@codex review"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "--match-head-commit"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "resolveReviewThread"
+# An answer's disposition is part of that recovery: a guide that still teaches
+# the optional --fix-commit sends agents into a refused command, and its raw
+# reply would be rejected by the gate for carrying no disposition (AUT-800).
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "--no-code-change"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  "<!-- touchstone:review-answer v=1 id=<comment-id> disposition=fixed fix=<40-hex> -->"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  "<!-- touchstone:review-answer v=1 id=<comment-id> disposition=no-code-change -->"
+if grep -qF -- "--body-file <reply.md> [--fix-commit <sha>]" "$TOUCHSTONE_ROOT/principles/git-workflow.md"; then
+  fail "principles/git-workflow.md still documents --fix-commit as optional"
+fi
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "gh api graphql --paginate"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'reviewThreads(first:100, after:$endCursor)'
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "pageInfo { hasNextPage endCursor }"

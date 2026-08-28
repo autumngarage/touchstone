@@ -13,7 +13,7 @@ touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
 touchstone pr status PR
 touchstone pr merge PR --head SHA [--unguarded]
 touchstone policy status [--base BRANCH]
-touchstone pr answer PR --comment-id ID --body-file FILE [--fix-commit SHA]
+touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change)
 touchstone pr answer PR --all-resolved-check
 ```
 
@@ -240,12 +240,21 @@ exists to prevent (vesper `ship-pr.sh`, 2026-08-21).
   poll and the client immediately returns control. If full policy status needs
   unavailable administration reads, `answer` reports that limitation and
   conservatively refreshes through the behavior-v1 path. Its
-  `--all-resolved-check` form proves no thread remains. `--fix-commit SHA`
-  appends "Fixed in SHA." only after GitHub resolves the revision and proves it
-  is reachable from the captured PR head; the reply records the canonical full
-  SHA. Replies carry an invisible marker, so a rerun after a partial
+  `--all-resolved-check` form proves no thread remains. Exactly one
+  disposition is required and is refused before any read or mutation:
+  `--fix-commit SHA` appends "Fixed in SHA." only after GitHub resolves the
+  revision and proves it is reachable from the captured PR head, and
+  `--no-code-change` records that no commit was needed. The disposition is
+  published in a versioned marker the gate verifies independently --
+  `<!-- touchstone:review-answer v=1 id=FINDING_ID disposition=fixed fix=SHA -->`
+  or `disposition=no-code-change` -- because prose claiming "fixed in SHA"
+  once resolved a finding whose commit the evaluated head did not contain
+  (AUT-800). Replies carry an invisible marker, so a rerun after a partial
   failure (reply posted, resolve failed) resolves the existing thread instead
-  of posting again; `--fix-commit` on a rerun does not edit the earlier reply. Raw equivalent:
+  of posting again; `--fix-commit` on a rerun does not edit the earlier reply.
+  A reply recorded before dispositions existed does not satisfy that check, so
+  re-running `answer` with a disposition is how an already-open pull request
+  records one. Raw equivalent:
   `gh api repos/O/R/pulls/N/comments/ID/replies -F body=@FILE`, the GraphQL
   `resolveReviewThread` mutation, and `gh api -X POST …/actions/runs/ID/rerun`.
   Why not the raw sequence: it is four calls with two ID systems (numeric

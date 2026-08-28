@@ -1,4 +1,4 @@
-# review-gate evidence contract, version 3.
+# review-gate evidence contract, version 4.
 #
 # This is a pure evaluator. The required workflow owns GitHub API collection
 # and passes one complete document here; missing or partial inputs fail
@@ -14,6 +14,22 @@
 # An optional `evidenceCutoffAt` evaluates the collected GitHub evidence as of
 # that UTC instant. This lets polling workflows enforce a deadline without
 # accepting evidence posted or edited after it.
+#
+# Version 4 requires every answer to record a disposition in a versioned
+# marker. Version 3 accepted any authorized reply in a finding's thread, so a
+# reply whose prose claimed "fixed in <sha>" answered the finding while the
+# evaluated head did not contain that commit -- Vesper PR #1047 passed the
+# gate on the unfixed head and GitHub queued it (AUT-800). Prose is still
+# never parsed. The marker is the contract:
+#
+#   <!-- touchstone:review-answer v=1 id=<FINDING_ID> disposition=fixed fix=<40-HEX> -->
+#   <!-- touchstone:review-answer v=1 id=<FINDING_ID> disposition=no-code-change -->
+#
+# A `fixed` disposition is an answer only while `fixCommitReachability` -- the
+# workflow's own comparison against the evaluated head, never this client's
+# word -- reports its commit reachable. An unmarked, malformed, or unsupported
+# answer is not an answer, so an answer written under version 3 is re-recorded
+# by running the same `touchstone pr answer` again with its disposition.
 
 def trusted($authors):
   (.user.login // "") as $login
@@ -66,13 +82,36 @@ def edited_after_submission($root):
   | (($review.updated_at // "") | if . == "" then null else fromdateiso8601 end) as $updated
   | $updated != null and $settled != null and $updated > $settled;
 
-def answers_body_finding($id):
-  (.body // "") | contains("<!-- touchstone:review-answer id=\($id) -->");
+# Every version-1 marker in one body. A single answer may dispose of several
+# findings, so each is matched independently and bound to its own finding id.
+# Anything that is not one of the two supported shapes yields no marker at
+# all: an unsupported disposition must never read as an answer.
+def answer_markers:
+  (.body // "") as $body
+  | [$body
+     | match("<!--[ \t]*touchstone:review-answer[ \t]+v=1[ \t]+id=(?<id>[0-9]+)[ \t]+disposition=fixed[ \t]+fix=(?<fix>[0-9a-fA-F]{40})[ \t]*-->"; "g")
+     | {id: .captures[0].string, disposition: "fixed", fix: (.captures[1].string | ascii_downcase)}]
+  + [$body
+     | match("<!--[ \t]*touchstone:review-answer[ \t]+v=1[ \t]+id=(?<id>[0-9]+)[ \t]+disposition=no-code-change[ \t]*-->"; "g")
+     | {id: .captures[0].string, disposition: "no-code-change", fix: null}];
+
+# Does this comment dispose of finding $id? A fixed disposition additionally
+# requires the workflow to have proved the commit reachable from the evaluated
+# head; an unknown SHA is absent from the map and fails closed.
+def answers_finding($id; $reachable):
+  answer_markers
+  | any(.[];
+      .id == ($id | tostring)
+      and (.disposition == "no-code-change"
+        or (.disposition == "fixed" and (($reachable[.fix] // false) == true))));
 
 def observed_at:
   .updated_at // .submitted_at // .created_at // "";
 
 . as $input
+| (if (($input.fixCommitReachability // null) | type) == "object"
+   then ($input.fixCommitReachability | with_entries(.key |= ascii_downcase))
+   else {} end) as $reachable
 | (if ($input | has("evidenceCutoffAt")) then $input.evidenceCutoffAt else null end) as $raw_cutoff
 | ($raw_cutoff == null
    or (($raw_cutoff | type) == "string"
@@ -138,7 +177,7 @@ def observed_at:
       $root.issueComments[]?
       | select(
           review_request
-          or ((.body // "") | test("<!--[[:space:]]*touchstone:review-answer id=[0-9]+[[:space:]]*-->")))
+          or ((.body // "") | test("<!--[[:space:]]*touchstone:review-answer[[:space:]]")))
       | .user.login // empty
     ] + [
       $root.reviewComments[]?
@@ -276,7 +315,14 @@ def observed_at:
         answered: any($root.reviewComments[]?;
           ((.in_reply_to_id // 0) | tostring) == ($finding.id | tostring)
           and (.created_at // "") > $finding_at
-          and driver_action_authorized($permissions))
+          # Contract 4 reads the reply body, so an edit can now change a
+          # verdict. GitHub exposes no prior body for an inline comment, so a
+          # reply observed after the deadline is not evidence -- otherwise a
+          # disposition could be added to a pre-cutoff reply once the gate had
+          # stopped collecting.
+          and ($cutoff == null or observed_at <= $cutoff)
+          and driver_action_authorized($permissions)
+          and answers_finding($finding.id; $reachable))
       }
   ] | unique_by(.id) as $inline_findings
 | [
@@ -300,7 +346,7 @@ def observed_at:
             (.created_at // "") > $finding_at
             and ($cutoff == null or observed_at <= $cutoff)
             and driver_action_authorized($permissions)
-            and answers_body_finding($finding.id))
+            and answers_finding($finding.id; $reachable))
           or any($reviews[]?;
             (.submitted_at // "") > $finding_at)
           or any($result_comments[]?;
@@ -328,7 +374,7 @@ def observed_at:
             (.created_at // "") > $finding_at
             and ($cutoff == null or observed_at <= $cutoff)
             and driver_action_authorized($permissions)
-            and answers_body_finding($finding.id))
+            and answers_finding($finding.id; $reachable))
           or any($reviews[]?;
             (.submitted_at // "") > $finding_at)
           or any($result_comments[]?;
@@ -338,7 +384,9 @@ def observed_at:
   ] as $comment_body_findings
 | ($review_body_findings + $comment_body_findings + $cutoff_mutated_reviews) as $body_findings
 | [
-    if ($root.contractVersion // 0) != 3 then "unsupported or missing evidence contract version" else empty end,
+    if ($root.contractVersion // 0) != 4 then "unsupported or missing evidence contract version" else empty end,
+    if (($input.fixCommitReachability // null) | type) != "object"
+      then "fix-commit reachability evidence is missing" else empty end,
     if ($root.complete // false) != true then "GitHub evidence collection was incomplete" else empty end,
     if $cutoff_valid | not then "evidence cutoff is not a UTC whole-second timestamp" else empty end,
     if $cutoff != null and (($input | has("priorIssueComments")) | not)
@@ -390,12 +438,17 @@ def observed_at:
     if any($inline_findings[]; .answered | not) then
       "inline finding(s) "
         + ([$inline_findings[] | select(.answered | not) | (.id | tostring)] | join(", "))
-        + " have no qualifying later driver answer"
+        + " have no qualifying later driver answer recording a disposition"
+        + " (`<!-- touchstone:review-answer v=1 id=FINDING_ID disposition=fixed fix=SHA -->`"
+        + " with SHA reachable from this head, or `disposition=no-code-change`);"
+        + " re-run `touchstone pr answer` with its disposition"
     else empty end,
     if any($body_findings[]; .answered | not) then
       "body-only finding(s) "
         + ([$body_findings[] | select(.answered | not) | (.id | tostring)] | join(", "))
-        + " have no later marked answer (`<!-- touchstone:review-answer id=FINDING_ID -->`) or re-review"
+        + " have no later answer recording a disposition"
+        + " (`<!-- touchstone:review-answer v=1 id=FINDING_ID disposition=fixed fix=SHA -->`"
+        + " with SHA reachable from this head, or `disposition=no-code-change`) or re-review"
     else empty end
   ] as $finding_reasons
 | ($invariant_reasons + $progress_reasons + $rejected_evidence_reasons + $finding_reasons) as $reasons
@@ -405,7 +458,7 @@ def observed_at:
    else "waiting-review"
    end) as $state
 | {
-    contractVersion: 3,
+    contractVersion: 4,
     evidenceCutoffAt: $raw_cutoff,
     state: $state,
     conclusion: (if ($reasons | length) == 0 then "success" else "failure" end),

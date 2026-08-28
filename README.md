@@ -124,7 +124,8 @@ Answering inline review findings still uses the existing script because GitHub
 needs four API calls to reply-and-resolve correctly:
 
 ```bash
-bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file>
+bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file> --fix-commit <sha>
+bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file> --no-code-change
 bash scripts/respond-review.sh <pr> --all-resolved-check
 ```
 
