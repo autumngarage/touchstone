@@ -116,6 +116,9 @@ run_state_case "an edited stale-head result remains diagnostic at the cutoff" '
 run_state_case "a post-cutoff mutation without a snapshot fails closed" '
   .evidenceCutoffAt = "2026-08-20T10:25:00Z"
   | .issueComments += [{"id":102,"created_at":"2026-08-20T10:21:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"cleared body"}]' failure
+run_state_case "a qualifying comment deleted before the cutoff cannot be restored" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .issueComments = [.issueComments[0]]' failure
 run_state_case "a cutoff without a prior issue-comment snapshot fails closed" \
   '.evidenceCutoffAt = "2026-08-20T10:25:00Z" | del(.priorIssueComments)' failure
 run_state_case "an invalid evidence cutoff fails closed" \

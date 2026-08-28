@@ -84,8 +84,9 @@ def observed_at:
 | ($input
    # GitHub's issue-comment API exposes only the current mutable body. At a
    # cutoff, reconstruct every post-cutoff edit from the workflow's last
-   # complete pre-cutoff snapshot and retain comments deleted after it. If no
-   # prior version exists, keep an explicit uncertainty marker so the result
+   # complete pre-cutoff snapshot. A missing current comment has no deletion
+   # timestamp, so it cannot be proven to have survived through the cutoff;
+   # mark that ambiguity explicitly. Any unavailable prior version likewise
    # fails closed instead of silently accepting older evidence.
    | .issueComments = ([
        $current_issue_comments[]?
@@ -109,6 +110,7 @@ def observed_at:
        | select($cutoff != null)
        | select((.created_at // "") <= $cutoff and observed_at <= $cutoff)
        | select(any($current_issue_comments[]?; (.id | tostring) == ($prior.id | tostring)) | not)
+       | ._touchstoneCutoffUncertain = true
      ] | unique_by(.id))
    # A review or inline finding that existed by the cutoff remains evidence
    # even if GitHub reports a later edit. Its post-cutoff updated_at then keeps
