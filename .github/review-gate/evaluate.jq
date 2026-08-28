@@ -225,7 +225,11 @@ def observed_at:
       )
   ] as $rejected_reviews
 | [
-    $reviews[]
+    # Derive the cutoff tombstone before current-state filtering. A formal
+    # review dismissed after the cutoff still existed at the cutoff and may
+    # have carried an unanswered body-only finding.
+    $review_candidates[]
+    | select((.commit_id // "" | ascii_downcase) == ($head | ascii_downcase))
     | select($cutoff != null)
     | select((.submitted_at // "") <= $cutoff and (.updated_at // .submitted_at // "") > $cutoff)
     | {
