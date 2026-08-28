@@ -239,7 +239,17 @@ case "$1 ${2:-}" in
       touch "$GH_STATE/retried"
       exit 1
     fi
-    if has '--json headRefOid,baseRefName,baseRefOid' "$@"; then
+    if has '--json headRefOid,baseRefName,baseRefOid,mergeStateStatus' "$@"; then
+      if [ "${GH_MODE:-ok}" = conflicting_pr_moved ]; then
+        printf 'moved-head\t%s\t%s\tDIRTY\n' "$GH_BASE_REF" "$GH_BASE_SHA"
+      elif [ "${GH_MODE:-ok}" = conflicting_pr ]; then
+        printf '%s\t%s\t%s\tDIRTY\n' "$GH_HEAD" "$GH_BASE_REF" "$GH_BASE_SHA"
+      elif [ "${GH_MODE:-ok}" = unknown_mergeability ]; then
+        printf '%s\t%s\t%s\tUNKNOWN\n' "$GH_HEAD" "$GH_BASE_REF" "$GH_BASE_SHA"
+      else
+        printf '%s\t%s\t%s\tCLEAN\n' "$GH_HEAD" "$GH_BASE_REF" "$GH_BASE_SHA"
+      fi
+    elif has '--json headRefOid,baseRefName,baseRefOid' "$@"; then
       if [ "${GH_MODE:-ok}" = binding_moved ] || [ "${GH_MODE:-ok}" = moved_during_gate ] \
         || { [ "${GH_MODE:-ok}" = delivery_moved ] && [ -f "$GH_STATE/evidence-reruns" ]; } \
         || { [ "${GH_MODE:-ok}" = candidate_files_moved ] && [ -f "$GH_STATE/candidate-files-read" ]; }; then
@@ -953,6 +963,18 @@ EOF
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'auth status --hostname github.com'
 
+  echo "==> open refuses a conflicting new PR before requesting review"
+  rm -f "$TMP/state/pr-exists" "$TMP/state/review-request"
+  : >"$GH_CALLS"
+  GH_MODE=conflicting_pr run_pr "$TMP/out" open --title 'Conflict' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"status":"failed"'
+  assert_has "$TMP/out" 'conflicts with main'
+  assert_not_has "$GH_CALLS" 'pr comment'
+  assert_not_has "$GH_CALLS" 'actions/runs?head_sha='
+  ok "a conflicting new PR consumes no hosted review or workflow recovery"
+  rm -f "$TMP/state/pr-exists"
+
   echo "==> open re-runs the pinned review gate where the repository has one"
   touch "$TMP/state/review-gate"
   rm -f "$TMP/state/gate-reruns" "$TMP/state/review-request"
@@ -979,6 +1001,41 @@ EOF
   rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/review-request"
   printf 'Original evidence body.\n' >"$TMP/state/pr-body"
   printf 'Corrected evidence body.\n' >"$TMP/body2"
+
+  : >"$GH_CALLS"
+  GH_MODE=conflicting_pr run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'PR #7 at'
+  assert_has "$TMP/out" "conflicts with $GH_BASE_REF at $GH_BASE_SHA"
+  assert_has "$TMP/out" "fetch $GH_BASE_REF from the PR base repository https://github.com/autumngarage/current"
+  assert_has "$TMP/out" "refuse unless FETCH_HEAD is $GH_BASE_SHA"
+  assert_has "$TMP/out" 'merge that verified commit'
+  assert_has "$TMP/out" 'prove every feature-side edit survived against the pre-merge head'
+  assert_has "$TMP/out" 'run the complete validation suite'
+  assert_not_has "$TMP/out" 'rebase'
+  assert_not_has "$GH_CALLS" 'actions/runs?head_sha='
+  assert_not_has "$GH_CALLS" '/rerun'
+  ok "a conflicting PR fails before required-workflow recovery"
+
+  : >"$GH_CALLS"
+  GH_MODE=conflicting_pr_moved run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'PR coordinates moved before required-workflow recovery'
+  assert_not_has "$TMP/out" 'conflicts with'
+  assert_not_has "$GH_CALLS" 'actions/runs?head_sha='
+  assert_not_has "$GH_CALLS" '/rerun'
+  ok "conflict diagnosis is bound to re-read PR coordinates"
+
+  : >"$GH_CALLS"
+  GH_MODE=unknown_mergeability run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'actions/runs?head_sha='
+  grep -q 'rerun 80' "$TMP/state/evidence-reruns" 2>/dev/null \
+    || fail "unknown mergeability did not continue bounded workflow recovery"
+  ok "unknown mergeability continues bounded workflow recovery"
+
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun"
+  printf 'Original evidence body.\n' >"$TMP/state/pr-body"
   run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
   assert_rc "$RUN_RC" 0
   grep -q 'rerun 80' "$TMP/state/evidence-reruns" 2>/dev/null \
