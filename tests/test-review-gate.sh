@@ -27,7 +27,7 @@ cat >"$TMP_DIR/base.json" <<EOF2
 EOF2
 run_case() {
   local label="$1" filter="$2" expected="$3" reason="${4:-}" verdict
-  jq ".priorIssueComments = .issueComments | ($filter)" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
+  jq ".priorIssueComments = .issueComments | .priorReviewComments = .reviewComments | ($filter)" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
   verdict="$(jq -f "$EVALUATOR" "$TMP_DIR/case.json")" || {
     fail "$label: evaluator crashed"
     return
@@ -46,7 +46,7 @@ run_state_case() {
   local label="$1" filter="$2" expected_state="$3" verdict
   local expected_conclusion="failure"
   [ "$expected_state" = "success" ] && expected_conclusion="success"
-  jq ".priorIssueComments = .issueComments | ($filter)" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
+  jq ".priorIssueComments = .issueComments | .priorReviewComments = .reviewComments | ($filter)" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
   verdict="$(jq -f "$EVALUATOR" "$TMP_DIR/case.json")" || {
     fail "$label: evaluator crashed"
     return
@@ -63,7 +63,7 @@ run_state_case() {
 }
 run_rejected_count_case() {
   local label="$1" filter="$2" expected="$3" expected_state="$4" verdict
-  jq ".priorIssueComments = .issueComments | ($filter)" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
+  jq ".priorIssueComments = .issueComments | .priorReviewComments = .reviewComments | ($filter)" "$TMP_DIR/base.json" >"$TMP_DIR/case.json"
   verdict="$(jq -f "$EVALUATOR" "$TMP_DIR/case.json")" || {
     fail "$label: evaluator crashed"
     return
@@ -121,6 +121,8 @@ run_state_case "a qualifying comment deleted before the cutoff cannot be restore
   | .issueComments = [.issueComments[0]]' failure
 run_state_case "a cutoff without a prior issue-comment snapshot fails closed" \
   '.evidenceCutoffAt = "2026-08-20T10:25:00Z" | del(.priorIssueComments)' failure
+run_state_case "a cutoff without a prior review-comment snapshot fails closed" \
+  '.evidenceCutoffAt = "2026-08-20T10:25:00Z" | del(.priorReviewComments)' failure
 run_state_case "an invalid evidence cutoff fails closed" \
   '.evidenceCutoffAt = "2026-08-20 10:20:00"' failure
 run_state_case "a non-string evidence cutoff fails closed" \
@@ -134,6 +136,11 @@ run_state_case "a pre-cutoff finding edited later remains blocking evidence" '
   | .issueComments = [.issueComments[0]]
   | .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
   | .reviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:30:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 edited finding"}]' failure
+run_state_case "a pre-cutoff inline finding deleted later cannot disappear" '
+  .evidenceCutoffAt = "2026-08-20T10:25:00Z"
+  | .reviews = [{"id":7,"body":"","state":"COMMENTED","submitted_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","commit_id":"'"$HEAD_SHA"'","user":{"login":"chatgpt-codex-connector[bot]"}}]
+  | .priorReviewComments = [{"id":9,"pull_request_review_id":7,"in_reply_to_id":null,"created_at":"2026-08-20T10:20:00Z","updated_at":"2026-08-20T10:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"},"body":"P1 finding"}]
+  | .reviewComments = []' failure
 run_state_case "a pre-cutoff formal finding cleared later remains blocking evidence" '
   .evidenceCutoffAt = "2026-08-20T10:25:00Z"
   | .issueComments = [.issueComments[0]]

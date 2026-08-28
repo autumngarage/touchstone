@@ -81,6 +81,8 @@ def observed_at:
 | (if $cutoff_valid then $raw_cutoff else "0000-00-00T00:00:00Z" end) as $cutoff
 | (($input.issueComments // []) | if type == "array" then . else [] end) as $current_issue_comments
 | (($input.priorIssueComments // []) | if type == "array" then . else [] end) as $prior_issue_comments
+| (($input.reviewComments // []) | if type == "array" then . else [] end) as $current_review_comments
+| (($input.priorReviewComments // []) | if type == "array" then . else [] end) as $prior_review_comments
 | ($input
    # GitHub's issue-comment API exposes only the current mutable body. At a
    # cutoff, reconstruct every post-cutoff edit from the workflow's last
@@ -116,7 +118,20 @@ def observed_at:
    # even if GitHub reports a later edit. Its post-cutoff updated_at then keeps
    # answers from laundering the mutation. Removing it would hide a finding.
    | .reviews = [(.reviews // [])[] | select($cutoff == null or (.submitted_at // "") <= $cutoff)]
-   | .reviewComments = [(.reviewComments // [])[] | select($cutoff == null or (.created_at // "") <= $cutoff)]) as $root
+   | .reviewComments = ([
+       $current_review_comments[]?
+       | select($cutoff == null or (.created_at // "") <= $cutoff)
+     ] + [
+       # GitHub exposes no deletion timestamp for inline review comments. A
+       # prior finding absent from the current response may have disappeared
+       # on either side of the cutoff, so retain only an uncertainty tombstone.
+       $prior_review_comments[]?
+       | . as $prior
+       | select($cutoff != null)
+       | select((.created_at // "") <= $cutoff and observed_at <= $cutoff)
+       | select(any($current_review_comments[]?; (.id | tostring) == ($prior.id | tostring)) | not)
+       | ._touchstoneCutoffUncertain = true
+     ] | unique_by(.id))) as $root
 | ($root.trustedAuthors // []) as $trusted
 | (($root.authorPermissions // {}) | if type == "object" then . else {} end) as $permissions
 | (([
@@ -330,8 +345,14 @@ def observed_at:
       then "evidence cutoff requires a prior issue-comment snapshot" else empty end,
     if $cutoff != null and (($input.priorIssueComments | type) != "array")
       then "prior issue-comment snapshot is not an array" else empty end,
+    if $cutoff != null and (($input | has("priorReviewComments")) | not)
+      then "evidence cutoff requires a prior review-comment snapshot" else empty end,
+    if $cutoff != null and (($input.priorReviewComments | type) != "array")
+      then "prior review-comment snapshot is not an array" else empty end,
     if any($root.issueComments[]?; ._touchstoneCutoffUncertain == true)
       then "issue-comment state at the evidence cutoff cannot be reconstructed" else empty end,
+    if any($root.reviewComments[]?; ._touchstoneCutoffUncertain == true)
+      then "review-comment state at the evidence cutoff cannot be reconstructed" else empty end,
     if ($root.authorPermissions | type) != "object"
       or any($driver_authors[]; . as $author | ($permissions | has($author) | not))
       then "effective permission evidence is missing for one or more driver comment authors" else empty end,
