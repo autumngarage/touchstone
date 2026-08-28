@@ -1421,6 +1421,21 @@ verify_live_coordinates() {
     || fail_input "PR coordinates moved before the review request was bound" "Push or integrate the live head/base, then request review once for that binding."
 }
 
+refuse_conflicting_open_pr() {
+  local number="$1" head="$2" base_ref="$3" base_sha="$4" live_row live_head live_base live_base_sha merge_state
+  read_with_retry gh pr view "$number" --repo "$REPO_SPEC" \
+    --json headRefOid,baseRefName,baseRefOid,mergeStateStatus \
+    --jq '[.headRefOid,.baseRefName,.baseRefOid,(.mergeStateStatus // "UNKNOWN")] | @tsv' \
+    || fail_operation "could not read mergeability before waiting for required workflows: $READ_OUTPUT" "Retry after GitHub recovers."
+  live_row="$READ_OUTPUT"
+  IFS="$(printf '\t')" read -r live_head live_base live_base_sha merge_state <<<"$live_row"
+  [ "$live_head" = "$head" ] && [ "$live_base" = "$base_ref" ] && [ "$live_base_sha" = "$base_sha" ] \
+    || fail_input "PR coordinates moved before required-workflow recovery" "Re-run against the live head and base."
+  [ "$merge_state" != DIRTY ] \
+    || fail_input "PR #$number at $head conflicts with $base_ref at $base_sha, so GitHub cannot create or accept its required workflows" \
+      "Follow $TOOL_ROOT/principles/git-workflow.md: fetch $base_ref from the PR base repository $REPO_URL, refuse unless FETCH_HEAD is $base_sha, merge that verified commit, prove every feature-side edit survived against the pre-merge head, run the complete validation suite, push, and re-run this command."
+}
+
 verify_live_body() {
   local number="$1" expected_body="$2" live_body
   read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json body --jq '.body' \
@@ -1434,6 +1449,7 @@ wait_for_request_binding() {
   local number="$1" head="$2" base_ref="$3" base_sha="$4" request_url="$5" request_author="$6" request_already_existed="${7:-false}"
   local comment_id live_comment request_marker active_reuse_seconds
   if review_gate_required "$base_ref"; then
+    refuse_conflicting_open_pr "$number" "$head" "$base_ref" "$base_sha"
     # The package policy expresses intent, but only GitHub's effective pin can
     # prove the run actually implements behavior v2. A rollout mismatch keeps
     # the behavior-v1 wait-and-refresh path instead of trusting local bytes.
@@ -1590,6 +1606,7 @@ open_pr() {
   # body edit from ordinary feedback. Re-read the exact coordinates and body
   # after the request so the recovery cannot bind evidence to state that moved.
   if [ "$state" = existing ] && delivery_evidence_required "$pr_base"; then
+    refuse_conflicting_open_pr "$number" "$local_head" "$pr_base" "$pr_base_sha"
     rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS"
     verify_live_coordinates "$number" "$local_head" "$pr_base" "$pr_base_sha"
     verify_live_body "$number" "$wanted_body"
@@ -1625,6 +1642,9 @@ open_pr() {
   request_body="@codex review
 
 $request_marker"
+  # A conflicting head must be replaced before it can merge. Do not consume a
+  # hosted review on a head whose only valid recovery creates a new head.
+  refuse_conflicting_open_pr "$number" "$local_head" "$pr_base" "$pr_base_sha"
   if capture_command gh pr comment "$number" --repo "$REPO_SPEC" --body "$request_body"; then
     request_url="$CAPTURE_OUTPUT"
   else
