@@ -9,7 +9,8 @@
 # the whole exchange and fails loudly at every step.
 #
 # Usage:
-#   touchstone pr answer <pr-number> --comment-id <id> --body-file <file> [--fix-commit <sha>]
+#   touchstone pr answer <pr-number> --comment-id <id> --body-file <file>
+#     (--fix-commit <sha> | --no-code-change)
 #   touchstone pr answer <pr-number> --all-resolved-check
 #   (installed name; from a source checkout: bash scripts/respond-review.sh …)
 #
@@ -17,11 +18,32 @@
 #   --comment-id + --body-file   Reply to the review comment (body read from
 #                                the file, avoiding shell-quoting hazards),
 #                                then resolve its thread and verify the
-#                                resolution stuck. --fix-commit appends a
-#                                "Fixed in <sha>." line to the reply.
+#                                resolution stuck. Exactly one disposition is
+#                                required, and it is recorded in a versioned
+#                                answer marker the review gate verifies.
+#   --fix-commit <sha>           Disposition "fixed": the commit is resolved
+#                                through GitHub and proved reachable from the
+#                                captured PR head before the canonical SHA is
+#                                published in the marker.
+#   --no-code-change             Disposition "no-code-change": the answer
+#                                explains why no commit was needed. Touchstone
+#                                never judges whether the reason persuades.
 #   --all-resolved-check         Exit 0 when no unresolved review threads
 #                                remain on the PR; otherwise list them and
 #                                exit 1. Use before re-running the merge gate.
+#
+# Why a disposition is mandatory: with an optional --fix-commit, free-form
+# prose could claim "fixed in <sha>" while the repository head did not contain
+# that commit. Vesper PR #1047 resolved a finding that way, the gate passed on
+# the unfixed head, and GitHub queued it (AUT-800). Prose is never parsed; the
+# marker below is the whole contract, so raw recovery writes the same thing:
+#
+#   <!-- touchstone:review-answer v=1 id=<FINDING_ID> disposition=fixed fix=<40-HEX> -->
+#   <!-- touchstone:review-answer v=1 id=<FINDING_ID> disposition=no-code-change -->
+#
+# A fixed disposition is accepted only while its SHA stays reachable from the
+# head the gate evaluates; the gate proves that itself rather than trusting
+# this client.
 #
 # Transient GraphQL failures (gateway HTML instead of JSON, rate blips) are
 # retried up to 3 times with a short delay before failing closed.
@@ -39,13 +61,21 @@ GATE_V2_REVIEW_REUSE_SECONDS=3600
 TOOL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 usage() {
-  sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '3,46p' "$0" | sed 's/^# \{0,1\}//'
   exit 2
 }
 
 fail() {
   echo "ERROR: $*" >&2
   exit 1
+}
+
+# Invalid input, exit 2 in the CLI contract, and distinct from an operational
+# failure so a caller can tell "you asked for something impossible" from
+# "GitHub was unreachable".
+invalid_input() {
+  echo "ERROR: $*" >&2
+  exit 2
 }
 
 PR_NUMBER="${1:-}"
@@ -57,6 +87,7 @@ shift
 COMMENT_ID=""
 BODY_FILE=""
 FIX_COMMIT=""
+NO_CODE_CHANGE=false
 ALL_RESOLVED_CHECK=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -72,6 +103,9 @@ while [ "$#" -gt 0 ]; do
       shift
       FIX_COMMIT="${1:-}"
       ;;
+    --no-code-change)
+      NO_CODE_CHANGE=true
+      ;;
     --all-resolved-check)
       ALL_RESOLVED_CHECK=true
       ;;
@@ -81,6 +115,21 @@ while [ "$#" -gt 0 ]; do
   esac
   shift || true
 done
+
+# Exactly one disposition, checked before the first read, let alone the reply:
+# an answer that records neither is the AUT-800 defect, and one that records
+# both is ambiguous. Neither is a state this script may resolve a thread from.
+if [ "$ALL_RESOLVED_CHECK" = true ]; then
+  { [ -z "$FIX_COMMIT" ] && [ "$NO_CODE_CHANGE" = false ]; } \
+    || invalid_input "--all-resolved-check reads state; it takes no disposition."
+elif [ -n "$COMMENT_ID" ] || [ -n "$BODY_FILE" ]; then
+  if [ -n "$FIX_COMMIT" ] && [ "$NO_CODE_CHANGE" = true ]; then
+    invalid_input "--fix-commit and --no-code-change are the two dispositions; pass exactly one."
+  fi
+  if [ -z "$FIX_COMMIT" ] && [ "$NO_CODE_CHANGE" = false ]; then
+    invalid_input "an answer must record its disposition: pass --fix-commit <sha> for a commit already reachable from the PR head, or --no-code-change when the answer explains why no commit was needed."
+  fi
+fi
 
 REPO_WITH_OWNER="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)" \
   || fail "could not resolve the GitHub repository (gh repo view failed)."
@@ -159,7 +208,7 @@ if [ "$ALL_RESOLVED_CHECK" = true ]; then
   printf '%s\n' "$UNRESOLVED" | while IFS=$'\t' read -r _tid cid path; do
     echo "       comment $cid ($path)" >&2
   done
-  echo "       Answer each with: touchstone pr answer $PR_NUMBER --comment-id <id> --body-file <file>" >&2
+  echo "       Answer each with: touchstone pr answer $PR_NUMBER --comment-id <id> --body-file <file> (--fix-commit <sha> | --no-code-change)" >&2
   exit 1
 fi
 
@@ -201,6 +250,12 @@ if [ -n "$FIX_COMMIT" ]; then
   REPLY_BODY="$REPLY_BODY
 
 Fixed in $FIX_COMMIT."
+  DISPOSITION_MARKER="<!-- touchstone:review-answer v=1 id=$COMMENT_ID disposition=fixed fix=$FIX_COMMIT -->"
+else
+  REPLY_BODY="$REPLY_BODY
+
+No code change."
+  DISPOSITION_MARKER="<!-- touchstone:review-answer v=1 id=$COMMENT_ID disposition=no-code-change -->"
 fi
 
 # Idempotency marker: reruns after a partial failure (reply posted, resolve
@@ -209,7 +264,8 @@ fi
 REPLY_MARKER="<!-- touchstone:respond-review comment=$COMMENT_ID -->"
 REPLY_BODY="$REPLY_BODY
 
-$REPLY_MARKER"
+$REPLY_MARKER
+$DISPOSITION_MARKER"
 
 # The marker only proves idempotency for OUR OWN prior run. Selecting replies
 # by in_reply_to_id alone let any participant's comment carrying the (trivially
@@ -225,8 +281,13 @@ EXISTING_REPLY="$(gh_read api --paginate \
   "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/comments" \
   --jq ".[] | select(.in_reply_to_id == $COMMENT_ID) | select((.user.login // \"\") == \"$REPLY_AUTHOR\") | .body")" \
   || fail "could not inspect existing replies for comment $COMMENT_ID: $EXISTING_REPLY"
-if printf '%s' "$EXISTING_REPLY" | grep -qF "$REPLY_MARKER"; then
-  echo "==> Reply for comment $COMMENT_ID already posted (marker found); skipping the reply step."
+# Both markers must match to skip. The disposition is part of the answer, so
+# a reply carrying a different one -- or an answer written before dispositions
+# were recorded at all -- is not this answer, and re-running is how an
+# already-open pull request records the disposition its gate now requires.
+if printf '%s' "$EXISTING_REPLY" | grep -qF "$REPLY_MARKER" \
+  && printf '%s' "$EXISTING_REPLY" | grep -qF "$DISPOSITION_MARKER"; then
+  echo "==> Reply for comment $COMMENT_ID already posted with this disposition; skipping the reply step."
   echo "    matched our own reply as @$REPLY_AUTHOR."
 else
   echo "==> Replying to review comment $COMMENT_ID on PR #$PR_NUMBER ..."

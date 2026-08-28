@@ -203,15 +203,34 @@ resolution, whoever opened it — so answer and resolve them all.
 Use the stable root comment ID from the complete GitHub review surface, then:
 
 ```bash
-touchstone pr answer <n> --comment-id <id> --body-file <reply.md> [--fix-commit <sha>]
+touchstone pr answer <n> --comment-id <id> --body-file <reply.md> --fix-commit <sha>
+touchstone pr answer <n> --comment-id <id> --body-file <reply.md> --no-code-change
 touchstone pr answer <n> --all-resolved-check   # exit 0 only when no thread is unresolved
 ```
 
+Exactly one disposition is required, and the CLI refuses the answer as
+invalid input before any read when neither or both are given. `--fix-commit`
+is proved reachable from the captured head before it is published;
+`--no-code-change` says the answer explains why no commit was needed.
+Touchstone never judges whether that explanation persuades — it records
+which of the two states you claimed, because prose reading "fixed in `<sha>`"
+once resolved a finding the evaluated head did not contain, and GitHub queued
+that head (AUT-800).
+
 It posts the reply, resolves the thread, and asks the pinned gate to
 re-evaluate, once; a rerun after a timeout finds its own reply instead of
-posting a second one. Where the CLI is absent, the raw equivalent is a reply
-with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<id>/replies -F
-body=@<file>`, then the GraphQL mutation:
+posting a second one — unless the earlier reply predates dispositions, which
+is how an already-open PR records one. Where the CLI is absent, the raw
+equivalent is a reply with `gh api
+repos/<owner>/<repo>/pulls/<n>/comments/<id>/replies -F body=@<file>` whose
+body ends with the disposition the gate reads:
+
+```text
+<!-- touchstone:review-answer v=1 id=<comment-id> disposition=fixed fix=<40-hex> -->
+<!-- touchstone:review-answer v=1 id=<comment-id> disposition=no-code-change -->
+```
+
+then the GraphQL mutation:
 
 ```bash
 gh api graphql -f query='
