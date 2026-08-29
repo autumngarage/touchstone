@@ -721,6 +721,11 @@ jq -e 'any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")' \
   "$ROOT/policy/github/consumers/arpeggio.json" >/dev/null \
   && ok "arpeggio declares a merge queue" \
   || fail "arpeggio lost its merge queue; regenerate it without --no-queue"
+# Hesperus (private, Enterprise Cloud) is queue-eligible from its first policy.
+jq -e 'any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")' \
+  "$ROOT/policy/github/consumers/hesperus.json" >/dev/null \
+  && ok "hesperus declares a merge queue" \
+  || fail "hesperus lost its merge queue; regenerate it without --no-queue"
 # Vesper's hosted macOS workflow publishes on merge_group, so its checked-in
 # policy keeps the queue and requires that exact prospective-merge verdict.
 jq -e '
