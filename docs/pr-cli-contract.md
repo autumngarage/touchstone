@@ -136,8 +136,11 @@ taking this document's word for it.
   ambiguous or unbound gates, and incomplete policy bindings are
   `action-required`. After that, only the policy-owned exact-head gate decides:
   active is `reviewing`, completed failure is `fix-required`, and completed
-  success is `ready-to-queue`. An absent gate with no active bound workflow is
-  `action-required`, never guessed to be pending or passing.
+  success that postdates the complete review surface is `ready-to-queue`.
+  Success without a completion timestamp, or with later review activity, is
+  `action-required`, matching the merge command's existing freshness refusal.
+  An absent gate with no active bound workflow is `action-required`, never
+  guessed to be pending or passing.
 
   Status does not parse gate output or reviewer prose, recognize a reviewer,
   reconstruct auto-merge from local wait conditions, decide whether review is

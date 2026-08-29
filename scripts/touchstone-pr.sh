@@ -1743,6 +1743,7 @@ merge_queue_text() {
 PR_PHASE=""
 PR_NEXT_ACTION=""
 PR_NEXT_COMMAND=""
+REVIEW_GATE_FRESH=false
 classify_pr_phase() {
   local state="$1" merge_state="$2" draft="$3" number="$4" head="$5"
   local gate_present gate_status gate_conclusion workflow_status workflow_conclusion
@@ -1792,9 +1793,11 @@ classify_pr_phase() {
     gate_conclusion="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.conclusion // ""')"
     if [ "$gate_status" = completed ]; then
       if [ "$gate_conclusion" = success ]; then
-        PR_PHASE=ready-to-queue
-        PR_NEXT_ACTION=queue
-        PR_NEXT_COMMAND="touchstone pr merge $number --head $head"
+        if [ "$REVIEW_GATE_FRESH" = true ]; then
+          PR_PHASE=ready-to-queue
+          PR_NEXT_ACTION=queue
+          PR_NEXT_COMMAND="touchstone pr merge $number --head $head"
+        fi
       else
         PR_PHASE=fix-required
         PR_NEXT_ACTION=address-review
@@ -2089,6 +2092,18 @@ read_review_surface_latest_at() {
     || fail_operation "GitHub returned a malformed review-surface timestamp" "Retry after GitHub returns complete review data."
 }
 
+read_review_gate_freshness() {
+  local number="$1" completed_at="$2"
+  REVIEW_GATE_FRESH=false
+  [ -n "$completed_at" ] || return 0
+  read_review_surface_latest_at "$number"
+  if [ -z "$REVIEW_SURFACE_LATEST_AT" ] \
+    || jq -ne --arg latest "$REVIEW_SURFACE_LATEST_AT" --arg completed "$completed_at" \
+      '($latest | fromdateiso8601) < ($completed | fromdateiso8601)' >/dev/null; then
+    REVIEW_GATE_FRESH=true
+  fi
+}
+
 require_review_gate_success() {
   local head="$1" number="$2" gate_status gate_conclusion gate_completed_at gate_text
   read_review_gate_check "$head" "$number"
@@ -2102,10 +2117,8 @@ require_review_gate_success() {
     && [ "$gate_status" = completed ] && [ "$gate_conclusion" = success ]; then
     [ -n "$gate_completed_at" ] \
       || fail_operation "successful review gate $REVIEW_GATE_RUN_ID has no completion timestamp" "Retry after GitHub returns complete check data."
-    read_review_surface_latest_at "$number"
-    if [ -n "$REVIEW_SURFACE_LATEST_AT" ] \
-      && ! jq -ne --arg latest "$REVIEW_SURFACE_LATEST_AT" --arg completed "$gate_completed_at" \
-        '($latest | fromdateiso8601) < ($completed | fromdateiso8601)' >/dev/null; then
+    read_review_gate_freshness "$number" "$gate_completed_at"
+    if [ "$REVIEW_GATE_FRESH" != true ]; then
       fail_input "review evidence is stale: the PR review surface changed at $REVIEW_SURFACE_LATEST_AT, at or after gate run $REVIEW_GATE_RUN_ID completed at $gate_completed_at" \
         "Use touchstone pr open to refresh a clean review, or touchstone pr answer for a finding, then retry after the exact-head gate succeeds."
     fi
@@ -2138,6 +2151,13 @@ status_pr() {
     read_review_gate_check "$head" "$number"
   else
     REVIEW_GATE_CHECK_JSON="$(jq -cn --arg head "$head" '{present:false, head:$head, configured:false}')"
+  fi
+  if [ "$state" = OPEN ] && [ "$draft" = false ] && [ "$ENFORCEMENT_STATUS" = applied ] \
+    && [ -z "$MERGE_QUEUE_STATE" ] && [ "$AUTO_MERGE_ARMED" = false ] \
+    && [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.present == true and .status == "completed" and .conclusion == "success"')" = true ]; then
+    read_review_gate_freshness "$number" "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.completedAt // ""')"
+  else
+    REVIEW_GATE_FRESH=false
   fi
   classify_pr_phase "$state" "$merge_state" "$draft" "$number" "$head"
   if [ "$JSON_MODE" = true ]; then

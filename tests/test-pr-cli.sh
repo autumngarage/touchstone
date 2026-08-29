@@ -940,6 +940,10 @@ EOF
   assert_has "$TMP/out" 'phase: ready-to-queue'
   assert_has "$TMP/out" 'next action: queue'
   assert_has "$TMP/out" "command: touchstone pr merge 7 --head $HEAD_SHA"
+  GH_MODE=status_gate_stale_review run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'
+  assert_not_has "$TMP/out" '"phase":"ready-to-queue"'
   GH_MODE=status_gate_queued run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"mergeQueue":{"state":"AWAITING_CHECKS"},"phase":"queued","nextAction":"wait"'
@@ -983,6 +987,7 @@ EOF
   rm -f "$TMP/state/no-review-gate-rule"
   GH_MODE=status_gate_run_recency run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'
   assert_has "$TMP/out" '"workflowRunId":77,"runAttempt":3'
   assert_not_has "$TMP/out" '"workflowRunId":88'
   GH_MODE=status_gate_run_overlap run_pr "$TMP/out" status 7 --json
