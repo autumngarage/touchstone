@@ -293,7 +293,7 @@ case "$1 ${2:-}" in
       case "${GH_MODE:-ok}" in
         status_closed) pr_state=CLOSED ;;
         status_merged) pr_state=MERGED ;;
-        status_gate_queue_removed) merge_state=BLOCKED ;;
+        status_gate_queue_removed | status_gate_blocked_success) merge_state=BLOCKED ;;
       esac
       [ ! -f "$GH_STATE/status-draft" ] || draft=true
       [ ! -f "$GH_STATE/status-conflicts" ] || merge_state=DIRTY
@@ -392,6 +392,10 @@ case "$1 ${2:-}" in
           printf '%s\n' '{"jobs":[{"id":81,"name":"review-gate","run_attempt":2,"status":"in_progress","conclusion":null}]}' ;;
         status_gate_failure | status_gate_collision)
           printf '%s\n' '{"jobs":[{"id":82,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"failure"}]}' ;;
+        status_gate_cancelled)
+          printf '%s\n' '{"jobs":[{"id":82,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"cancelled"}]}' ;;
+        status_gate_workflow_cancelled)
+          printf '%s\n' '{"jobs":[]}' ;;
         status_gate_success | status_gate_historical)
           printf '%s\n' '{"jobs":[{"id":84,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"success"}]}' ;;
         status_gate_status_race)
@@ -411,6 +415,12 @@ case "$1 ${2:-}" in
           ;;
         status_gate_failure)
           jq -cn --arg head "$GH_HEAD" '{check_runs:[{id:82,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"failure",details_url:"https://example.test/runs/82",output:{title:"No request binds this head",summary:"Run touchstone pr open for the live head."}}]}'
+          ;;
+        status_gate_cancelled)
+          jq -cn --arg head "$GH_HEAD" '{check_runs:[{id:82,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"cancelled",details_url:"https://example.test/runs/82",output:{title:"Review evaluation cancelled",summary:"Inspect the workflow run."}}]}'
+          ;;
+        status_gate_workflow_cancelled)
+          jq -cn '{check_runs:[]}'
           ;;
         status_gate_success | status_gate_historical)
           jq -cn --arg head "$GH_HEAD" '{check_runs:[
@@ -709,6 +719,10 @@ case "$1 ${2:-}" in
             gate_status=completed
             gate_conclusion_json='"failure"'
             ;;
+          status_gate_cancelled | status_gate_workflow_cancelled)
+            gate_status=completed
+            gate_conclusion_json='"cancelled"'
+            ;;
           status_gate_attempt_race)
             if [ -f "$GH_STATE/status-attempt-advanced" ]; then
               gate_attempt=3
@@ -940,6 +954,21 @@ EOF
   assert_has "$TMP/out" 'phase: ready-to-queue'
   assert_has "$TMP/out" 'next action: queue'
   assert_has "$TMP/out" "command: touchstone pr merge 7 --head $HEAD_SHA"
+  GH_MODE=status_gate_blocked_success run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"mergeState":"BLOCKED"'
+  assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'
+  assert_not_has "$TMP/out" '"phase":"ready-to-queue"'
+  GH_MODE=status_gate_cancelled run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"completed","conclusion":"cancelled"'
+  assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'
+  assert_not_has "$TMP/out" '"phase":"fix-required"'
+  GH_MODE=status_gate_workflow_cancelled run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"workflowStatus":"completed","workflowConclusion":"cancelled"'
+  assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'
+  assert_not_has "$TMP/out" '"phase":"fix-required"'
   GH_MODE=status_gate_stale_review run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'

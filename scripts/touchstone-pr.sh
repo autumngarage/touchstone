@@ -1793,12 +1793,12 @@ classify_pr_phase() {
     gate_conclusion="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.conclusion // ""')"
     if [ "$gate_status" = completed ]; then
       if [ "$gate_conclusion" = success ]; then
-        if [ "$REVIEW_GATE_FRESH" = true ]; then
+        if [ "$REVIEW_GATE_FRESH" = true ] && [ "$merge_state" = CLEAN ]; then
           PR_PHASE=ready-to-queue
           PR_NEXT_ACTION=queue
           PR_NEXT_COMMAND="touchstone pr merge $number --head $head"
         fi
-      else
+      elif [ "$gate_conclusion" = failure ]; then
         PR_PHASE=fix-required
         PR_NEXT_ACTION=address-review
       fi
@@ -1821,7 +1821,7 @@ classify_pr_phase() {
       PR_NEXT_ACTION="wait"
       ;;
     completed)
-      if [ -n "$workflow_conclusion" ] && [ "$workflow_conclusion" != success ]; then
+      if [ "$workflow_conclusion" = failure ]; then
         PR_PHASE=fix-required
         PR_NEXT_ACTION=address-review
       fi

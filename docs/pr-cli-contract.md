@@ -135,10 +135,11 @@ taking this document's word for it.
   because GitHub can land it without another local mutation. Conflicts,
   ambiguous or unbound gates, and incomplete policy bindings are
   `action-required`. After that, only the policy-owned exact-head gate decides:
-  active is `reviewing`, completed failure is `fix-required`, and completed
-  success that postdates the complete review surface is `ready-to-queue`.
-  Success without a completion timestamp, or with later review activity, is
-  `action-required`, matching the merge command's existing freshness refusal.
+  active is `reviewing`, explicit `failure` is `fix-required`, and success that
+  postdates the complete review surface is `ready-to-queue` only when GitHub
+  reports the PR `CLEAN`. A blocked merge state, operational conclusion,
+  missing completion timestamp, or later review activity is `action-required`,
+  matching the merge command's existing fail-closed behavior.
   An absent gate with no active bound workflow is `action-required`, never
   guessed to be pending or passing.
 
