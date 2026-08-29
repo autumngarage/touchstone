@@ -93,9 +93,10 @@ taking this document's word for it.
   exists; a fully applied workflow-source policy instead states that
   exact-head review remains driver procedure.
 - `status` is a read-only observation of state, URL, exact head, base ref/base
-  SHA, draft state, GitHub's merge-state observation, and whether GitHub's
-  durable `autoMergeRequest` is armed. Armed state includes its `enabledAt`
-  timestamp and the live PR head that state belongs to. It also reports the
+  SHA, draft state, GitHub's merge-state observation, whether GitHub's durable
+  `autoMergeRequest` is armed, and the current `mergeQueueEntry.state`. Armed
+  state includes its `enabledAt` timestamp and the live PR head that state
+  belongs to. It also reports the
   newest exact-head CheckRun belonging to the effectively required
   `review-gate` workflow run: its id, status, conclusion, details URL, and
   bounded policy-owned title and summary, plus the owning workflow-run id,
@@ -113,15 +114,43 @@ taking this document's word for it.
   `reviewGateBehaviorContractVersion` is the version verified at the effective
   exact pinned revision, or `null` when that live binding is not verified; PR
   clients use this field instead of inferring behavior from local policy bytes.
-  If distinct runs share
-  GitHub's newest second-resolution attempt-start timestamp, status reports the
-  ambiguity and their run ids instead of inventing an order. Status does not infer a
-  pending or passing verdict. It does not parse review requests, recognize a
-  reviewer, reconstruct auto-merge from local wait conditions, or decide
-  whether review is complete.
+  If distinct runs share GitHub's newest second-resolution attempt-start
+  timestamp, status reports the ambiguity and their run ids instead of
+  inventing an order.
+
+  The additive `phase` field reduces those authoritative observations to one
+  stable enum: `reviewing`, `fix-required`, `ready-to-queue`, `queued`,
+  `merged`, or `action-required`. Its one-to-one `nextAction` values are
+  `wait`, `address-review`, `queue`, `done`, and `inspect`; both `reviewing`
+  and `queued` intentionally use `wait`. Human output prints the exact-head
+  `touchstone pr merge PR --head SHA` command only for `ready-to-queue`, where
+  that mutation is safe to attempt. No other phase invents a recovery command.
+
+  Classification is deliberately small and fail closed. `MERGED` is terminal.
+  Any non-open or draft PR is `action-required`. Effective enforcement is
+  checked before queue state, so a queue entry never implies that review was
+  authorized in a partially adopted repository. A known live queue state is
+  `queued`; `UNMERGEABLE` or an unknown future queue state is
+  `action-required`. An armed legacy auto-merge request is also `queued`
+  because GitHub can land it without another local mutation. Conflicts,
+  ambiguous or unbound gates, and incomplete policy bindings are
+  `action-required`. After that, only the policy-owned exact-head gate decides:
+  active is `reviewing`, explicit `failure` is `fix-required`, and success that
+  postdates the complete review surface is `ready-to-queue` only when GitHub
+  reports the PR `CLEAN`. A blocked merge state, operational conclusion,
+  missing completion timestamp, or later review activity is `action-required`,
+  matching the merge command's existing fail-closed behavior.
+  An absent gate with no active bound workflow is `action-required`, never
+  guessed to be pending or passing.
+
+  Status does not parse gate output or reviewer prose, recognize a reviewer,
+  reconstruct auto-merge from local wait conditions, decide whether review is
+  complete, request review, enqueue, retry, or wait for delivery. Queue
+  position, ETA, and merge-group internals stay outside the versioned contract.
   Raw equivalent: `gh pr view --json
   number,state,url,headRefOid,baseRefName,baseRefOid,mergeStateStatus,isDraft`
-  plus `autoMergeRequest { enabledAt }` from GitHub's GraphQL API and
+  plus `autoMergeRequest { enabledAt }` and `mergeQueueEntry { state }` from
+  GitHub's GraphQL API and
   `gh api repos/O/R/commits/HEAD/check-runs?check_name=review-gate&filter=all`
   plus the matching external workflow run and its current-attempt jobs, with
   exact-head and job-id filtering. The CheckRun endpoint belongs to the consumer
