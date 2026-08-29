@@ -1680,14 +1680,21 @@ read_pr_row() {
 }
 
 read_auto_merge_state() {
-  local number="$1" expected_head="$2" row
+  local number="$1" expected_head="$2" observation
   read_with_retry gh api graphql --hostname "$REPO_HOST" \
     -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F number="$number" \
-    -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid autoMergeRequest{enabledAt}}}}' \
-    --jq '[.data.repository.pullRequest.headRefOid, (.data.repository.pullRequest.autoMergeRequest.enabledAt // "")] | @tsv' \
-    || fail_operation "could not read auto-merge state for PR #$number: $READ_OUTPUT" "Retry after GitHub recovers."
-  row="$READ_OUTPUT"
-  IFS="$(printf '\t')" read -r AUTO_MERGE_HEAD AUTO_MERGE_ENABLED_AT <<<"$row"
+    -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid autoMergeRequest{enabledAt} mergeQueueEntry{state}}}}' \
+    --jq '.data.repository.pullRequest | {head:.headRefOid,autoMergeEnabledAt:(.autoMergeRequest.enabledAt // null),mergeQueueState:(.mergeQueueEntry.state // null)}' \
+    || fail_operation "could not read auto-merge or merge-queue state for PR #$number: $READ_OUTPUT" "Retry after GitHub recovers."
+  observation="$(printf '%s' "$READ_OUTPUT" | jq -ce '
+    if (.head | type) != "string" or .head == "" then error("missing head")
+    elif .autoMergeEnabledAt != null and (.autoMergeEnabledAt | type) != "string" then error("invalid auto-merge timestamp")
+    elif .mergeQueueState != null and (.mergeQueueState | type) != "string" then error("invalid merge-queue state")
+    else . end')" \
+    || fail_operation "GitHub returned malformed auto-merge or merge-queue state for PR #$number" "Retry after GitHub returns a complete pull-request observation."
+  AUTO_MERGE_HEAD="$(printf '%s' "$observation" | jq -r .head)"
+  AUTO_MERGE_ENABLED_AT="$(printf '%s' "$observation" | jq -r '.autoMergeEnabledAt // ""')"
+  MERGE_QUEUE_STATE="$(printf '%s' "$observation" | jq -r '.mergeQueueState // ""')"
   [ -n "$AUTO_MERGE_HEAD" ] \
     || fail_operation "GitHub returned no live head while reading auto-merge state for PR #$number" "Retry after GitHub recovers."
   [ "$AUTO_MERGE_HEAD" = "$expected_head" ] \
@@ -1713,6 +1720,110 @@ auto_merge_text() {
   else
     printf 'not armed for %s' "$AUTO_MERGE_HEAD"
   fi
+}
+
+merge_queue_json() {
+  if [ -z "$MERGE_QUEUE_STATE" ]; then
+    printf 'null'
+  else
+    printf '{"state":'
+    json_string "$MERGE_QUEUE_STATE"
+    printf '}'
+  fi
+}
+
+merge_queue_text() {
+  if [ -n "$MERGE_QUEUE_STATE" ]; then
+    printf '%s' "$MERGE_QUEUE_STATE"
+  else
+    printf 'not queued'
+  fi
+}
+
+PR_PHASE=""
+PR_NEXT_ACTION=""
+PR_NEXT_COMMAND=""
+classify_pr_phase() {
+  local state="$1" merge_state="$2" draft="$3" number="$4" head="$5"
+  local gate_present gate_status gate_conclusion workflow_status workflow_conclusion
+  PR_PHASE=action-required
+  PR_NEXT_ACTION=inspect
+  PR_NEXT_COMMAND=""
+
+  if [ "$state" = MERGED ]; then
+    PR_PHASE=merged
+    PR_NEXT_ACTION="done"
+    return 0
+  fi
+  [ "$state" = OPEN ] || return 0
+  [ "$draft" = false ] || return 0
+
+  # A queue entry is not review authority. Keep enforcement ahead of queue
+  # classification so a workflow-source or partially adopted repository never
+  # turns GitHub queue state into implied review approval (AUT-791).
+  [ "$ENFORCEMENT_STATUS" = applied ] || return 0
+
+  case "$MERGE_QUEUE_STATE" in
+    QUEUED | AWAITING_CHECKS | MERGEABLE | LOCKED)
+      PR_PHASE=queued
+      PR_NEXT_ACTION="wait"
+      return 0
+      ;;
+    UNMERGEABLE)
+      return 0
+      ;;
+    "") ;;
+    *) return 0 ;;
+  esac
+
+  if [ "$AUTO_MERGE_ARMED" = true ]; then
+    PR_PHASE=queued
+    PR_NEXT_ACTION="wait"
+    return 0
+  fi
+  [ "$merge_state" != DIRTY ] || return 0
+  [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.ambiguous // false')" = false ] || return 0
+  [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.unbound // false')" = false ] || return 0
+  [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r 'if has("configured") then .configured else true end')" = true ] || return 0
+
+  gate_present="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.present // false')"
+  if [ "$gate_present" = true ]; then
+    gate_status="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.status // ""')"
+    gate_conclusion="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.conclusion // ""')"
+    if [ "$gate_status" = completed ]; then
+      if [ "$gate_conclusion" = success ]; then
+        PR_PHASE=ready-to-queue
+        PR_NEXT_ACTION=queue
+        PR_NEXT_COMMAND="touchstone pr merge $number --head $head"
+      else
+        PR_PHASE=fix-required
+        PR_NEXT_ACTION=address-review
+      fi
+      return 0
+    fi
+    case "$gate_status" in
+      queued | requested | waiting | pending | in_progress)
+        PR_PHASE=reviewing
+        PR_NEXT_ACTION="wait"
+        ;;
+    esac
+    return 0
+  fi
+
+  workflow_status="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.workflowStatus // ""')"
+  workflow_conclusion="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.workflowConclusion // ""')"
+  case "$workflow_status" in
+    queued | requested | waiting | pending | in_progress)
+      PR_PHASE=reviewing
+      PR_NEXT_ACTION="wait"
+      ;;
+    completed)
+      if [ -n "$workflow_conclusion" ] && [ "$workflow_conclusion" != success ]; then
+        PR_PHASE=fix-required
+        PR_NEXT_ACTION=address-review
+      fi
+      ;;
+  esac
 }
 
 REVIEW_GATE_RUN_IDENTITY="null"
@@ -2028,6 +2139,7 @@ status_pr() {
   else
     REVIEW_GATE_CHECK_JSON="$(jq -cn --arg head "$head" '{present:false, head:$head, configured:false}')"
   fi
+  classify_pr_phase "$state" "$merge_state" "$draft" "$number" "$head"
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"status","status":"observed","pullRequest":%s,"state":' "$OUTPUT_SCHEMA" "$number"
     json_string "$state"
@@ -2043,6 +2155,12 @@ status_pr() {
     json_string "$merge_state"
     printf ',"draft":%s,"autoMerge":' "$draft"
     auto_merge_json
+    printf ',"mergeQueue":'
+    merge_queue_json
+    printf ',"phase":'
+    json_string "$PR_PHASE"
+    printf ',"nextAction":'
+    json_string "$PR_NEXT_ACTION"
     printf ',"reviewGateCheck":%s' "$REVIEW_GATE_CHECK_JSON"
     printf ',"reviewGateBehaviorContractVersion":'
     if [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ] && [ -n "$ENFORCEMENT_GATE_BEHAVIOR_VERSION" ]; then
@@ -2055,8 +2173,9 @@ status_pr() {
     policy_binding_json_fields
     printf '}\n'
   else
-    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  merge state: %s\n  draft: %s\n  auto-merge: %s\n  review gate: %s\n  policy: %s at %s\n  enforcement on %s: %s\n' \
-      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$merge_state" "$draft" "$(auto_merge_text)" "$(review_gate_check_text)" "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" "$base" "$(enforcement_text)"
+    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  phase: %s\n  next action: %s\n  merge state: %s\n  draft: %s\n  auto-merge: %s\n  merge queue: %s\n  review gate: %s\n  policy: %s at %s\n  enforcement on %s: %s\n' \
+      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$PR_PHASE" "$PR_NEXT_ACTION" "$merge_state" "$draft" "$(auto_merge_text)" "$(merge_queue_text)" "$(review_gate_check_text)" "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" "$base" "$(enforcement_text)"
+    [ -z "$PR_NEXT_COMMAND" ] || printf '  command: %s\n' "$PR_NEXT_COMMAND"
     [ -z "$ENFORCEMENT_CANDIDATE_REVISION" ] \
       || printf '  candidate policy: %s at %s (%s)\n' "$ENFORCEMENT_CANDIDATE_SOURCE" "$ENFORCEMENT_CANDIDATE_REVISION" "$ENFORCEMENT_CANDIDATE_ROLE"
   fi

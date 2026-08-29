@@ -287,8 +287,18 @@ case "$1 ${2:-}" in
     else
       head_repo="${GH_FAKE_HEAD_REPO:-${GH_FAKE_REPO:-${GH_REPO:-autumngarage/current}}}"
       [ ! -f "$GH_STATE/head-repo-missing" ] || head_repo=-
-      printf '7\tOPEN\thttps://example.test/pr/7\t%s\t%s\tmain\t%s\tCLEAN\tfalse\n' \
-        "$GH_HEAD" "$head_repo" "${GH_BASE_SHA:-base-sha}"
+      pr_state=OPEN
+      merge_state=CLEAN
+      draft=false
+      case "${GH_MODE:-ok}" in
+        status_closed) pr_state=CLOSED ;;
+        status_merged) pr_state=MERGED ;;
+        status_gate_queue_removed) merge_state=BLOCKED ;;
+      esac
+      [ ! -f "$GH_STATE/status-draft" ] || draft=true
+      [ ! -f "$GH_STATE/status-conflicts" ] || merge_state=DIRTY
+      printf '7\t%s\thttps://example.test/pr/7\t%s\t%s\tmain\t%s\t%s\t%s\n' \
+        "$pr_state" "$GH_HEAD" "$head_repo" "${GH_BASE_SHA:-base-sha}" "$merge_state" "$draft"
     fi
     ;;
   "pr merge")
@@ -306,12 +316,23 @@ case "$1 ${2:-}" in
     ;;
   "api user") printf '%s\n' alice ;;
   "api graphql")
-    if has 'autoMergeRequest.enabledAt // ""' "$@"; then
-      if [ "${GH_MODE:-ok}" = status_auto_merge ]; then
-        printf '%s\t%s\n' "$GH_HEAD" '2026-08-24T20:00:00Z'
-      else
-        printf '%s\t\n' "$GH_HEAD"
+    if has 'autoMergeEnabledAt' "$@"; then
+      if [ "${GH_MODE:-ok}" = status_observation_failure ]; then
+        printf 'GraphQL unavailable\n' >&2
+        exit 1
       fi
+      observed_head="$GH_HEAD"
+      [ "${GH_MODE:-ok}" != status_head_moved ] || observed_head=moved-head
+      auto_merge_enabled_at=null
+      [ "${GH_MODE:-ok}" != status_auto_merge ] || auto_merge_enabled_at='"2026-08-24T20:00:00Z"'
+      queue_state=null
+      case "${GH_MODE:-ok}" in
+        status_gate_queued) queue_state='"AWAITING_CHECKS"' ;;
+        status_gate_queue_unmergeable) queue_state='"UNMERGEABLE"' ;;
+        status_gate_queue_unknown) queue_state='"FUTURE_STATE"' ;;
+      esac
+      printf '{"head":"%s","autoMergeEnabledAt":%s,"mergeQueueState":%s}\n' \
+        "$observed_head" "$auto_merge_enabled_at" "$queue_state"
     elif has 'mergeQueueEntry' "$@"; then
       if [ "${GH_MODE:-ok}" = merge_reconcile_failed ]; then
         printf 'GraphQL unavailable\n' >&2
@@ -879,12 +900,16 @@ EOF
   assert_has "$TMP/out" '"status":"observed"'
   assert_has "$TMP/out" "\"head\":\"$HEAD_SHA\""
   assert_has "$TMP/out" "\"autoMerge\":{\"armed\":false,\"enabledAt\":null,\"head\":\"$HEAD_SHA\"}"
+  assert_has "$TMP/out" '"mergeQueue":null,"phase":"action-required","nextAction":"inspect"'
   assert_has "$TMP/out" "\"reviewGateCheck\":{\"present\":false,\"head\":\"$HEAD_SHA\",\"configured\":false}"
   assert_has "$GH_CALLS" 'api graphql --hostname github.com -f owner=autumngarage -f name=current -F number=7'
   [ "$(grep -c '^pr view' "$GH_CALLS")" -eq 2 ] || fail "status did not retry exactly once"
   run_pr "$TMP/out" status 7
   assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'phase: action-required'
+  assert_has "$TMP/out" 'next action: inspect'
   assert_has "$TMP/out" "auto-merge: not armed for $HEAD_SHA"
+  assert_has "$TMP/out" 'merge queue: not queued'
   assert_has "$TMP/out" "review gate: not configured by the effective policy for $HEAD_SHA"
   GH_MODE=status_auto_merge run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
@@ -895,6 +920,7 @@ EOF
   touch "$TMP/state/review-gate"
   GH_MODE=status_gate_pending run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"phase":"reviewing","nextAction":"wait"'
   assert_has "$TMP/out" '"reviewGateCheck":{"present":true'
   assert_has "$TMP/out" '"checkRunId":81,"status":"in_progress","conclusion":null'
   GH_MODE=status_gate_failure run_pr "$TMP/out" status 7
@@ -902,11 +928,43 @@ EOF
   assert_has "$TMP/out" 'review gate: completed/failure (check run 82): No request binds this head — https://example.test/runs/82'
   GH_MODE=status_gate_failure run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"phase":"fix-required","nextAction":"address-review"'
   assert_has "$TMP/out" '"title":"No request binds this head","summary":"Run touchstone pr open for the live head."'
   GH_MODE=status_gate_success run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"phase":"ready-to-queue","nextAction":"queue"'
   assert_has "$TMP/out" '"checkRunId":84,"status":"completed","conclusion":"success"'
   assert_not_has "$TMP/out" 'Superseded attempt'
+  GH_MODE=status_gate_success run_pr "$TMP/out" status 7
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'phase: ready-to-queue'
+  assert_has "$TMP/out" 'next action: queue'
+  assert_has "$TMP/out" "command: touchstone pr merge 7 --head $HEAD_SHA"
+  GH_MODE=status_gate_queued run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"mergeQueue":{"state":"AWAITING_CHECKS"},"phase":"queued","nextAction":"wait"'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  assert_not_has "$GH_CALLS" 'pr comment'
+  touch "$TMP/state/no-review-gate-rule"
+  GH_MODE=status_gate_queued run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"mergeQueue":{"state":"AWAITING_CHECKS"},"phase":"action-required","nextAction":"inspect"'
+  rm -f "$TMP/state/no-review-gate-rule"
+  GH_MODE=status_merged run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"phase":"merged","nextAction":"done"'
+  GH_MODE=status_gate_queue_unmergeable run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"mergeQueue":{"state":"UNMERGEABLE"},"phase":"action-required","nextAction":"inspect"'
+  GH_MODE=status_gate_queue_unknown run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"mergeQueue":{"state":"FUTURE_STATE"},"phase":"action-required","nextAction":"inspect"'
+  GH_MODE=status_head_moved run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" "moved from $HEAD_SHA to moved-head while status was being read"
+  GH_MODE=status_observation_failure run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'could not read auto-merge or merge-queue state'
   GH_MODE=status_gate_historical run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"present":false,"head":"'"$HEAD_SHA"'","unbound":true,"workflowRunId":77'
@@ -934,6 +992,7 @@ EOF
   assert_not_has "$TMP/out" '"workflowRunId":77'
   GH_MODE=status_gate_run_tie run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'
   assert_has "$TMP/out" '"present":false,"head":"'"$HEAD_SHA"'","ambiguous":true,"workflowRunIds":[77,88],"runStartedAt":"2026-08-27T17:10:00Z"'
   assert_not_has "$GH_CALLS" '/attempts/'
   GH_MODE=status_gate_collision run_pr "$TMP/out" status 7 --json

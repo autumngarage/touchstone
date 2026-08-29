@@ -1952,7 +1952,7 @@ case "${1:-} ${2:-}" in
   'auth status') exit 0 ;;
   'repo view') printf '%s\n' $'autumngarage/consumer\thttps://github.com/autumngarage/consumer' ;;
   'pr view') printf '%s\n' $'1\tOPEN\thttps://example.invalid/pr/1\t1111111111111111111111111111111111111111\tautumngarage/consumer\tmain\t2222222222222222222222222222222222222222\tCLEAN\tfalse' ;;
-  'api graphql') printf '%s\t\n' '1111111111111111111111111111111111111111' ;;
+  'api graphql') printf '%s\n' '{"head":"1111111111111111111111111111111111111111","autoMergeEnabledAt":null,"mergeQueueState":null}' ;;
   'api --hostname')
     if [[ "$*" == *'actions/workflows?per_page=100'* ]]; then
       printf '%s\n' '{"workflows":[]}'
