@@ -2142,10 +2142,53 @@ read_review_budget() {
       any($issueComments[]?;
         (.body // "")
         | test("touchstone:review-answer( v=1)? id=" + ($id | tostring) + "([[:space:]]|-->)"));
-    def result_head:
-      (.body // "")
-      | (try capture("/blob/(?<sha>[0-9a-fA-F]{40})/").sha catch "")
-      | ascii_downcase;
+    def standard_codex_review_body:
+      (.body // "") as $body
+      | ($body | contains("### 💡 Codex Review"))
+        and ($body | contains("Reviewed commit:"));
+    def root_inline_for($id):
+      any($reviewComments[]?;
+        .in_reply_to_id == null
+        and ((.pull_request_review_id // 0) | tostring) == ($id | tostring));
+    def edited_after_attachments($review):
+      ([$review.submitted_at // empty]
+       + [$reviewComments[]?
+          | select(((.pull_request_review_id // 0) | tostring) == (($review.id // 0) | tostring))
+          | .created_at // empty]
+       | max // "") as $settled
+      | ($review.updated_at // "") > $settled;
+    def review_body_finding($review):
+      (($review.body // "") | gsub("[[:space:]]"; "")) != ""
+      and (
+        (($review | standard_codex_review_body) | not)
+        or edited_after_attachments($review)
+        or (root_inline_for($review.id) | not)
+      );
+    def result_comment_finding:
+      (
+        (((.body // "") | contains("Didn\u0027t find any major issues")) | not)
+        and (standard_codex_review_body | not)
+      )
+      or ((.updated_at // .created_at // "") > (.created_at // ""));
+    def result_head($requests):
+      . as $comment
+      | ($comment.resolved_review_sha // "" | ascii_downcase) as $resolved
+      | ([($comment.body // "")
+          | capture("/blob/(?<sha>[0-9a-fA-F]{40})/").sha
+          | ascii_downcase]
+        | first // "") as $linked
+      | if ($resolved | valid_sha) then $resolved
+        elif ($linked | valid_sha) then $linked
+        else
+          ([($comment.body // "")
+            | capture("Reviewed commit:[*]*[[:space:]]*`(?<sha>[0-9a-fA-F]{7,40})`").sha
+            | ascii_downcase]
+           | first // "") as $abbreviated
+          | if $abbreviated == "" then ""
+            else ([$requests[]?.head | select(startswith($abbreviated))] | unique) as $matches
+              | if ($matches | length) == 1 then $matches[0] else "" end
+            end
+        end;
     [
       $issueComments[]? as $comment
       | select(($comment.body // "") | test("^[[:space:]]*@codex[[:space:]]+review([[:space:]]|$)"; "i"))
@@ -2166,14 +2209,13 @@ read_review_budget() {
             at: $at,
             finding: (
               ($review.state // "") == "CHANGES_REQUESTED"
-              or any($reviewComments[]?;
-                .in_reply_to_id == null
-                and ((.pull_request_review_id // 0) | tostring) == (($review.id // 0) | tostring))
+              or root_inline_for($review.id)
+              or review_body_finding($review)
               or answer_for($review.id)
             )
           },
         $issueComments[]? as $comment
-        | ($comment | result_head) as $head
+        | ($comment | result_head($requests)) as $head
         | ($comment.updated_at // $comment.created_at // "") as $at
         | select($head | valid_sha)
         | select(any($requests[]?; .head == $head and .at < $at))
@@ -2182,10 +2224,7 @@ read_review_budget() {
             at: $at,
             finding: (
               answer_for($comment.id)
-              or (
-                (($comment.body // "") | contains("### 💡 Codex Review"))
-                and ((($comment.body // "") | contains("Didn'\''t find any major issues")) | not)
-              )
+              or ($comment | result_comment_finding)
             )
           }
       ] as $evidence
