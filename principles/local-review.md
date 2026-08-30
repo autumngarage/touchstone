@@ -20,8 +20,8 @@ the loop:
 | serious | one Codex review of the branch, pre-push | `codex review --base <default>` |
 
 One harness keeps the procedure stable. Touchstone owns the normal profile as
-a machine-wide cost boundary: it routes the bounded local pass through
-OpenRouter's Pareto Code router at medium reasoning, while the serious pass and
+a machine-wide cost boundary: the checked-in profile pins the bounded local
+pass to a cost-efficient model at medium reasoning, while the serious pass and
 PR-side reviewer remain on the default Codex path. The PR-side reviewer runs on
 open regardless and remains the merge authority.
 
