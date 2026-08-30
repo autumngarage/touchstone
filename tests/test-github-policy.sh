@@ -726,6 +726,13 @@ jq -e 'any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")' \
   "$ROOT/policy/github/consumers/hesperus.json" >/dev/null \
   && ok "hesperus declares a merge queue" \
   || fail "hesperus lost its merge queue; regenerate it without --no-queue"
+# Hesperus's persistent acceptance fixture exists to exercise that queue end to
+# end, so losing either its registration or its queue must fail independently
+# of the generic derivation loop above.
+jq -e 'any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")' \
+  "$ROOT/policy/github/consumers/hesperus-acceptance-fixture.json" >/dev/null \
+  && ok "hesperus acceptance fixture declares a merge queue" \
+  || fail "hesperus acceptance fixture lost its merge queue; regenerate it without --no-queue"
 # Vesper's hosted macOS workflow publishes on merge_group, so its checked-in
 # policy keeps the queue and requires that exact prospective-merge verdict.
 jq -e '
