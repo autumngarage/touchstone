@@ -167,6 +167,10 @@ value_after() {
   return 1
 }
 
+budget_item() {
+  jq -cn "$@" | jq -r @base64
+}
+
 case "$1 ${2:-}" in
   "auth status")
     [ "${GH_MODE:-ok}" != auth_fail ]
@@ -490,6 +494,50 @@ case "$1 ${2:-}" in
       # page as --paginate delivers it: two pages, the record (if any) on the
       # second.
       if [ -f "$GH_STATE/unguarded-recorded" ]; then printf '0\n1\n'; else printf '0\n0\n'; fi
+    elif has '.[] | @base64' "$@" && [ -f "$GH_STATE/review-budget-fixture" ]; then
+      request_one='@codex review
+
+<!-- touchstone:pr-open head=1111111111111111111111111111111111111111 base=main base_sha=base-sha -->'
+      request_two='@codex review
+
+<!-- touchstone:pr-open head=2222222222222222222222222222222222222222 base=main base_sha=base-sha -->'
+      request_three='@codex review
+
+<!-- touchstone:pr-open head=3333333333333333333333333333333333333333 base=main base_sha=base-sha -->'
+      request_four='@codex review
+
+<!-- touchstone:pr-open head=5555555555555555555555555555555555555555 base=main base_sha=base-sha -->'
+      request_five='@codex review
+
+<!-- touchstone:pr-open head=6666666666666666666666666666666666666666 base=main base_sha=base-sha -->'
+      if has '/issues/7/comments' "$@"; then
+        budget_item --arg body "$request_one" '{id:1,created_at:"2026-08-27T10:00:00Z",updated_at:"2026-08-27T10:00:00Z",user:{login:"alice"},body:$body}'
+        # A replacement provider trigger on the same head is one round, not two.
+        budget_item --arg body "$request_one" '{id:2,created_at:"2026-08-27T10:01:00Z",updated_at:"2026-08-27T10:01:00Z",user:{login:"alice"},body:$body}'
+        budget_item --arg body "$request_two" '{id:3,created_at:"2026-08-27T11:00:00Z",updated_at:"2026-08-27T11:00:00Z",user:{login:"alice"},body:$body}'
+        budget_item --arg body "$request_three" '{id:4,created_at:"2026-08-27T12:00:00Z",updated_at:"2026-08-27T12:00:00Z",user:{login:"alice"},body:$body}'
+        budget_item --arg body "$request_four" '{id:5,created_at:"2026-08-27T14:00:00Z",updated_at:"2026-08-27T14:00:00Z",user:{login:"alice"},body:$body}'
+        budget_item --arg body 'Codex Review: P1 result finding
+
+**Reviewed commit:** `5555555`' '{id:6,created_at:"2026-08-27T14:05:00Z",updated_at:"2026-08-27T14:05:00Z",user:{login:"chatgpt-codex-connector[bot]"},body:$body}'
+        budget_item --arg body "$request_five" '{id:7,created_at:"2026-08-27T15:00:00Z",updated_at:"2026-08-27T15:00:00Z",user:{login:"alice"},body:$body}'
+        budget_item --arg body "Codex Review: Didn't find any major issues.
+
+**Reviewed commit:** \`6666666\`" '{id:8,created_at:"2026-08-27T15:05:00Z",updated_at:"2026-08-27T15:05:00Z",user:{login:"chatgpt-codex-connector[bot]"},body:$body}'
+      elif has '/pulls/7/reviews' "$@"; then
+        budget_item '{id:61,commit_id:"1111111111111111111111111111111111111111",submitted_at:"2026-08-27T10:05:00Z",updated_at:"2026-08-27T10:05:00Z",state:"COMMENTED",body:""}'
+        budget_item '{id:62,commit_id:"1111111111111111111111111111111111111111",submitted_at:"2026-08-27T10:06:00Z",updated_at:"2026-08-27T10:06:00Z",state:"COMMENTED",body:""}'
+        budget_item '{id:63,commit_id:"2222222222222222222222222222222222222222",submitted_at:"2026-08-27T11:05:00Z",updated_at:"2026-08-27T11:05:00Z",state:"COMMENTED",body:"P1 body-only finding."}'
+        budget_item '{id:64,commit_id:"3333333333333333333333333333333333333333",submitted_at:"2026-08-27T12:05:00Z",updated_at:"2026-08-27T12:05:00Z",state:"CHANGES_REQUESTED",body:"Fix the provenance boundary."}'
+        # A finding on an unrequested head is not part of this PR's review rounds.
+        budget_item '{id:65,commit_id:"4444444444444444444444444444444444444444",submitted_at:"2026-08-27T13:05:00Z",updated_at:"2026-08-27T13:05:00Z",state:"COMMENTED",body:""}'
+      elif has '/pulls/7/comments' "$@"; then
+        budget_item '{id:101,pull_request_review_id:61,in_reply_to_id:null,created_at:"2026-08-27T10:05:00Z",updated_at:"2026-08-27T10:05:00Z",user:{login:"reviewer"},body:"Finding."}'
+        budget_item '{id:102,pull_request_review_id:61,in_reply_to_id:101,created_at:"2026-08-27T10:07:00Z",updated_at:"2026-08-27T10:07:00Z",user:{login:"alice"},body:"Answered."}'
+        budget_item '{id:103,pull_request_review_id:65,in_reply_to_id:null,created_at:"2026-08-27T13:05:00Z",updated_at:"2026-08-27T13:05:00Z",user:{login:"reviewer"},body:"Unbound finding."}'
+      fi
+    elif has '.[] | @base64' "$@"; then
+      :
     elif has '/issues/7/comments' "$@"; then
       if has 'updated_at // .created_at' "$@"; then
         printf '%s\n' '2026-08-27T17:05:00Z'
@@ -917,7 +965,8 @@ EOF
   assert_has "$TMP/out" '"mergeQueue":null,"phase":"action-required","nextAction":"inspect"'
   assert_has "$TMP/out" "\"reviewGateCheck\":{\"present\":false,\"head\":\"$HEAD_SHA\",\"configured\":false}"
   assert_has "$GH_CALLS" 'api graphql --hostname github.com -f owner=autumngarage -f name=current -F number=7'
-  [ "$(grep -c '^pr view' "$GH_CALLS")" -eq 2 ] || fail "status did not retry exactly once"
+  [ "$(grep -c '^pr view .*--json number,state,url,headRefOid' "$GH_CALLS")" -eq 2 ] \
+    || fail "status did not retry its primary PR read exactly once"
   run_pr "$TMP/out" status 7
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" 'phase: action-required'
@@ -925,6 +974,39 @@ EOF
   assert_has "$TMP/out" "auto-merge: not armed for $HEAD_SHA"
   assert_has "$TMP/out" 'merge queue: not queued'
   assert_has "$TMP/out" "review gate: not configured by the effective policy for $HEAD_SHA"
+
+  echo "==> status exposes the cumulative review budget without treating it as a verdict"
+  cat >"$TMP/state/pr-body" <<EOF
+## Validation
+- Local review: codex on \`$HEAD_SHA\`: 2 findings, fixed.
+- Review budget: v1 capability=AUT-461 local_rounds=1 prior_hosted_rounds=2 reviewed_head=$HEAD_SHA cascade=true exit=split
+EOF
+  touch "$TMP/state/review-budget-fixture"
+  run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewBudget":{"recorded":true,"limit":3,"capability":"AUT-461","localFindingBearingRounds":1,"hostedFindingBearingRounds":6,"findingBearingRounds":7,"sameShapeRoundsRemaining":0,"exhausted":true'
+  assert_has "$TMP/out" "\"reviewedHead\":\"$HEAD_SHA\",\"currentHeadReviewed\":true,\"cascade\":true,\"selectedExit\":\"split\""
+  run_pr "$TMP/out" status 7
+  assert_has "$TMP/out" 'review budget: AUT-461 — 7/3 finding-bearing rounds; same-shape rounds remaining: 0; exhausted: yes; exact-head review still required'
+  assert_has "$TMP/out" "reviewed head: $HEAD_SHA (current); cascade: yes; selected exit: split"
+  [ "$(grep -c -- '--paginate.*issues/7/comments' "$GH_CALLS")" -eq 1 ] \
+    || fail "review-budget issue comments were not read once with pagination"
+  [ "$(grep -c -- '--paginate.*pulls/7/reviews' "$GH_CALLS")" -eq 1 ] \
+    || fail "review-budget formal reviews were not read once with pagination"
+  [ "$(grep -c -- '--paginate.*pulls/7/comments' "$GH_CALLS")" -eq 1 ] \
+    || fail "review-budget inline comments were not read once with pagination"
+
+  printf '%s\n' 'Change summary.' '' 'Closes #42' >"$TMP/state/pr-body"
+  run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewBudget":{"recorded":false,"limit":3,"capability":null,"localFindingBearingRounds":null,"hostedFindingBearingRounds":4,"findingBearingRounds":null,"sameShapeRoundsRemaining":null,"exhausted":null,"reviewedHead":"6666666666666666666666666666666666666666"'
+
+  printf '%s\n' '- Review budget: local_rounds=one' >"$TMP/state/pr-body"
+  run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'malformed Review budget record'
+  rm -f "$TMP/state/review-budget-fixture" "$TMP/state/pr-body"
+
   GH_MODE=status_auto_merge run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" "\"autoMerge\":{\"armed\":true,\"enabledAt\":\"2026-08-24T20:00:00Z\",\"head\":\"$HEAD_SHA\"}"
@@ -1163,6 +1245,7 @@ EOF
   run_pr "$TMP/out" open --title 'Gate v2' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"already-active"}'
+  assert_has "$TMP/out" '"reviewBudget":{"recorded":false,"limit":3'
   [ ! -f "$TMP/state/gate-reruns" ] \
     || fail "behavior v2 open re-ran an evaluation that was already active"
   [ "$(grep -c 'actions/runs?head_sha=' "$GH_CALLS")" -le 2 ] \

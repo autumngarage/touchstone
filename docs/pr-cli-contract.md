@@ -28,6 +28,9 @@ refreshed a completed attempt; `already-active` means a behavior-v2 run is the
 authoritative evaluator and the client returned while that run waits. A
 successful guarded `merge` reports `verified-success`: it observed an existing
 policy-bound successful gate and did not request another evaluation.
+`open` and `status` also include an additive `reviewBudget` observation. It is
+round-accounting state, never a review verdict or permission to skip the
+required exact-head review.
 
 ## Operations and raw equivalents
 
@@ -64,6 +67,10 @@ taking this document's word for it.
   posted evidence cannot be stranded beyond its cutoff. A newly posted request
   uses the short request window; an idempotent retry that finds the exact
   request already present uses the longer review window.
+  Immediately before inspecting or posting that request, `open` reports the
+  same review-budget observation as `status`. It then re-reads the request
+  surface for sequencing; the earlier observation cannot suppress a request
+  after intervening PR or workflow activity.
   Raw equivalent: compare `git rev-parse HEAD` with `git ls-remote`, inspect
   `gh pr list`, create with `gh pr create`, re-read, then inspect comments
   before `gh pr comment --body "@codex review"`, then re-run a completed gate
@@ -117,6 +124,20 @@ taking this document's word for it.
   If distinct runs share GitHub's newest second-resolution attempt-start
   timestamp, status reports the ambiguity and their run ids instead of
   inventing an order.
+
+  The additive `reviewBudget` object combines a versioned PR-body record of
+  finding-bearing local rounds and hosted rounds from replaced PRs with
+  paginated current-PR review evidence. Current-PR hosted rounds are collapsed
+  by requested head, so retries for one head count once; clean rounds and
+  findings on an unrequested head do not spend the finding-bearing budget. The
+  object reports the capability, local/hosted/total counts, same-shape rounds
+  remaining from the three-round limit, exhaustion, the latest reviewed head,
+  cascade state, and selected exit. An older PR with no record reports local
+  totals and remaining rounds as `null` while still exposing its hosted count.
+  A malformed or duplicate record fails explicitly.
+  This is derived status plus the irreducible local-history input, not a second
+  verdict: exhaustion selects a stop path, while exact-head review remains
+  mandatory for the code that will merge.
 
   The additive `phase` field reduces those authoritative observations to one
   stable enum: `reviewing`, `fix-required`, `ready-to-queue`, `queued`,

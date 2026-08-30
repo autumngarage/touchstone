@@ -108,6 +108,7 @@ the PR is opened.
 - Automated tests: <exact command and result>
 - Manual validation: <specific scenario and result>
 - Local review: <codex on <target>: <n> findings, <disposition> — or n/a — <reason>>
+- Review budget: v1 capability=<tracker ref> local_rounds=<finding-bearing local rounds> prior_hosted_rounds=<finding-bearing hosted rounds on replaced PRs> reviewed_head=<40-character SHA or none> cascade=<true|false> exit=<continue|merge-answered|revert-simplify|split|close-replan>
 
 ## Out of scope
 <intentionally excluded related work>
@@ -121,6 +122,16 @@ the PR is opened.
 
 Never claim a build, test, or manual validation happened unless it actually
 ran.
+
+The versioned `Review budget` row carries the parts of round history the current
+PR cannot expose: cumulative finding-bearing local rounds and hosted rounds on
+replaced PRs. Update it after the local pass and carry the current status count
+into `prior_hosted_rounds` when replacing a PR; a provider retry on the same
+head is not another round. `reviewed_head` records the exact head the local pass
+saw, `cascade=true` means a review fix created another defect, and `exit`
+records the chosen stop path. A missing row is compatible with older PRs but
+reports unknown cross-PR history; it never waives the required exact-head PR
+review.
 
 ## Tier classification
 
