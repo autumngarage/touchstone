@@ -422,9 +422,10 @@ for file in \
     "Run at most one tier-required local AI pass per coherent unit"
   assert_contains "$file" "none for trivial work"
   assert_contains "$file" \
-    "Hosted PR review owns every pushed exact head"
+    'Put a pass or reasoned waiver in `- Local review:`'
   assert_contains "$file" \
-    "never run a confirming local pass"
+    "Hosted review owns every pushed exact head"
+  assert_contains "$file" "never confirm locally"
 done
 for file in \
   "$GIT_WORKFLOW_GUIDE" \
