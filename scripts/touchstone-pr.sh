@@ -1719,6 +1719,39 @@ read_auto_merge_state() {
   fi
 }
 
+ACCEPTED_DELIVERY_STATE=""
+DELIVERY_STATE_CLASS=""
+classify_delivery_state() {
+  local queue_state="$1" auto_merge_armed="$2"
+  DELIVERY_STATE_CLASS=""
+  case "$queue_state" in
+    QUEUED | AWAITING_CHECKS | MERGEABLE | LOCKED) DELIVERY_STATE_CLASS=queued ;;
+    UNMERGEABLE) DELIVERY_STATE_CLASS=unmergeable ;;
+    "")
+      [ "$auto_merge_armed" = false ] || DELIVERY_STATE_CLASS=auto-merge-enabled
+      ;;
+    *) DELIVERY_STATE_CLASS=unknown ;;
+  esac
+}
+
+read_accepted_delivery_state() {
+  local number="$1" head="$2"
+  ACCEPTED_DELIVERY_STATE=""
+  read_auto_merge_state "$number" "$head"
+  classify_delivery_state "$MERGE_QUEUE_STATE" "$AUTO_MERGE_ARMED"
+  case "$DELIVERY_STATE_CLASS" in
+    queued | auto-merge-enabled) ACCEPTED_DELIVERY_STATE="$DELIVERY_STATE_CLASS" ;;
+    unmergeable)
+      fail_operation "PR #$number has an unmergeable queue entry for $head; no merge mutation was made" \
+        "Inspect the authoritative merge-group run and fix forward."
+      ;;
+    unknown)
+      fail_operation "PR #$number has unknown merge-queue state $MERGE_QUEUE_STATE for $head; no merge mutation was made" \
+        "Inspect GitHub before retrying."
+      ;;
+  esac
+}
+
 auto_merge_json() {
   printf '{"armed":%s,"enabledAt":' "$AUTO_MERGE_ARMED"
   if [ -n "$AUTO_MERGE_ENABLED_AT" ]; then json_string "$AUTO_MERGE_ENABLED_AT"; else printf 'null'; fi
@@ -2445,7 +2478,7 @@ status_pr() {
 
 merge_pr() {
   local number state url head head_repo base base_sha merge_state draft merge_output merge_status=0
-  local merge_diagnostic final_state final_row final_head auto_merge queue_state unguarded_marker prior_records record_author merge_auto
+  local merge_diagnostic final_state="" final_row final_head auto_merge queue_state unguarded_marker prior_records record_author merge_auto
   [ -n "$EXPECTED_HEAD" ] \
     || fail_input "merge requires --head SHA" "Pass the exact reviewed head from GitHub."
   read_pr_row
@@ -2490,6 +2523,14 @@ merge_pr() {
       # be gated the way the policy intends. Missing enforcement is a tracked
       # gap, not permission -- refuse unless the caller says so explicitly,
       # and then leave the fact on the PR.
+      # Avoid even the PR-visible unguarded record when GitHub already owns
+      # delivery. The state is read again at the actual merge boundary below,
+      # after the record and coordinate check, to close the intervening race.
+      verify_live_head_and_base "$number" "$head" "$base" "$base_sha"
+      read_accepted_delivery_state "$number" "$head"
+      [ -z "$ACCEPTED_DELIVERY_STATE" ] \
+        || fail_operation "PR #$PR_NUMBER is already accepted for delivery at $head while enforcement is $(enforcement_text); no merge mutation was made" \
+          "Wait for GitHub, or inspect the enforcement gap without changing the live delivery state."
       [ "$UNGUARDED" = true ] \
         || fail_input "enforcement on $base of $REPO is $(enforcement_text); GitHub would not gate this merge as the policy intends" \
           "$(enforcement_remedy); or pass --unguarded to merge anyway and record the gap on the PR."
@@ -2517,31 +2558,54 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
       verify_live_head_and_base "$number" "$head" "$base" "$base_sha"
       printf 'WARNING: requesting merge of PR #%s without a pinned review gate on %s (recorded on the PR).\n' "$PR_NUMBER" "$base" >&2
     fi
-    # Without a merge queue there is nothing to enter: GitHub refuses a plain
-    # merge while required checks are still running, so arm auto-merge and
-    # let it land when they pass (the state `auto-merge-enabled` below).
-    merge_auto=()
-    [ "$ENFORCEMENT_QUEUE_APPLIED" = true ] || merge_auto=(--auto)
-    merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash ${merge_auto[@]+"${merge_auto[@]}"} \
-      --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
-    merge_diagnostic="$(clean_diagnostic "$merge_output")"
-    read_with_retry gh api graphql --hostname "$REPO_HOST" \
-      -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F pr="$PR_NUMBER" \
-      -f query='query($owner: String!, $name: String!, $pr: Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$pr) { state url headRefOid autoMergeRequest { enabledAt } mergeQueueEntry { state } } } }' \
-      --jq '[.data.repository.pullRequest.state,.data.repository.pullRequest.url,.data.repository.pullRequest.headRefOid,(.data.repository.pullRequest.autoMergeRequest != null),(.data.repository.pullRequest.mergeQueueEntry.state // "")] | @tsv' \
-      || fail_operation "merge returned $merge_status (${merge_diagnostic:-no diagnostic}) and final state could not be read: $READ_OUTPUT" "Inspect GitHub."
-    final_row="$READ_OUTPUT"
-    IFS="$(printf '\t')" read -r state _ final_head auto_merge queue_state <<<"$final_row"
-    [ "$final_head" = "$EXPECTED_HEAD" ] \
-      || fail_operation "PR #$PR_NUMBER moved to $final_head during merge reconciliation" "Inspect and review the live head."
-    if [ "$state" = MERGED ]; then
-      final_state=merged
-    elif [ "$state" = OPEN ] && [ -n "$queue_state" ]; then
-      final_state=queued
-    elif [ "$state" = OPEN ] && [ "$auto_merge" = true ]; then
-      final_state=auto-merge-enabled
-    else
-      fail_operation "GitHub did not accept merge for PR #$PR_NUMBER: $merge_diagnostic" "The repository ruleset remains authoritative."
+    # This is the final remote read before the mutation. A queue entry already
+    # bound to this exact head is the desired state; calling merge again can
+    # dequeue a valid merge-group run before GitHub rejects another merge path
+    # (AUT-891). Unknown and failed queue states require inspection, never a
+    # speculative mutation.
+    read_accepted_delivery_state "$number" "$head"
+    if [ -n "$ACCEPTED_DELIVERY_STATE" ]; then
+      if [ "$ENFORCEMENT_STATUS" = applied ]; then
+        final_state="$ACCEPTED_DELIVERY_STATE"
+        [ "$JSON_MODE" = true ] \
+          || printf 'GitHub already accepted this exact head for delivery; no merge mutation was made.\n' >&2
+      else
+        fail_operation "PR #$PR_NUMBER became accepted for delivery at $head; no merge mutation was made" \
+          "Wait for GitHub and leave the live delivery state unchanged."
+      fi
+    fi
+    if [ -z "$final_state" ]; then
+      # Without a merge queue there is nothing to enter: GitHub refuses a plain
+      # merge while required checks are still running, so arm auto-merge and
+      # let it land when they pass (the state `auto-merge-enabled` below).
+      merge_auto=()
+      [ "$ENFORCEMENT_QUEUE_APPLIED" = true ] || merge_auto=(--auto)
+      merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash ${merge_auto[@]+"${merge_auto[@]}"} \
+        --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
+      merge_diagnostic="$(clean_diagnostic "$merge_output")"
+      read_with_retry gh api graphql --hostname "$REPO_HOST" \
+        -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F pr="$PR_NUMBER" \
+        -f query='query($owner: String!, $name: String!, $pr: Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$pr) { state url headRefOid autoMergeRequest { enabledAt } mergeQueueEntry { state } } } }' \
+        --jq '[.data.repository.pullRequest.state,.data.repository.pullRequest.url,.data.repository.pullRequest.headRefOid,(.data.repository.pullRequest.autoMergeRequest != null),(.data.repository.pullRequest.mergeQueueEntry.state // "")] | @tsv' \
+        || fail_operation "merge returned $merge_status (${merge_diagnostic:-no diagnostic}) and final state could not be read: $READ_OUTPUT" "Inspect GitHub."
+      final_row="$READ_OUTPUT"
+      IFS="$(printf '\t')" read -r state _ final_head auto_merge queue_state <<<"$final_row"
+      [ "$final_head" = "$EXPECTED_HEAD" ] \
+        || fail_operation "PR #$PR_NUMBER moved to $final_head during merge reconciliation" "Inspect and review the live head."
+      classify_delivery_state "$queue_state" "$auto_merge"
+      if [ "$state" = MERGED ]; then
+        final_state=merged
+      elif [ "$state" = OPEN ] && { [ "$DELIVERY_STATE_CLASS" = queued ] || [ "$DELIVERY_STATE_CLASS" = auto-merge-enabled ]; }; then
+        final_state="$DELIVERY_STATE_CLASS"
+      elif [ "$state" = OPEN ] && [ "$DELIVERY_STATE_CLASS" = unmergeable ]; then
+        fail_operation "GitHub returned an unmergeable queue state for PR #$PR_NUMBER after the merge request" \
+          "Inspect the authoritative merge-group run; do not retry the merge mutation blindly."
+      elif [ "$state" = OPEN ] && [ "$DELIVERY_STATE_CLASS" = unknown ]; then
+        fail_operation "GitHub returned unknown merge-queue state $queue_state for PR #$PR_NUMBER after the merge request" \
+          "Inspect GitHub; do not retry the merge mutation blindly."
+      else
+        fail_operation "GitHub did not accept merge for PR #$PR_NUMBER: $merge_diagnostic" "The repository ruleset remains authoritative."
+      fi
     fi
   fi
   if [ "$JSON_MODE" = true ]; then

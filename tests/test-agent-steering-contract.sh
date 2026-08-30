@@ -200,6 +200,14 @@ assert_contains "$GIT_WORKFLOW_GUIDE" \
   "do not infer it from this guide"
 assert_not_contains "$GIT_WORKFLOW_GUIDE" \
   "then an organization admin may use GitHub's PR-only ruleset bypass"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "A live exact-head queue entry ends merge mutation"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "The human must explicitly authorize bypassing normal policy"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "Do not probe the rule by mutation"
+assert_contains "$GIT_WORKFLOW_SKILL" \
+  "A live exact-head queue entry receives zero more merge mutations"
 assert_not_contains "$GIT_WORKFLOW_GUIDE" \
   'Direct pushes to `main` are rejected by the server even for organization admins.'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
