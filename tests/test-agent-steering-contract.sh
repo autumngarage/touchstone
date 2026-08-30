@@ -413,6 +413,33 @@ assert_contains "$GIT_WORKFLOW_SKILL" "A review-fix regression is a stop signal"
 assert_contains "$TOUCHSTONE_ROOT/skills/touchstone-audit-weak-points/SKILL.md" \
   "This audit is not permission to patch the failed implementation forward"
 
+echo "==> tier-required local review hands off once to hosted exact-head review"
+for file in \
+  "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
+  "$TOUCHSTONE_ROOT/AGENTS.md" \
+  "$TOUCHSTONE_ROOT/GEMINI.md"; do
+  assert_contains "$file" \
+    "Run at most one tier-required local AI pass per coherent unit"
+  assert_contains "$file" "none for trivial work"
+  assert_contains "$file" \
+    'Put a pass or reasoned waiver in `- Local review:`'
+  assert_contains "$file" \
+    "Hosted review owns every pushed exact head"
+  assert_contains "$file" "never confirm locally"
+done
+for file in \
+  "$GIT_WORKFLOW_GUIDE" \
+  "$GIT_WORKFLOW_SKILL"; do
+  assert_contains "$file" \
+    "A tier-required local AI pass runs at most once per coherent review unit"
+  assert_contains "$file" \
+    "the hosted PR reviewer owns exact-head review for every pushed head"
+done
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "runs at most once before its first push"
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "pass is neither required nor authorized"
+
 echo "==> dirty PR recovery preserves authored work and re-ships the new head"
 assert_contains "$GIT_WORKFLOW_GUIDE" '## Recovering a `DIRTY` PR'
 assert_contains "$GIT_WORKFLOW_GUIDE" 'With a verified merge queue'
