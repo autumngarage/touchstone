@@ -187,7 +187,7 @@ claiming a check ran is not, and the two must never be confused.
 
 ## The local review pass
 
-Once per coherent normal change, after deterministic checks pass. Stage only
+At most once per coherent normal change, after deterministic checks pass. Stage only
 the intended slice; exclude unrelated files, accidental formatting, and any
 generated artifact that is not required to land with this change. State the
 intent and risks. Codex's `--uncommitted` mode sees staged, unstaged, and
@@ -225,7 +225,10 @@ profile: doing so defeats the cost boundary and misstates which review ran.
 Do not retry or inspect credentials; the operator recovery is `touchstone
 review setup` for a missing boundary or `touchstone review rotate` for a
 rejected credential. The serious pass remains `codex review --base <default>`
-after the branch is committed.
+after the branch is committed and runs at most once before its first push.
+After allowed local findings are fixed, deterministic checks run again and the
+hosted PR reviewer owns exact-head review for every pushed head; another local
+pass is neither required nor authorized.
 
 **Local passes and PR-side reviews can share one metered pool**, depending on
 the provider's plan. A driver that re-runs locally after every edit is then
