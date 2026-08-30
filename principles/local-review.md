@@ -59,6 +59,33 @@ atomic correctness change merely to reduce line count. A migration, API
 change, or invariant change stays one slice when its pieces must land
 together.
 
+## Scope-expansion checkpoint
+
+A follow-up request approves doing the work; it does not automatically make
+that work part of the current review unit. A review unit is one behavioral
+invariant with one validation story, not everything accumulated in one
+conversation, branch, or eventual "ship everything" request.
+
+Before the first edit for a follow-up that can be reviewed independently:
+
+1. checkpoint the current coherent unit with its commit and PR/tracker context;
+2. put the addition in a sequential branch/PR or its own tracked item; or
+3. record why the addition is required to make the *same* invariant correct
+   and retain the integrated unit.
+
+During exploratory UI work, checkpoint each accepted stable concern instead
+of waiting for a final shipping request to create all commits. Where the
+project has a release-note contract, decide note or no-note for each unit when
+writing its PR context, before commit.
+
+Size is evidence to inspect, never the decision. A theme-picker change that
+grows into onboarding, a Metal renderer, command behavior, settings migrations,
+and website compatibility has several independent invariants and validation
+stories: checkpoint and separate them while that is cheap. A large icon
+migration, generated release update, or schema transition stays atomic when
+its source, generated artifacts, and callers must land together to avoid an
+invalid intermediate state.
+
 ## Required PR context
 
 Write the context before committing. The `Local review` row is the one

@@ -52,9 +52,10 @@ Non-negotiable. Every code change is reviewed against them. Full rationale lives
 - **Preserve compatibility at boundaries** — public API/config/schema/CLI/hook/template changes need a compatibility or migration plan.
 - **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill (Claude) or read `principles/audit-weak-points.md` (other drivers).
 - **File-writing subagents** — use worktrees; remove one only after final result delivery or confirmed cancellation.
-- **File tracked bugs** — open an item in the configured tracker when you find a bug, here or in an upstream tool. Don't silently work around it.
-- **Keep review subordinate to scope** — review cannot amend approved scope. Implement only in-scope high-severity findings; route the rest. A review-fix defect stops patching: revert or simplify, then audit the class. A second ends same-shape work. Three rounds follow the capability across replacement PRs; closing or renaming never resets the budget.
-- **Stop when the task is correct, not when review runs out of remarks** — deterministic gates first. Implement only high-severity findings; answer and route the rest; never reopen the design space. **Exact-head review after a fix commit is never skipped**, but it never authorizes mutation past a stop. Details live in `principles/git-workflow.md`.
+- **File tracked bugs** — file bugs found here or upstream in the configured tracker; don't silently work around them.
+- **Checkpoint scope expansion before editing** — a follow-up approves doing the work, not bundling it. Route independent additions pre-edit; file count alone never decides.
+- **Keep review subordinate to scope** — review cannot amend approved scope; fix only in-scope high-severity findings. A review-fix defect stops patching. A second ends same-shape work. Three rounds follow the capability across replacement PRs; closing or renaming never resets the budget.
+- **Stop when the task is correct** — deterministic gates first. Implement only high-severity findings; route the rest; never reopen the design space. **Exact-head review after a fix commit is never skipped** and never authorizes mutation past a stop. See `principles/git-workflow.md`.
 
 ## Never commit on the default branch
 
