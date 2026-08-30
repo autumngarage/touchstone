@@ -452,11 +452,15 @@ emit_open_result() {
       printf ',"body":'
       json_string "$BODY_APPLIED"
     fi
+    printf ',"reviewBudget":%s' "$REVIEW_BUDGET_JSON"
     printf '}\n'
   else
     printf 'PR #%s: %s\n  url: %s\n  branch: %s\n  head: %s\n  review request: %s\n' \
       "$number" "$state" "$url" "$branch" "$head" "$request"
     [ -z "$BODY_APPLIED" ] || printf '  body: %s\n' "$BODY_APPLIED"
+    printf '  review budget: %s\n' "$(review_budget_text)"
+    [ "$(printf '%s' "$REVIEW_BUDGET_JSON" | jq -r '.recorded')" != true ] \
+      || printf '  %s\n' "$(review_budget_detail_text)"
   fi
 }
 
@@ -1621,6 +1625,12 @@ open_pr() {
       printf 'Delivery evidence re-run requested for run %s.\n' "$REQUIRED_WORKFLOW_RUN_ID" >&2
     fi
   fi
+  read_review_budget "$number" "$wanted_body" "$local_head"
+  if [ "$JSON_MODE" = false ]; then
+    printf 'Review budget: %s\n' "$(review_budget_text)" >&2
+    [ "$(printf '%s' "$REVIEW_BUDGET_JSON" | jq -r '.recorded')" != true ] \
+      || printf '%s\n' "$(review_budget_detail_text)" >&2
+  fi
   request_marker="<!-- touchstone:pr-open head=$local_head base=$pr_base base_sha=$pr_base_sha -->"
   request_head_marker="<!-- touchstone:pr-open head=$local_head "
   read_with_retry gh api user --hostname "$REPO_HOST" --jq '.login' \
@@ -1628,9 +1638,12 @@ open_pr() {
   request_author="$READ_OUTPUT"
   [ -n "$request_author" ] \
     || fail_operation "GitHub returned no authenticated login" "Re-authenticate to $REPO_HOST."
+  # Re-read the request surface immediately before mutation. Budget status is
+  # an observation; it must not become the source of truth for sequencing a
+  # review request after intervening workflow recovery or PR edits.
   read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$number/comments" \
     --jq '.[] | [.html_url, (.user.login // ""), (.body // "")] | @tsv' \
-    || fail_operation "could not inspect prior review requests: $READ_OUTPUT" "Retry without posting a duplicate."
+    || fail_operation "could not inspect existing review requests: $READ_OUTPUT" "Retry after GitHub recovers."
   comment_rows="$READ_OUTPUT"
   existing_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$request_marker" -v author="$request_author" \
     '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
@@ -2064,6 +2077,184 @@ review_gate_check_text() {
     end'
 }
 
+# Local review runs happen before GitHub can observe them. A versioned PR-body
+# row carries only that irreducible history; hosted finding-bearing rounds are
+# derived from GitHub's review surface and collapsed by reviewed head so a
+# provider retry cannot spend the budget twice.
+REVIEW_BUDGET_LIMIT=3
+REVIEW_BUDGET_JSON='null'
+read_review_budget() {
+  local number="$1" body="$2" current_head="$3"
+  local rows row_count local_record encoded issue_comments reviews review_comments hosted
+
+  rows="$(printf '%s\n' "$body" | sed -n 's/\r$//; /^- Review budget:/p')"
+  row_count="$(printf '%s\n' "$rows" | awk 'NF { count++ } END { print count + 0 }')"
+  case "$row_count" in
+    0) local_record=null ;;
+    1)
+      local_record="$(printf '%s' "$rows" | jq -Rce '
+        capture("^- Review budget: v1 capability=(?<capability>[A-Za-z0-9][A-Za-z0-9._:/#-]*) local_rounds=(?<local>[0-9]+) reviewed_head=(?<head>[0-9a-fA-F]{40}|none) cascade=(?<cascade>true|false) exit=(?<exit>continue|merge-answered|revert-simplify|split|close-replan)$")
+        | {
+            capability: .capability,
+            localRounds: (.local | tonumber),
+            reviewedHead: (if .head == "none" then null else (.head | ascii_downcase) end),
+            cascade: (.cascade == "true"),
+            selectedExit: .exit
+          }')" \
+        || fail_operation "PR #$number has a malformed Review budget record" \
+          "Use '- Review budget: v1 capability=REF local_rounds=N reviewed_head=40_HEX_OR_none cascade=true|false exit=continue|merge-answered|revert-simplify|split|close-replan'."
+      ;;
+    *)
+      fail_operation "PR #$number has multiple Review budget records" "Keep exactly one cumulative v1 record in the PR body."
+      ;;
+  esac
+
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" \
+    "repos/$REPO/issues/$number/comments?per_page=100" --jq '.[] | @base64' \
+    || fail_operation "could not read PR conversation evidence for review-budget status: $READ_OUTPUT" "Retry after GitHub recovers."
+  encoded="$READ_OUTPUT"
+  issue_comments="$(printf '%s\n' "$encoded" | jq -Rsce '
+    split("\n") | map(select(. != "") | @base64d | fromjson)')" \
+    || fail_operation "GitHub returned malformed PR conversation evidence for review-budget status" "Retry after GitHub returns complete comments."
+
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" \
+    "repos/$REPO/pulls/$number/reviews?per_page=100" --jq '.[] | @base64' \
+    || fail_operation "could not read formal review evidence for review-budget status: $READ_OUTPUT" "Retry after GitHub recovers."
+  encoded="$READ_OUTPUT"
+  reviews="$(printf '%s\n' "$encoded" | jq -Rsce '
+    split("\n") | map(select(. != "") | @base64d | fromjson)')" \
+    || fail_operation "GitHub returned malformed formal review evidence for review-budget status" "Retry after GitHub returns complete reviews."
+
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" \
+    "repos/$REPO/pulls/$number/comments?per_page=100" --jq '.[] | @base64' \
+    || fail_operation "could not read inline review evidence for review-budget status: $READ_OUTPUT" "Retry after GitHub recovers."
+  encoded="$READ_OUTPUT"
+  review_comments="$(printf '%s\n' "$encoded" | jq -Rsce '
+    split("\n") | map(select(. != "") | @base64d | fromjson)')" \
+    || fail_operation "GitHub returned malformed inline review evidence for review-budget status" "Retry after GitHub returns complete review comments."
+
+  hosted="$(jq -cne \
+    --argjson issueComments "$issue_comments" \
+    --argjson reviews "$reviews" \
+    --argjson reviewComments "$review_comments" '
+    def valid_sha: type == "string" and test("^[0-9a-fA-F]{40}$");
+    def answer_for($id):
+      any($issueComments[]?;
+        (.body // "")
+        | test("touchstone:review-answer( v=1)? id=" + ($id | tostring) + "([[:space:]]|-->)"));
+    def result_head:
+      (.body // "")
+      | (try capture("/blob/(?<sha>[0-9a-fA-F]{40})/").sha catch "")
+      | ascii_downcase;
+    [
+      $issueComments[]? as $comment
+      | select(($comment.body // "") | test("^[[:space:]]*@codex[[:space:]]+review([[:space:]]|$)"; "i"))
+      | (try (($comment.body // "")
+          | capture("touchstone:pr-open head=(?<head>[0-9a-fA-F]{40})[[:space:]]+base=").head)
+        catch "") as $head
+      | select($head | valid_sha)
+      | {head: ($head | ascii_downcase), at: ($comment.created_at // "")}
+    ] | group_by(.head) | map({head: .[0].head, at: (map(.at) | min)}) as $requests
+    | [
+        $reviews[]? as $review
+        | ($review.commit_id // "" | ascii_downcase) as $head
+        | ($review.submitted_at // "") as $at
+        | select($head | valid_sha)
+        | select(any($requests[]?; .head == $head and .at < $at))
+        | {
+            head: $head,
+            at: $at,
+            finding: (
+              ($review.state // "") == "CHANGES_REQUESTED"
+              or any($reviewComments[]?;
+                .in_reply_to_id == null
+                and ((.pull_request_review_id // 0) | tostring) == (($review.id // 0) | tostring))
+              or answer_for($review.id)
+            )
+          },
+        $issueComments[]? as $comment
+        | ($comment | result_head) as $head
+        | ($comment.updated_at // $comment.created_at // "") as $at
+        | select($head | valid_sha)
+        | select(any($requests[]?; .head == $head and .at < $at))
+        | {
+            head: $head,
+            at: $at,
+            finding: (
+              answer_for($comment.id)
+              or (
+                (($comment.body // "") | contains("### 💡 Codex Review"))
+                and ((($comment.body // "") | contains("Didn'\''t find any major issues")) | not)
+              )
+            )
+          }
+      ] as $evidence
+    | {
+        findingHeads: ([$evidence[] | select(.finding) | .head] | unique),
+        reviewedHead: (($evidence | sort_by(.at) | last // {}).head // null)
+      }')" \
+    || fail_operation "GitHub returned malformed review evidence for review-budget status" "Retry after GitHub returns complete review data."
+
+  REVIEW_BUDGET_JSON="$(jq -cn \
+    --argjson limit "$REVIEW_BUDGET_LIMIT" \
+    --argjson localRecord "$local_record" \
+    --argjson hosted "$hosted" \
+    --arg currentHead "$(printf '%s' "$current_head" | tr '[:upper:]' '[:lower:]')" '
+    ($hosted.findingHeads | length) as $hostedRounds
+    | if $localRecord == null then {
+        recorded: false,
+        limit: $limit,
+        capability: null,
+        localFindingBearingRounds: null,
+        hostedFindingBearingRounds: $hostedRounds,
+        findingBearingRounds: null,
+        sameShapeRoundsRemaining: null,
+        exhausted: null,
+        reviewedHead: $hosted.reviewedHead,
+        currentHeadReviewed: (if $hosted.reviewedHead == null then false else $hosted.reviewedHead == $currentHead end),
+        cascade: null,
+        selectedExit: null,
+        exitRequired: null
+      } else
+        ($localRecord.localRounds + $hostedRounds) as $total
+        | (if $total >= $limit then 0 else $limit - $total end) as $remaining
+        | (if $localRecord.reviewedHead == $currentHead then $localRecord.reviewedHead
+           else ($hosted.reviewedHead // $localRecord.reviewedHead) end) as $reviewedHead
+        | {
+            recorded: true,
+            limit: $limit,
+            capability: $localRecord.capability,
+            localFindingBearingRounds: $localRecord.localRounds,
+            hostedFindingBearingRounds: $hostedRounds,
+            findingBearingRounds: $total,
+            sameShapeRoundsRemaining: $remaining,
+            exhausted: ($total >= $limit),
+            reviewedHead: $reviewedHead,
+            currentHeadReviewed: (if $reviewedHead == null then false else $reviewedHead == $currentHead end),
+            cascade: $localRecord.cascade,
+            selectedExit: $localRecord.selectedExit,
+            exitRequired: ((($total >= $limit) or $localRecord.cascade) and $localRecord.selectedExit == "continue")
+          }
+      end')"
+}
+
+review_budget_text() {
+  printf '%s' "$REVIEW_BUDGET_JSON" | jq -r '
+    if .recorded then
+      "\(.capability) — \(.findingBearingRounds)/\(.limit) finding-bearing rounds; same-shape rounds remaining: \(.sameShapeRoundsRemaining); exhausted: \(if .exhausted then "yes" else "no" end); exact-head review still required"
+    else
+      "unrecorded — \(.hostedFindingBearingRounds) hosted finding-bearing round(s) visible; local/capability history unknown; exact-head review still required"
+    end'
+}
+
+review_budget_detail_text() {
+  printf '%s' "$REVIEW_BUDGET_JSON" | jq -r '
+    if .recorded then
+      "reviewed head: \(.reviewedHead // "none") \(if .currentHeadReviewed then "(current)" else "(not current)" end); cascade: \(if .cascade then "yes" else "no" end); selected exit: \(.selectedExit)" +
+      (if .exitRequired then "; exit selection required before more same-shape mutation" else "" end)
+    else empty end'
+}
+
 REVIEW_SURFACE_LATEST_AT=""
 read_review_surface_latest_at() {
   local number="$1" issue_comment_times review_times review_comment_times
@@ -2139,7 +2330,7 @@ require_review_gate_success() {
 }
 
 status_pr() {
-  local number state url head head_repo base base_sha merge_state draft
+  local number state url head head_repo base base_sha merge_state draft body
   read_pr_row
   IFS="$(printf '\t')" read -r number state url head head_repo base base_sha merge_state draft <<<"$PR_ROW"
   [ "$head_repo" != - ] || head_repo=""
@@ -2152,6 +2343,10 @@ status_pr() {
   else
     REVIEW_GATE_CHECK_JSON="$(jq -cn --arg head "$head" '{present:false, head:$head, configured:false}')"
   fi
+  read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json body --jq '.body' \
+    || fail_operation "could not read PR #$number body for review-budget status: $READ_OUTPUT" "Retry after GitHub recovers."
+  body="$READ_OUTPUT"
+  read_review_budget "$number" "$body" "$head"
   if [ "$state" = OPEN ] && [ "$draft" = false ] && [ "$ENFORCEMENT_STATUS" = applied ] \
     && [ -z "$MERGE_QUEUE_STATE" ] && [ "$AUTO_MERGE_ARMED" = false ] \
     && [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.present == true and .status == "completed" and .conclusion == "success"')" = true ]; then
@@ -2182,6 +2377,7 @@ status_pr() {
     printf ',"nextAction":'
     json_string "$PR_NEXT_ACTION"
     printf ',"reviewGateCheck":%s' "$REVIEW_GATE_CHECK_JSON"
+    printf ',"reviewBudget":%s' "$REVIEW_BUDGET_JSON"
     printf ',"reviewGateBehaviorContractVersion":'
     if [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ] && [ -n "$ENFORCEMENT_GATE_BEHAVIOR_VERSION" ]; then
       printf '%s' "$ENFORCEMENT_GATE_BEHAVIOR_VERSION"
@@ -2193,8 +2389,12 @@ status_pr() {
     policy_binding_json_fields
     printf '}\n'
   else
-    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  phase: %s\n  next action: %s\n  merge state: %s\n  draft: %s\n  auto-merge: %s\n  merge queue: %s\n  review gate: %s\n  policy: %s at %s\n  enforcement on %s: %s\n' \
-      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$PR_PHASE" "$PR_NEXT_ACTION" "$merge_state" "$draft" "$(auto_merge_text)" "$(merge_queue_text)" "$(review_gate_check_text)" "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" "$base" "$(enforcement_text)"
+    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  phase: %s\n  next action: %s\n  merge state: %s\n  draft: %s\n  auto-merge: %s\n  merge queue: %s\n  review gate: %s\n  review budget: %s\n' \
+      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$PR_PHASE" "$PR_NEXT_ACTION" "$merge_state" "$draft" "$(auto_merge_text)" "$(merge_queue_text)" "$(review_gate_check_text)" "$(review_budget_text)"
+    [ "$(printf '%s' "$REVIEW_BUDGET_JSON" | jq -r '.recorded')" != true ] \
+      || printf '  %s\n' "$(review_budget_detail_text)"
+    printf '  policy: %s at %s\n  enforcement on %s: %s\n' \
+      "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" "$base" "$(enforcement_text)"
     [ -z "$PR_NEXT_COMMAND" ] || printf '  command: %s\n' "$PR_NEXT_COMMAND"
     [ -z "$ENFORCEMENT_CANDIDATE_REVISION" ] \
       || printf '  candidate policy: %s at %s (%s)\n' "$ENFORCEMENT_CANDIDATE_SOURCE" "$ENFORCEMENT_CANDIDATE_REVISION" "$ENFORCEMENT_CANDIDATE_ROLE"

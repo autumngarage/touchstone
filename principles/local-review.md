@@ -108,6 +108,7 @@ the PR is opened.
 - Automated tests: <exact command and result>
 - Manual validation: <specific scenario and result>
 - Local review: <codex on <target>: <n> findings, <disposition> — or n/a — <reason>>
+- Review budget: v1 capability=<tracker ref> local_rounds=<finding-bearing local rounds> reviewed_head=<40-character SHA or none> cascade=<true|false> exit=<continue|merge-answered|revert-simplify|split|close-replan>
 
 ## Out of scope
 <intentionally excluded related work>
@@ -121,6 +122,15 @@ the PR is opened.
 
 Never claim a build, test, or manual validation happened unless it actually
 ran.
+
+The versioned `Review budget` row carries the one part of the round history
+GitHub cannot derive: cumulative finding-bearing local rounds for this
+capability. Update it after the local pass and retain it across replacement
+PRs; a provider retry on the same head is not another round. `reviewed_head`
+records the exact head the local pass saw, `cascade=true` means a review fix
+created another defect, and `exit` records the chosen stop path. A missing row
+is compatible with older PRs but reports unknown local history; it never
+waives the required exact-head PR review.
 
 ## Tier classification
 

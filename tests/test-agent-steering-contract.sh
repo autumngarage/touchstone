@@ -363,6 +363,12 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "gets one validation round"
 assert_contains "$GIT_WORKFLOW_GUIDE" "Exact-head review makes moving stacks multiply work"
 assert_contains "$GIT_WORKFLOW_GUIDE" "Do not open dependent"
 assert_contains "$GIT_WORKFLOW_GUIDE" "while a parent is still finding-bearing"
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "- Review budget: v1 capability="
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "compatible with older PRs but reports unknown local history"
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "waives the required exact-head PR review"
 
 echo "==> scope expansion checkpoints before independent edits"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
