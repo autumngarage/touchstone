@@ -1308,14 +1308,18 @@ wait_for_new_attempt() {
 REQUIRED_WORKFLOW_RUN_ID=""
 REQUIRED_WORKFLOW_ALREADY_ACTIVE=false
 REQUIRED_WORKFLOW_MIN_ATTEMPT=0
+REQUIRED_WORKFLOW_MIN_ATTEMPT_RUN_ID=""
 rerun_required_workflow() {
   local number="$1" head="$2" workflow_name="$3" local_workflow_ids="$4" active_reuse_seconds="${5:-0}"
-  local refresh_completed="${6:-true}" minimum_attempt="${7:-0}"
+  local refresh_completed="${6:-true}" minimum_attempt="${7:-0}" minimum_attempt_run_id="${8:-}"
   local attempt=1 run_id run_node status conclusion selected_attempt run_started_at run_started_epoch now prior_attempt run_pages run_row workflow_ids workflow_id_count
   local run_identity active_run_bound
   REQUIRED_WORKFLOW_RUN_ID=""
   REQUIRED_WORKFLOW_ALREADY_ACTIVE=false
-  [ "$refresh_completed" != true ] || REQUIRED_WORKFLOW_MIN_ATTEMPT=0
+  if [ "$refresh_completed" = true ]; then
+    REQUIRED_WORKFLOW_MIN_ATTEMPT=0
+    REQUIRED_WORKFLOW_MIN_ATTEMPT_RUN_ID=""
+  fi
   while :; do
     # Scoped to this pull request: two open PRs can share a head SHA, and
     # re-running the other one's gate would prove nothing about this request.
@@ -1360,7 +1364,10 @@ rerun_required_workflow() {
       case "$selected_attempt$minimum_attempt" in
         *[!0-9]* | "") fail_operation "$workflow_name run $run_id reported a non-numeric attempt ('$selected_attempt'; expected at least '$minimum_attempt')" "Inspect the run in the Actions tab." ;;
       esac
-      if [ "$selected_attempt" -lt "$minimum_attempt" ]; then
+      # Attempts are scoped to one workflow run. A body edit can dispatch a
+      # distinct newer run at attempt 1 while the explicitly rerun identity is
+      # still becoming visible; only that rerun must satisfy its attempt floor.
+      if [ "$run_id" = "$minimum_attempt_run_id" ] && [ "$selected_attempt" -lt "$minimum_attempt" ]; then
         run_id=""
         status=""
         conclusion=""
@@ -1425,6 +1432,7 @@ rerun_required_workflow() {
         || fail_operation "could not re-run $workflow_name run $run_id" "Re-run it from the Actions tab, then retry."
       wait_for_new_attempt "$run_id" "$prior_attempt" "$workflow_name"
       REQUIRED_WORKFLOW_MIN_ATTEMPT=$((prior_attempt + 1))
+      REQUIRED_WORKFLOW_MIN_ATTEMPT_RUN_ID="$run_id"
       return 0
     fi
     if [ "$attempt" -ge "$GATE_ATTEMPTS" ]; then
@@ -1573,7 +1581,7 @@ wait_for_request_binding() {
 
 open_pr() {
   local branch local_head remote_line remote_head rows count number url pr_head pr_base pr_base_sha create_output create_status=0
-  local evidence_min_attempt=0
+  local evidence_min_attempt=0 evidence_min_attempt_run_id=""
   local request_marker request_head_marker comment_rows existing_request moved_request request_body request_url request_rows state request_author
   [ -n "$TITLE" ] || fail_input "open requires --title" "Pass the PR title explicitly."
   [ -f "$BODY_FILE" ] && [ -s "$BODY_FILE" ] \
@@ -1679,8 +1687,10 @@ open_pr() {
     if [ "$state" = existing ]; then
       rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS"
       evidence_min_attempt="$REQUIRED_WORKFLOW_MIN_ATTEMPT"
+      evidence_min_attempt_run_id="$REQUIRED_WORKFLOW_MIN_ATTEMPT_RUN_ID"
     fi
-    rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS" 0 false "$evidence_min_attempt"
+    rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS" 0 false \
+      "$evidence_min_attempt" "$evidence_min_attempt_run_id"
     verify_live_coordinates "$number" "$local_head" "$pr_base" "$pr_base_sha"
     verify_live_body "$number" "$wanted_body"
     if [ "$JSON_MODE" = false ]; then

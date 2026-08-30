@@ -52,8 +52,11 @@ taking this document's word for it.
   gate fail with no signal from the one command the driver uses (AUT-437).
   After convergence, a reused PR asks the policy-declared organization-required
   `delivery-evidence` run to evaluate the surviving body and waits for that
-  exact attempt to succeed before requesting hosted review. A new PR waits for
-  the initial attempt created by GitHub rather than redundantly rerunning it.
+  run's next attempt, or a distinct newer policy-bound run for the same head,
+  to succeed before requesting hosted review. Attempt thresholds are scoped to
+  the run that was explicitly rerun; a newer run starts at attempt one. A new
+  PR waits for the initial attempt created by GitHub rather than redundantly
+  rerunning it.
   GitHub exposes only a
   PR-wide update timestamp, so the sequencer does not guess whether activity was
   a body edit: it requests a fresh attempt, then re-verifies the body, head, and

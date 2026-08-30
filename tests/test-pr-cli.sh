@@ -368,7 +368,7 @@ case "$1 ${2:-}" in
       source_repository="autumngarage/touchstone-workflows"
       source_path=".github/workflows/review-gate.yml"
       case "$run_id" in
-        80) source_path=".github/workflows/delivery-evidence.yml" ;;
+        80 | 84) source_path=".github/workflows/delivery-evidence.yml" ;;
         82)
           source_repository="autumngarage/decoy-workflows"
           source_path=".github/workflows/delivery-evidence.yml"
@@ -874,6 +874,23 @@ case "$1 ${2:-}" in
         fi
         if [ -f "$GH_STATE/same-name-external-decoy" ] || [ -f "$GH_STATE/same-name-external-decoy-only" ]; then
           runs="$(printf '%s' "$runs" | jq -c '.workflow_runs += [{"id":82,"node_id":"RUN_82","name":"delivery-evidence","head_sha":"'"$GH_HEAD"'","check_suite_id":905,"run_attempt":1,"event":"pull_request","status":"completed","conclusion":"success","workflow_id":1001,"run_started_at":"2026-08-27T17:25:00Z","updated_at":"2026-08-27T17:25:00Z","pull_requests":[{"number":7}]}]')"
+        fi
+        if [ "${GH_MODE:-ok}" = delivery_new_run_after_rerun ] && [ -f "$GH_STATE/evidence-reruns" ]; then
+          runs="$(printf '%s' "$runs" | jq -c '.workflow_runs += [{
+            id:84,
+            node_id:"RUN_84",
+            name:"delivery-evidence",
+            head_sha:"'"$GH_HEAD"'",
+            check_suite_id:907,
+            run_attempt:1,
+            event:"pull_request",
+            status:"completed",
+            conclusion:"success",
+            workflow_id:1000,
+            run_started_at:"2026-08-27T17:40:00Z",
+            updated_at:"2026-08-27T17:41:00Z",
+            pull_requests:[{number:7}]
+          }]')"
         fi
         if [ -f "$GH_STATE/same-name-external-decoy-only" ]; then
           runs="$(printf '%s' "$runs" | jq -c '{workflow_runs: [.workflow_runs[] | select(.id != 80)]}')"
@@ -1403,6 +1420,16 @@ EOF
     && ok "a corrected body re-ran the organization-required delivery-evidence run" \
     || fail "a corrected body did not re-run delivery evidence"
   assert_has "$TMP/out" 'Delivery evidence accepted by run 80 before hosted review.'
+
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/review-request"
+  GH_MODE=delivery_new_run_after_rerun run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'Delivery evidence accepted by run 84 before hosted review.'
+  grep -q 'rerun 80' "$TMP/state/evidence-reruns" 2>/dev/null \
+    || fail "the existing evidence run was not refreshed before the overlapping new run"
+  [ "$(wc -l <"$TMP/state/review-request" | tr -d ' ')" -eq 1 ] \
+    && ok "a distinct newer evidence run starts at attempt one without duplicating hosted review" \
+    || fail "a distinct newer evidence run was rejected or requested hosted review more than once"
 
   rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun"
   touch "$TMP/state/same-name-external-decoy"
