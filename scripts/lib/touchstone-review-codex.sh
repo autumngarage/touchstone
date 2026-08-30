@@ -77,27 +77,36 @@ touchstone_review_resolve_git_context() {
 }
 
 touchstone_review_render_profile() {
-  local source="$1" destination="$2" git_dir="$3" git_common_dir="$4"
+  local source="$1" destination="$2" repository_root="$3" git_dir="$4" git_common_dir="$5"
   local staged="${destination}.tmp"
 
-  touchstone_review_path_is_profile_safe "$git_dir" \
+  touchstone_review_path_is_profile_safe "$repository_root" \
+    && touchstone_review_path_is_profile_safe "$git_dir" \
     && touchstone_review_path_is_profile_safe "$git_common_dir" || {
-    touchstone_codex_fail "Git metadata path cannot be represented safely in the isolated Codex trust boundary"
+    touchstone_codex_fail "repository path cannot be represented safely in the isolated Codex trust boundary"
     return
   }
-  if ! awk -v git_dir="$git_dir" -v git_common_dir="$git_common_dir" '
+  if ! awk \
+    -v repository_root="$repository_root" \
+    -v git_dir="$git_dir" \
+    -v git_common_dir="$git_common_dir" '
     $0 == "# touchstone:review-git-roots" {
       print "\"" git_dir "\" = \"read\""
       if (git_common_dir != git_dir) {
         print "\"" git_common_dir "\" = \"read\""
       }
-      rendered = 1
+      git_roots_rendered = 1
+    }
+    $0 == "# touchstone:review-project-trust" {
+      print "[projects.\"" repository_root "\"]"
+      print "trust_level = \"untrusted\""
+      project_trust_rendered = 1
     }
     { print }
-    END { if (!rendered) exit 42 }
+    END { if (!git_roots_rendered || !project_trust_rendered) exit 42 }
   ' "$source" >"$staged"; then
     rm -f "$staged"
-    touchstone_codex_fail "managed review profile is missing its Git metadata boundary marker"
+    touchstone_codex_fail "managed review profile is missing a repository boundary marker"
     return
   fi
   if ! mv "$staged" "$destination"; then

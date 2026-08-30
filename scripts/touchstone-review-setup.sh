@@ -166,7 +166,7 @@ case "$ACTION" in
     trap cleanup_runtime_home EXIT HUP INT TERM
     touchstone_review_render_profile \
       "$PROFILE_SOURCE" "$RUNTIME_HOME/review-normal.config.toml" \
-      "$REVIEW_GIT_DIR" "$REVIEW_GIT_COMMON_DIR" \
+      "$REPOSITORY_ROOT" "$REVIEW_GIT_DIR" "$REVIEW_GIT_COMMON_DIR" \
       || die "$TOUCHSTONE_CODEX_ERROR"
     chmod 700 "$RUNTIME_HOME" \
       || die "could not restrict isolated Codex state"
@@ -179,7 +179,6 @@ case "$ACTION" in
     "$CODEX_BIN" \
       -p review-normal \
       --strict-config \
-      -c "projects.\"$REPOSITORY_ROOT\".trust_level=\"untrusted\"" \
       -c 'shell_environment_policy.filters.OPENROUTER_API_KEY="exclude"' \
       -c 'allow_login_shell=false' \
       --disable shell_snapshot \

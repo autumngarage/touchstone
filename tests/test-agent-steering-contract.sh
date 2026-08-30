@@ -155,6 +155,8 @@ assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'stages the canoni
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'Never fall back silently to the default'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  'model = "qwen/qwen3-coder-next"'
+assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
   'model = "google/gemini-3.7-flash"'
 assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
   'model = "openrouter/pareto-code"'
@@ -881,7 +883,6 @@ assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
 assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
   "TOUCHSTONE_REVIEW_CODEX_BIN"
 for boundary in \
-  'trust_level=\"untrusted\"' \
   '--strict-config' \
   '--disable shell_snapshot' \
   '--disable plugins' \
@@ -890,6 +891,10 @@ for boundary in \
   'unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE'; do
   assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" "$boundary"
 done
+assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
+  '-c "projects.'
+assert_contains "$REVIEW_CODEX_LIB" \
+  'trust_level = \"untrusted\"'
 
 echo "==> normal-review launcher resolves only the official npm native child"
 # shellcheck source=../scripts/lib/touchstone-review-codex.sh
@@ -1080,8 +1085,13 @@ EXPECTED_REVIEW_COMMON_DIR="$(
 touchstone_review_render_profile \
   "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
   "$RENDERED_REVIEW_PROFILE" \
+  "$TOUCHSTONE_REVIEW_REPOSITORY_ROOT" \
   "$TOUCHSTONE_REVIEW_GIT_DIR" "$TOUCHSTONE_REVIEW_GIT_COMMON_DIR" \
   || fail "linked-worktree review profile did not render: $TOUCHSTONE_CODEX_ERROR"
+assert_contains "$RENDERED_REVIEW_PROFILE" \
+  "[projects.\"$REVIEW_WORKTREE_PHYSICAL\"]"
+assert_contains "$RENDERED_REVIEW_PROFILE" \
+  'trust_level = "untrusted"'
 assert_contains "$RENDERED_REVIEW_PROFILE" \
   "\"$EXPECTED_REVIEW_GIT_DIR\" = \"read\""
 assert_contains "$RENDERED_REVIEW_PROFILE" \
@@ -1091,8 +1101,16 @@ assert_not_contains "$RENDERED_REVIEW_PROFILE" \
 if touchstone_review_render_profile \
   "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
   "$TEST_DIR/unsafe-review.config.toml" \
+  "$REVIEW_WORKTREE_PHYSICAL" \
   "$EXPECTED_REVIEW_GIT_DIR\"unsafe" "$EXPECTED_REVIEW_COMMON_DIR"; then
   fail "normal-review profile accepted an unsafe Git metadata path"
+fi
+if touchstone_review_render_profile \
+  "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  "$TEST_DIR/unsafe-review-root.config.toml" \
+  "$REVIEW_WORKTREE_PHYSICAL\"unsafe" \
+  "$EXPECTED_REVIEW_GIT_DIR" "$EXPECTED_REVIEW_COMMON_DIR"; then
+  fail "normal-review profile accepted an unsafe repository root"
 fi
 
 review_command setup --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
