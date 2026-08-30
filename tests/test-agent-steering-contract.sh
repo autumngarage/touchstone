@@ -155,6 +155,8 @@ assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'stages the canoni
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'Never fall back silently to the default'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  'model = "google/gemini-3.7-flash"'
+assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
   'model = "openrouter/pareto-code"'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
   'model_reasoning_effort = "medium"'
