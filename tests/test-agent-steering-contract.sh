@@ -68,6 +68,9 @@ for file in \
   assert_contains "$file" "bounded stalled-request recovery"
   assert_contains "$file" "Keep review subordinate to scope"
   assert_contains "$file" "review cannot amend approved scope"
+  assert_contains "$file" "Checkpoint scope expansion before editing"
+  assert_contains "$file" "a follow-up approves doing the work, not bundling it"
+  assert_contains "$file" "file count alone never decides"
   assert_contains "$file" "A review-fix defect stops patching"
   assert_contains "$file" "A second ends same-shape work"
   assert_contains "$file" "Answering is not implementing"
@@ -358,6 +361,32 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "gets one validation round"
 assert_contains "$GIT_WORKFLOW_GUIDE" "Exact-head review makes moving stacks multiply work"
 assert_contains "$GIT_WORKFLOW_GUIDE" "Do not open dependent"
 assert_contains "$GIT_WORKFLOW_GUIDE" "while a parent is still finding-bearing"
+
+echo "==> scope expansion checkpoints before independent edits"
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "A follow-up request approves doing the work"
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "automatically make"
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "Before the first edit for a follow-up"
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "checkpoint each accepted stable concern"
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "Size is evidence to inspect, never the decision"
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "website compatibility has several independent invariants"
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "generated release update"
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "invalid intermediate state"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  '"Ship it all" means deliver every approved'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "Use one PR when commits share an invariant"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "Independent units use separate PRs"
+assert_not_contains "$GIT_WORKFLOW_GUIDE" \
+  'When the user says "ship it all," default to one PR'
 
 echo "==> adjacent review guidance cannot reopen a fix-created cascade"
 assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" \
