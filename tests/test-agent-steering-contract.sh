@@ -379,6 +379,14 @@ assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   "generated release update"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   "invalid intermediate state"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  '"Ship it all" means deliver every approved'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "Use one PR when commits share an invariant"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "Independent units use separate PRs"
+assert_not_contains "$GIT_WORKFLOW_GUIDE" \
+  'When the user says "ship it all," default to one PR'
 
 echo "==> adjacent review guidance cannot reopen a fix-created cascade"
 assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" \

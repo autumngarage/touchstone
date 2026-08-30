@@ -735,7 +735,11 @@ and rebased.
 
 Merge a chain in order, parent first, repeating both steps for each next child.
 
-**Bundling is still often simpler.** When the user says "ship it all," default to one PR with all the commits. Reviewers reason more cleanly about one coherent story than a chain. Use a stack only when a child truly depends on an unmerged parent and must be reviewable separately.
+**Bundle one coherent review unit.** "Ship it all" means deliver every approved
+unit, not combine them. Use one PR when commits share an invariant and
+validation story. Independent units use separate PRs based on the default
+branch; dependent units proceed sequentially so exact-head review does not
+multiply.
 
 ## Claiming tracked work before agent dispatch
 
