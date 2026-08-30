@@ -2077,9 +2077,9 @@ review_gate_check_text() {
     end'
 }
 
-# Local review runs happen before GitHub can observe them. A versioned PR-body
-# row carries only that irreducible history; hosted finding-bearing rounds are
-# derived from GitHub's review surface and collapsed by reviewed head so a
+# Local review runs and hosted rounds from replaced PRs are outside the current
+# PR's GitHub surface. A versioned PR-body row carries that irreducible history;
+# current-PR hosted rounds are derived and collapsed by reviewed head so a
 # provider retry cannot spend the budget twice.
 REVIEW_BUDGET_LIMIT=3
 REVIEW_BUDGET_JSON='null'
@@ -2093,16 +2093,17 @@ read_review_budget() {
     0) local_record=null ;;
     1)
       local_record="$(printf '%s' "$rows" | jq -Rce '
-        capture("^- Review budget: v1 capability=(?<capability>[A-Za-z0-9][A-Za-z0-9._:/#-]*) local_rounds=(?<local>[0-9]+) reviewed_head=(?<head>[0-9a-fA-F]{40}|none) cascade=(?<cascade>true|false) exit=(?<exit>continue|merge-answered|revert-simplify|split|close-replan)$")
+        capture("^- Review budget: v1 capability=(?<capability>[A-Za-z0-9][A-Za-z0-9._:/#-]*) local_rounds=(?<local>[0-9]+) prior_hosted_rounds=(?<priorHosted>[0-9]+) reviewed_head=(?<head>[0-9a-fA-F]{40}|none) cascade=(?<cascade>true|false) exit=(?<exit>continue|merge-answered|revert-simplify|split|close-replan)$")
         | {
             capability: .capability,
             localRounds: (.local | tonumber),
+            priorHostedRounds: (.priorHosted | tonumber),
             reviewedHead: (if .head == "none" then null else (.head | ascii_downcase) end),
             cascade: (.cascade == "true"),
             selectedExit: .exit
           }')" \
         || fail_operation "PR #$number has a malformed Review budget record" \
-          "Use '- Review budget: v1 capability=REF local_rounds=N reviewed_head=40_HEX_OR_none cascade=true|false exit=continue|merge-answered|revert-simplify|split|close-replan'."
+          "Use '- Review budget: v1 capability=REF local_rounds=N prior_hosted_rounds=N reviewed_head=40_HEX_OR_none cascade=true|false exit=continue|merge-answered|revert-simplify|split|close-replan'."
       ;;
     *)
       fail_operation "PR #$number has multiple Review budget records" "Keep exactly one cumulative v1 record in the PR body."
@@ -2239,7 +2240,9 @@ read_review_budget() {
     --argjson localRecord "$local_record" \
     --argjson hosted "$hosted" \
     --arg currentHead "$(printf '%s' "$current_head" | tr '[:upper:]' '[:lower:]')" '
-    ($hosted.findingHeads | length) as $hostedRounds
+    ($hosted.findingHeads | length) as $currentHostedRounds
+    | (if $localRecord == null then $currentHostedRounds
+       else $localRecord.priorHostedRounds + $currentHostedRounds end) as $hostedRounds
     | if $localRecord == null then {
         recorded: false,
         limit: $limit,

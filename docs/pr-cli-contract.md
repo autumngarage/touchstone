@@ -126,14 +126,15 @@ taking this document's word for it.
   inventing an order.
 
   The additive `reviewBudget` object combines a versioned PR-body record of
-  finding-bearing local rounds with paginated PR-visible review evidence.
-  Hosted rounds are collapsed by requested head, so retries for one head count
-  once; clean rounds and findings on an unrequested head do not spend the
-  finding-bearing budget. The object reports the capability, local/hosted/total
-  counts, same-shape rounds remaining from the three-round limit, exhaustion,
-  the latest reviewed head, cascade state, and selected exit. An older PR with
-  no record reports local totals and remaining rounds as `null` while still
-  exposing the hosted count. A malformed or duplicate record fails explicitly.
+  finding-bearing local rounds and hosted rounds from replaced PRs with
+  paginated current-PR review evidence. Current-PR hosted rounds are collapsed
+  by requested head, so retries for one head count once; clean rounds and
+  findings on an unrequested head do not spend the finding-bearing budget. The
+  object reports the capability, local/hosted/total counts, same-shape rounds
+  remaining from the three-round limit, exhaustion, the latest reviewed head,
+  cascade state, and selected exit. An older PR with no record reports local
+  totals and remaining rounds as `null` while still exposing its hosted count.
+  A malformed or duplicate record fails explicitly.
   This is derived status plus the irreducible local-history input, not a second
   verdict: exhaustion selects a stop path, while exact-head review remains
   mandatory for the code that will merge.

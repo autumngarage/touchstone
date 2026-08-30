@@ -979,15 +979,15 @@ EOF
   cat >"$TMP/state/pr-body" <<EOF
 ## Validation
 - Local review: codex on \`$HEAD_SHA\`: 2 findings, fixed.
-- Review budget: v1 capability=AUT-461 local_rounds=1 reviewed_head=$HEAD_SHA cascade=true exit=split
+- Review budget: v1 capability=AUT-461 local_rounds=1 prior_hosted_rounds=2 reviewed_head=$HEAD_SHA cascade=true exit=split
 EOF
   touch "$TMP/state/review-budget-fixture"
   run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"reviewBudget":{"recorded":true,"limit":3,"capability":"AUT-461","localFindingBearingRounds":1,"hostedFindingBearingRounds":4,"findingBearingRounds":5,"sameShapeRoundsRemaining":0,"exhausted":true'
+  assert_has "$TMP/out" '"reviewBudget":{"recorded":true,"limit":3,"capability":"AUT-461","localFindingBearingRounds":1,"hostedFindingBearingRounds":6,"findingBearingRounds":7,"sameShapeRoundsRemaining":0,"exhausted":true'
   assert_has "$TMP/out" "\"reviewedHead\":\"$HEAD_SHA\",\"currentHeadReviewed\":true,\"cascade\":true,\"selectedExit\":\"split\""
   run_pr "$TMP/out" status 7
-  assert_has "$TMP/out" 'review budget: AUT-461 — 5/3 finding-bearing rounds; same-shape rounds remaining: 0; exhausted: yes; exact-head review still required'
+  assert_has "$TMP/out" 'review budget: AUT-461 — 7/3 finding-bearing rounds; same-shape rounds remaining: 0; exhausted: yes; exact-head review still required'
   assert_has "$TMP/out" "reviewed head: $HEAD_SHA (current); cascade: yes; selected exit: split"
   [ "$(grep -c -- '--paginate.*issues/7/comments' "$GH_CALLS")" -eq 1 ] \
     || fail "review-budget issue comments were not read once with pagination"
