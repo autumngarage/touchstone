@@ -130,16 +130,18 @@ You are maintaining the standard baseline for a solo developer directing many ag
 
 ### Testing
 
-Before pushing, run:
+Before pushing, run the smallest deterministic test files that exercise the
+changed behavior and the pre-commit checks for the changed files. Do not rerun
+the complete suite as confirmation: the protected hosted workflow pinned
+by `policy/github/touchstone-main.json` owns that proof through the single
+`.touchstone.toml` command. The suite stays deterministic, offline, and free of
+live model/provider quota. Do not add a duplicate target-repository validation
+workflow — a required check that can go red because a package host had a bad
+minute is not a gate (#742, #803, #808).
 
-```bash
-for test in tests/test-*.sh; do
-  echo "==> $test"
-  bash "$test" || exit 1
-done
-```
-
-The suite must stay deterministic, offline, and free of live model/provider quota. The protected workflow pinned by `policy/github/touchstone-main.json` runs the same loop as the required check and fetches nothing at all. Do not add a duplicate target-repository validation workflow — a required check that can go red because a package host had a bad minute is not a gate (#742, #803, #808).
+This optimization applies only while effective policy contains that protected
+workflow. If it is absent, run the complete suite locally and track the rollout
+gap; missing enforcement never authorizes missing validation.
 
 Lint is not part of the test suite. It runs at pre-commit and via `pre-commit run --all-files`: `shellcheck`, `shfmt`, `markdownlint`, and `actionlint`.
 
