@@ -489,11 +489,18 @@ uri_encode() {
 }
 
 REQUIRED_WORKFLOW_LOCAL_IDS="[]"
+REQUIRED_WORKFLOW_SOURCE_REPOSITORY=""
+REQUIRED_WORKFLOW_PATH=""
+REQUIRED_WORKFLOW_REVISIONS="[]"
 required_workflow_declared() {
   local base_ref="$1" workflow_path="$2" encoded pages declared expected workflow_pages
+  local actual_shas
   REQUIRED_WORKFLOW_LOCAL_IDS="[]"
+  REQUIRED_WORKFLOW_SOURCE_REPOSITORY=""
+  REQUIRED_WORKFLOW_PATH=""
+  REQUIRED_WORKFLOW_REVISIONS="[]"
   expected="$(enforcement_policy_jq -c --arg path "$workflow_path" \
-    '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]? | select(.path == $path) | {repository_id, ref}] | if length == 1 then .[0] else null end')" \
+    '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]? | select(.path == $path) | {repository_id, ref, sha}] | if length == 1 then .[0] else null end')" \
     || fail_operation "could not read the declared source for $workflow_path" "Reinstall touchstone; the policy file is corrupt or incomplete."
   [ "$expected" != null ] || return 1
   encoded="$(uri_encode "$base_ref")"
@@ -505,6 +512,31 @@ required_workflow_declared() {
     || fail_operation "GitHub returned malformed effective rules for $base_ref" "Retry after GitHub returns complete rule pages."
   case "$declared" in true | false) ;; *) fail_operation "GitHub returned an invalid workflow declaration result for $base_ref" "Retry after GitHub returns complete rule pages." ;; esac
   [ "$declared" = true ] || return 1
+  if [ "$workflow_path" = .github/workflows/delivery-evidence.yml ]; then
+    actual_shas="$(printf '%s\n' "$pages" | jq -sr --arg path "$workflow_path" --argjson expected "$expected" '
+      add // [] | [.[] | select(.type == "workflows") | .parameters.workflows[]?
+        | select(.path == $path and .repository_id == $expected.repository_id and .ref == $expected.ref)
+        | (.sha // "") | ascii_downcase | select(. != "")] | unique | join(" ")')" \
+      || fail_operation "GitHub returned malformed workflow revisions for $base_ref" "Retry after GitHub returns complete rule pages."
+    [ -n "$actual_shas" ] \
+      || fail_operation "the required $workflow_path has no exact source revision" "Repair the effective workflow rule before requesting review."
+    # The checked-in source contract versions review-gate behavior, not the
+    # delivery-evidence body schema. Filter this workflow through the shared
+    # lineage evaluator, but do not make a newer review-gate contract reject a
+    # still-compatible delivery-evidence run for an older client.
+    resolve_pin_enforcement \
+      "$(printf '%s' "$expected" | jq -r .repository_id)" \
+      "$(printf '%s' "$expected" | jq -r .ref)" \
+      "$(printf '%s' "$expected" | jq -r .sha)" \
+      "$actual_shas" "" ""
+    [ "$PIN_ENFORCEMENT_VERDICT" = verified ] \
+      || fail_operation "the required $workflow_path has no policy-compatible source revision${PIN_ENFORCEMENT_REASON:+: $PIN_ENFORCEMENT_REASON}" "Repair the effective workflow pin before requesting review."
+    REQUIRED_WORKFLOW_REVISIONS="$PIN_ENFORCEMENT_REVISIONS"
+    resolve_workflow_source_repository "$(printf '%s' "$expected" | jq -r .repository_id)" \
+      || fail_operation "could not resolve the source repository for $workflow_path" "Retry after GitHub can resolve the policy-declared repository."
+    REQUIRED_WORKFLOW_SOURCE_REPOSITORY="$WORKFLOW_SOURCE_REPOSITORY"
+    REQUIRED_WORKFLOW_PATH="$workflow_path"
+  fi
   # Organization-required runs receive a target-repository workflow_id, not
   # the source repository's workflow_id. Enumerate the target's workflows so
   # repository-local look-alikes can be excluded when selecting the run.
@@ -1274,15 +1306,16 @@ wait_for_new_attempt() {
 }
 
 REQUIRED_WORKFLOW_RUN_ID=""
-REQUIRED_WORKFLOW_RERAN=false
 REQUIRED_WORKFLOW_ALREADY_ACTIVE=false
+REQUIRED_WORKFLOW_MIN_ATTEMPT=0
 rerun_required_workflow() {
   local number="$1" head="$2" workflow_name="$3" local_workflow_ids="$4" active_reuse_seconds="${5:-0}"
-  local attempt=1 run_id run_node status run_started_at run_started_epoch now prior_attempt run_pages run_row workflow_ids workflow_id_count
+  local refresh_completed="${6:-true}" minimum_attempt="${7:-0}"
+  local attempt=1 run_id run_node status conclusion selected_attempt run_started_at run_started_epoch now prior_attempt run_pages run_row workflow_ids workflow_id_count
   local run_identity active_run_bound
   REQUIRED_WORKFLOW_RUN_ID=""
-  REQUIRED_WORKFLOW_RERAN=false
   REQUIRED_WORKFLOW_ALREADY_ACTIVE=false
+  [ "$refresh_completed" != true ] || REQUIRED_WORKFLOW_MIN_ATTEMPT=0
   while :; do
     # Scoped to this pull request: two open PRs can share a head SHA, and
     # re-running the other one's gate would prove nothing about this request.
@@ -1301,7 +1334,8 @@ rerun_required_workflow() {
       --arg workflow "$workflow_name" --argjson workflow_ids "$workflow_ids" --argjson number "$number" \
       '[.[].workflow_runs[]? | select(.name == $workflow and (.workflow_id as $id | $workflow_ids | index($id)) != null and (.event == "pull_request" or .event == "merge_group") and any(.pull_requests[]?; .number == $number))]
       | if length == 0 then ""
-        elif any(.[]; (.id | type) != "number" or (.run_attempt | type) != "number"
+        elif any(.[]; (.id | type) != "number" or (.node_id | type) != "string" or .node_id == ""
+          or (.run_attempt | type) != "number"
           or (.run_started_at | type) != "string" or .run_started_at == ""
           or (.status | type) != "string") then
           error("workflow run is missing its id, attempt, status, or execution timestamp")
@@ -1309,11 +1343,29 @@ rerun_required_workflow() {
           | [.[] | select(.run_started_at == $latest_start)] as $latest_runs
           | if ($latest_runs | length) > 1 then
               error("multiple workflow runs share the newest execution timestamp")
-            else $latest_runs[0] | "\(.id) \(.status) \(.run_started_at)"
+            else $latest_runs[0] | "\(.id) \(.node_id) \(.status) \(.run_started_at) \(.run_attempt) \(.conclusion // "-")"
             end
         end')" \
       || fail_operation "GitHub returned malformed $workflow_name run pages for $head" "Retry after GitHub returns complete workflow-run pages."
-    read -r run_id status run_started_at <<<"$run_row"
+    read -r run_id run_node status run_started_at selected_attempt conclusion <<<"$run_row"
+    if [ -n "$run_id" ]; then
+      if [ "$workflow_name" = delivery-evidence ]; then
+        run_identity="$(jq -cn --argjson run_id "$run_id" --arg run_node "$run_node" '{runId:$run_id, runNodeId:$run_node}')"
+        read_required_workflow_run_binding "$run_identity" \
+          "$REQUIRED_WORKFLOW_SOURCE_REPOSITORY" "$REQUIRED_WORKFLOW_PATH" \
+          "$REQUIRED_WORKFLOW_REVISIONS" "$workflow_name"
+        [ "$(printf '%s' "$REQUIRED_WORKFLOW_RUN_BINDING" | jq -r .bound)" = true ] \
+          || fail_operation "$workflow_name run $run_id is not bound to the policy-declared source file" "Wait for the required workflow run; do not request hosted review from a same-named decoy."
+      fi
+      case "$selected_attempt$minimum_attempt" in
+        *[!0-9]* | "") fail_operation "$workflow_name run $run_id reported a non-numeric attempt ('$selected_attempt'; expected at least '$minimum_attempt')" "Inspect the run in the Actions tab." ;;
+      esac
+      if [ "$selected_attempt" -lt "$minimum_attempt" ]; then
+        run_id=""
+        status=""
+        conclusion=""
+      fi
+    fi
     if [ -n "$run_id" ] && [ "$active_reuse_seconds" -gt 0 ]; then
       active_run_bound=false
       case "$status" in
@@ -1356,6 +1408,12 @@ rerun_required_workflow() {
     fi
     if [ -n "$run_id" ] && [ "$status" = completed ]; then
       REQUIRED_WORKFLOW_RUN_ID="$run_id"
+      if [ "$refresh_completed" = false ]; then
+        [ "$conclusion" = success ] \
+          || fail_input "$workflow_name rejected PR #$number at $head (run $run_id concluded ${conclusion:--})" \
+            "Open run $run_id, correct the recorded evidence, and retry before requesting hosted review."
+        return 0
+      fi
       # A re-run keeps the run id and increments run_attempt. GitHub can keep
       # exposing the superseded attempt's verdict for a moment after the POST;
       # wait until the new attempt is visible so nothing downstream reads the
@@ -1365,8 +1423,8 @@ rerun_required_workflow() {
       prior_attempt="$READ_OUTPUT"
       gh api --hostname "$REPO_HOST" -X POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>&1 \
         || fail_operation "could not re-run $workflow_name run $run_id" "Re-run it from the Actions tab, then retry."
-      REQUIRED_WORKFLOW_RERAN=true
       wait_for_new_attempt "$run_id" "$prior_attempt" "$workflow_name"
+      REQUIRED_WORKFLOW_MIN_ATTEMPT=$((prior_attempt + 1))
       return 0
     fi
     if [ "$attempt" -ge "$GATE_ATTEMPTS" ]; then
@@ -1515,6 +1573,7 @@ wait_for_request_binding() {
 
 open_pr() {
   local branch local_head remote_line remote_head rows count number url pr_head pr_base pr_base_sha create_output create_status=0
+  local evidence_min_attempt=0
   local request_marker request_head_marker comment_rows existing_request moved_request request_body request_url request_rows state request_author
   [ -n "$TITLE" ] || fail_input "open requires --title" "Pass the PR title explicitly."
   [ -f "$BODY_FILE" ] && [ -s "$BODY_FILE" ] \
@@ -1609,20 +1668,23 @@ open_pr() {
       BODY_APPLIED=updated
     fi
   fi
-  # Required workflows do not reliably receive a new consumer event when an
-  # existing PR body is corrected. The sequencer owns body convergence, so it
-  # also owns requesting a fresh delivery-evidence evaluation without
-  # close/reopen side effects. Every reused PR gets a new attempt: GitHub's PR
-  # timestamp includes comments and reviews, so it cannot safely distinguish a
-  # body edit from ordinary feedback. Re-read the exact coordinates and body
-  # after the request so the recovery cannot bind evidence to state that moved.
-  if [ "$state" = existing ] && delivery_evidence_required "$pr_base"; then
+  # GitHub's required workflow is the sole authority for the body contract.
+  # A new PR waits for its initial verdict; a reused PR first requests a fresh
+  # attempt because GitHub does not reliably dispatch the central workflow for
+  # every body edit. In either case a hosted review is requested only after the
+  # authoritative exact-head/body attempt succeeds, so invalid evidence cannot
+  # consume a model review and then force a second review cycle.
+  if delivery_evidence_required "$pr_base"; then
     refuse_conflicting_open_pr "$number" "$local_head" "$pr_base" "$pr_base_sha"
-    rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS"
+    if [ "$state" = existing ]; then
+      rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS"
+      evidence_min_attempt="$REQUIRED_WORKFLOW_MIN_ATTEMPT"
+    fi
+    rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS" 0 false "$evidence_min_attempt"
     verify_live_coordinates "$number" "$local_head" "$pr_base" "$pr_base_sha"
     verify_live_body "$number" "$wanted_body"
-    if [ "$REQUIRED_WORKFLOW_RERAN" = true ] && [ "$JSON_MODE" = false ]; then
-      printf 'Delivery evidence re-run requested for run %s.\n' "$REQUIRED_WORKFLOW_RUN_ID" >&2
+    if [ "$JSON_MODE" = false ]; then
+      printf 'Delivery evidence accepted by run %s before hosted review.\n' "$REQUIRED_WORKFLOW_RUN_ID" >&2
     fi
   fi
   read_review_budget "$number" "$wanted_body" "$local_head"
@@ -1924,20 +1986,21 @@ select_review_gate_run_identity() {
     || fail_operation "GitHub returned malformed or ambiguous review-gate run data for $head" "Remove same-named external workflow ambiguity or retry after GitHub returns complete workflow-run pages."
 }
 
-REVIEW_GATE_RUN_BINDING="null"
-read_review_gate_run_binding() {
-  local run_identity="$1" run_id run_node
+REQUIRED_WORKFLOW_RUN_BINDING="null"
+read_required_workflow_run_binding() {
+  local run_identity="$1" expected_repo="$2" expected_path="$3" expected_revisions="$4" workflow_name="$5"
+  local run_id run_node
   run_id="$(printf '%s' "$run_identity" | jq -r .runId)"
   run_node="$(printf '%s' "$run_identity" | jq -r .runNodeId)"
   read_with_retry gh api graphql --hostname "$REPO_HOST" \
     -f query='query($id:ID!){node(id:$id){... on WorkflowRun{databaseId file{path repositoryName repositoryFileUrl}}}}' \
     -F id="$run_node" \
-    || fail_operation "could not read the source identity of review-gate run $run_id: $READ_OUTPUT" "Retry after GitHub can resolve the workflow-run file."
-  REVIEW_GATE_RUN_BINDING="$(printf '%s' "$READ_OUTPUT" | jq -ce \
+    || fail_operation "could not read the source identity of $workflow_name run $run_id: $READ_OUTPUT" "Retry after GitHub can resolve the workflow-run file."
+  REQUIRED_WORKFLOW_RUN_BINDING="$(printf '%s' "$READ_OUTPUT" | jq -ce \
     --argjson run_id "$run_id" \
-    --arg expected_repo "$ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY" \
-    --arg expected_path ".github/workflows/review-gate.yml" \
-    --argjson expected_revisions "$ENFORCEMENT_REVIEW_GATE_REVISIONS" '
+    --arg expected_repo "$expected_repo" \
+    --arg expected_path "$expected_path" \
+    --argjson expected_revisions "$expected_revisions" '
       .data.node as $run
       | if ($run.databaseId | type) != "number" or $run.databaseId != $run_id
           or ($run.file.repositoryName | type) != "string"
@@ -1954,7 +2017,17 @@ read_review_gate_run_binding() {
               revision:$revision
             }
         end')" \
-    || fail_operation "GitHub returned malformed source identity for review-gate run $run_id" "Retry after GitHub returns its exact workflow file."
+    || fail_operation "GitHub returned malformed source identity for $workflow_name run $run_id" "Retry after GitHub returns its exact workflow file."
+}
+
+REVIEW_GATE_RUN_BINDING="null"
+read_review_gate_run_binding() {
+  read_required_workflow_run_binding "$1" \
+    "$ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY" \
+    ".github/workflows/review-gate.yml" \
+    "$ENFORCEMENT_REVIEW_GATE_REVISIONS" \
+    review-gate
+  REVIEW_GATE_RUN_BINDING="$REQUIRED_WORKFLOW_RUN_BINDING"
 }
 
 read_review_gate_check() {

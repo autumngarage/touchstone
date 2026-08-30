@@ -42,14 +42,19 @@ taking this document's word for it.
 
 - `open` proves the local and remote branch heads match, reuses an existing
   open PR for that branch or runs `gh pr create`, re-reads GitHub after the
-  mutation, and posts `@codex review` once for the exact head. On a reused
+  mutation, requires the policy-declared `delivery-evidence` workflow to
+  accept the surviving body, and only then posts `@codex review` once for the
+  exact head. A rejected body therefore consumes no hosted model review. On a reused
   PR it applies the `--title` and `--body-file` given now when they differ
   from the live values (`gh pr edit`, re-read to verify) and reports `body:
   updated` or `unchanged` — idempotent means "converges on the arguments",
   not "no-ops": a body silently kept let the required `delivery-evidence`
   gate fail with no signal from the one command the driver uses (AUT-437).
   After convergence, a reused PR asks the policy-declared organization-required
-  `delivery-evidence` run to evaluate the surviving body. GitHub exposes only a
+  `delivery-evidence` run to evaluate the surviving body and waits for that
+  exact attempt to succeed before requesting hosted review. A new PR waits for
+  the initial attempt created by GitHub rather than redundantly rerunning it.
+  GitHub exposes only a
   PR-wide update timestamp, so the sequencer does not guess whether activity was
   a body edit: it requests a fresh attempt, then re-verifies the body, head, and
   base immediately before success without closing the PR or disturbing
