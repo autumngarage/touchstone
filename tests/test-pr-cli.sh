@@ -311,7 +311,7 @@ case "$1 ${2:-}" in
       printf 'merge rejected by rules\n' >&2
       exit 1
     fi
-    case "${GH_MODE:-ok}" in merge_queue | auto_merge) exit 0 ;; esac
+    case "${GH_MODE:-ok}" in merge_queue | auto_merge | merge_queue_unmergeable_after) exit 0 ;; esac
     touch "$GH_STATE/merged"
     case "${GH_MODE:-ok}" in merge_lied | merge_head_moved) exit 1 ;; esac
     ;;
@@ -334,6 +334,8 @@ case "$1 ${2:-}" in
         status_gate_queued) queue_state='"AWAITING_CHECKS"' ;;
         status_gate_queue_unmergeable) queue_state='"UNMERGEABLE"' ;;
         status_gate_queue_unknown) queue_state='"FUTURE_STATE"' ;;
+        merge_queue_existing) queue_state='"AWAITING_CHECKS"' ;;
+        merge_queue_unknown_existing) queue_state='"FUTURE_STATE"' ;;
       esac
       printf '{"head":"%s","autoMergeEnabledAt":%s,"mergeQueueState":%s}\n' \
         "$observed_head" "$auto_merge_enabled_at" "$queue_state"
@@ -343,6 +345,8 @@ case "$1 ${2:-}" in
         exit 1
       elif [ "${GH_MODE:-ok}" = merge_head_moved ]; then
         printf 'MERGED\thttps://example.test/pr/7\tmoved-head\tfalse\t\n'
+      elif [ "${GH_MODE:-ok}" = merge_queue_unmergeable_after ]; then
+        printf 'OPEN\thttps://example.test/pr/7\t%s\tfalse\tUNMERGEABLE\n' "$GH_HEAD"
       elif [ -f "$GH_STATE/merged" ]; then
         printf 'MERGED\thttps://example.test/pr/7\t%s\tfalse\t\n' "$GH_HEAD"
       elif [ "${GH_MODE:-ok}" = merge_queue ]; then
@@ -1060,6 +1064,16 @@ EOF
   assert_has "$TMP/out" '"mergeQueue":{"state":"AWAITING_CHECKS"},"phase":"queued","nextAction":"wait"'
   assert_not_has "$GH_CALLS" 'pr merge'
   assert_not_has "$GH_CALLS" 'pr comment'
+
+  echo "==> a partial-policy queue entry is observed before an unguarded record"
+  rm -f "$TMP/calls"
+  touch "$TMP/state/no-queue-rule"
+  GH_MODE=merge_queue_existing run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'already accepted for delivery'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  assert_not_has "$GH_CALLS" 'pr comment'
+  rm -f "$TMP/state/no-queue-rule"
   touch "$TMP/state/no-review-gate-rule"
   GH_MODE=status_gate_queued run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
@@ -2224,6 +2238,32 @@ STUB
   GH_MODE=auto_merge run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"auto-merge-enabled"'
+
+  echo "==> an existing exact-head queue entry receives no second merge mutation"
+  rm -f "$TMP/state/merged" "$TMP/calls"
+  touch "$TMP/state/review-gate"
+  GH_MODE=merge_queue_existing run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"queued"'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  assert_not_has "$GH_CALLS" 'pr comment'
+
+  echo "==> an unknown live queue state fails closed without a merge mutation"
+  rm -f "$TMP/calls"
+  GH_MODE=merge_queue_unknown_existing run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'unknown merge-queue state FUTURE_STATE'
+  assert_has "$TMP/out" 'no merge mutation was made'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  assert_not_has "$GH_CALLS" 'pr comment'
+
+  echo "==> post-mutation queue reconciliation rejects an unmergeable state"
+  rm -f "$TMP/calls"
+  GH_MODE=merge_queue_unmergeable_after run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'unmergeable queue state'
+  assert_has "$GH_CALLS" 'pr merge'
+  assert_not_has "$TMP/out" '"status":"queued"'
 
   echo "==> merge refuses a success state observed on a moved head"
   rm -f "$TMP/state/merged"

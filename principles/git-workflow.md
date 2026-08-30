@@ -291,7 +291,9 @@ asks GitHub to merge bound to it, and reports merged, queued, or
 auto-merge-enabled only while the head still equals the reviewed one. It never
 starts or waits for review. Where the CLI is absent, verify the declared gate
 is successful and newer than the latest conversation, formal-review, and
-inline-review activity for the reviewed head, then
+inline-review activity for the reviewed head. Immediately before the alternate
+merge command, re-read `mergeQueueEntry`; a live entry for the reviewed head
+ends the mutation path. Only when no such entry exists, run
 
 ```bash
 gh pr merge <n> --squash --match-head-commit <reviewed-sha>
@@ -315,6 +317,15 @@ combination. If the queue ejects the PR, that is GitHub's verdict on the
 combination: fix forward on the branch, re-review the new head, re-enqueue.
 `touchstone pr merge` reports `queued`; `MERGED` arrives when the queue lands
 it.
+
+**A live exact-head queue entry ends merge mutation.** Read `mergeQueueEntry`
+before any raw recovery or emergency attempt. When the same PR head is already
+`QUEUED`, `AWAITING_CHECKS`, `MERGEABLE`, or `LOCKED`, wait for GitHub. Do not
+dequeue, enqueue, re-enqueue, cancel its merge-group run, or probe `--admin`:
+GitHub may remove the valid queue entry before it rejects the alternate merge,
+discarding paid prospective validation without changing the code or base. An
+unknown or `UNMERGEABLE` queue state is inspect-and-fix-forward, not permission
+to mutate the queue.
 
 **`gh pr merge` exit codes lie in both directions.** It can exit nonzero after the merge actually succeeded, and it can exit zero having merely *armed* auto-merge while a check is still red. Never trust the exit code alone:
 
@@ -831,14 +842,23 @@ Do not substitute `rm -rf <worktree-dir>` for `git worktree remove <path>`. Dele
 ## Emergency path
 
 If a production bug cannot wait for normal gates, it still goes through a PR.
-First inspect the repository's effective policy. Where it exposes the audited
-PR-only organization-admin bypass, include an "Emergency-bypass disclosure"
-section explaining the incident and bypass, then an organization admin may use
-it (for example, `gh pr merge --admin --squash --match-head-commit <sha>`).
+Urgency, frustration, “keep going,” or a request to file follow-up work never
+authorizes bypass. The human must explicitly authorize bypassing normal policy
+for this incident. After that authorization, first inspect both the
+repository's effective policy and the PR's current `mergeQueueEntry` read-only.
+An existing live exact-head entry still receives zero merge mutations. Where
+no entry exists, inspect effective policy. Where it exposes the audited PR-only
+organization-admin bypass, include an "Emergency-bypass disclosure" section
+explaining the incident and bypass, then an organization admin may use it (for
+example, `gh pr merge --admin --squash --match-head-commit <sha>`), but only
+after one final read confirms the reviewed head still has no queue entry.
 GitHub records that bypass, and the adopted ruleset continues to reject direct
 pushes, including for admins. If the effective policy does not expose that
-bypass, do not infer it from this guide; the missing enforcement is a rollout
-gap and there is no audited Touchstone emergency path to use.
+bypass — including when it requires the merge queue for admins — do not infer it from this guide:
+report that no audited bypass exists. Do not probe the rule by mutation.
+Missing
+enforcement is a rollout gap and there is no audited Touchstone emergency path
+to use.
 
 `--no-verify` bypasses local hooks only; it cannot bypass the server ruleset. Never configure an `exempt` ruleset actor: exempt actions skip rule evaluation and do not create the required audit entry.
 
