@@ -272,9 +272,11 @@ default branch.
 3. Prove the feature side survived: for every file the feature branch changed,
    inspect `git diff <pre-merge-head> HEAD -- <file...>` and confirm that the
    merge did not delete or replace those edits.
-4. Run the complete validation suite again, push the new head, and re-run the
-   PR-open command with the same `--base`. The merge commit is a new head and
-   requires exact-head review before it can merge.
+4. If effective policy contains the protected validation workflow, run focused
+   deterministic tests for the integrated behavior; otherwise run the complete
+   suite locally and track the rollout gap. Push the new head and re-run the
+   PR-open command with the same `--base`. The hosted workflow validates the
+   prospective merge; the pushed head still requires exact-head review.
 
 Never let a green suite substitute for step 3: a developer machine can carry
 state that masks a discarded fixture or precondition.

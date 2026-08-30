@@ -455,7 +455,7 @@ assert_contains "$GIT_WORKFLOW_GUIDE" '`--theirs` are whole-file operations'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
   'git diff <pre-merge-head> HEAD -- <file...>'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
-  'requires exact-head review before it can merge'
+  'the pushed head still requires exact-head review'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
   'started before the exact-head review completed'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
@@ -1219,6 +1219,16 @@ assert_contains "$TOUCHSTONE_ROOT/bin/touchstone" \
   'steering install --non-interactive'
 assert_contains "$TOUCHSTONE_ROOT/bin/touchstone" \
   'touchstone review setup|check|run|rotate|uninstall'
+
+echo "==> Touchstone keeps one complete-suite boundary"
+assert_not_contains "$TOUCHSTONE_ROOT/.pre-commit-config.yaml" 'touchstone-validate'
+assert_not_contains "$TOUCHSTONE_ROOT/.pre-commit-config.yaml" 'scripts/touchstone-run.sh validate'
+assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" 'Do not rerun'
+assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" 'protected hosted workflow'
+assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" 'If it is absent, run the complete suite locally'
+assert_contains "$TOUCHSTONE_ROOT/CLAUDE.md" 'protected hosted workflow owns the complete suite'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'otherwise run the complete'
+assert_contains "$TOUCHSTONE_ROOT/.touchstone.toml" 'for test in tests/test-*.sh'
 
 if [ "$ERRORS" -gt 0 ]; then
   echo ""

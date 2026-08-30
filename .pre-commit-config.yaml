@@ -61,26 +61,3 @@ repos:
     hooks:
       - id: actionlint
         files: ^\.github/workflows/.*\.ya?ml$
-
-  # Self-tests via the schema-v1 declaration engine used by the central
-  # required workflow. Touchstone's .touchstone.toml declares the complete
-  # tests/test-*.sh loop, so local and remote validation share one interpreter.
-  - repo: local
-    hooks:
-      - id: touchstone-validate
-        name: Touchstone project validation
-        entry: >-
-          /usr/bin/env env
-          -u GIT_ALTERNATE_OBJECT_DIRECTORIES
-          -u GIT_CONFIG -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT
-          -u GIT_OBJECT_DIRECTORY -u GIT_DIR -u GIT_WORK_TREE
-          -u GIT_IMPLICIT_WORK_TREE -u GIT_GRAFT_FILE -u GIT_INDEX_FILE
-          -u GIT_NO_REPLACE_OBJECTS -u GIT_REPLACE_REF_BASE
-          -u GIT_PREFIX -u GIT_SHALLOW_FILE -u GIT_COMMON_DIR
-          -u GIT_NAMESPACE -u GIT_INTERNAL_GETTEXT_SH_SCHEME
-          TOUCHSTONE_VALIDATE_SKIP_FEATURE_PUSH=1
-          bash scripts/touchstone-run.sh validate
-        language: system
-        stages: [pre-push]
-        always_run: true
-        pass_filenames: false

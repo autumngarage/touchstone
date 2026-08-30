@@ -19,20 +19,23 @@ The block above is the canonical universal contract: agent roles, the engineerin
 - **A rule must live at the layer that can enforce it.** GitHub enforces (rulesets, required checks). Prose instructs. Scripts observe and sequence — they never adjudicate. Nothing may live at two layers at once. Re-deciding locally what GitHub decides at the merge button is what grew this repo to 49,000 lines; it is the specific mistake to not repeat.
 - **Adoption must stay set-and-forget.** Consumer repositories carry declarations and narrow integration points, never copied Touchstone implementation. An adopted repository remains valid without routine rewrites; evolution is backward-compatible or an explicit reviewable upgrade. `docs/product-contract.md` is the canonical boundary.
 - **Delete by default.** The burden of proof is on keeping. A deletion is recoverable from git history; a file kept on "it might be useful" accretes tests, findings, and dependents. A change earns its way in when a real failure demanded it — not because a review round suggested it.
-- **Self-tests are mandatory.** Run every `tests/test-*.sh` before pushing. The suite must stay deterministic, offline, and free of live model/provider quota.
+- **Self-tests are mandatory.** Run focused deterministic tests for changed behavior before pushing. The protected hosted workflow owns the complete suite; do not repeat it locally as confirmation. If effective policy lacks that workflow, run the complete suite locally and track the rollout gap.
 - **Downstream projects are frozen, deliberately.** anima, vesper, arpeggio, and convoy carry committed copies of the old scripts. Deleting the bootstrap means no stripped release can reach them: they keep working exactly as they did. Re-adoption is a separate, later decision — do not "fix" them from here.
 
 ## Testing
 
-```bash
-# Before any push
-for test in tests/test-*.sh; do
-  echo "==> $test"
-  bash "$test" || exit 1
-done
-```
+Run the smallest deterministic test files that exercise the changed behavior,
+then run pre-commit on the changed files. The complete suite is the protected
+hosted gate — deterministic, offline, and fetching nothing. The protected
+workflow pinned by `policy/github/touchstone-main.json` runs the one
+`.touchstone.toml` command, with no third-party dependency. The target
+repository carries no duplicate validation workflow. That is deliberate: a
+required check that can go red because a package host had a bad minute is not a
+gate (#742, #803, #808).
 
-The suite is the "is this safe to push" gate — deterministic, offline, and fetching nothing. The protected workflow pinned by `policy/github/touchstone-main.json` runs the same loop as the required check, with no third-party dependency of any kind. The target repository carries no duplicate validation workflow. That is deliberate: a required check that can go red because a package host had a bad minute is not a gate (#742, #803, #808).
+This local optimization is conditional on effective policy containing the
+protected workflow. Without it, run the complete suite locally and track the
+rollout gap.
 
 Lint is not part of the test suite. It runs at pre-commit and via `pre-commit run --all-files`: `shellcheck`, `shfmt`, `markdownlint`, and `actionlint`. `.pre-commit-config.yaml` and `.markdownlint.json` are the canonical config.
 
