@@ -110,7 +110,8 @@ git checkout -b fix/some-slug
 # ... edit, then stage explicit paths ...
 git commit -m "fix: what changed"
 git push -u origin HEAD
-printf 'What changed and why.\n\nFixes AUT-123\n' >/tmp/pr-body
+cp .github/pull_request_template.md /tmp/pr-body
+# Fill every required section and Validation row; keep `Fixes AUT-123` in the body.
 bash bin/touchstone pr open --title "fix: what changed" --body-file /tmp/pr-body \
   --expect-branch fix/some-slug   # creates the PR and posts the bound review request
 # ... answer every finding, fix the high-severity ones, resolve every thread ...

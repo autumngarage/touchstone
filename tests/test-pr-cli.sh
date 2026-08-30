@@ -121,6 +121,10 @@ serve_rules() {
       evidence_sha="$GH_MID_SHA"
       extra_workflows="$ahead_workflows"
     fi
+    if [ -f "$GH_STATE/incompatible-evidence-overlap" ]; then
+      evidence_sha="$GH_BEHIND_SHA"
+      extra_workflows="$ahead_workflows"
+    fi
     [ ! -f "$GH_STATE/overlapping-exact-pins" ] || extra_workflows="$ahead_workflows"
     queue_rule=',{"type":"merge_queue"}'
     [ ! -f "$GH_STATE/no-queue-rule" ] || queue_rule=""
@@ -361,10 +365,23 @@ case "$1 ${2:-}" in
       for field in "$@"; do case "$field" in id=*) run_node="${field#id=}" ;; esac; done
       run_id="${run_node#RUN_}"
       source_revision="$GH_POLICY_SHA"
+      source_repository="autumngarage/touchstone-workflows"
+      source_path=".github/workflows/review-gate.yml"
+      case "$run_id" in
+        80) source_path=".github/workflows/delivery-evidence.yml" ;;
+        82)
+          source_repository="autumngarage/decoy-workflows"
+          source_path=".github/workflows/delivery-evidence.yml"
+          ;;
+      esac
       [ ! -f "$GH_STATE/ahead-pin" ] || source_revision="$GH_AHEAD_SHA"
+      [ ! -f "$GH_STATE/incompatible-evidence-run" ] || [ "$run_id" != 80 ] \
+        || source_revision="$GH_BEHIND_SHA"
       [ "${GH_MODE:-ok}" != status_gate_historical ] || source_revision="$GH_AHEAD_SHA"
-      [ ! -f "$GH_STATE/gate-run-unbound" ] || source_revision="$GH_AHEAD_SHA"
-      jq -cn --argjson id "$run_id" --arg revision "$source_revision" '{data:{node:{databaseId:$id,file:{path:".github/workflows/review-gate.yml",repositoryName:"autumngarage/touchstone-workflows",repositoryFileUrl:("https://github.com/autumngarage/touchstone-workflows/blob/" + $revision + "/.github/workflows/review-gate.yml")}}}}'
+      [ ! -f "$GH_STATE/gate-run-unbound" ] || [ "$run_id" = 80 ] || source_revision="$GH_AHEAD_SHA"
+      jq -cn --argjson id "$run_id" --arg revision "$source_revision" \
+        --arg repository "$source_repository" --arg path "$source_path" \
+        '{data:{node:{databaseId:$id,file:{path:$path,repositoryName:$repository,repositoryFileUrl:("https://github.com/" + $repository + "/blob/" + $revision + "/" + $path)}}}}'
     elif has 'resolveReviewThread' "$@"; then
       printf '%s\n' true
     elif has 'node(id:' "$@"; then
@@ -797,11 +814,14 @@ case "$1 ${2:-}" in
         if [ -f "$GH_STATE/gate-review-window-active" ]; then
           gate_started_at="$(jq -nr --argjson started "$(( $(date -u +%s) - 300 ))" '$started | todateiso8601')"
         fi
+        evidence_conclusion="${GH_EVIDENCE_CONCLUSION:-success}"
+        [ "${GH_MODE:-ok}" != delivery_evidence_failure ] || evidence_conclusion=failure
+        [ ! -f "$GH_STATE/evidence-reruns" ] || evidence_conclusion=success
         runs="{\"workflow_runs\":[
           {\"id\":77,\"node_id\":\"RUN_77\",\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":900,\"run_attempt\":$gate_attempt,\"event\":\"pull_request\",\"status\":\"$gate_status\",\"conclusion\":$gate_conclusion_json,\"workflow_id\":999,\"run_started_at\":\"$gate_started_at\",\"updated_at\":\"2026-08-27T17:30:00Z\",\"pull_requests\":[{\"number\":7}]},
           {\"id\":78,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":901,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":2,\"run_started_at\":\"2026-08-27T17:20:00Z\",\"updated_at\":\"2026-08-27T17:20:00Z\",\"pull_requests\":[{\"number\":7}]},
           {\"id\":79,\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":902,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":999,\"run_started_at\":\"2026-08-27T17:20:00Z\",\"updated_at\":\"2026-08-27T17:20:00Z\",\"pull_requests\":[{\"number\":8}]},
-          {\"id\":80,\"name\":\"delivery-evidence\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":903,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"${GH_EVIDENCE_CONCLUSION:-success}\",\"run_started_at\":\"${GH_EVIDENCE_STARTED_AT:-2026-08-26T22:20:00Z}\",\"updated_at\":\"2026-08-27T17:30:00Z\",\"run_attempt\":2,\"workflow_id\":1000,\"pull_requests\":[{\"number\":7}]},
+          {\"id\":80,\"node_id\":\"RUN_80\",\"name\":\"delivery-evidence\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":903,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"$evidence_conclusion\",\"run_started_at\":\"${GH_EVIDENCE_STARTED_AT:-2026-08-26T22:20:00Z}\",\"updated_at\":\"2026-08-27T17:30:00Z\",\"run_attempt\":2,\"workflow_id\":1000,\"pull_requests\":[{\"number\":7}]},
           {\"id\":81,\"name\":\"delivery-evidence\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":904,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"failure\",\"workflow_id\":3,\"pull_requests\":[{\"number\":7}]},
           {\"id\":82,\"name\":\"other-external-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":905,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":1001,\"pull_requests\":[{\"number\":7}]},
           {\"id\":83,\"name\":\"other-external-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":905,\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"workflow_id\":1001,\"pull_requests\":[{\"number\":7}]}]}"
@@ -852,8 +872,11 @@ case "$1 ${2:-}" in
         if [ "${GH_MODE:-ok}" = status_gate_unbound ]; then
           runs="$(printf '%s' "$runs" | jq -c '(.workflow_runs[] | select(.id == 77) | .pull_requests) = []')"
         fi
-        if [ -f "$GH_STATE/same-name-external-decoy" ]; then
-          runs="$(printf '%s' "$runs" | jq -c '.workflow_runs += [{"id":82,"name":"delivery-evidence","event":"pull_request","status":"completed","conclusion":"success","workflow_id":1001,"pull_requests":[{"number":7}]}]')"
+        if [ -f "$GH_STATE/same-name-external-decoy" ] || [ -f "$GH_STATE/same-name-external-decoy-only" ]; then
+          runs="$(printf '%s' "$runs" | jq -c '.workflow_runs += [{"id":82,"node_id":"RUN_82","name":"delivery-evidence","head_sha":"'"$GH_HEAD"'","check_suite_id":905,"run_attempt":1,"event":"pull_request","status":"completed","conclusion":"success","workflow_id":1001,"run_started_at":"2026-08-27T17:25:00Z","updated_at":"2026-08-27T17:25:00Z","pull_requests":[{"number":7}]}]')"
+        fi
+        if [ -f "$GH_STATE/same-name-external-decoy-only" ]; then
+          runs="$(printf '%s' "$runs" | jq -c '{workflow_runs: [.workflow_runs[] | select(.id != 80)]}')"
         fi
       else
         runs='{"workflow_runs":[]}'
@@ -1213,6 +1236,19 @@ EOF
   ok "a conflicting new PR consumes no hosted review or workflow recovery"
   rm -f "$TMP/state/pr-exists"
 
+  echo "==> open requires authoritative delivery evidence before hosted review (AUT-877)"
+  touch "$TMP/state/review-gate"
+  : >"$GH_CALLS"
+  GH_MODE=delivery_evidence_failure run_pr "$TMP/out" open --title 'Invalid evidence' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'delivery-evidence rejected PR #7'
+  assert_not_has "$GH_CALLS" 'pr comment'
+  assert_not_has "$GH_CALLS" 'actions/runs/80/rerun'
+  [ ! -f "$TMP/state/review-request" ] \
+    && ok "a rejected body consumes no hosted review or redundant evidence rerun" \
+    || fail "a rejected body still posted a hosted review request"
+  rm -f "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request"
+
   echo "==> open re-runs the pinned review gate where the repository has one"
   touch "$TMP/state/review-gate" "$TMP/state/behavior-version-legacy"
   rm -f "$TMP/state/gate-reruns" "$TMP/state/review-request"
@@ -1262,7 +1298,7 @@ EOF
   assert_has "$TMP/out" '"reviewBudget":{"recorded":false,"limit":3'
   [ ! -f "$TMP/state/gate-reruns" ] \
     || fail "behavior v2 open re-ran an evaluation that was already active"
-  [ "$(grep -c 'actions/runs?head_sha=' "$GH_CALLS")" -le 2 ] \
+  [ "$(grep -c 'actions/runs?head_sha=' "$GH_CALLS")" -le 3 ] \
     || fail "behavior v2 open repeatedly polled an active evaluation instead of returning control"
   rm -f "$TMP/state/gate-in-progress" "$TMP/state/gate-reruns" "$TMP/state/gate-fresh-active"
   touch "$TMP/state/gate-fresh-active" "$TMP/state/gate-run-unbound"
@@ -1366,7 +1402,7 @@ EOF
   grep -q 'rerun 80' "$TMP/state/evidence-reruns" 2>/dev/null \
     && ok "a corrected body re-ran the organization-required delivery-evidence run" \
     || fail "a corrected body did not re-run delivery evidence"
-  assert_has "$TMP/out" 'Delivery evidence re-run requested for run 80.'
+  assert_has "$TMP/out" 'Delivery evidence accepted by run 80 before hosted review.'
 
   rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun"
   touch "$TMP/state/same-name-external-decoy"
@@ -1377,6 +1413,26 @@ EOF
     && ok "same-named external workflows fail closed instead of rerunning the wrong gate" \
     || fail "an ambiguous external workflow was rerun"
   rm -f "$TMP/state/same-name-external-decoy"
+
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/review-request"
+  touch "$TMP/state/same-name-external-decoy-only"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'delivery-evidence run 82 is not bound to the policy-declared source file'
+  [ ! -f "$TMP/state/review-request" ] \
+    && ok "a sole same-named decoy cannot authorize hosted review" \
+    || fail "a same-named decoy posted a hosted review request"
+  rm -f "$TMP/state/same-name-external-decoy-only"
+
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/review-request"
+  touch "$TMP/state/incompatible-evidence-overlap" "$TMP/state/incompatible-evidence-run"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'delivery-evidence run 80 is not bound to the policy-declared source file'
+  [ ! -f "$TMP/state/review-request" ] \
+    && ok "an obsolete overlapping evidence pin cannot authorize hosted review" \
+    || fail "an obsolete overlapping evidence pin posted a hosted review request"
+  rm -f "$TMP/state/incompatible-evidence-overlap" "$TMP/state/incompatible-evidence-run"
 
   rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun"
   GH_EVIDENCE_CONCLUSION=failure run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
@@ -2041,7 +2097,7 @@ Closes #42'
   touch "$TMP/state/review-gate" "$TMP/state/gate-never-runs" "$TMP/state/actions-disabled-after-preflight"
   TOUCHSTONE_GATE_ATTEMPTS=2 run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-branch feat/test --json
   assert_rc "$RUN_RC" 1
-  assert_has "$TMP/out" 'no review-gate run can exist for'
+  assert_has "$TMP/out" 'no delivery-evidence run can exist for'
   assert_has "$TMP/out" 'repository Actions are disabled for autumngarage/current'
   assert_not_has "$TMP/out" 'Wait for the gate run to finish'
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-never-runs" "$TMP/state/actions-disabled-after-preflight" "$TMP/state/actions-preflight-seen" "$TMP/state/review-request"

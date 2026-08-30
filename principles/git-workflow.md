@@ -69,7 +69,23 @@ mandatory driver procedure, `touchstone pr merge` refuses without
 ```bash
 git push -u origin HEAD
 touchstone pr open --expect-branch "<branch>" --title "<type>: <what changed>" --body-file <(cat <<'EOF'
+## Intent
 <what and why>
+
+## Invariants
+<what must remain true>
+
+## Validation
+- Build: <what ran and its result, or n/a with a reason>
+- Automated tests: <what ran and its result, or n/a with a reason>
+- Manual validation: <what ran and its result, or n/a with a reason>
+- Local review: <the tier-required record or permitted waiver>
+
+## Review tier
+<trivial | normal | serious>
+
+## Why this tier
+<why this tier applies>
 
 <configured closing reference, for example: Fixes AUT-123>
 EOF
@@ -77,9 +93,11 @@ EOF
 ```
 
 The installed CLI is the PR-open sequencer on every machine: it creates or
-reuses the PR for the branch, posts the review request once for the exact
-head, re-runs the pinned `review-gate` where policy declares one, and reports
-success only after the coordinates still hold. A policy with no gate leaves
+reuses the PR for the branch, waits for the policy-declared
+`delivery-evidence` workflow to accept the surviving body, then posts the
+review request once for the exact head. It re-runs the pinned `review-gate`
+where policy declares one and reports success only after the coordinates still
+hold. A policy with no gate leaves
 exact-head review as explicit driver procedure. `--expect-branch` is
 written out, never derived from `git branch --show-current` — that reads the
 same checkout the command reads and would agree with a wrong worktree. Where
