@@ -2,8 +2,9 @@
 # Staged in disposable Codex state by `touchstone review run`. No credentials.
 
 # Keep the normal-review cost boundary deterministic. Router defaults can admit
-# premium models when their capability tiers change.
-model = "google/gemini-3.7-flash"
+# premium models, and Codex's Responses request reserves the selected model's
+# full completion ceiling. This coding model keeps that reservation economical.
+model = "qwen/qwen3-coder-next"
 model_provider = "openrouter"
 model_reasoning_effort = "medium"
 model_reasoning_summary = "none"
@@ -39,3 +40,5 @@ wire_api = "responses"
 [model_providers.openrouter.http_headers]
 HTTP-Referer = "https://github.com/autumngarage/touchstone"
 X-OpenRouter-Title = "Touchstone Local Review"
+
+# touchstone:review-project-trust
