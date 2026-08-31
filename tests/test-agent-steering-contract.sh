@@ -904,8 +904,6 @@ fi
 if grep -qF 'dummy-openrouter-token' "$TEST_DIR/review-setup.out"; then
   fail "setup exposed the credential in output"
 fi
-review_command check --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
-  || fail "check failed immediately after setup"
 REVIEW_CODEX_LIB="$TOUCHSTONE_ROOT/scripts/lib/touchstone-review-codex.sh"
 assert_contains "$REVIEW_CODEX_LIB" \
   "TeamIdentifier=2DC432GLL2"
@@ -914,17 +912,22 @@ assert_contains "$REVIEW_CODEX_LIB" \
 assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
   'touchstone_verify_openai_codex "$candidate" /usr/bin/codesign'
 assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
+  'touchstone_review_validate_launch'
+assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
   'PATH="$bundled_path:$PATH"'
 assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
   "TOUCHSTONE_REVIEW_CODEX_BIN"
 for boundary in \
   '--strict-config' \
-  '--disable shell_snapshot' \
-  '--disable plugins' \
-  'shell_environment_policy.filters.OPENROUTER_API_KEY="exclude"' \
   'exec --ephemeral --ignore-rules review --uncommitted' \
   'unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE'; do
   assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" "$boundary"
+done
+for boundary in \
+  '--disable shell_snapshot' \
+  '--disable plugins' \
+  'shell_environment_policy.filters.OPENROUTER_API_KEY="exclude"'; do
+  assert_contains "$REVIEW_CODEX_LIB" "$boundary"
 done
 assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
   '-c "projects.'
@@ -1133,6 +1136,47 @@ assert_contains "$RENDERED_REVIEW_PROFILE" \
   "\"$EXPECTED_REVIEW_COMMON_DIR\" = \"read\""
 assert_not_contains "$RENDERED_REVIEW_PROFILE" \
   "\"$(dirname "$REVIEW_REPOSITORY")\" = \"read\""
+
+echo "==> normal-review check exercises the managed Codex invocation and exact Git state"
+FAKE_REVIEW_CODEX="$TEST_DIR/fake-review-codex"
+FAKE_REVIEW_CODEX_LOG="$TEST_DIR/fake-review-codex.log"
+cat >"$FAKE_REVIEW_CODEX" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$TOUCHSTONE_FAKE_REVIEW_CODEX_LOG"
+if [ "${TOUCHSTONE_FAKE_REVIEW_CODEX_REJECT:-false}" = true ]; then
+  echo 'Error loading config.toml: unknown configuration field `projects.\"/private/tmp/worktree\"`' >&2
+  exit 1
+fi
+case " $* " in
+  *' sandbox -P touchstone_review -C '*" status --short ")
+    exit 0
+    ;;
+  *)
+    echo "unexpected Codex invocation: $*" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$FAKE_REVIEW_CODEX"
+if ! CODEX_HOME="$TEST_DIR" \
+  TOUCHSTONE_FAKE_REVIEW_CODEX_LOG="$FAKE_REVIEW_CODEX_LOG" \
+  touchstone_review_validate_launch \
+  "$FAKE_REVIEW_CODEX" "$REVIEW_WORKTREE_PHYSICAL" /usr/bin/git; then
+  fail "normal-review launch preflight rejected the valid linked-worktree invocation: $TOUCHSTONE_CODEX_ERROR"
+fi
+[ "$(wc -l <"$FAKE_REVIEW_CODEX_LOG" | tr -d ' ')" = 1 ] \
+  || fail "normal-review launch preflight did not exercise its Codex/Git boundary exactly once"
+if CODEX_HOME="$TEST_DIR" \
+  TOUCHSTONE_FAKE_REVIEW_CODEX_LOG="$FAKE_REVIEW_CODEX_LOG" \
+  TOUCHSTONE_FAKE_REVIEW_CODEX_REJECT=true \
+  touchstone_review_validate_launch \
+  "$FAKE_REVIEW_CODEX" "$REVIEW_WORKTREE_PHYSICAL" /usr/bin/git; then
+  fail "normal-review launch preflight accepted a Codex parser rejection"
+elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" \
+  | grep -qF 'unknown configuration field'; then
+  fail "normal-review parser rejection lost its actionable diagnostic: $TOUCHSTONE_CODEX_ERROR"
+fi
 if touchstone_review_render_profile \
   "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
   "$TEST_DIR/unsafe-review.config.toml" \
@@ -1168,7 +1212,7 @@ review_command setup --codex-home "$SECOND_REVIEW_HOME" >/dev/null 2>&1 \
   || fail "a second Codex home could not configure its own credential"
 review_command uninstall --codex-home "$SECOND_REVIEW_HOME" >/dev/null 2>&1 \
   || fail "the second Codex home could not uninstall cleanly"
-review_command check --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
+[ -e "$(fake_key_path "$REVIEW_HOME")" ] \
   || fail "uninstalling one Codex home deleted another home's credential"
 
 DELETE_FAILURE_HOME="$TEST_DIR/review-delete-failure"

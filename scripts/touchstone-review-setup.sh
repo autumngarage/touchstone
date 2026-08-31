@@ -139,6 +139,51 @@ cleanup_runtime_home() {
   exit "$exit_status"
 }
 
+prepare_review_runtime() {
+  local invoking_dir
+
+  invoking_dir="$(pwd -P)"
+  touchstone_review_resolve_git_context "$invoking_dir" \
+    || die "$TOUCHSTONE_CODEX_ERROR"
+  REPOSITORY_ROOT="$TOUCHSTONE_REVIEW_REPOSITORY_ROOT"
+  REVIEW_GIT_DIR="$TOUCHSTONE_REVIEW_GIT_DIR"
+  REVIEW_GIT_COMMON_DIR="$TOUCHSTONE_REVIEW_GIT_COMMON_DIR"
+  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
+    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES \
+    GIT_CONFIG GIT_CONFIG_PARAMETERS
+  GIT_CONFIG_NOSYSTEM=1
+  GIT_CONFIG_GLOBAL=/dev/null
+  GIT_CONFIG_SYSTEM=/dev/null
+  GIT_CONFIG_COUNT=0
+  export GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT
+  cd "$REPOSITORY_ROOT"
+  RUNTIME_HOME="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-review.XXXXXX")" \
+    || die "could not create isolated Codex state for normal review"
+  trap cleanup_runtime_home EXIT HUP INT TERM
+  touchstone_review_render_profile \
+    "$PROFILE_SOURCE" "$RUNTIME_HOME/review-normal.config.toml" \
+    "$REPOSITORY_ROOT" "$REVIEW_GIT_DIR" "$REVIEW_GIT_COMMON_DIR" \
+    || die "$TOUCHSTONE_CODEX_ERROR"
+  chmod 700 "$RUNTIME_HOME" \
+    || die "could not restrict isolated review state"
+  chmod 600 "$RUNTIME_HOME/review-normal.config.toml" \
+    || die "could not restrict the isolated review profile"
+  CODEX_HOME="$RUNTIME_HOME"
+  export CODEX_HOME
+}
+
+resolve_review_git() {
+  REVIEW_GIT_BIN=""
+  if [ "$PLATFORM" = Darwin ] && [ -x /usr/bin/xcrun ]; then
+    REVIEW_GIT_BIN="$(/usr/bin/xcrun --find git 2>/dev/null)" \
+      || die "could not resolve the Git executable for the review preflight"
+  else
+    REVIEW_GIT_BIN="$(command -v git 2>/dev/null || true)"
+  fi
+  [ -n "$REVIEW_GIT_BIN" ] && [ -x "$REVIEW_GIT_BIN" ] \
+    || die "Git is unavailable for the review preflight"
+}
+
 case "$ACTION" in
   run)
     RUNTIME_HOME=""
@@ -146,45 +191,12 @@ case "$ACTION" in
     require_keychain
     require_usable_key
     resolve_codex
-    INVOKING_DIR="$(pwd -P)"
-    touchstone_review_resolve_git_context "$INVOKING_DIR" \
-      || die "$TOUCHSTONE_CODEX_ERROR"
-    REPOSITORY_ROOT="$TOUCHSTONE_REVIEW_REPOSITORY_ROOT"
-    REVIEW_GIT_DIR="$TOUCHSTONE_REVIEW_GIT_DIR"
-    REVIEW_GIT_COMMON_DIR="$TOUCHSTONE_REVIEW_GIT_COMMON_DIR"
-    unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
-      GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES \
-      GIT_CONFIG GIT_CONFIG_PARAMETERS
-    GIT_CONFIG_NOSYSTEM=1
-    GIT_CONFIG_GLOBAL=/dev/null
-    GIT_CONFIG_SYSTEM=/dev/null
-    GIT_CONFIG_COUNT=0
-    export GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT
-    cd "$REPOSITORY_ROOT"
-    RUNTIME_HOME="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-review.XXXXXX")" \
-      || die "could not create isolated Codex state for normal review"
-    trap cleanup_runtime_home EXIT HUP INT TERM
-    touchstone_review_render_profile \
-      "$PROFILE_SOURCE" "$RUNTIME_HOME/review-normal.config.toml" \
-      "$REPOSITORY_ROOT" "$REVIEW_GIT_DIR" "$REVIEW_GIT_COMMON_DIR" \
-      || die "$TOUCHSTONE_CODEX_ERROR"
-    chmod 700 "$RUNTIME_HOME" \
-      || die "could not restrict isolated Codex state"
-    chmod 600 "$RUNTIME_HOME/review-normal.config.toml" \
-      || die "could not restrict the isolated review profile"
-    CODEX_HOME="$RUNTIME_HOME"
+    prepare_review_runtime
     OPENROUTER_API_KEY="$KEY_VALUE"
     unset KEY_VALUE
-    export CODEX_HOME OPENROUTER_API_KEY
-    "$CODEX_BIN" \
-      -p review-normal \
+    export OPENROUTER_API_KEY
+    touchstone_review_codex "$CODEX_BIN" \
       --strict-config \
-      -c 'shell_environment_policy.filters.OPENROUTER_API_KEY="exclude"' \
-      -c 'allow_login_shell=false' \
-      --disable shell_snapshot \
-      --disable plugins \
-      --disable plugin_hooks \
-      --disable enable_mcp_apps \
       -a never \
       exec --ephemeral --ignore-rules review --uncommitted
     ;;
@@ -192,6 +204,13 @@ case "$ACTION" in
     [ "$DRY_RUN" = false ] || die "--dry-run is not valid for check"
     require_keychain
     require_usable_key
+    unset KEY_VALUE OPENROUTER_API_KEY
+    resolve_codex
+    prepare_review_runtime
+    resolve_review_git
+    touchstone_review_validate_launch \
+      "$CODEX_BIN" "$REPOSITORY_ROOT" "$REVIEW_GIT_BIN" \
+      || die "$TOUCHSTONE_CODEX_ERROR"
     echo "==> PASS: lower-cost normal review is configured"
     ;;
   setup)

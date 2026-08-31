@@ -67,8 +67,9 @@ touchstone review setup
 ```
 
 The second command securely saves a dedicated OpenRouter key in macOS Keychain.
-`touchstone review check` verifies that boundary and `touchstone review run`
-stages the shipped profile in disposable Codex state, then launches the pass
+`touchstone review check` verifies the credential, the installed Codex parser,
+and exact read-only Git inspection from the current checkout. `touchstone review run`
+stages the same shipped profile in disposable Codex state, then launches the pass
 with core-only environment inheritance and repository-scoped reads. Serious and
 PR-visible reviews remain on their default Codex paths.
 
