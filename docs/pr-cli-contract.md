@@ -151,11 +151,11 @@ taking this document's word for it.
   because GitHub can land it without another local mutation. Conflicts,
   ambiguous or unbound gates, and incomplete policy bindings are
   `action-required`. After that, only the policy-owned exact-head gate decides:
-  active is `reviewing`, explicit `failure` is `fix-required`, and success that
-  postdates the complete review surface is `ready-to-queue` only when GitHub
-  reports the PR `CLEAN`. A blocked merge state, operational conclusion,
-  missing completion timestamp, or later review activity is `action-required`,
-  matching the merge command's existing fail-closed behavior.
+  active is `reviewing`, explicit `failure` is `fix-required`, and exact-head
+  success is `ready-to-queue` only when GitHub reports the PR `CLEAN`. A
+  blocked merge state or operational conclusion is `action-required`. Status
+  does not reconstruct freshness from mutable review timestamps: the protected
+  merge group's prospective gate owns feedback that arrives after the PR gate.
   An absent gate with no active bound workflow is `action-required`, never
   guessed to be pending or passing.
 
@@ -199,17 +199,17 @@ taking this document's word for it.
   `review-gate` workflow, it requires the current policy-bound CheckRun to be
   complete and successful for that head before asking GitHub to merge. A
   pending, failed, absent, unbound, or ambiguous gate causes no merge or queue
-  mutation. A green gate is also refused when any conversation comment, formal
-  review, or inline review comment was created or edited at or after that gate
-  completed; this prevents same-head feedback from arriving behind the
-  verdict. Review is requested by `open` and refreshed by `answer`; `merge`
-  never starts or waits for review. A review-gated policy without a merge
-  queue is reported as partial and requires the explicit audited `--unguarded`
-  path: only the merge group's fresh gate run makes review evidence atomic with
-  admission. Raw equivalent: verify the policy-bound
-  gate is successful and fresh for the exact head, then `gh pr merge --squash
+  mutation. Review is requested by `open` and refreshed by `answer`; `merge`
+  never starts or waits for review. It also does not rebuild a second review
+  verdict from mutable comment timestamps. A review-gated policy without a
+  merge queue is reported as partial and requires the explicit audited
+  `--unguarded` path: only the merge group's prospective gate makes feedback
+  after the PR gate atomic with delivery. Raw recovery is available only when
+  effective enforcement includes that queue: verify the policy-bound gate is
+  successful for the exact head, then `gh pr merge --squash
   --match-head-commit SHA`, then re-read `state`, `headRefOid`, merge queue,
-  and auto-merge state.
+  and auto-merge state. Without the queue, stop and repair enforcement; a raw
+  merge would lose the prospective review boundary.
 
   Why not the raw sequence: `gh pr merge` exit codes lie in both directions —
   nonzero after a merge that actually succeeded, and zero having merely *armed*

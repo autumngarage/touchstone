@@ -1029,10 +1029,13 @@ EOF
   assert_has "$TMP/out" '"workflowStatus":"completed","workflowConclusion":"cancelled"'
   assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'
   assert_not_has "$TMP/out" '"phase":"fix-required"'
+  : >"$GH_CALLS"
   GH_MODE=status_gate_stale_review run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'
-  assert_not_has "$TMP/out" '"phase":"ready-to-queue"'
+  assert_has "$TMP/out" '"phase":"ready-to-queue","nextAction":"queue"'
+  assert_not_has "$GH_CALLS" '/issues/7/comments?per_page=100'
+  assert_not_has "$GH_CALLS" '/pulls/7/reviews?per_page=100'
+  assert_not_has "$GH_CALLS" '/pulls/7/comments?per_page=100'
   GH_MODE=status_gate_queued run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"mergeQueue":{"state":"AWAITING_CHECKS"},"phase":"queued","nextAction":"wait"'
@@ -1086,7 +1089,7 @@ EOF
   rm -f "$TMP/state/no-review-gate-rule"
   GH_MODE=status_gate_run_recency run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'
+  assert_has "$TMP/out" '"phase":"ready-to-queue","nextAction":"queue"'
   assert_has "$TMP/out" '"workflowRunId":77,"runAttempt":3'
   assert_not_has "$TMP/out" '"workflowRunId":88'
   GH_MODE=status_gate_run_overlap run_pr "$TMP/out" status 7 --json
@@ -1696,10 +1699,11 @@ Closes #42'
   rm -f "$TMP/state/merged"
   : >"$GH_CALLS"
   GH_MODE=status_gate_stale_review run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
-  assert_rc "$RUN_RC" 2
-  assert_has "$TMP/out" 'review evidence is stale'
-  assert_has "$TMP/out" '2026-08-27T17:35:00Z'
-  assert_not_has "$GH_CALLS" 'pr merge'
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'pr merge'
+  assert_not_has "$GH_CALLS" '/issues/7/comments?per_page=100'
+  assert_not_has "$GH_CALLS" '/pulls/7/reviews?per_page=100'
+  assert_not_has "$GH_CALLS" '/pulls/7/comments?per_page=100'
   rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
   : >"$GH_CALLS"
   GH_MODE=status_gate_pending run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json

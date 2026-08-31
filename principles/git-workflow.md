@@ -210,12 +210,11 @@ current head after the bound request and every inline or body-only finding has
 a qualifying later answer. Until that check is installed and verified as
 required, exact-head review remains mandatory driver procedure. GitHub
 conversation resolution separately requires every inline thread closed.
-`touchstone pr merge` additionally refuses a green gate when the review surface
-changed at or after that gate completed; refresh through `open` or `answer`
-instead of treating a stale same-head verdict as current.
-The merge queue is the atomic boundary: its merge-group run re-evaluates the
-complete surface. A review-gated policy without that run is an enforcement gap,
-not a guarded auto-merge path.
+`touchstone pr merge` observes that policy-owned exact-head verdict; it does
+not reconstruct a second verdict from mutable review timestamps. The merge
+queue is the atomic boundary: its merge-group run re-evaluates the complete
+surface, including feedback that arrived after the PR gate. A review-gated
+policy without that run is an enforcement gap, not a guarded auto-merge path.
 
 ## Answering findings
 
@@ -306,14 +305,15 @@ touchstone pr merge <n> --head <reviewed-sha>
 ```
 
 It requires the policy-owned gate to have already succeeded for that exact
-head and refuses review-surface activity at or after that gate completed,
-asks GitHub to merge bound to it, and reports merged, queued, or
+head, asks GitHub to merge bound to it, and reports merged, queued, or
 auto-merge-enabled only while the head still equals the reviewed one. It never
-starts or waits for review. Where the CLI is absent, verify the declared gate
-is successful and newer than the latest conversation, formal-review, and
-inline-review activity for the reviewed head. Immediately before the alternate
-merge command, re-read `mergeQueueEntry`; a live entry for the reviewed head
-ends the mutation path. Only when no such entry exists, run
+starts or waits for review, or reconstructs another verdict from review
+timestamps. Where the CLI is absent, first verify that effective enforcement
+includes both the declared exact-head gate and the merge queue. Without the
+queue, stop and repair enforcement: raw recovery cannot preserve review
+freshness. With both applied, verify the gate is successful and immediately
+re-read `mergeQueueEntry`; a live entry for the reviewed head ends the mutation
+path. Only when no such entry exists, run
 
 ```bash
 gh pr merge <n> --squash --match-head-commit <reviewed-sha>
@@ -324,6 +324,10 @@ live `headRefOid`, which would bind the merge to whatever was pushed last),
 then re-read `state`, `headRefOid`, merge-queue and auto-merge state: merged,
 queued, or auto-merge-enabled count only while `headRefOid` still equals the
 reviewed head, and only `state == MERGED` proves the merge.
+
+The protected merge group's prospective gate re-evaluates the complete review
+surface after admission. It owns feedback that arrives after the PR gate;
+client-side timestamp comparisons do not make that boundary atomic.
 
 **`--match-head-commit` is the head binding.** It refuses the merge if the PR head moved since you checked the gate — which is exactly the race that lets an unreviewed commit slip in behind a passing review.
 
