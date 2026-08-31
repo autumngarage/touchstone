@@ -690,8 +690,8 @@ for consumer in "$ROOT"/policy/github/consumers/*.json; do
   name="$(basename "$consumer" .json)"
   # A queue-less consumer (private repository outside Enterprise Cloud) is the
   # same derivation with --no-queue; the checked-in file says which it is.
-  # A consumer-owned required status (convoy's delivery-protocol) is the same
-  # derivation with --require-status; the checked-in rule says which.
+  # A consumer-owned required status uses the flag matching its checked-in
+  # queue shape: pull_request-only when queue-less, merge_group when queued.
   derive_flags=()
   if jq -e '.managedRepositoryRuleset == null' "$consumer" >/dev/null; then
     derive_flags+=(--no-queue)
@@ -741,9 +741,15 @@ jq -e '
 ' "$ROOT/policy/github/consumers/vesper.json" >/dev/null \
   && ok "vesper queues on its hosted macOS prospective-merge verdict" \
   || fail "vesper must queue on the required Build, test, and smoke merge-group status"
-jq -e '.managedRepositoryRuleset == null' "$ROOT/policy/github/consumers/convoy.json" >/dev/null \
-  && ok "convoy holds its queue until its own required checks run on a merge group" \
-  || fail "convoy declared a merge queue while convoy/delivery-protocol and powershell-tests still have no merge_group trigger"
+# Convoy's repository-owned publishers now report on merge_group. Its policy
+# must preserve the delivery-protocol status while making the queue the atomic
+# final review boundary.
+jq -e '
+  any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")
+  and [.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] == ["convoy/delivery-protocol"]
+' "$ROOT/policy/github/consumers/convoy.json" >/dev/null \
+  && ok "convoy queues on its trusted delivery-protocol merge-group verdict" \
+  || fail "convoy must queue on the required convoy/delivery-protocol merge-group status"
 
 echo "==> Read-only diff and dry-run"
 init_branch

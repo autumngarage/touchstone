@@ -23,19 +23,18 @@
 # returns when eligibility changes by regenerating without this flag.
 #
 # --require-status CONTEXT (repeatable) adds one repository-owned required
-# status check to the consumer's ruleset, on top of the pinned workflows. It
-# exists for a consumer whose own workflow publishes a merge-blocking status
-# the contract does not know about (convoy's `convoy/delivery-protocol` PR
-# body check); without it, applying the derived policy would silently stop
-# requiring a gate the project relies on. It is the only per-consumer
-# variation besides the queue: the canonical rules are never removed or
-# weakened, only joined by a context the consumer names and owns.
+# status check to a queue-less consumer's ruleset, on top of the pinned
+# workflows. Without it, applying the derived policy could silently stop
+# requiring a pull-request-only gate the project relies on. It is the only
+# per-consumer variation besides the queue: the canonical rules are never
+# removed or weakened, only joined by a context the consumer names and owns.
 #
 # --require-merge-group-status CONTEXT is the queued counterpart. It makes the
 # same required-status declaration while keeping the merge queue, and is an
 # explicit assertion that the repository-owned publisher runs for
-# `merge_group`. Keeping the two flags distinct makes the event contract
-# checked-in data instead of guessing from a status name.
+# `merge_group`. Convoy's `convoy/delivery-protocol` publisher uses this flag.
+# Keeping the two flags distinct makes the event contract checked-in data
+# instead of guessing from a status name.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 usage() {
