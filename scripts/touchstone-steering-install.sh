@@ -159,19 +159,19 @@ die() {
 }
 
 offer_review_setup() {
-  local answer review_codex_home
+  local answer review_credential_scope
   [ "$DRY_RUN" = false ] || return 0
   [ "${TOUCHSTONE_REVIEW_PLATFORM:-$(uname -s)}" = Darwin ] || {
-    echo "Next: configure a review-normal profile for this platform, or record the normal-review waiver when it is unavailable."
+    echo "Next: configure an OpenRouter credential for this platform, or record the normal-review waiver when it is unavailable."
     return 0
   }
   if [ "$HOME_WAS_EXPLICIT" = true ]; then
-    review_codex_home="$HOME_DIR/.codex"
+    review_credential_scope="$HOME_DIR/.codex"
   else
-    review_codex_home="${CODEX_HOME:-$HOME_DIR/.codex}"
+    review_credential_scope="${CODEX_HOME:-$HOME_DIR/.codex}"
   fi
-  if bash "$ROOT/scripts/touchstone-review-setup.sh" credential-check \
-    --codex-home "$review_codex_home" >/dev/null 2>&1; then
+  if bash "$ROOT/scripts/touchstone-review.sh" credential-check \
+    --codex-home "$review_credential_scope" >/dev/null 2>&1; then
     echo "==> lower-cost normal review is already configured"
     return 0
   fi
@@ -186,8 +186,8 @@ offer_review_setup() {
     fi
     case "$answer" in
       '' | y | Y | yes | YES | Yes)
-        bash "$ROOT/scripts/touchstone-review-setup.sh" setup \
-          --codex-home "$review_codex_home"
+        bash "$ROOT/scripts/touchstone-review.sh" setup \
+          --codex-home "$review_credential_scope"
         ;;
       *)
         echo "Skipped. Run 'touchstone review setup' once when you are ready."

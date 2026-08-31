@@ -9,27 +9,25 @@ bounded local review. The GitHub side — answering findings, thread resolution,
 the round budget, merge — lives in `principles/git-workflow.md` and is not
 restated here.
 
-**The tier routes the Codex invocation — deterministically.** Classify the
+**The tier routes the review invocation — deterministically.** Classify the
 change, and the classification picks the review shape; no judgment is left in
 the loop:
 
 | Tier | Local pass | Command |
 |---|---|---|
 | trivial | none | — |
-| normal | one Codex pass of the staged slice, through Touchstone's lower-cost `review-normal` profile | `touchstone review run` |
+| normal | one direct, cost-bounded OpenRouter review of the staged slice | `touchstone review run` |
 | serious | one Codex review of the branch, pre-push | `codex review --base <default>` |
 
-One harness keeps the procedure stable. Touchstone owns the normal profile as
-a machine-wide cost boundary: the checked-in profile pins the bounded local
-pass to a cost-efficient model at medium reasoning, while the serious pass and
-PR-side reviewer remain on the default Codex path. The PR-side reviewer runs on
-open regardless and remains the merge authority.
-
-Local Codex reads `AGENTS.md` and applies its rules as review authority —
-observed citing this repository's own rule lines in findings — so durable
-review rules belong there, not in per-run prompts. (Its CLI accepts either
-`--base` or a custom prompt, not both, which makes `AGENTS.md` the only
-reliable channel for standing instructions.)
+The `touchstone review` command is the stable normal-review interface. Its
+versioned policy selects the backend and owns the cost limits, so the backend
+and routing strategy can evolve without changing the delivery workflow. The v1
+backend makes one OpenRouter Chat Completions request using Pareto Code's
+medium coding tier and absolute prompt/completion price ceilings. It names no
+concrete review model; OpenRouter selects the cheapest eligible model and the
+command reports what actually ran. The serious pass and PR-side reviewer
+remain on the default Codex path. The PR-side reviewer runs on open regardless
+and remains the merge authority.
 
 ## Work slicing
 
@@ -107,7 +105,7 @@ the PR is opened.
 - Build: <exact command and result>
 - Automated tests: <exact command and result>
 - Manual validation: <specific scenario and result>
-- Local review: <normal: codex on the staged slice (review-normal): <n> findings, <disposition>; serious: codex on <captured-head-sha>: <n> findings, <disposition>; or n/a — <reason>>
+- Local review: <normal: openrouter on the staged slice (review-normal): <n> findings, <disposition>; serious: codex on <captured-head-sha>: <n> findings, <disposition>; or n/a — <reason>>
 - Review budget: v1 capability=<tracker ref> local_rounds=<finding-bearing local rounds> prior_hosted_rounds=<finding-bearing hosted rounds on replaced PRs> reviewed_head=<40-character SHA or none> cascade=<true|false> exit=<continue|merge-answered|revert-simplify|split|close-replan>
 
 ## Out of scope
@@ -151,9 +149,9 @@ they change, never as trivial.
 **Normal** — ordinary contained work: small bug fixes, isolated application
 logic, localized implementation changes, safe refactors preserving a clearly
 testable behavior, anything with a focused validation path and no serious
-trigger. Path: deterministic checks, the readable-profile preflight, then
-**one** local Codex pass once the change is coherent, one bounded fix pass,
-commit, open the PR.
+trigger. Path: deterministic checks, the offline policy/credential preflight,
+then **one** direct OpenRouter pass once the staged change is coherent, one
+bounded fix pass, commit, open the PR.
 
 **Serious** — any of: networked or distributed state (RPCs, replication,
 client/server authority, prediction); concurrency (async handoff, scheduling,
@@ -187,12 +185,10 @@ claiming a check ran is not, and the two must never be confused.
 
 ## The local review pass
 
-At most once per coherent normal change, after deterministic checks pass. Stage only
-the intended slice; exclude unrelated files, accidental formatting, and any
-generated artifact that is not required to land with this change. State the
-intent and risks. Codex's `--uncommitted` mode sees staged, unstaged, and
-untracked changes, so isolate the slice before running it; do not let unrelated
-dirty state ride along.
+At most once per coherent normal change, after deterministic checks pass. Stage
+only the intended slice; unstaged and untracked files are deliberately excluded.
+The command fails before credential lookup or network access when the staged
+diff is empty or the request exceeds the configured input limit.
 
 The normal credential is configured once per machine with:
 
@@ -201,30 +197,37 @@ touchstone review setup
 ```
 
 On macOS, setup securely prompts for a dedicated OpenRouter key and saves it in
-Keychain. For each run, the launcher stages the canonical profile in a
-disposable Codex home, passes the key only to that Codex parent process, and
-removes it from model-issued subprocess environments. Already-running Claude,
-Codex, and Gemini sessions need no environment refresh, and future reviews need
-no approval prompt. `touchstone steering install` offers this setup during
-interactive onboarding. The shipped config shape is owned by
-`config/review-normal.config.toml`; credentials never appear in it.
+Keychain. Use a key dedicated to review and set its monthly spending limit in
+OpenRouter. Already-running Claude, Codex, and Gemini sessions need no
+environment refresh, and future reviews need no approval prompt. `touchstone
+steering install` offers this setup during interactive onboarding.
 
-Check the complete boundary before invocation because Codex 0.149 falls back
-silently when a named profile file is absent (AUT-500), and an unavailable
-credential fails later with less useful context:
+The versioned non-secret policy is `config/review-normal.json`; the review
+instructions are `config/review-normal-prompt.md`. The current policy uses
+`openrouter/pareto-code`, the Pareto router's medium coding floor (`0.33`),
+provider price ceilings of $0.50 per million prompt tokens and $2.00 per million
+completion tokens, a 100,000-byte request ceiling, and 4,096 completion tokens.
+Changing those parameters or adding a backend is a reviewable policy/adapter
+change behind the same command.
+
+Check the complete local boundary without making a provider request, then run:
 
 ```bash
 touchstone review check
 touchstone review run
 ```
 
-If the check fails, do not invoke Codex: record a reasoned `n/a` waiver naming
-its concise cause. If the configured-profile command exits nonzero, record its
-concise cause as the waiver and stop. Never fall back silently to the default
-profile: doing so defeats the cost boundary and misstates which review ran.
-Do not retry or inspect credentials; the operator recovery is `touchstone
-review setup` for a missing boundary or `touchstone review rotate` for a
-rejected credential. For the serious pass, capture
+The v1 backend sends the staged diff as untrusted data in one direct request.
+No tools or agent loop are present, and no repository command can be issued by
+the model. The request requires structured JSON, filters providers above the
+absolute price ceilings, and prints the selected model, prompt/completion
+tokens, exact reported cost, findings, and evidence prefix. Provider, timeout,
+malformed-output, and truncation failures stop without retrying.
+
+If the check or run fails, record a reasoned normal-tier `n/a` waiver naming its
+concise cause and stop; never fall back to an unbounded model path. Do not retry
+or inspect credentials. Use `touchstone review setup` for a missing credential
+or `touchstone review rotate` for a rejected one. For the serious pass, capture
 `reviewed_head="$(git rev-parse HEAD)"` immediately before
 `codex review --base <default>` after the branch is committed. The captured
 current head is the immutable revision the pass reviews; `<default>` is only
@@ -234,14 +237,11 @@ After allowed local findings are fixed, deterministic checks run again and the
 hosted PR reviewer owns exact-head review for every pushed head; another local
 pass is neither required nor authorized.
 
-**Local passes and PR-side reviews can share one metered pool**, depending on
-the provider's plan. A driver that re-runs locally after every edit is then
-spending the budget the merge gate depends on — a second reason the rules
-above allow one pass per coherent slice and no confirming re-run. When a
-quota is exhausted, the tier's local obligation is **satisfied by its
-deterministic checks plus recording the exhaustion** in the validation block
-— the same rule as a machine where Codex is unavailable. Do not wait for quota
-to run an initiated pass; the PR-visible review is the authority either way.
+The one-request rule limits accidental spend and makes permanent provider
+failures terminal instead of retry loops. When a quota or key limit is
+exhausted, the tier's local obligation is satisfied by deterministic checks
+plus recording that failure in the validation block. The PR-visible review is
+the authority either way.
 
 Afterwards: triage each finding as valid, false positive, duplicate, or out of
 scope; apply valid **high-severity** fixes and answer-and-route valid findings
@@ -272,11 +272,11 @@ the PR body's Validation block carries
 
 ```markdown
 - Local review: codex on abc1234: 3 findings, 2 fixed, 1 routed to AUT-n.
-- Local review: codex on the staged slice (review-normal): 0 findings.
+- Local review: openrouter on the staged slice (review-normal): 0 findings.
 - Local review: n/a — `touchstone review check` reports that the OpenRouter credential is not configured.
 ```
 
-The row begins with `codex on the staged slice (review-normal): <n> findings`
+The row begins with `openrouter on the staged slice (review-normal): <n> findings`
 for normal, or `codex on <captured-head-sha>: <n> findings` for serious. Prose
 and dispositions go after the count; backticks around a SHA are fine — and
 `delivery-evidence` refuses a normal or serious PR whose row is missing, a bare
@@ -286,9 +286,8 @@ a reason.
 When the row is present but unreadable it says so and quotes the line.
 The gate checks shape, not truth — it cannot see a terminal — but it can
 refuse silence, and silence was the failure. For normal, a waiver is only the
-managed profile check failing, its configured run exiting nonzero, or Codex being
-absent, unauthenticated, or out of quota. Serious may waive only when Codex is unavailable.
-Unavailable means absent, unauthenticated, or out of quota; either waiver says which.
+configured check or run failing. Serious may waive only when Codex is unavailable.
+Either waiver says which concrete boundary failed.
 
 ## Stop conditions
 
@@ -299,12 +298,11 @@ is met:
 
 - **trivial** — no initiated review; deterministic checks alone complete it.
 - **normal** — one local pass has run and its findings are triaged, **or**
-  the recorded waiver applies (the normal profile check fails, its configured
-  pass exits nonzero, or Codex is unavailable — recorded in the validation
-  block).
+  the recorded waiver applies (the configured check or run fails — recorded in
+  the validation block).
 - **serious** — the pre-push local pass ran or its Codex-unavailable waiver is
   recorded, and the PR-side review evidence covers the head that merges (the
-  gate enforces the latter). A normal-profile failure never waives this pass.
+  gate enforces the latter). A normal-review failure never waives this pass.
 
 After a bounded pass, fix the valid findings, **re-run every applicable
 deterministic check and the intended validation scenario** — a valid fix can

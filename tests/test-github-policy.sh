@@ -2351,6 +2351,8 @@ lr_body '- Local review: CodeRabbit on the staged slice: 0 findings.' normal
 accepts && ok "the transition still accepts a coderabbit normal pass" || fail "a coderabbit normal pass was refused during the transition"
 lr_body '- Local review: codex on the staged slice (review-normal): 0 findings.' normal
 accepts && ok "the transition accepts a codex normal pass" || fail "a codex normal pass was refused during the transition"
+lr_body '- Local review: openrouter on the staged slice (review-normal): 0 findings.' normal
+accepts && ok "a direct OpenRouter normal pass is accepted" || fail "an OpenRouter normal pass was refused"
 lr_body '- Local review: codex on    : 0 findings.' normal
 accepts && fail "a normal pass naming only whitespace as its target was accepted" || ok "a normal target contains non-whitespace text"
 lr_body '- Local review: codex on 1234567: 0 findings.' normal
@@ -2365,8 +2367,12 @@ lr_body '- Local review: codex on `1234567 `: 0 findings.' normal
 accepts && fail "a normal pass naming an inner-padded bare revision was accepted" || ok "whitespace inside target decoration cannot disguise a bare revision"
 lr_body '- Local review: coderabbit on 1234567: 0 findings.' normal
 accepts && fail "a normal coderabbit pass naming a bare revision was accepted" || ok "the normal target rule applies to both transition reviewers"
+lr_body '- Local review: openrouter on 1234567: 0 findings.' normal
+accepts && fail "a normal OpenRouter pass naming a bare revision was accepted" || ok "the normal target rule applies to OpenRouter"
 lr_body '- Local review: coderabbit on the staged slice: 0 findings.' serious
 accepts && fail "a serious PR recording coderabbit was accepted" || ok "the wrong reviewer for the tier is refused (serious wants codex)"
+lr_body '- Local review: openrouter on the staged slice: 0 findings.' serious
+accepts && fail "a serious PR recording OpenRouter was accepted" || ok "serious review remains codex-only"
 lr_body '- Local review: codex on the branch head: 0 findings.' serious
 accepts && fail "a serious codex pass naming no revision was accepted" || ok "a serious codex pass must name the revision it reviewed"
 lr_body '- Local review: codex on origin/main: 0 findings, accepted.' serious

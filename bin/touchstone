@@ -127,7 +127,7 @@ case "$COMMAND" in
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-cleanup.sh" "$@"
     ;;
   review)
-    exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" "$@"
+    exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" "$@"
     ;;
   version)
     # The formula's test block and consumers reporting which tool they run

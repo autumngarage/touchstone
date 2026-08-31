@@ -67,11 +67,12 @@ touchstone review setup
 ```
 
 The second command securely saves a dedicated OpenRouter key in macOS Keychain.
-`touchstone review check` verifies the credential, the installed Codex parser,
-and exact read-only Git inspection from the current checkout. `touchstone review run`
-stages the same shipped profile in disposable Codex state, then launches the pass
-with core-only environment inheritance and repository-scoped reads. Serious and
-PR-visible reviews remain on their default Codex paths.
+`touchstone review check` validates the credential, local tools, and versioned
+review policy without a provider request. `touchstone review run` sends only the
+staged diff in one cost-bounded OpenRouter request, then reports the selected
+model, tokens, cost, and findings. The policy chooses a Pareto coding tier and
+absolute price ceilings rather than one concrete model. Serious and PR-visible
+reviews remain on their default Codex paths.
 
 `scripts/touchstone-run.sh` is the declaration-only validation engine,
 accepting schema 1 and schema 2; its contract lives in [docs/validation-contract.md](docs/validation-contract.md).
