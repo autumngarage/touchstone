@@ -1851,7 +1851,6 @@ merge_queue_text() {
 PR_PHASE=""
 PR_NEXT_ACTION=""
 PR_NEXT_COMMAND=""
-REVIEW_GATE_FRESH=false
 classify_pr_phase() {
   local state="$1" merge_state="$2" draft="$3" number="$4" head="$5"
   local gate_present gate_status gate_conclusion workflow_status workflow_conclusion
@@ -1901,7 +1900,7 @@ classify_pr_phase() {
     gate_conclusion="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.conclusion // ""')"
     if [ "$gate_status" = completed ]; then
       if [ "$gate_conclusion" = success ]; then
-        if [ "$REVIEW_GATE_FRESH" = true ] && [ "$merge_state" = CLEAN ]; then
+        if [ "$merge_state" = CLEAN ]; then
           PR_PHASE=ready-to-queue
           PR_NEXT_ACTION=queue
           PR_NEXT_COMMAND="touchstone pr merge $number --head $head"
@@ -2183,64 +2182,16 @@ review_gate_check_text() {
     end'
 }
 
-REVIEW_SURFACE_LATEST_AT=""
-read_review_surface_latest_at() {
-  local number="$1" issue_comment_times review_times review_comment_times
-  read_with_retry gh api --paginate --hostname "$REPO_HOST" \
-    "repos/$REPO/issues/$number/comments?per_page=100" \
-    --jq '.[] | (.updated_at // .created_at // empty)' \
-    || fail_operation "could not read PR conversation timestamps: $READ_OUTPUT" "Retry after GitHub recovers."
-  issue_comment_times="$READ_OUTPUT"
-  read_with_retry gh api --paginate --hostname "$REPO_HOST" \
-    "repos/$REPO/pulls/$number/reviews?per_page=100" \
-    --jq '.[] | (.updated_at // .submitted_at // empty)' \
-    || fail_operation "could not read formal review timestamps: $READ_OUTPUT" "Retry after GitHub recovers."
-  review_times="$READ_OUTPUT"
-  read_with_retry gh api --paginate --hostname "$REPO_HOST" \
-    "repos/$REPO/pulls/$number/comments?per_page=100" \
-    --jq '.[] | (.updated_at // .created_at // empty)' \
-    || fail_operation "could not read inline review timestamps: $READ_OUTPUT" "Retry after GitHub recovers."
-  review_comment_times="$READ_OUTPUT"
-  REVIEW_SURFACE_LATEST_AT="$(printf '%s\n%s\n%s\n' \
-    "$issue_comment_times" "$review_times" "$review_comment_times" | jq -Rrsc '
-      split("\n") | map(select(. != ""))
-      | if any(.[]; (fromdateiso8601? // null) == null)
-        then error("review timestamp is not ISO-8601 UTC")
-        else max // ""
-        end')" \
-    || fail_operation "GitHub returned a malformed review-surface timestamp" "Retry after GitHub returns complete review data."
-}
-
-read_review_gate_freshness() {
-  local number="$1" completed_at="$2"
-  REVIEW_GATE_FRESH=false
-  [ -n "$completed_at" ] || return 0
-  read_review_surface_latest_at "$number"
-  if [ -z "$REVIEW_SURFACE_LATEST_AT" ] \
-    || jq -ne --arg latest "$REVIEW_SURFACE_LATEST_AT" --arg completed "$completed_at" \
-      '($latest | fromdateiso8601) < ($completed | fromdateiso8601)' >/dev/null; then
-    REVIEW_GATE_FRESH=true
-  fi
-}
-
 require_review_gate_success() {
-  local head="$1" number="$2" gate_status gate_conclusion gate_completed_at gate_text
+  local head="$1" number="$2" gate_status gate_conclusion gate_text
   read_review_gate_check "$head" "$number"
   gate_status="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.status // .workflowStatus // "absent"')"
   gate_conclusion="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.conclusion // .workflowConclusion // ""')"
-  gate_completed_at="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.completedAt // empty')"
   gate_text="$(review_gate_check_text)"
   REVIEW_GATE_RUN_ID="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.workflowRunId // empty')"
 
   if [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.present == true')" = true ] \
     && [ "$gate_status" = completed ] && [ "$gate_conclusion" = success ]; then
-    [ -n "$gate_completed_at" ] \
-      || fail_operation "successful review gate $REVIEW_GATE_RUN_ID has no completion timestamp" "Retry after GitHub returns complete check data."
-    read_review_gate_freshness "$number" "$gate_completed_at"
-    if [ "$REVIEW_GATE_FRESH" != true ]; then
-      fail_input "review evidence is stale: the PR review surface changed at $REVIEW_SURFACE_LATEST_AT, at or after gate run $REVIEW_GATE_RUN_ID completed at $gate_completed_at" \
-        "Use touchstone pr open to refresh a clean review, or touchstone pr answer for a finding, then retry after the exact-head gate succeeds."
-    fi
     REVIEW_GATE_ACTION=verified-success
     return 0
   fi
@@ -2270,13 +2221,6 @@ status_pr() {
     read_review_gate_check "$head" "$number"
   else
     REVIEW_GATE_CHECK_JSON="$(jq -cn --arg head "$head" '{present:false, head:$head, configured:false}')"
-  fi
-  if [ "$state" = OPEN ] && [ "$draft" = false ] && [ "$ENFORCEMENT_STATUS" = applied ] \
-    && [ -z "$MERGE_QUEUE_STATE" ] && [ "$AUTO_MERGE_ARMED" = false ] \
-    && [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.present == true and .status == "completed" and .conclusion == "success"')" = true ]; then
-    read_review_gate_freshness "$number" "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.completedAt // ""')"
-  else
-    REVIEW_GATE_FRESH=false
   fi
   classify_pr_phase "$state" "$merge_state" "$draft" "$number" "$head"
   if [ "$JSON_MODE" = true ]; then

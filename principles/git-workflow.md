@@ -210,12 +210,11 @@ current head after the bound request and every inline or body-only finding has
 a qualifying later answer. Until that check is installed and verified as
 required, exact-head review remains mandatory driver procedure. GitHub
 conversation resolution separately requires every inline thread closed.
-`touchstone pr merge` additionally refuses a green gate when the review surface
-changed at or after that gate completed; refresh through `open` or `answer`
-instead of treating a stale same-head verdict as current.
-The merge queue is the atomic boundary: its merge-group run re-evaluates the
-complete surface. A review-gated policy without that run is an enforcement gap,
-not a guarded auto-merge path.
+`touchstone pr merge` observes that policy-owned exact-head verdict; it does
+not reconstruct a second verdict from mutable review timestamps. The merge
+queue is the atomic boundary: its merge-group run re-evaluates the complete
+surface, including feedback that arrived after the PR gate. A review-gated
+policy without that run is an enforcement gap, not a guarded auto-merge path.
 
 ## Answering findings
 
