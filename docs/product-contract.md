@@ -70,10 +70,11 @@ Completions request. A failed check or run permits the documented normal-tier
 waiver; it never permits fallback to an unbounded model path.
 
 The stable interface is `touchstone review`; the versioned backend contract is
-`touchstone.review/v1`. Its canonical non-secret policy lives in
+`touchstone.review/v2`. Its canonical non-secret policy lives in
 `config/review-normal.json`, and the canonical prompt lives in
-`config/review-normal-prompt.md`. V1 selects OpenRouter Pareto Code's medium
-coding tier instead of a concrete model, imposes absolute provider price,
+`config/review-normal-prompt.md`. V2 asks OpenRouter Auto Router to select for
+the review prompt from its low-cost tier instead of naming a concrete model,
+imposes absolute provider price,
 input, output, and timeout ceilings, requests strict structured output, and
 prints the actual model, token counts, and provider-reported cost. No tools or
 agent loop are sent. Permanent HTTP failures and timeouts are not retried.
@@ -124,7 +125,7 @@ explain that owner's decision; they may not recompute it.
 | Bind merge to the reviewed head | GitHub merge API | Expected head passed to the merge mutation | Moving the head before merge is rejected |
 | Claim work | Configured tracker adapter | Tracker-neutral claim contract | GitHub- and Linear-backed fixtures distinguish verified from unavailable transport |
 | Carry agent steering | The installed tool, machine-wide | One delimited block in each driver's user-level instruction file, the routed principles under `~/.touchstone/principles`, and the bundled Claude skills under `~/.claude/skills` — all installed, checked, and removed by `touchstone steering`; Touchstone installs and manages no repository copy | `touchstone steering check` compares the installed block against the tool's contract; deterministic size-cap, path-integrity, and steering-contract assertions run in the required suite |
-| Route normal local review through the lower-cost lane | The installed tool, machine-wide | Stable `touchstone review` command plus the versioned `touchstone.review/v1` policy and Keychain-backed OpenRouter adapter | Offline fixtures prove staged-only input, linked-worktree fidelity, router and absolute-price parameters, no tools, one-request failures, structured output, usage reporting, size limits, credential isolation, and fail-closed malformed states |
+| Route normal local review through the lower-cost lane | The installed tool, machine-wide | Stable `touchstone review` command plus the versioned `touchstone.review/v2` policy and Keychain-backed OpenRouter adapter | Offline fixtures prove staged-only input, linked-worktree fidelity, router and absolute-price parameters, no tools, one-request failures, structured output, usage reporting, size limits, credential isolation, and fail-closed malformed states |
 | Adopt and evolve a repository | Touchstone CLI adoption module | Versioned project declarations and reviewable plan/apply output | Fresh, current, repeat, old-compatible, and unsupported-schema fixtures |
 | Make repository cleanup residue legible | `touchstone cleanup check` (read-only) | Versioned report (`touchstone.cleanup/v1`): checkout, worktrees, finished branches, untracked and dirty files | Each residue kind is reported once without claiming session ownership and nothing is mutated; a failed GitHub read is a finding, not silence |
 | Install and upgrade the local tool | Homebrew | Versioned formula and checksummed release | Install, upgrade, rollback, and no-project-mutation tests pass |

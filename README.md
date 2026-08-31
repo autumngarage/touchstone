@@ -70,9 +70,9 @@ The second command securely saves a dedicated OpenRouter key in macOS Keychain.
 `touchstone review check` validates the credential, local tools, and versioned
 review policy without a provider request. `touchstone review run` sends only the
 staged diff in one cost-bounded OpenRouter request, then reports the selected
-model, tokens, cost, and findings. The policy chooses a Pareto coding tier and
-absolute price ceilings rather than one concrete model. Serious and PR-visible
-reviews remain on their default Codex paths.
+model, tokens, cost, and findings. The policy asks OpenRouter Auto Router for
+its low-cost tier under absolute price ceilings rather than naming one concrete
+model. Serious and PR-visible reviews remain on their default Codex paths.
 
 `scripts/touchstone-run.sh` is the declaration-only validation engine,
 accepting schema 1 and schema 2; its contract lives in [docs/validation-contract.md](docs/validation-contract.md).
