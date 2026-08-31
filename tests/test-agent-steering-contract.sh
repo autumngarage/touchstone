@@ -141,8 +141,14 @@ for file in \
   assert_contains "$file" 'touchstone review check'
   assert_contains "$file" 'touchstone review run'
   assert_contains "$file" 'codex review --base <default>'
-  assert_contains "$file" 'may waive only when Codex is unavailable'
   assert_not_contains "$file" 'coderabbit review --agent --uncommitted'
+done
+for file in \
+  "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md" \
+  "$TOUCHSTONE_ROOT/.github/pull_request_template.md"; do
+  assert_contains "$file" 'may waive only when Codex is unavailable'
 done
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'touchstone review setup'
@@ -430,10 +436,12 @@ for file in \
     "Run at most one tier-required local AI pass per coherent unit"
   assert_contains "$file" "none for trivial work"
   assert_contains "$file" \
-    'Put a pass or reasoned waiver in `- Local review:`'
+    'or Codex-unavailable waiver; never record the base'
   assert_contains "$file" \
-    "Hosted review owns every pushed exact head"
-  assert_contains "$file" "never confirm locally"
+    'record `codex on <head-sha>: <n> findings, <disposition>`'
+  assert_contains "$file" \
+    "Hosted review owns exact heads"
+  assert_contains "$file" "never rerun to confirm fixes"
 done
 for file in \
   "$GIT_WORKFLOW_GUIDE" \
@@ -447,6 +455,10 @@ assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   "runs at most once before its first push"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   "pass is neither required nor authorized"
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  'reviewed_head="$(git rev-parse HEAD)"'
+assert_contains "$TOUCHSTONE_ROOT/.github/pull_request_template.md" \
+  'begin serious with `codex on <captured-head-sha>: <n> findings, <disposition>`'
 
 echo "==> dirty PR recovery preserves authored work and re-ships the new head"
 assert_contains "$GIT_WORKFLOW_GUIDE" '## Recovering a `DIRTY` PR'
