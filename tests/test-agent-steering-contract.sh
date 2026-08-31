@@ -161,11 +161,13 @@ assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'stages the canoni
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'Never fall back silently to the default'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
-  'model = "qwen/qwen3-coder-next"'
+  'model = "openai/gpt-5.4-mini"'
 assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
   'model = "google/gemini-3.7-flash"'
 assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
   'model = "openrouter/pareto-code"'
+assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
+  'model = "qwen/qwen3-coder-next"'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
   'model_reasoning_effort = "medium"'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
@@ -935,6 +937,8 @@ assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
   'touchstone_review_validate_launch'
 assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
   'PATH="$bundled_path:$PATH"'
+assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
+  'PATH="$(dirname "$REVIEW_GIT_BIN"):${PATH:-/usr/bin:/bin}"'
 assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
   "TOUCHSTONE_REVIEW_CODEX_BIN"
 for boundary in \
@@ -1113,7 +1117,9 @@ for boundary in \
   'GIT_CONFIG_NOSYSTEM = "1"' \
   'GIT_CONFIG_GLOBAL = "/dev/null"' \
   'GIT_CONFIG_SYSTEM = "/dev/null"' \
-  'GIT_CONFIG_COUNT = "0"' \
+  'GIT_CONFIG_COUNT = "1"' \
+  'GIT_CONFIG_KEY_0 = "core.excludesFile"' \
+  'GIT_CONFIG_VALUE_0 = "/dev/null"' \
   '"~/Library/Keychains" = "deny"'; do
   assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" "$boundary"
 done
@@ -1156,6 +1162,40 @@ assert_contains "$RENDERED_REVIEW_PROFILE" \
   "\"$EXPECTED_REVIEW_COMMON_DIR\" = \"read\""
 assert_not_contains "$RENDERED_REVIEW_PROFILE" \
   "\"$(dirname "$REVIEW_REPOSITORY")\" = \"read\""
+
+echo "==> normal-review run refuses an empty Git slice before credential lookup"
+if touchstone_review_require_uncommitted_slice "$REVIEW_WORKTREE"; then
+  fail "normal review accepted an empty uncommitted slice"
+elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" | grep -qF 'no uncommitted changes'; then
+  fail "empty normal review produced the wrong diagnostic: $TOUCHSTONE_CODEX_ERROR"
+fi
+EMPTY_RUN_HOME="$TEST_DIR/empty-run-home"
+if (
+  cd "$REVIEW_WORKTREE"
+  review_command run --codex-home "$EMPTY_RUN_HOME"
+) >"$TEST_DIR/empty-review-run.out" 2>&1; then
+  fail "normal-review run launched from a clean worktree"
+elif ! grep -qF 'no uncommitted changes' "$TEST_DIR/empty-review-run.out"; then
+  fail "clean run reached credential or Codex setup: $(cat "$TEST_DIR/empty-review-run.out")"
+fi
+printf 'review input\n' >"$REVIEW_WORKTREE/untracked-review-input"
+touchstone_review_require_uncommitted_slice "$REVIEW_WORKTREE" \
+  || fail "normal review rejected an untracked review slice: $TOUCHSTONE_CODEX_ERROR"
+rm -f "$REVIEW_WORKTREE/untracked-review-input"
+printf 'baseline\n' >"$REVIEW_WORKTREE/tracked-review-input"
+git -C "$REVIEW_WORKTREE" add tracked-review-input
+git -C "$REVIEW_WORKTREE" \
+  -c user.name=Touchstone -c user.email=touchstone@example.invalid \
+  commit -qm 'add review input fixture'
+printf 'unstaged review input\n' >"$REVIEW_WORKTREE/tracked-review-input"
+touchstone_review_require_uncommitted_slice "$REVIEW_WORKTREE" \
+  || fail "normal review rejected an unstaged review slice: $TOUCHSTONE_CODEX_ERROR"
+git -C "$REVIEW_WORKTREE" restore tracked-review-input
+printf 'staged review input\n' >"$REVIEW_WORKTREE/tracked-review-input"
+git -C "$REVIEW_WORKTREE" add tracked-review-input
+touchstone_review_require_uncommitted_slice "$REVIEW_WORKTREE" \
+  || fail "normal review rejected a staged review slice: $TOUCHSTONE_CODEX_ERROR"
+git -C "$REVIEW_WORKTREE" restore --staged --worktree tracked-review-input
 
 echo "==> normal-review check exercises the managed Codex invocation and exact Git state"
 FAKE_REVIEW_CODEX="$TEST_DIR/fake-review-codex"

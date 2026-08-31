@@ -25,8 +25,26 @@ touchstone_review_git() {
     -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
     -u GIT_CEILING_DIRECTORIES -u GIT_CONFIG -u GIT_CONFIG_PARAMETERS \
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-    GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_COUNT=0 \
+    GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_COUNT=1 \
+    GIT_CONFIG_KEY_0=core.excludesFile GIT_CONFIG_VALUE_0=/dev/null \
     git "$@"
+}
+
+touchstone_review_require_uncommitted_slice() {
+  local repository_root="$1" status_output
+
+  status_output="$(
+    touchstone_review_git -C "$repository_root" \
+      --no-optional-locks status --porcelain=v1 \
+      --untracked-files=normal --ignore-submodules=none
+  )" || {
+    touchstone_codex_fail "normal review could not inspect the uncommitted Git slice"
+    return
+  }
+  [ -n "$status_output" ] || {
+    touchstone_codex_fail "normal review has no uncommitted changes; stage or edit the intended review slice first"
+    return
+  }
 }
 
 touchstone_review_resolve_git_context() {
