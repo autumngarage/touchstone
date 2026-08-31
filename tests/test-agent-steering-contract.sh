@@ -904,6 +904,14 @@ fi
 if grep -qF 'dummy-openrouter-token' "$TEST_DIR/review-setup.out"; then
   fail "setup exposed the credential in output"
 fi
+NON_REPOSITORY_REVIEW_DIR="$TEST_DIR/review-machine-check"
+mkdir -p "$NON_REPOSITORY_REVIEW_DIR"
+(
+  cd "$NON_REPOSITORY_REVIEW_DIR"
+  review_command credential-check --codex-home "$REVIEW_HOME" >/dev/null 2>&1
+) || fail "machine-level review credential check required repository context"
+assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-steering-install.sh" \
+  'touchstone-review-setup.sh" credential-check'
 REVIEW_CODEX_LIB="$TOUCHSTONE_ROOT/scripts/lib/touchstone-review-codex.sh"
 assert_contains "$REVIEW_CODEX_LIB" \
   "TeamIdentifier=2DC432GLL2"
@@ -1154,7 +1162,7 @@ case " $* " in
     echo 'Error: Model provider `touchstone-review-config-check` not found' >&2
     exit 1
     ;;
-  *' sandbox -P touchstone_review -C '*" status --short ")
+  *' sandbox -P touchstone_review -C '*' --no-optional-locks -c core.excludesFile=/dev/null status --short '*)
     exit 0
     ;;
   *)
@@ -1172,6 +1180,8 @@ if ! CODEX_HOME="$TEST_DIR" \
 fi
 [ "$(wc -l <"$FAKE_REVIEW_CODEX_LOG" | tr -d ' ')" = 2 ] \
   || fail "normal-review launch preflight did not exercise strict config and Git boundaries"
+assert_contains "$FAKE_REVIEW_CODEX_LOG" \
+  '/usr/bin/git --no-optional-locks -c core.excludesFile=/dev/null status --short'
 BROKEN_REVIEW_HOME="$TEST_DIR/broken-review-home"
 mkdir -p "$BROKEN_REVIEW_HOME"
 cp "$RENDERED_REVIEW_PROFILE" "$BROKEN_REVIEW_HOME/review-normal.config.toml"

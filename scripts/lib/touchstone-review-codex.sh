@@ -156,7 +156,8 @@ touchstone_review_validate_launch() {
   if ! output="$(
     touchstone_review_codex "$codex_bin" \
       sandbox -P touchstone_review -C "$repository_root" \
-      "$git_bin" -c core.excludesFile=/dev/null status --short \
+      "$git_bin" --no-optional-locks \
+      -c core.excludesFile=/dev/null status --short \
       2>&1
   )"; then
     touchstone_codex_fail "Codex rejected the managed review profile or cannot inspect exact Git state: $output"

@@ -185,6 +185,15 @@ resolve_review_git() {
 }
 
 case "$ACTION" in
+  credential-check)
+    # Machine-level steering installation can run outside a repository. Its
+    # only setup decision is whether the managed Keychain item already exists;
+    # repository/profile/Git validation remains the public `review check`.
+    [ "$DRY_RUN" = false ] || die "--dry-run is not valid for credential-check"
+    require_keychain
+    require_usable_key
+    unset KEY_VALUE OPENROUTER_API_KEY
+    ;;
   run)
     RUNTIME_HOME=""
     [ "$DRY_RUN" = false ] || die "--dry-run is not valid for run"
