@@ -382,13 +382,17 @@ assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
 assert_contains "$GIT_WORKFLOW_GUIDE" \
   'prior_hosted_rounds` therefore means *replaced PRs only*'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
-  'legacy `local_rounds` and `prior_hosted_rounds` values exactly'
+  'legacy `local_rounds` and `prior_hosted_rounds` values'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
-  "provider retry or"
+  "push it, then answer fixed findings"
 assert_contains "$GIT_WORKFLOW_GUIDE" \
-  "already-counted head adds nothing"
+  "finding-bearing hosted result"
 assert_contains "$GIT_WORKFLOW_GUIDE" \
-  "do not add a CLI parser"
+  "even when the head did not change"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "reproduces the same result"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "CLI parser, state store, poller"
 
 echo "==> scope expansion checkpoints before independent edits"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
