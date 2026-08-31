@@ -2369,6 +2369,8 @@ lr_body '- Local review: coderabbit on the staged slice: 0 findings.' serious
 accepts && fail "a serious PR recording coderabbit was accepted" || ok "the wrong reviewer for the tier is refused (serious wants codex)"
 lr_body '- Local review: codex on the branch head: 0 findings.' serious
 accepts && fail "a serious codex pass naming no revision was accepted" || ok "a serious codex pass must name the revision it reviewed"
+lr_body '- Local review: codex on origin/main: 0 findings, accepted.' serious
+accepts && fail "a serious codex pass naming its symbolic base was accepted" || ok "a serious pass records the captured reviewed head, not its symbolic base"
 lr_body '- Local review: n/a — the codex executable is missing from this runner.' serious
 accepts && ok "a waiver with any stated reason is accepted" || fail "a waiver stating a reason in its own words was refused"
 lr_body '- Local review: n/a —' serious

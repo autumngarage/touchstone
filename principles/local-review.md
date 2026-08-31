@@ -107,7 +107,7 @@ the PR is opened.
 - Build: <exact command and result>
 - Automated tests: <exact command and result>
 - Manual validation: <specific scenario and result>
-- Local review: <codex on <target>: <n> findings, <disposition> — or n/a — <reason>>
+- Local review: <normal: codex on the staged slice (review-normal): <n> findings, <disposition>; serious: codex on <captured-head-sha>: <n> findings, <disposition>; or n/a — <reason>>
 - Review budget: v1 capability=<tracker ref> local_rounds=<finding-bearing local rounds> prior_hosted_rounds=<finding-bearing hosted rounds on replaced PRs> reviewed_head=<40-character SHA or none> cascade=<true|false> exit=<continue|merge-answered|revert-simplify|split|close-replan>
 
 ## Out of scope
@@ -224,8 +224,12 @@ concise cause as the waiver and stop. Never fall back silently to the default
 profile: doing so defeats the cost boundary and misstates which review ran.
 Do not retry or inspect credentials; the operator recovery is `touchstone
 review setup` for a missing boundary or `touchstone review rotate` for a
-rejected credential. The serious pass remains `codex review --base <default>`
-after the branch is committed and runs at most once before its first push.
+rejected credential. For the serious pass, capture
+`reviewed_head="$(git rev-parse HEAD)"` immediately before
+`codex review --base <default>` after the branch is committed. The captured
+current head is the immutable revision the pass reviews; `<default>` is only
+its comparison boundary. Record the captured head, never the symbolic base.
+The pass runs at most once before its first push.
 After allowed local findings are fixed, deterministic checks run again and the
 hosted PR reviewer owns exact-head review for every pushed head; another local
 pass is neither required nor authorized.
@@ -272,8 +276,9 @@ the PR body's Validation block carries
 - Local review: n/a — `touchstone review check` reports that the OpenRouter credential is not configured.
 ```
 
-The row *begins* with `codex on <target>: <n> findings` — prose and
-dispositions go after the count; backticks around a SHA are fine — and
+The row begins with `codex on the staged slice (review-normal): <n> findings`
+for normal, or `codex on <captured-head-sha>: <n> findings` for serious. Prose
+and dispositions go after the count; backticks around a SHA are fine — and
 `delivery-evidence` refuses a normal or serious PR whose row is missing, a bare
 `n/a`, a serious reviewer other than Codex, a serious target without the
 reviewed revision, a normal target that is a bare revision, or a waiver without

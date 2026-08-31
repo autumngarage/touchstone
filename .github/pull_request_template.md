@@ -13,7 +13,7 @@
 - Automated tests:
 - Manual validation:
 - Local review:
-<!-- The tier's one Codex pass, recorded as it ran: normal → `touchstone review check`, then `touchstone review run` on the isolated staged slice before commit; serious → `codex review --base <default>` on the committed branch before push. Begin with `codex on <target>: <n> findings, <disposition>` — normal target example: "the staged slice (review-normal)"; serious target: the reviewed SHA. Normal may waive for a failed profile check/pass or Codex unavailability; serious may waive only when Codex is unavailable. -->
+<!-- The tier's one Codex pass, recorded as it ran: normal → `touchstone review check`, then `touchstone review run` on the isolated staged slice before commit; serious → capture `git rev-parse HEAD`, then run `codex review --base <default>` on that committed branch before push. Begin normal with `codex on the staged slice (review-normal): <n> findings, <disposition>`; begin serious with `codex on <captured-head-sha>: <n> findings, <disposition>`. The serious SHA is the current head the pass reviewed; `<default>` is only the comparison boundary. Normal may waive for a failed profile check/pass or Codex unavailability; serious may waive only when Codex is unavailable. -->
 
 ## Out of scope
 <!-- Intentionally excluded related work, and where it is tracked. -->
