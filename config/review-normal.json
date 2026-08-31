@@ -1,0 +1,18 @@
+{
+  "schema": "touchstone.review/v1",
+  "backend": "openrouter-chat-completions",
+  "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+  "router": {
+    "model": "openrouter/pareto-code",
+    "plugin": "pareto-router",
+    "minCodingScore": 0.33
+  },
+  "limits": {
+    "maxInputBytes": 100000,
+    "maxCompletionTokens": 4096,
+    "maxPromptPricePerMillion": 0.5,
+    "maxCompletionPricePerMillion": 2,
+    "connectTimeoutSeconds": 10,
+    "requestTimeoutSeconds": 120
+  }
+}

@@ -63,30 +63,31 @@ touched; `uninstall` removes the block and leaves the rest byte-identical.
 Normal local review is intentionally routed through OpenRouter to reduce the
 cost of the common review tier without changing the serious or PR-visible
 review paths. `touchstone review setup` stores a dedicated OpenRouter credential
-in macOS Keychain. `touchstone review check` verifies the credential, parses the
-shipped profile with the installed Codex, and proves exact read-only Git access
-from the current primary or linked checkout. A failed check permits the
-documented normal-tier waiver; it never permits a silent fallback to the more
-expensive default profile.
+in macOS Keychain. `touchstone review check` validates the credential, local
+tools, and versioned policy without contacting the provider. `touchstone review
+run` reads only the staged Git diff and makes one direct OpenRouter Chat
+Completions request. A failed check or run permits the documented normal-tier
+waiver; it never permits fallback to an unbounded model path.
 
-The enforceable invariant is that the key never appears in the profile,
-durable Codex state, the spawned review agent's tool environment, its prompt or
-output, or a repository. The launcher gives it only to one ephemeral Codex
-parent process. That process uses an isolated Codex home, treats the reviewed
-repository as untrusted for configuration, disables shell snapshots and
-plugins, removes the key from every model-issued subprocess, and denies those
-subprocesses access to non-repository user files through Codex's own permission
-profile. Their environment inherits only Codex's core variables, never the
-driver's unrelated credential variables. Strict configuration parsing refuses
-Codex versions that cannot enforce any field in that boundary. The fully
-empowered same-user driving shell remains a trusted principal: no-prompt
-Keychain access cannot also protect a secret from that same principal. The
-Keychain account is scoped to the selected Codex home, so rotating or
-uninstalling one credential cannot invalidate another. `touchstone review
-rotate` is the explicit replacement path for a revoked or expired key. The
-canonical non-secret config shape lives in
-`config/review-normal.config.toml`; prose links to that owner instead of
-duplicating it.
+The stable interface is `touchstone review`; the versioned backend contract is
+`touchstone.review/v1`. Its canonical non-secret policy lives in
+`config/review-normal.json`, and the canonical prompt lives in
+`config/review-normal-prompt.md`. V1 selects OpenRouter Pareto Code's medium
+coding tier instead of a concrete model, imposes absolute provider price,
+input, output, and timeout ceilings, requests strict structured output, and
+prints the actual model, token counts, and provider-reported cost. No tools or
+agent loop are sent. Permanent HTTP failures and timeouts are not retried.
+
+The key is read only after the staged diff and request-size checks pass. It is
+validated before being written to curl's stdin configuration, never appears in
+an argument, environment variable, durable config, request body, output, or
+repository, and is unset after the call. The fully empowered same-user driving
+shell remains a trusted principal: no-prompt Keychain access cannot also
+protect a secret from that same principal. The Keychain account remains scoped
+to the selected Codex home for compatibility with already configured machines,
+so rotating or uninstalling one credential cannot invalidate another.
+`touchstone review rotate` is the explicit replacement path for a revoked or
+expired key.
 
 ## Outcome
 
@@ -123,7 +124,7 @@ explain that owner's decision; they may not recompute it.
 | Bind merge to the reviewed head | GitHub merge API | Expected head passed to the merge mutation | Moving the head before merge is rejected |
 | Claim work | Configured tracker adapter | Tracker-neutral claim contract | GitHub- and Linear-backed fixtures distinguish verified from unavailable transport |
 | Carry agent steering | The installed tool, machine-wide | One delimited block in each driver's user-level instruction file, the routed principles under `~/.touchstone/principles`, and the bundled Claude skills under `~/.claude/skills` — all installed, checked, and removed by `touchstone steering`; Touchstone installs and manages no repository copy | `touchstone steering check` compares the installed block against the tool's contract; deterministic size-cap, path-integrity, and steering-contract assertions run in the required suite |
-| Route normal local review through the lower-cost lane | The installed tool, machine-wide | Shipped `review-normal` Codex profile plus a Keychain-backed launcher that filters the provider key from the spawned review agent | Offline setup/check/rotate/uninstall fixtures prove per-home isolation, idempotency, distinct missing/empty/error states, and fail-closed credential behavior; launcher assertions and a live adversarial probe cover ephemeral state and subprocess isolation |
+| Route normal local review through the lower-cost lane | The installed tool, machine-wide | Stable `touchstone review` command plus the versioned `touchstone.review/v1` policy and Keychain-backed OpenRouter adapter | Offline fixtures prove staged-only input, linked-worktree fidelity, router and absolute-price parameters, no tools, one-request failures, structured output, usage reporting, size limits, credential isolation, and fail-closed malformed states |
 | Adopt and evolve a repository | Touchstone CLI adoption module | Versioned project declarations and reviewable plan/apply output | Fresh, current, repeat, old-compatible, and unsupported-schema fixtures |
 | Make repository cleanup residue legible | `touchstone cleanup check` (read-only) | Versioned report (`touchstone.cleanup/v1`): checkout, worktrees, finished branches, untracked and dirty files | Each residue kind is reported once without claiming session ownership and nothing is mutated; a failed GitHub read is a finding, not silence |
 | Install and upgrade the local tool | Homebrew | Versioned formula and checksummed release | Install, upgrade, rollback, and no-project-mutation tests pass |

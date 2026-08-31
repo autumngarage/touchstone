@@ -306,16 +306,16 @@ case "$TIER" in
           report "the Validation row '- Local review:' waiver stating why (reviewer CLI not installed, not authenticated, or out of quota)"
         fi
       else
-        # During the normal-tier transition either documented reviewer may
-        # open the run record; serious remains codex-only. The target shape is
-        # what preserves the tier boundary: normal names a staged slice, while
-        # serious names the bare revision it reviewed. A mention elsewhere is
-        # not the run record, and "codex not run" carries no count, so both are
-        # refused by the same check.
+        # Normal review has had multiple documented backends. Preserve their
+        # recorded evidence as active compatibility while serious remains
+        # codex-only. The target shape is what preserves the tier boundary:
+        # normal names a staged slice, while serious names the bare revision
+        # it reviewed. A mention elsewhere is not the run record, and "codex
+        # not run" carries no count, so both are refused by the same check.
         case "$TIER" in
           normal)
-            lr_tool='codex or coderabbit'
-            lr_reviewer="${lr_mark}(codex|coderabbit)${lr_mark}"
+            lr_tool='openrouter, codex, or coderabbit'
+            lr_reviewer="${lr_mark}(openrouter|codex|coderabbit)${lr_mark}"
             ;;
           serious)
             lr_tool=codex

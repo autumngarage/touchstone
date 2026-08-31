@@ -129,7 +129,7 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
   "abandonment, and a clean tree are not worker-lifecycle evidence"
 
-echo "==> one Codex harness is routed by tier with an explicit normal-review cost lane"
+echo "==> tiered review keeps a cost-bounded OpenRouter normal lane and Codex serious lane"
 for file in \
   "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
   "$TOUCHSTONE_ROOT/AGENTS.md" \
@@ -152,36 +152,34 @@ for file in \
 done
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'touchstone review setup'
-assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  'silently when a named profile file is absent'
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   '## The deep review pass'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'OpenRouter'
-assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'stages the canonical profile'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'one direct request'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  'Never fall back silently to the default'
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
-  'model = "openai/gpt-5.4-mini"'
-assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
-  'model = "google/gemini-3.7-flash"'
-assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
-  'model = "openrouter/pareto-code"'
-assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
-  'model = "qwen/qwen3-coder-next"'
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
-  'model_reasoning_effort = "medium"'
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
-  'env_key = "OPENROUTER_API_KEY"'
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
-  'OPENROUTER_API_KEY = "exclude"'
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
-  'allow_login_shell = false'
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
-  'sandbox_mode = "read-only"'
-assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
-  '[model_providers.openrouter.auth]'
+  'No tools or agent loop'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
+  '"schema": "touchstone.review/v1"'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
+  '"backend": "openrouter-chat-completions"'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
+  '"model": "openrouter/pareto-code"'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
+  '"minCodingScore": 0.33'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
+  '"maxPromptPricePerMillion": 0.5'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
+  '"maxCompletionPricePerMillion": 2'
+assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
+  'gpt-5.6-sol'
+assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
+  'codex review'
+assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
+  'tools:'
+assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
+  '-q --config -'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  'A normal-profile failure never waives this pass.'
+  'A normal-review failure never waives this pass.'
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'or the same recorded waiver'
 [ ! -e "$TOUCHSTONE_ROOT/.touchstone-review.toml" ] \
@@ -849,7 +847,7 @@ for file in $GATE_FILES; do
   fi
 done
 
-echo "==> normal-review setup keeps credentials out of agent environments and config"
+echo "==> direct OpenRouter review is bounded, staged-only, and offline-testable"
 FAKE_SECURITY="$TEST_DIR/security"
 FAKE_KEYCHAIN_DIR="$TEST_DIR/keychain"
 FAKE_KEYCHAIN_LOG="$TEST_DIR/keychain-log"
@@ -876,7 +874,11 @@ case "${1:-}" in
     [ "${TOUCHSTONE_FAKE_READBACK_FAIL:-false}" != true ] || exit 45
     [ -f "$state" ] || exit 44
     [ "${TOUCHSTONE_FAKE_EMPTY_KEY:-false}" != true ] || exit 0
-    printf 'dummy-openrouter-token\n'
+    if [ "${TOUCHSTONE_FAKE_UNSAFE_KEY:-false}" = true ]; then
+      printf 'unsafe"key\n'
+    else
+      printf 'sk-or-v1-dummy-token\n'
+    fi
     ;;
   add-generic-password)
     printf 'add\n' >>"$TOUCHSTONE_FAKE_KEYCHAIN_LOG"
@@ -892,14 +894,64 @@ esac
 EOF
 chmod +x "$FAKE_SECURITY"
 
+FAKE_CURL="$TEST_DIR/curl"
+FAKE_CURL_LOG="$TEST_DIR/curl-log"
+FAKE_CURL_CAPTURE="$TEST_DIR/request.json"
+FAKE_RESPONSE="$TEST_DIR/response.json"
+REVIEW_CONTENT='{"summary":"One concrete defect.","findings":[{"severity":"P2","file":"staged.txt","line":1,"title":"Wrong value","body":"The staged value breaks the fixture invariant."}]}'
+jq -n --arg content "$REVIEW_CONTENT" '{
+  model: "qwen/qwen3-coder-next",
+  usage: {prompt_tokens: 321, completion_tokens: 45, cost: 0.00042},
+  choices: [{finish_reason: "stop", message: {content: $content}}]
+}' >"$FAKE_RESPONSE"
+cat >"$FAKE_CURL" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+config="$(cat)"
+case "$config" in
+  *'Authorization: Bearer sk-or-v1-dummy-token'*) ;;
+  *) echo "missing safe authorization config" >&2; exit 97 ;;
+esac
+printf 'call\n' >>"$TOUCHSTONE_FAKE_CURL_LOG"
+output=""
+request=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output)
+      output="$2"
+      shift 2
+      ;;
+    --data-binary)
+      request="${2#@}"
+      shift 2
+      ;;
+    *) shift ;;
+  esac
+done
+[ -n "$output" ] && [ -n "$request" ] || exit 96
+cp "$request" "$TOUCHSTONE_FAKE_CURL_CAPTURE"
+[ "${TOUCHSTONE_FAKE_CURL_STATUS:-0}" -eq 0 ] \
+  || exit "$TOUCHSTONE_FAKE_CURL_STATUS"
+cp "$TOUCHSTONE_FAKE_REVIEW_RESPONSE" "$output"
+printf '%s' "${TOUCHSTONE_FAKE_HTTP_STATUS:-200}"
+EOF
+chmod +x "$FAKE_CURL"
+
 review_command() {
   TOUCHSTONE_REVIEW_PLATFORM=Darwin \
     TOUCHSTONE_REVIEW_SECURITY_BIN="$FAKE_SECURITY" \
+    TOUCHSTONE_REVIEW_CURL_BIN="$FAKE_CURL" \
     TOUCHSTONE_FAKE_KEYCHAIN_DIR="$FAKE_KEYCHAIN_DIR" \
     TOUCHSTONE_FAKE_KEYCHAIN_LOG="$FAKE_KEYCHAIN_LOG" \
     TOUCHSTONE_FAKE_READBACK_FAIL="${TOUCHSTONE_FAKE_READBACK_FAIL:-false}" \
     TOUCHSTONE_FAKE_EMPTY_KEY="${TOUCHSTONE_FAKE_EMPTY_KEY:-false}" \
+    TOUCHSTONE_FAKE_UNSAFE_KEY="${TOUCHSTONE_FAKE_UNSAFE_KEY:-false}" \
     TOUCHSTONE_FAKE_DELETE_FAIL="${TOUCHSTONE_FAKE_DELETE_FAIL:-false}" \
+    TOUCHSTONE_FAKE_CURL_LOG="$FAKE_CURL_LOG" \
+    TOUCHSTONE_FAKE_CURL_CAPTURE="$FAKE_CURL_CAPTURE" \
+    TOUCHSTONE_FAKE_CURL_STATUS="${TOUCHSTONE_FAKE_CURL_STATUS:-0}" \
+    TOUCHSTONE_FAKE_HTTP_STATUS="${TOUCHSTONE_FAKE_HTTP_STATUS:-200}" \
+    TOUCHSTONE_FAKE_REVIEW_RESPONSE="${TOUCHSTONE_FAKE_REVIEW_RESPONSE:-$FAKE_RESPONSE}" \
     bash "$TOUCHSTONE_ROOT/bin/touchstone" review "$@"
 }
 
@@ -909,15 +961,10 @@ fake_key_path() {
   printf '%s/%s\n' "$FAKE_KEYCHAIN_DIR" "$key_id"
 }
 
-REVIEW_HOME="$TEST_DIR/review-codex"
-if review_command setup --codex-home "$REVIEW_HOME" >"$TEST_DIR/review-setup.out" 2>&1; then
-  :
-else
-  fail "normal-review setup failed: $(cat "$TEST_DIR/review-setup.out")"
-fi
-if grep -qF 'dummy-openrouter-token' "$TEST_DIR/review-setup.out"; then
-  fail "setup exposed the credential in output"
-fi
+REVIEW_HOME="$TEST_DIR/review-credential-scope"
+review_command setup --codex-home "$REVIEW_HOME" >"$TEST_DIR/review-setup.out" 2>&1 \
+  || fail "normal-review setup failed: $(cat "$TEST_DIR/review-setup.out")"
+assert_not_contains "$TEST_DIR/review-setup.out" 'sk-or-v1-dummy-token'
 NON_REPOSITORY_REVIEW_DIR="$TEST_DIR/review-machine-check"
 mkdir -p "$NON_REPOSITORY_REVIEW_DIR"
 (
@@ -925,247 +972,82 @@ mkdir -p "$NON_REPOSITORY_REVIEW_DIR"
   review_command credential-check --codex-home "$REVIEW_HOME" >/dev/null 2>&1
 ) || fail "machine-level review credential check required repository context"
 assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-steering-install.sh" \
-  'touchstone-review-setup.sh" credential-check'
-REVIEW_CODEX_LIB="$TOUCHSTONE_ROOT/scripts/lib/touchstone-review-codex.sh"
-assert_contains "$REVIEW_CODEX_LIB" \
-  "TeamIdentifier=2DC432GLL2"
-assert_contains "$REVIEW_CODEX_LIB" \
-  '"$codesign_bin" --verify --deep --strict'
-assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
-  'touchstone_verify_openai_codex "$candidate" /usr/bin/codesign'
-assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
-  'touchstone_review_validate_launch'
-assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
-  'PATH="$bundled_path:$PATH"'
-assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
-  'PATH="$(dirname "$REVIEW_GIT_BIN"):${PATH:-/usr/bin:/bin}"'
-assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
-  "TOUCHSTONE_REVIEW_CODEX_BIN"
-for boundary in \
-  '--strict-config' \
-  'exec --ephemeral --ignore-rules review --uncommitted' \
-  'unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE'; do
-  assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" "$boundary"
-done
-for boundary in \
-  '--disable shell_snapshot' \
-  '--disable plugins' \
-  'shell_environment_policy.filters.OPENROUTER_API_KEY="exclude"'; do
-  assert_contains "$REVIEW_CODEX_LIB" "$boundary"
-done
-assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" \
-  '-c "projects.'
-assert_contains "$REVIEW_CODEX_LIB" \
-  'trust_level = \"untrusted\"'
+  'touchstone-review.sh" credential-check'
+[ ! -e "$TOUCHSTONE_ROOT/scripts/touchstone-review-setup.sh" ] \
+  || fail "retired Codex review launcher remains"
+[ ! -e "$TOUCHSTONE_ROOT/scripts/lib/touchstone-review-codex.sh" ] \
+  || fail "retired Codex review library remains"
+[ ! -e "$TOUCHSTONE_ROOT/config/review-normal.config.toml" ] \
+  || fail "retired Codex review profile remains"
 
-echo "==> normal-review launcher resolves only the official npm native child"
-# shellcheck source=../scripts/lib/touchstone-review-codex.sh
-source "$REVIEW_CODEX_LIB"
-TOUCHSTONE_CODEX_ERROR=""
-TOUCHSTONE_CODEX_BIN=""
-TOUCHSTONE_CODEX_BUNDLED_PATH=""
-NPM_PREFIX="$TEST_DIR/npm-prefix"
-NPM_PACKAGE="$NPM_PREFIX/lib/node_modules/@openai/codex"
-NPM_LAUNCHER="$NPM_PACKAGE/bin/codex.js"
-NPM_NATIVE="$NPM_PREFIX/lib/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex"
-NPM_TOOLS="$NPM_PREFIX/lib/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/path"
-NPM_MARKER="$TEST_DIR/npm-launcher-executed"
-mkdir -p "$(dirname "$NPM_LAUNCHER")" "$(dirname "$NPM_NATIVE")" "$NPM_TOOLS" "$NPM_PREFIX/bin"
-cat >"$NPM_LAUNCHER" <<EOF
-#!/usr/bin/env bash
-touch "$NPM_MARKER"
-exit 99
-EOF
-: >"$NPM_NATIVE"
-chmod +x "$NPM_LAUNCHER" "$NPM_NATIVE"
-ln -s ../lib/node_modules/@openai/codex/bin/codex.js "$NPM_PREFIX/bin/codex"
-NPM_NATIVE_CANONICAL="$(cd "$(dirname "$NPM_NATIVE")" && pwd -P)/$(basename "$NPM_NATIVE")"
-NPM_TOOLS_CANONICAL="$(cd "$NPM_TOOLS" && pwd -P)"
-
-touchstone_resolve_codex_native "$NPM_PREFIX/bin/codex" Darwin arm64 \
-  || fail "official npm Codex did not resolve: $TOUCHSTONE_CODEX_ERROR"
-NPM_RESOLVED="$TOUCHSTONE_CODEX_BIN"
-NPM_RESOLVED_TOOLS="$TOUCHSTONE_CODEX_BUNDLED_PATH"
-[ "$NPM_RESOLVED" = "$NPM_NATIVE_CANONICAL" ] \
-  || fail "official npm Codex resolved to $NPM_RESOLVED instead of its native child"
-[ "$NPM_RESOLVED_TOOLS" = "$NPM_TOOLS_CANONICAL" ] \
-  || fail "official npm Codex did not preserve its bundled-tool path"
-[ ! -e "$NPM_MARKER" ] \
-  || fail "official npm Codex resolution evaluated the JavaScript launcher"
-
-NESTED_PACKAGE="$TEST_DIR/npm-nested/lib/node_modules/@openai/codex"
-NESTED_LAUNCHER="$NESTED_PACKAGE/bin/codex.js"
-NESTED_NATIVE="$NESTED_PACKAGE/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
-mkdir -p "$(dirname "$NESTED_LAUNCHER")" "$(dirname "$NESTED_NATIVE")"
-: >"$NESTED_LAUNCHER"
-: >"$NESTED_NATIVE"
-chmod +x "$NESTED_LAUNCHER" "$NESTED_NATIVE"
-NESTED_NATIVE_CANONICAL="$(cd "$(dirname "$NESTED_NATIVE")" && pwd -P)/$(basename "$NESTED_NATIVE")"
-touchstone_resolve_codex_native "$NESTED_LAUNCHER" Darwin arm64 \
-  || fail "nested official npm Codex did not resolve: $TOUCHSTONE_CODEX_ERROR"
-NESTED_RESOLVED="$TOUCHSTONE_CODEX_BIN"
-[ "$NESTED_RESOLVED" = "$NESTED_NATIVE_CANONICAL" ] \
-  || fail "nested official npm Codex resolved to $NESTED_RESOLVED instead of its native child"
-
-DIRECT_CODEX="$TEST_DIR/direct-codex"
-: >"$DIRECT_CODEX"
-chmod +x "$DIRECT_CODEX"
-DIRECT_CODEX_CANONICAL="$(cd "$(dirname "$DIRECT_CODEX")" && pwd -P)/$(basename "$DIRECT_CODEX")"
-touchstone_resolve_codex_native "$DIRECT_CODEX" Darwin arm64 \
-  || fail "direct Codex binary did not resolve: $TOUCHSTONE_CODEX_ERROR"
-DIRECT_RESOLVED="$TOUCHSTONE_CODEX_BIN"
-[ "$DIRECT_RESOLVED" = "$DIRECT_CODEX_CANONICAL" ] \
-  || fail "direct Codex resolution changed the executable path"
-
-NEWLINE_LINK="$TEST_DIR/newline-codex"
-ln -s "$DIRECT_CODEX"$'\n'"injected-path" "$NEWLINE_LINK"
-if touchstone_resolve_codex_native "$NEWLINE_LINK" Darwin arm64; then
-  fail "Codex resolution accepted a newline introduced by a symbolic-link target"
-elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" | grep -qF 'link target contains a newline'; then
-  fail "newline-bearing Codex link produced the wrong error: $TOUCHSTONE_CODEX_ERROR"
-fi
-TRAILING_NEWLINE_LINK="$TEST_DIR/trailing-newline-codex"
-ln -s "$DIRECT_CODEX"$'\n' "$TRAILING_NEWLINE_LINK"
-if touchstone_resolve_codex_native "$TRAILING_NEWLINE_LINK" Darwin arm64; then
-  fail "Codex resolution lost a trailing newline from a symbolic-link target"
-fi
-
-ANCESTOR_TARGET="$TEST_DIR/ancestor"$'\n'"target"
-ANCESTOR_CODEX="$ANCESTOR_TARGET/codex"
-ANCESTOR_LINK="$TEST_DIR/ancestor-link"
-mkdir -p "$ANCESTOR_TARGET"
-: >"$ANCESTOR_CODEX"
-chmod +x "$ANCESTOR_CODEX"
-ln -s "$ANCESTOR_TARGET" "$ANCESTOR_LINK"
-if touchstone_resolve_codex_native "$ANCESTOR_LINK/codex" Darwin arm64; then
-  fail "Codex resolution accepted a newline introduced by an ancestor symbolic link"
-elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" | grep -qF 'physical directory contains a newline'; then
-  fail "newline-bearing Codex ancestor produced the wrong error: $TOUCHSTONE_CODEX_ERROR"
-fi
-
-LOOKALIKE_ROOT="$TEST_DIR/lookalike/codex"
-LOOKALIKE_LAUNCHER="$LOOKALIKE_ROOT/bin/codex.js"
-LOOKALIKE_NATIVE="$LOOKALIKE_ROOT/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
-mkdir -p "$(dirname "$LOOKALIKE_LAUNCHER")" "$(dirname "$LOOKALIKE_NATIVE")"
-: >"$LOOKALIKE_LAUNCHER"
-: >"$LOOKALIKE_NATIVE"
-chmod +x "$LOOKALIKE_LAUNCHER" "$LOOKALIKE_NATIVE"
-LOOKALIKE_LAUNCHER_CANONICAL="$(cd "$(dirname "$LOOKALIKE_LAUNCHER")" && pwd -P)/$(basename "$LOOKALIKE_LAUNCHER")"
-touchstone_resolve_codex_native "$LOOKALIKE_LAUNCHER" Darwin arm64 \
-  || fail "non-official launcher path did not remain a direct candidate: $TOUCHSTONE_CODEX_ERROR"
-LOOKALIKE_RESOLVED="$TOUCHSTONE_CODEX_BIN"
-[ "$LOOKALIKE_RESOLVED" = "$LOOKALIKE_LAUNCHER_CANONICAL" ] \
-  || fail "normal review performed generic launcher discovery outside the official npm path"
-
-MISSING_PACKAGE="$TEST_DIR/missing/lib/node_modules/@openai/codex"
-MISSING_LAUNCHER="$MISSING_PACKAGE/bin/codex.js"
-mkdir -p "$(dirname "$MISSING_LAUNCHER")"
-: >"$MISSING_LAUNCHER"
-chmod +x "$MISSING_LAUNCHER"
-if touchstone_resolve_codex_native "$MISSING_LAUNCHER" Darwin arm64; then
-  fail "official npm Codex resolved without its native child"
-elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" | grep -qF 'native executable is missing or not executable'; then
-  fail "missing npm native child produced the wrong error: $TOUCHSTONE_CODEX_ERROR"
-fi
-if touchstone_resolve_codex_native "$NPM_LAUNCHER" Darwin sparc; then
-  fail "official npm Codex accepted an unsupported macOS architecture"
-elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" | grep -qF 'no supported macOS package'; then
-  fail "unsupported npm architecture produced the wrong error: $TOUCHSTONE_CODEX_ERROR"
-fi
-
-FAKE_CODESIGN="$TEST_DIR/codesign"
-FAKE_CODESIGN_LOG="$TEST_DIR/codesign-log"
-cat >"$FAKE_CODESIGN" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-candidate=""
-for arg in "$@"; do
-  candidate="$arg"
-done
-printf '%s\n' "$candidate" >>"$TOUCHSTONE_FAKE_CODESIGN_LOG"
-if [ "${1:-}" = --verify ]; then
-  [ "${TOUCHSTONE_FAKE_SIGNATURE:-valid}" != invalid ]
-  exit
-fi
-printf 'Identifier=%s\n' "${TOUCHSTONE_FAKE_IDENTIFIER:-codex}" >&2
-printf 'TeamIdentifier=%s\n' "${TOUCHSTONE_FAKE_TEAM:-2DC432GLL2}" >&2
-EOF
-chmod +x "$FAKE_CODESIGN"
-
-TOUCHSTONE_FAKE_CODESIGN_LOG="$FAKE_CODESIGN_LOG" \
-  touchstone_verify_openai_codex "$NPM_NATIVE_CANONICAL" "$FAKE_CODESIGN" \
-  || fail "signed OpenAI npm native child was rejected"
-[ "$(tail -n 1 "$FAKE_CODESIGN_LOG")" = "$NPM_NATIVE_CANONICAL" ] \
-  || fail "signature verification did not inspect the npm native child"
-if TOUCHSTONE_FAKE_CODESIGN_LOG="$FAKE_CODESIGN_LOG" TOUCHSTONE_FAKE_SIGNATURE=invalid \
-  touchstone_verify_openai_codex "$NPM_NATIVE_CANONICAL" "$FAKE_CODESIGN"; then
-  fail "normal review accepted a native child with an invalid signature"
-elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" | grep -qF 'integrity verification'; then
-  fail "invalid native signature produced the wrong error: $TOUCHSTONE_CODEX_ERROR"
-fi
-if TOUCHSTONE_FAKE_CODESIGN_LOG="$FAKE_CODESIGN_LOG" TOUCHSTONE_FAKE_TEAM=NOT-OPENAI \
-  touchstone_verify_openai_codex "$NPM_NATIVE_CANONICAL" "$FAKE_CODESIGN"; then
-  fail "normal review accepted a native child not signed by OpenAI"
-elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" | grep -qF 'not signed by OpenAI'; then
-  fail "wrong native signing team produced the wrong error: $TOUCHSTONE_CODEX_ERROR"
-fi
-for boundary in \
-  'default_permissions = "touchstone_review"' \
-  '":minimal" = "read"' \
-  '":workspace_roots" = "read"' \
-  'inherit = "core"' \
-  'GIT_CONFIG_NOSYSTEM = "1"' \
-  'GIT_CONFIG_GLOBAL = "/dev/null"' \
-  'GIT_CONFIG_SYSTEM = "/dev/null"' \
-  'GIT_CONFIG_COUNT = "2"' \
-  'GIT_CONFIG_KEY_0 = "core.excludesFile"' \
-  'GIT_CONFIG_VALUE_0 = "/dev/null"' \
-  'GIT_CONFIG_KEY_1 = "core.fsmonitor"' \
-  'GIT_CONFIG_VALUE_1 = "false"' \
-  '"~/Library/Keychains" = "deny"'; do
-  assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" "$boundary"
-done
-
-echo "==> normal-review profile follows linked-worktree Git metadata read-only"
 REVIEW_REPOSITORY="$TEST_DIR/review-repository"
-REVIEW_WORKTREE="$TEST_DIR/review-linked-worktree"
-RENDERED_REVIEW_PROFILE="$TEST_DIR/review-linked.config.toml"
+mkdir -p "$REVIEW_REPOSITORY"
 git init -q "$REVIEW_REPOSITORY"
+printf 'baseline\n' >"$REVIEW_REPOSITORY/staged.txt"
+printf 'baseline\n' >"$REVIEW_REPOSITORY/unstaged.txt"
+git -C "$REVIEW_REPOSITORY" add staged.txt unstaged.txt
 git -C "$REVIEW_REPOSITORY" \
   -c user.name=Touchstone -c user.email=touchstone@example.invalid \
-  commit --allow-empty -qm initial
-git -C "$REVIEW_REPOSITORY" worktree add --detach "$REVIEW_WORKTREE" HEAD >/dev/null
-REVIEW_WORKTREE_PHYSICAL="$(cd "$REVIEW_WORKTREE" && pwd -P)"
-touchstone_review_resolve_git_context "$REVIEW_WORKTREE" \
-  || fail "linked-worktree Git context did not resolve: $TOUCHSTONE_CODEX_ERROR"
-[ "$TOUCHSTONE_REVIEW_REPOSITORY_ROOT" = "$REVIEW_WORKTREE_PHYSICAL" ] \
-  || fail "linked-worktree root resolved to $TOUCHSTONE_REVIEW_REPOSITORY_ROOT"
-EXPECTED_REVIEW_GIT_DIR="$(git -C "$REVIEW_WORKTREE" rev-parse --absolute-git-dir)"
-EXPECTED_REVIEW_COMMON_DIR="$(
-  git -C "$REVIEW_WORKTREE" rev-parse --path-format=absolute --git-common-dir
-)"
-[ "$TOUCHSTONE_REVIEW_GIT_DIR" = "$EXPECTED_REVIEW_GIT_DIR" ] \
-  || fail "linked-worktree Git directory was not preserved"
-[ "$TOUCHSTONE_REVIEW_GIT_COMMON_DIR" = "$EXPECTED_REVIEW_COMMON_DIR" ] \
-  || fail "linked-worktree common directory was not preserved"
-touchstone_review_render_profile \
-  "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
-  "$RENDERED_REVIEW_PROFILE" \
-  "$TOUCHSTONE_REVIEW_REPOSITORY_ROOT" \
-  "$TOUCHSTONE_REVIEW_GIT_DIR" "$TOUCHSTONE_REVIEW_GIT_COMMON_DIR" \
-  || fail "linked-worktree review profile did not render: $TOUCHSTONE_CODEX_ERROR"
-assert_contains "$RENDERED_REVIEW_PROFILE" \
-  "[projects.\"$REVIEW_WORKTREE_PHYSICAL\"]"
-assert_contains "$RENDERED_REVIEW_PROFILE" \
-  'trust_level = "untrusted"'
-assert_contains "$RENDERED_REVIEW_PROFILE" \
-  "\"$EXPECTED_REVIEW_GIT_DIR\" = \"read\""
-assert_contains "$RENDERED_REVIEW_PROFILE" \
-  "\"$EXPECTED_REVIEW_COMMON_DIR\" = \"read\""
-assert_not_contains "$RENDERED_REVIEW_PROFILE" \
-  "\"$(dirname "$REVIEW_REPOSITORY")\" = \"read\""
+  commit -qm initial
+printf 'reviewed value\n' >"$REVIEW_REPOSITORY/staged.txt"
+git -C "$REVIEW_REPOSITORY" add staged.txt
+printf 'must not be reviewed\n' >"$REVIEW_REPOSITORY/unstaged.txt"
+printf 'also excluded\n' >"$REVIEW_REPOSITORY/untracked.txt"
 
-echo "==> normal-review run refuses an empty Git slice before credential lookup"
+(
+  cd "$REVIEW_REPOSITORY"
+  review_command check --codex-home "$REVIEW_HOME" >"$TEST_DIR/review-check.out" 2>&1
+) || fail "offline normal-review check failed: $(cat "$TEST_DIR/review-check.out")"
+[ ! -e "$FAKE_CURL_LOG" ] \
+  || fail "normal-review check made a network request"
+(
+  cd "$REVIEW_REPOSITORY"
+  review_command run --codex-home "$REVIEW_HOME" >"$TEST_DIR/review-run.out" 2>&1
+) || fail "direct OpenRouter review failed: $(cat "$TEST_DIR/review-run.out")"
+[ "$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')" = 1 ] \
+  || fail "one review did not make exactly one OpenRouter request"
+for expected in \
+  'OpenRouter review' \
+  'Model: qwen/qwen3-coder-next' \
+  'Cost: $0.00042' \
+  'Tokens: prompt=321 completion=45' \
+  'P2 staged.txt:1 Wrong value' \
+  'Evidence: openrouter on the staged slice (review-normal): 1 findings'; do
+  assert_contains "$TEST_DIR/review-run.out" "$expected"
+done
+assert_not_contains "$TEST_DIR/review-run.out" 'sk-or-v1-dummy-token'
+jq -e '
+  .model == "openrouter/pareto-code" and
+  .plugins == [{id: "pareto-router", min_coding_score: 0.33}] and
+  .provider.require_parameters == true and
+  .provider.max_price.prompt == 0.5 and
+  .provider.max_price.completion == 2 and
+  .max_completion_tokens == 4096 and
+  .usage.include == true and
+  .response_format.type == "json_schema" and
+  (.tools == null)
+' "$FAKE_CURL_CAPTURE" >/dev/null \
+  || fail "OpenRouter request lost its router, price, output, or no-tools boundary"
+assert_contains "$FAKE_CURL_CAPTURE" 'reviewed value'
+assert_not_contains "$FAKE_CURL_CAPTURE" 'must not be reviewed'
+assert_not_contains "$FAKE_CURL_CAPTURE" 'also excluded'
+assert_not_contains "$FAKE_CURL_CAPTURE" 'sk-or-v1-dummy-token'
+
+echo "==> empty and oversized staged slices fail before credentials or network"
+git -C "$REVIEW_REPOSITORY" restore --staged --worktree staged.txt
+EMPTY_REVIEW_HOME="$TEST_DIR/empty-review-scope"
+before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+if (
+  cd "$REVIEW_REPOSITORY"
+  review_command run --codex-home "$EMPTY_REVIEW_HOME"
+) >"$TEST_DIR/empty-review.out" 2>&1; then
+  fail "normal review accepted an empty staged slice"
+elif ! grep -qF 'no staged changes' "$TEST_DIR/empty-review.out"; then
+  fail "empty staged slice reached credential lookup: $(cat "$TEST_DIR/empty-review.out")"
+fi
+after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+[ "$before_calls" = "$after_calls" ] || fail "empty staged slice reached OpenRouter"
+
 REVIEW_FSMONITOR="$TEST_DIR/review-fsmonitor"
 REVIEW_FSMONITOR_MARKER="$TEST_DIR/review-fsmonitor-ran"
 cat >"$REVIEW_FSMONITOR" <<EOF
@@ -1173,187 +1055,187 @@ cat >"$REVIEW_FSMONITOR" <<EOF
 printf 'invoked\n' >"$REVIEW_FSMONITOR_MARKER"
 EOF
 chmod +x "$REVIEW_FSMONITOR"
-git -C "$REVIEW_WORKTREE" config core.fsmonitor "$REVIEW_FSMONITOR"
-if touchstone_review_require_uncommitted_slice "$REVIEW_WORKTREE"; then
-  fail "normal review accepted an empty uncommitted slice"
-elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" | grep -qF 'no uncommitted changes'; then
-  fail "empty normal review produced the wrong diagnostic: $TOUCHSTONE_CODEX_ERROR"
+git -C "$REVIEW_REPOSITORY" config core.fsmonitor "$REVIEW_FSMONITOR"
+if (
+  cd "$REVIEW_REPOSITORY"
+  review_command run --codex-home "$EMPTY_REVIEW_HOME"
+) >/dev/null 2>&1; then
+  fail "empty review unexpectedly passed with a configured fsmonitor"
 fi
 [ ! -e "$REVIEW_FSMONITOR_MARKER" ] \
-  || fail "normal-review host preflight executed repository-configured fsmonitor"
-EMPTY_RUN_HOME="$TEST_DIR/empty-run-home"
+  || fail "normal-review diff discovery executed repository-configured fsmonitor"
+git -C "$REVIEW_REPOSITORY" config --unset core.fsmonitor
+
+printf 'reviewed value\n' >"$REVIEW_REPOSITORY/staged.txt"
+git -C "$REVIEW_REPOSITORY" add staged.txt
+SMALL_POLICY="$TEST_DIR/review-small-policy.json"
+jq '.limits.maxInputBytes = 100' \
+  "$TOUCHSTONE_ROOT/config/review-normal.json" >"$SMALL_POLICY"
+before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+if (
+  cd "$REVIEW_REPOSITORY"
+  TOUCHSTONE_REVIEW_POLICY_FILE="$SMALL_POLICY" \
+    review_command run --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/small-limit.out" 2>&1; then
+  fail "normal review accepted a request above its configured byte limit"
+elif ! grep -qF 'configured limit is 100 bytes' "$TEST_DIR/small-limit.out"; then
+  fail "input limit failure was not actionable: $(cat "$TEST_DIR/small-limit.out")"
+fi
+after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+[ "$before_calls" = "$after_calls" ] || fail "oversized review reached OpenRouter"
+
+awk 'BEGIN { for (i = 0; i < 105000; i++) printf "x"; printf "\n" }' \
+  >"$REVIEW_REPOSITORY/staged.txt"
+git -C "$REVIEW_REPOSITORY" add staged.txt
+before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+if (
+  cd "$REVIEW_REPOSITORY"
+  review_command run --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/large-input.out" 2>&1; then
+  fail "normal review accepted a large request above the shipped limit"
+elif ! grep -qF 'configured limit is 100000 bytes' "$TEST_DIR/large-input.out"; then
+  fail "the shipped large-input limit was not enforced"
+fi
+after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+[ "$before_calls" = "$after_calls" ] || fail "large review reached OpenRouter"
+
+echo "==> linked worktrees use their own staged index"
+REVIEW_WORKTREE="$TEST_DIR/review-linked-worktree"
+git -C "$REVIEW_REPOSITORY" restore --staged --worktree staged.txt
+git -C "$REVIEW_REPOSITORY" worktree add --detach "$REVIEW_WORKTREE" HEAD >/dev/null
+printf 'linked staged value\n' >"$REVIEW_WORKTREE/staged.txt"
+git -C "$REVIEW_WORKTREE" add staged.txt
+(
+  cd "$REVIEW_WORKTREE"
+  review_command run --codex-home "$REVIEW_HOME" >/dev/null 2>&1
+) || fail "normal review could not read a linked worktree's staged diff"
+assert_contains "$FAKE_CURL_CAPTURE" 'linked staged value'
+
+echo "==> provider and transport failures make one request and fail closed"
+for status_and_text in \
+  '401|rejected the credential' \
+  '402|billing or the API-key spending limit' \
+  '403|dedicated key permissions' \
+  '429|request was not retried'; do
+  http_status="${status_and_text%%|*}"
+  expected_text="${status_and_text#*|}"
+  before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+  if (
+    cd "$REVIEW_WORKTREE"
+    TOUCHSTONE_FAKE_HTTP_STATUS="$http_status" \
+      review_command run --codex-home "$REVIEW_HOME"
+  ) >"$TEST_DIR/http-$http_status.out" 2>&1; then
+    fail "HTTP $http_status review failure was accepted"
+  elif ! grep -qF "$expected_text" "$TEST_DIR/http-$http_status.out"; then
+    fail "HTTP $http_status review failure was not actionable"
+  fi
+  after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+  [ $((after_calls - before_calls)) -eq 1 ] \
+    || fail "HTTP $http_status review was retried"
+done
+before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
 if (
   cd "$REVIEW_WORKTREE"
-  review_command run --codex-home "$EMPTY_RUN_HOME"
-) >"$TEST_DIR/empty-review-run.out" 2>&1; then
-  fail "normal-review run launched from a clean worktree"
-elif ! grep -qF 'no uncommitted changes' "$TEST_DIR/empty-review-run.out"; then
-  fail "clean run reached credential or Codex setup: $(cat "$TEST_DIR/empty-review-run.out")"
+  TOUCHSTONE_FAKE_CURL_STATUS=28 \
+    review_command run --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/review-timeout.out" 2>&1; then
+  fail "OpenRouter timeout was accepted"
+elif ! grep -qF 'timed out' "$TEST_DIR/review-timeout.out"; then
+  fail "OpenRouter timeout lost its diagnostic"
 fi
-[ ! -e "$REVIEW_FSMONITOR_MARKER" ] \
-  || fail "normal-review run executed repository-configured fsmonitor"
-git -C "$REVIEW_WORKTREE" config --unset core.fsmonitor
-printf 'review input\n' >"$REVIEW_WORKTREE/untracked-review-input"
-touchstone_review_require_uncommitted_slice "$REVIEW_WORKTREE" \
-  || fail "normal review rejected an untracked review slice: $TOUCHSTONE_CODEX_ERROR"
-rm -f "$REVIEW_WORKTREE/untracked-review-input"
-printf 'baseline\n' >"$REVIEW_WORKTREE/tracked-review-input"
-git -C "$REVIEW_WORKTREE" add tracked-review-input
-git -C "$REVIEW_WORKTREE" \
-  -c user.name=Touchstone -c user.email=touchstone@example.invalid \
-  commit -qm 'add review input fixture'
-printf 'unstaged review input\n' >"$REVIEW_WORKTREE/tracked-review-input"
-touchstone_review_require_uncommitted_slice "$REVIEW_WORKTREE" \
-  || fail "normal review rejected an unstaged review slice: $TOUCHSTONE_CODEX_ERROR"
-git -C "$REVIEW_WORKTREE" restore tracked-review-input
-printf 'staged review input\n' >"$REVIEW_WORKTREE/tracked-review-input"
-git -C "$REVIEW_WORKTREE" add tracked-review-input
-touchstone_review_require_uncommitted_slice "$REVIEW_WORKTREE" \
-  || fail "normal review rejected a staged review slice: $TOUCHSTONE_CODEX_ERROR"
-git -C "$REVIEW_WORKTREE" restore --staged --worktree tracked-review-input
+after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+[ $((after_calls - before_calls)) -eq 1 ] || fail "OpenRouter timeout was retried"
 
-echo "==> normal-review check exercises the managed Codex invocation and exact Git state"
-FAKE_REVIEW_CODEX="$TEST_DIR/fake-review-codex"
-FAKE_REVIEW_CODEX_LOG="$TEST_DIR/fake-review-codex.log"
-cat >"$FAKE_REVIEW_CODEX" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$*" >>"$TOUCHSTONE_FAKE_REVIEW_CODEX_LOG"
-case " $* " in
-  *' --strict-config '*' model_provider="touchstone-review-config-check" '*)
-    if [ -f "$CODEX_HOME/review-normal.config.toml" ] \
-      && grep -qF 'unknown_touchstone_field' "$CODEX_HOME/review-normal.config.toml"; then
-      echo 'Error loading config.toml: unknown configuration field `unknown_touchstone_field`' >&2
-      exit 1
-    fi
-    echo 'Error: Model provider `touchstone-review-config-check` not found' >&2
-    exit 1
-    ;;
-  *' sandbox -P touchstone_review -C '*' --no-optional-locks -c core.excludesFile=/dev/null status --short '*)
-    exit 0
-    ;;
-  *)
-    echo "unexpected Codex invocation: $*" >&2
-    exit 2
-    ;;
-esac
-EOF
-chmod +x "$FAKE_REVIEW_CODEX"
-if ! CODEX_HOME="$TEST_DIR" \
-  TOUCHSTONE_FAKE_REVIEW_CODEX_LOG="$FAKE_REVIEW_CODEX_LOG" \
-  touchstone_review_validate_launch \
-  "$FAKE_REVIEW_CODEX" "$REVIEW_WORKTREE_PHYSICAL" /usr/bin/git; then
-  fail "normal-review launch preflight rejected the valid linked-worktree invocation: $TOUCHSTONE_CODEX_ERROR"
+echo "==> malformed, truncated, unsafe, and unsupported boundaries fail closed"
+MALFORMED_RESPONSE="$TEST_DIR/malformed-response.json"
+printf '{"not":"a completion"}\n' >"$MALFORMED_RESPONSE"
+if (
+  cd "$REVIEW_WORKTREE"
+  TOUCHSTONE_FAKE_REVIEW_RESPONSE="$MALFORMED_RESPONSE" \
+    review_command run --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/malformed-response.out" 2>&1; then
+  fail "malformed OpenRouter response was accepted"
+elif ! grep -qF 'malformed review response' "$TEST_DIR/malformed-response.out"; then
+  fail "malformed OpenRouter response lost its diagnostic"
 fi
-[ "$(wc -l <"$FAKE_REVIEW_CODEX_LOG" | tr -d ' ')" = 2 ] \
-  || fail "normal-review launch preflight did not exercise strict config and Git boundaries"
-assert_contains "$FAKE_REVIEW_CODEX_LOG" \
-  '/usr/bin/git --no-optional-locks -c core.excludesFile=/dev/null status --short'
-BROKEN_REVIEW_HOME="$TEST_DIR/broken-review-home"
-mkdir -p "$BROKEN_REVIEW_HOME"
-cp "$RENDERED_REVIEW_PROFILE" "$BROKEN_REVIEW_HOME/review-normal.config.toml"
-printf '\nunknown_touchstone_field = true\n' >>"$BROKEN_REVIEW_HOME/review-normal.config.toml"
-if CODEX_HOME="$BROKEN_REVIEW_HOME" \
-  TOUCHSTONE_FAKE_REVIEW_CODEX_LOG="$FAKE_REVIEW_CODEX_LOG" \
-  touchstone_review_validate_launch \
-  "$FAKE_REVIEW_CODEX" "$REVIEW_WORKTREE_PHYSICAL" /usr/bin/git; then
-  fail "normal-review launch preflight accepted an unknown strict profile field"
-elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" \
-  | grep -qF 'unknown_touchstone_field'; then
-  fail "normal-review parser rejection lost its actionable diagnostic: $TOUCHSTONE_CODEX_ERROR"
+TRUNCATED_RESPONSE="$TEST_DIR/truncated-response.json"
+jq '.choices[0].finish_reason = "length"' "$FAKE_RESPONSE" >"$TRUNCATED_RESPONSE"
+if (
+  cd "$REVIEW_WORKTREE"
+  TOUCHSTONE_FAKE_REVIEW_RESPONSE="$TRUNCATED_RESPONSE" \
+    review_command run --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/truncated-response.out" 2>&1; then
+  fail "truncated OpenRouter response was accepted"
+elif ! grep -qF 'truncated the review' "$TEST_DIR/truncated-response.out"; then
+  fail "truncated OpenRouter response lost its diagnostic"
 fi
-if touchstone_review_render_profile \
-  "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
-  "$TEST_DIR/unsafe-review.config.toml" \
-  "$REVIEW_WORKTREE_PHYSICAL" \
-  "$EXPECTED_REVIEW_GIT_DIR\"unsafe" "$EXPECTED_REVIEW_COMMON_DIR"; then
-  fail "normal-review profile accepted an unsafe Git metadata path"
+before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+if (
+  cd "$REVIEW_WORKTREE"
+  TOUCHSTONE_FAKE_UNSAFE_KEY=true \
+    review_command run --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/unsafe-key.out" 2>&1; then
+  fail "unsafe Keychain bytes reached curl configuration"
+elif ! grep -qF 'unsupported characters' "$TEST_DIR/unsafe-key.out"; then
+  fail "unsafe Keychain bytes lost their diagnostic"
 fi
-if touchstone_review_render_profile \
-  "$TOUCHSTONE_ROOT/config/review-normal.config.toml" \
-  "$TEST_DIR/unsafe-review-root.config.toml" \
-  "$REVIEW_WORKTREE_PHYSICAL\"unsafe" \
-  "$EXPECTED_REVIEW_GIT_DIR" "$EXPECTED_REVIEW_COMMON_DIR"; then
-  fail "normal-review profile accepted an unsafe repository root"
+after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+[ "$before_calls" = "$after_calls" ] || fail "unsafe Keychain bytes reached curl"
+UNSUPPORTED_POLICY="$TEST_DIR/review-unsupported-policy.json"
+jq '.schema = "touchstone.review/v2"' \
+  "$TOUCHSTONE_ROOT/config/review-normal.json" >"$UNSUPPORTED_POLICY"
+if TOUCHSTONE_REVIEW_POLICY_FILE="$UNSUPPORTED_POLICY" \
+  review_command check --codex-home "$EMPTY_REVIEW_HOME" \
+  >"$TEST_DIR/unsupported-policy.out" 2>&1; then
+  fail "unsupported review policy was accepted"
+elif ! grep -qF 'malformed or unsupported' "$TEST_DIR/unsupported-policy.out"; then
+  fail "unsupported review policy reached credential lookup"
 fi
 
+echo "==> credential lifecycle remains isolated and recoverable"
 review_command setup --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
   || fail "idempotent setup failed"
-add_count="$(grep -c '^add$' "$FAKE_KEYCHAIN_LOG" || true)"
-[ "$add_count" = 1 ] \
-  || fail "idempotent setup prompted for the key $add_count times"
-
+[ "$(grep -c '^add$' "$FAKE_KEYCHAIN_LOG" || true)" = 1 ] \
+  || fail "idempotent setup prompted more than once"
 review_command rotate --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
   || fail "normal-review credential rotation failed"
-add_count="$(grep -c '^add$' "$FAKE_KEYCHAIN_LOG" || true)"
-[ "$add_count" = 2 ] \
-  || fail "rotation did not replace the existing Keychain credential"
+[ "$(grep -c '^add$' "$FAKE_KEYCHAIN_LOG" || true)" = 2 ] \
+  || fail "rotation did not replace the credential"
 if review_command rotate --codex-home "$REVIEW_HOME" --dry-run >/dev/null 2>&1; then
-  fail "credential rotation accepted --dry-run even though it would mutate Keychain"
+  fail "credential rotation accepted --dry-run"
 fi
-
-SECOND_REVIEW_HOME="$TEST_DIR/review-codex-second"
+SECOND_REVIEW_HOME="$TEST_DIR/review-second-scope"
 review_command setup --codex-home "$SECOND_REVIEW_HOME" >/dev/null 2>&1 \
-  || fail "a second Codex home could not configure its own credential"
+  || fail "a second credential scope could not configure its own key"
 review_command uninstall --codex-home "$SECOND_REVIEW_HOME" >/dev/null 2>&1 \
-  || fail "the second Codex home could not uninstall cleanly"
+  || fail "the second credential scope could not uninstall"
 [ -e "$(fake_key_path "$REVIEW_HOME")" ] \
-  || fail "uninstalling one Codex home deleted another home's credential"
-
-DELETE_FAILURE_HOME="$TEST_DIR/review-delete-failure"
-review_command setup --codex-home "$DELETE_FAILURE_HOME" >/dev/null 2>&1 \
-  || fail "credential deletion fixture setup failed"
-if TOUCHSTONE_FAKE_DELETE_FAIL=true \
-  review_command uninstall --codex-home "$DELETE_FAILURE_HOME" >/dev/null 2>&1; then
-  fail "uninstall reported success after Keychain credential deletion failed"
+  || fail "uninstalling one credential scope deleted another"
+if TOUCHSTONE_FAKE_READBACK_FAIL=true \
+  review_command setup --codex-home "$TEST_DIR/readback-failure" >/dev/null 2>&1; then
+  fail "operational Keychain failure was treated as absence"
 fi
-[ -e "$(fake_key_path "$DELETE_FAILURE_HOME")" ] \
-  || fail "failed credential deletion lost the Keychain item"
-review_command uninstall --codex-home "$DELETE_FAILURE_HOME" >/dev/null 2>&1 \
-  || fail "uninstall did not recover after the transient Keychain failure"
-
+if TOUCHSTONE_FAKE_EMPTY_KEY=true \
+  review_command check --codex-home "$REVIEW_HOME" >/dev/null 2>&1; then
+  fail "normal-review check accepted an empty Keychain credential"
+fi
 review_command uninstall --codex-home "$REVIEW_HOME" >/dev/null 2>&1 \
   || fail "normal-review uninstall failed"
 [ ! -e "$(fake_key_path "$REVIEW_HOME")" ] \
-  || fail "uninstall left the managed Keychain credential behind"
-
-DRY_REVIEW_HOME="$TEST_DIR/review-dry"
+  || fail "uninstall left the managed credential behind"
+DRY_REVIEW_HOME="$TEST_DIR/review-dry-scope"
 review_command setup --codex-home "$DRY_REVIEW_HOME" --dry-run >/dev/null 2>&1 \
-  || fail "normal-review dry run failed"
+  || fail "normal-review setup dry run failed"
 [ ! -e "$DRY_REVIEW_HOME" ] \
-  || fail "normal-review dry run mutated Codex home"
-
-READBACK_REVIEW_HOME="$TEST_DIR/review-readback-failure"
-if TOUCHSTONE_FAKE_READBACK_FAIL=true \
-  review_command setup --codex-home "$READBACK_REVIEW_HOME" >/dev/null 2>&1; then
-  fail "normal-review setup treated an operational Keychain failure as absence"
-fi
-[ ! -e "$(fake_key_path "$READBACK_REVIEW_HOME")" ] \
-  || fail "an operational Keychain failure caused a credential mutation"
-
-EMPTY_REVIEW_HOME="$TEST_DIR/review-empty-key"
-review_command setup --codex-home "$EMPTY_REVIEW_HOME" >/dev/null 2>&1 \
-  || fail "empty-key fixture setup failed"
-if TOUCHSTONE_FAKE_EMPTY_KEY=true \
-  review_command check --codex-home "$EMPTY_REVIEW_HOME" >/dev/null 2>&1; then
-  fail "normal-review check accepted an empty Keychain credential"
-fi
-TOUCHSTONE_FAKE_EMPTY_KEY=true \
-  review_command uninstall --codex-home "$EMPTY_REVIEW_HOME" >/dev/null 2>&1 \
-  || fail "empty-key fixture uninstall failed"
-[ ! -e "$(fake_key_path "$EMPTY_REVIEW_HOME")" ] \
-  || fail "uninstall left an empty Keychain item behind"
-
+  || fail "normal-review setup dry run mutated its credential scope"
 if TOUCHSTONE_REVIEW_PLATFORM=Linux \
   TOUCHSTONE_REVIEW_SECURITY_BIN="$FAKE_SECURITY" \
   bash "$TOUCHSTONE_ROOT/bin/touchstone" review check \
   --codex-home "$REVIEW_HOME" >/dev/null 2>&1; then
-  fail "automatic Keychain review setup claimed support on a non-macOS platform"
+  fail "automatic Keychain setup claimed support on a non-macOS platform"
 fi
 assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-steering-install.sh" \
   'Set up lower-cost normal reviews through OpenRouter now?'
-assert_contains "$TOUCHSTONE_ROOT/bin/touchstone" \
-  'steering install --non-interactive'
 assert_contains "$TOUCHSTONE_ROOT/bin/touchstone" \
   'touchstone review setup|check|run|rotate|uninstall'
 

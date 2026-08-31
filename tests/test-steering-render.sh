@@ -538,17 +538,17 @@ else
   fail "absent file misreported: $(grep GEMINI "$TMP_DIR/hver3.out" | head -1)"
 fi
 
-# The installed review procedure keeps one managed cost profile and one
-# supported Codex invocation; it must not revive the retired CodeRabbit command.
+# The installed review procedure keeps the stable bounded OpenRouter command
+# and serious Codex invocation; it must not revive the retired CodeRabbit path.
 HCMD="$TMP_DIR/hcmd"
 bash "$INSTALL" install --home "$HCMD" >/dev/null 2>&1
 if grep -qF -- 'touchstone review check' "$HCMD/.touchstone/principles/local-review.md" \
   && grep -qF -- 'OpenRouter' "$HCMD/.touchstone/principles/local-review.md" \
   && grep -qF -- 'touchstone review run' "$HCMD/.touchstone/principles/local-review.md" \
   && ! grep -qF -- 'coderabbit review --agent --uncommitted' "$HCMD/.touchstone/principles/local-review.md"; then
-  pass "installed local review uses the managed lower-cost Codex profile"
+  pass "installed local review uses the cost-bounded OpenRouter command"
 else
-  fail "installed local-review.md does not carry the Codex profile contract"
+  fail "installed local-review.md does not carry the OpenRouter command contract"
 fi
 
 # A home containing a single quote cannot be rendered into a pasteable
