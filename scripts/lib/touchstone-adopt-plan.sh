@@ -10,38 +10,36 @@ toml_escape() {
 render_contract() {
   local name path _profile task target required command
   local setup_command="" setup_path setup_value setup_entry quoted_path
-  {
-    printf 'schema = 1\n\n'
-    printf '[validation]\n'
-    printf 'runtime = "bash"\n'
-    while IFS="$(printf '\t')" read -r setup_path setup_value; do
-      [ -n "$setup_path" ] || continue
-      if [ "$setup_path" = . ]; then
-        setup_entry="$setup_value"
-      else
-        printf -v quoted_path '%q' "$setup_path"
-        setup_entry="(cd $quoted_path && $setup_value)"
-      fi
-      setup_command="${setup_command:+$setup_command && }$setup_entry"
-    done < <(plan_records "$SETUPS_FILE")
-    if [ -n "$setup_command" ]; then
-      printf 'setup = "%s"\n' "$(toml_escape "$setup_command")"
+  printf 'schema = 1\n\n' || return
+  printf '[validation]\n' || return
+  printf 'runtime = "bash"\n' || return
+  while IFS="$(printf '\t')" read -r setup_path setup_value; do
+    [ -n "$setup_path" ] || continue
+    if [ "$setup_path" = . ]; then
+      setup_entry="$setup_value"
+    else
+      printf -v quoted_path '%q' "$setup_path" || return
+      setup_entry="(cd $quoted_path && $setup_value)"
     fi
-    while IFS="$(printf '\t')" read -r name path _profile; do
-      [ -n "$name" ] || continue
-      printf '\n[[validation.targets]]\n'
-      printf 'name = "%s"\n' "$(toml_escape "$name")"
-      printf 'path = "%s"\n' "$(toml_escape "$path")"
-    done < <(plan_records "$TARGETS_FILE")
-    while IFS="$(printf '\t')" read -r task target required command; do
-      [ -n "$task" ] || continue
-      printf '\n[[validation.tasks]]\n'
-      printf 'name = "%s"\n' "$(toml_escape "$task")"
-      printf 'target = "%s"\n' "$(toml_escape "$target")"
-      printf 'command = "%s"\n' "$(toml_escape "$command")"
-      printf 'required = %s\n' "$required"
-    done < <(plan_records "$TASKS_FILE")
-  } || operational_failure "could not render .touchstone.toml"
+    setup_command="${setup_command:+$setup_command && }$setup_entry"
+  done < <(plan_records "$SETUPS_FILE")
+  if [ -n "$setup_command" ]; then
+    printf 'setup = "%s"\n' "$(toml_escape "$setup_command")" || return
+  fi
+  while IFS="$(printf '\t')" read -r name path _profile; do
+    [ -n "$name" ] || continue
+    printf '\n[[validation.targets]]\n' || return
+    printf 'name = "%s"\n' "$(toml_escape "$name")" || return
+    printf 'path = "%s"\n' "$(toml_escape "$path")" || return
+  done < <(plan_records "$TARGETS_FILE")
+  while IFS="$(printf '\t')" read -r task target required command; do
+    [ -n "$task" ] || continue
+    printf '\n[[validation.tasks]]\n' || return
+    printf 'name = "%s"\n' "$(toml_escape "$task")" || return
+    printf 'target = "%s"\n' "$(toml_escape "$target")" || return
+    printf 'command = "%s"\n' "$(toml_escape "$command")" || return
+    printf 'required = %s\n' "$required" || return
+  done < <(plan_records "$TASKS_FILE")
 }
 
 capture_rendered_plan() {
@@ -83,13 +81,11 @@ plan_memory_file() {
 }
 
 render_tracker_contract() {
-  {
-    printf 'schema = 1\n'
-    printf 'type = "%s"\n' "$(toml_escape "$TRACKER_TYPE")"
-    if [ "$TRACKER_TYPE" = linear ]; then
-      printf 'key_prefix = "%s"\n' "$(toml_escape "$TRACKER_PREFIX")"
-    fi
-  } || operational_failure "could not render .touchstone-tracker.toml"
+  printf 'schema = 1\n' || return
+  printf 'type = "%s"\n' "$(toml_escape "$TRACKER_TYPE")" || return
+  if [ "$TRACKER_TYPE" = linear ]; then
+    printf 'key_prefix = "%s"\n' "$(toml_escape "$TRACKER_PREFIX")" || return
+  fi
 }
 
 safe_managed_path() {

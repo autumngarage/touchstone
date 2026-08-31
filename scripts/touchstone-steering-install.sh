@@ -314,18 +314,18 @@ render_block() {
   # The routing table names principles/*.md. Those documents are installed
   # beside the block, so the paths must resolve from the agent's home rather
   # than from a repository that no longer carries them.
-  local principles_home="$HOME_DIR/$PRINCIPLES_RELATIVE"
-  {
-    printf '%s\n' "$BEGIN_MARKER"
-    printf '\n<!-- Installed by touchstone %s. Do not edit between the markers; edit the\n' "$TOOL_VERSION"
-    cat <<'EOF'
+  local principles_home="$HOME_DIR/$PRINCIPLES_RELATIVE" escaped_home last_byte
+  escaped_home="$(sed_replacement "$principles_home")" || return
+  printf '%s\n' "$BEGIN_MARKER" || return
+  printf '\n<!-- Installed by touchstone %s. Do not edit between the markers; edit the\n' "$TOOL_VERSION" || return
+  cat <<'EOF' || return
      project's TOUCHSTONE.md upstream and reinstall. Everything outside the
      markers is yours. Remove with: touchstone steering uninstall -->
 EOF
-    sed "s|\`principles/|\`$(sed_replacement "$principles_home")/|g" "$SOURCE"
-    if [ -n "$(tail -c 1 "$SOURCE")" ]; then printf '\n'; fi
-    printf '%s\n' "$END_MARKER"
-  }
+  sed "s|\`principles/|\`$escaped_home/|g" "$SOURCE" || return
+  last_byte="$(tail -c 1 "$SOURCE")" || return
+  if [ -n "$last_byte" ]; then printf '\n' || return; fi
+  printf '%s\n' "$END_MARKER" || return
 }
 
 capture_rendered() {
@@ -586,12 +586,13 @@ preflight_principles() {
 # unrewritten, those links resolve nowhere on a machine whose repositories
 # carry no Touchstone files.
 render_principle() {
-  local source="$1" principles_home="$HOME_DIR/$PRINCIPLES_RELATIVE"
+  local source="$1" principles_home="$HOME_DIR/$PRINCIPLES_RELATIVE" escaped_home
+  escaped_home="$(sed_replacement "$principles_home")" || return
   # Two spellings route to the installed copies: inline code (`principles/…`)
   # and a bare ` principles/…` path inside a command line. Both must resolve
   # beside the installed steering block, not inside a consumer repository.
-  sed -e "s|\`principles/|\`$(sed_replacement "$principles_home")/|g" \
-    -e "s|\([[:space:]]\)principles/\([A-Za-z0-9._-]*\.md\)|\1'$(sed_replacement "$principles_home")/\2'|g" "$source"
+  sed -e "s|\`principles/|\`$escaped_home/|g" \
+    -e "s|\([[:space:]]\)principles/\([A-Za-z0-9._-]*\.md\)|\1'$escaped_home/\2'|g" "$source" || return
 }
 
 # Ownership is recorded per entry as `checksum<TAB>name`; match on the name
