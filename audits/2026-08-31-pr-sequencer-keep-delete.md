@@ -66,13 +66,16 @@ independent authority and should be reconsidered when this surface is thinned.
 
 ### Delete: runtime review-budget reconstruction
 
-Delete `read_review_budget`, its PR-body ledger, hosted-history reconstruction,
-status fields, output, tests, and follow-up bug tasks AUT-874 and AUT-876. The
-three-round stop is driver scope discipline, now stated directly in steering.
-The runtime surface does not enforce it, cannot recover unrecorded local passes,
-and did not change the AUT-750 decision. It added 250 script lines and 85 test
-lines in #1048, then immediately created more correctness tasks. Historical
-review analytics belong in the bounded AUT-885 audit, not the merge client.
+Delete `read_review_budget`, hosted-history reconstruction, status fields,
+output, tests, and follow-up bug tasks AUT-874 and AUT-876. Retain the versioned
+PR-body row and concise authoring guidance only as a durable cross-PR handoff:
+closing, replacing, or restacking a PR must not erase earlier finding-bearing
+rounds for the same capability. The row is not parsed or adjudicated by the
+client. The runtime surface did not enforce the stop, could not recover
+unrecorded local passes, and did not change the AUT-750 decision. It added 250
+script lines and 85 test lines in #1048, then immediately created more
+correctness tasks. Historical review analytics belong in the bounded AUT-885
+audit, not the merge client.
 
 ### Simplify cutoff logic without forgetting mutated findings
 
@@ -98,9 +101,11 @@ required mutation signal must not grow into a general event orchestrator.
 
 ## Approved implementation slices
 
-1. **Delete review-budget runtime state.** One deletion-only PR removes the
-   sequencer/evaluator-adjacent ledger, docs, and tests; steering retains the
-   stop rule. Close AUT-874/AUT-876 as obsolete only after the deletion merges.
+1. **Delete review-budget runtime projection.** One deletion-only PR removes
+   the sequencer parser, current-PR history reads, status/output fields, and
+   their tests. The versioned PR-body row and concise guidance remain as a
+   non-adjudicated cross-PR handoff. Close AUT-874/AUT-876 as obsolete only
+   after the deletion merges.
 2. **Prove a mutation-safe cutoff simplification.** A separate design and
    implementation must distinguish disposable client cutoff prediction from
    the evaluator history that prevents deleted, cleared, or dismissed findings
@@ -114,7 +119,8 @@ required mutation signal must not grow into a general event orchestrator.
    unstarted unless measured evidence crosses their admission gates.
 
 No implementation slice may add a state store, watcher, retry manager, cache,
-counter, ledger, local reviewer adjudicator, or another required check.
+runtime counter or ledger, local reviewer adjudicator, or another required
+check.
 
 ## Acceptance after subtraction
 
