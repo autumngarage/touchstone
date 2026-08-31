@@ -7,8 +7,9 @@ that audit.
 ## Why the earlier decision expired
 
 AUT-305 justified a 513-line `scripts/touchstone-pr.sh` on 2026-08-18. Twelve
-days later the script is 2,572 lines and `tests/test-pr-cli.sh` is 2,653 lines.
-Between v3.7.0 and v3.7.11, the two files grew by 2,694 net lines. Four recent
+days later the script is 2,719 lines and `tests/test-pr-cli.sh` is 2,776 lines.
+Between v3.7.0 and v3.7.11, the two files grew by 2,511 net lines (2,694
+insertions and 183 deletions). Four recent
 review-orchestration PRs (#1033, #1036, #1041, and #1048) produced 40 of 55 bot
 root findings across the sampled 35 merged PRs. That is recurrence evidence,
 not a line-count quota: the delivery client has again become a large local
