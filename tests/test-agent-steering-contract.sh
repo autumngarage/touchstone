@@ -1117,9 +1117,11 @@ for boundary in \
   'GIT_CONFIG_NOSYSTEM = "1"' \
   'GIT_CONFIG_GLOBAL = "/dev/null"' \
   'GIT_CONFIG_SYSTEM = "/dev/null"' \
-  'GIT_CONFIG_COUNT = "1"' \
+  'GIT_CONFIG_COUNT = "2"' \
   'GIT_CONFIG_KEY_0 = "core.excludesFile"' \
   'GIT_CONFIG_VALUE_0 = "/dev/null"' \
+  'GIT_CONFIG_KEY_1 = "core.fsmonitor"' \
+  'GIT_CONFIG_VALUE_1 = "false"' \
   '"~/Library/Keychains" = "deny"'; do
   assert_contains "$TOUCHSTONE_ROOT/config/review-normal.config.toml" "$boundary"
 done
@@ -1164,11 +1166,21 @@ assert_not_contains "$RENDERED_REVIEW_PROFILE" \
   "\"$(dirname "$REVIEW_REPOSITORY")\" = \"read\""
 
 echo "==> normal-review run refuses an empty Git slice before credential lookup"
+REVIEW_FSMONITOR="$TEST_DIR/review-fsmonitor"
+REVIEW_FSMONITOR_MARKER="$TEST_DIR/review-fsmonitor-ran"
+cat >"$REVIEW_FSMONITOR" <<EOF
+#!/usr/bin/env bash
+printf 'invoked\n' >"$REVIEW_FSMONITOR_MARKER"
+EOF
+chmod +x "$REVIEW_FSMONITOR"
+git -C "$REVIEW_WORKTREE" config core.fsmonitor "$REVIEW_FSMONITOR"
 if touchstone_review_require_uncommitted_slice "$REVIEW_WORKTREE"; then
   fail "normal review accepted an empty uncommitted slice"
 elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" | grep -qF 'no uncommitted changes'; then
   fail "empty normal review produced the wrong diagnostic: $TOUCHSTONE_CODEX_ERROR"
 fi
+[ ! -e "$REVIEW_FSMONITOR_MARKER" ] \
+  || fail "normal-review host preflight executed repository-configured fsmonitor"
 EMPTY_RUN_HOME="$TEST_DIR/empty-run-home"
 if (
   cd "$REVIEW_WORKTREE"
@@ -1178,6 +1190,9 @@ if (
 elif ! grep -qF 'no uncommitted changes' "$TEST_DIR/empty-review-run.out"; then
   fail "clean run reached credential or Codex setup: $(cat "$TEST_DIR/empty-review-run.out")"
 fi
+[ ! -e "$REVIEW_FSMONITOR_MARKER" ] \
+  || fail "normal-review run executed repository-configured fsmonitor"
+git -C "$REVIEW_WORKTREE" config --unset core.fsmonitor
 printf 'review input\n' >"$REVIEW_WORKTREE/untracked-review-input"
 touchstone_review_require_uncommitted_slice "$REVIEW_WORKTREE" \
   || fail "normal review rejected an untracked review slice: $TOUCHSTONE_CODEX_ERROR"
