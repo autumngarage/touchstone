@@ -308,10 +308,12 @@ It requires the policy-owned gate to have already succeeded for that exact
 head, asks GitHub to merge bound to it, and reports merged, queued, or
 auto-merge-enabled only while the head still equals the reviewed one. It never
 starts or waits for review, or reconstructs another verdict from review
-timestamps. Where the CLI is absent, verify the declared exact-head gate is
-successful. Immediately before the alternate merge command, re-read
-`mergeQueueEntry`; a live entry for the reviewed head ends the mutation path.
-Only when no such entry exists, run
+timestamps. Where the CLI is absent, first verify that effective enforcement
+includes both the declared exact-head gate and the merge queue. Without the
+queue, stop and repair enforcement: raw recovery cannot preserve review
+freshness. With both applied, verify the gate is successful and immediately
+re-read `mergeQueueEntry`; a live entry for the reviewed head ends the mutation
+path. Only when no such entry exists, run
 
 ```bash
 gh pr merge <n> --squash --match-head-commit <reviewed-sha>

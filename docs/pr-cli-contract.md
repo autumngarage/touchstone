@@ -204,10 +204,12 @@ taking this document's word for it.
   verdict from mutable comment timestamps. A review-gated policy without a
   merge queue is reported as partial and requires the explicit audited
   `--unguarded` path: only the merge group's prospective gate makes feedback
-  after the PR gate atomic with delivery. Raw equivalent: verify the
-  policy-bound gate is successful for the exact head, then `gh pr merge
-  --squash --match-head-commit SHA`, then re-read `state`, `headRefOid`, merge
-  queue, and auto-merge state.
+  after the PR gate atomic with delivery. Raw recovery is available only when
+  effective enforcement includes that queue: verify the policy-bound gate is
+  successful for the exact head, then `gh pr merge --squash
+  --match-head-commit SHA`, then re-read `state`, `headRefOid`, merge queue,
+  and auto-merge state. Without the queue, stop and repair enforcement; a raw
+  merge would lose the prospective review boundary.
 
   Why not the raw sequence: `gh pr merge` exit codes lie in both directions —
   nonzero after a merge that actually succeeded, and zero having merely *armed*
