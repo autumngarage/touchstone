@@ -305,14 +305,13 @@ touchstone pr merge <n> --head <reviewed-sha>
 ```
 
 It requires the policy-owned gate to have already succeeded for that exact
-head and refuses review-surface activity at or after that gate completed,
-asks GitHub to merge bound to it, and reports merged, queued, or
+head, asks GitHub to merge bound to it, and reports merged, queued, or
 auto-merge-enabled only while the head still equals the reviewed one. It never
-starts or waits for review. Where the CLI is absent, verify the declared gate
-is successful and newer than the latest conversation, formal-review, and
-inline-review activity for the reviewed head. Immediately before the alternate
-merge command, re-read `mergeQueueEntry`; a live entry for the reviewed head
-ends the mutation path. Only when no such entry exists, run
+starts or waits for review, or reconstructs another verdict from review
+timestamps. Where the CLI is absent, verify the declared exact-head gate is
+successful. Immediately before the alternate merge command, re-read
+`mergeQueueEntry`; a live entry for the reviewed head ends the mutation path.
+Only when no such entry exists, run
 
 ```bash
 gh pr merge <n> --squash --match-head-commit <reviewed-sha>
@@ -323,6 +322,10 @@ live `headRefOid`, which would bind the merge to whatever was pushed last),
 then re-read `state`, `headRefOid`, merge-queue and auto-merge state: merged,
 queued, or auto-merge-enabled count only while `headRefOid` still equals the
 reviewed head, and only `state == MERGED` proves the merge.
+
+The protected merge group's prospective gate re-evaluates the complete review
+surface after admission. It owns feedback that arrives after the PR gate;
+client-side timestamp comparisons do not make that boundary atomic.
 
 **`--match-head-commit` is the head binding.** It refuses the merge if the PR head moved since you checked the gate — which is exactly the race that lets an unreviewed commit slip in behind a passing review.
 
