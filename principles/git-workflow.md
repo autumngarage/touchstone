@@ -553,19 +553,19 @@ this loop. Otherwise, if every finding resolves **without moving the head**
 (dispositions 3–4), answer every thread, prove none remain with the complete
 paginated thread check above, then merge — answered findings satisfy the gate
 (issue #751); do not request another review. If any allowed fix lands as a
-commit (dispositions 1–2), batch ALL of them into ONE commit, answer every
-thread, push, and request one review for the new head.
+commit (dispositions 1–2), batch ALL of them into ONE commit, push it, answer
+every fixed finding with the reachable commit, resolve every thread, and
+request one review for the new head.
 
 **Record the handoff at the layer that owns it.** GitHub's reviews and comments
 are the durable record for finding-bearing heads on the current PR. The v1 PR
 body row's `prior_hosted_rounds` therefore means *replaced PRs only*; it never
 includes rounds visible on the current PR. Before a review-fix commit, preserve
-each finding's exact-head evidence and classify its disposition. Batch the
-allowed fixes into one commit and push it, then answer fixed findings with that
-reachable fix SHA as the loop above requires. Before replacing, stacking, or
-closing the PR, count each finding-bearing hosted result on that outgoing PR
-once, add that count to its existing `prior_hosted_rounds`, and carry the total
-into any replacement PR. Count a later permitted review that produces a new
+each finding's exact-head evidence and classify its disposition; the loop above
+owns the mutation and answer order. Before replacing, stacking, or closing the
+PR, count each finding-bearing hosted result on that outgoing PR once, add that
+count to its existing `prior_hosted_rounds`, and carry the total into any
+replacement PR. Count a later permitted review that produces a new
 finding-bearing result even when the head did not change. An audited provider
 recovery that merely reproduces the same result, or a clean result, adds
 nothing. Preserve legacy `local_rounds` and `prior_hosted_rounds` values

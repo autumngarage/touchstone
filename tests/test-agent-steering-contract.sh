@@ -384,7 +384,11 @@ assert_contains "$GIT_WORKFLOW_GUIDE" \
 assert_contains "$GIT_WORKFLOW_GUIDE" \
   'legacy `local_rounds` and `prior_hosted_rounds` values'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
-  "push it, then answer fixed findings"
+  "push it, answer"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "every fixed finding with the reachable commit"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "owns the mutation and answer order"
 assert_contains "$GIT_WORKFLOW_GUIDE" \
   "finding-bearing hosted result"
 assert_contains "$GIT_WORKFLOW_GUIDE" \
