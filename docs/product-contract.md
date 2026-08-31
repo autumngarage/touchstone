@@ -63,8 +63,9 @@ touched; `uninstall` removes the block and leaves the rest byte-identical.
 Normal local review is intentionally routed through OpenRouter to reduce the
 cost of the common review tier without changing the serious or PR-visible
 review paths. `touchstone review setup` stores a dedicated OpenRouter credential
-in macOS Keychain. `touchstone review check` verifies the shipped profile and
-credential availability before an agent invokes it. A failed check permits the
+in macOS Keychain. `touchstone review check` verifies the credential, parses the
+shipped profile with the installed Codex, and proves exact read-only Git access
+from the current primary or linked checkout. A failed check permits the
 documented normal-tier waiver; it never permits a silent fallback to the more
 expensive default profile.
 

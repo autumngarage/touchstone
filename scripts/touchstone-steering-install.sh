@@ -170,7 +170,7 @@ offer_review_setup() {
   else
     review_codex_home="${CODEX_HOME:-$HOME_DIR/.codex}"
   fi
-  if bash "$ROOT/scripts/touchstone-review-setup.sh" check \
+  if bash "$ROOT/scripts/touchstone-review-setup.sh" credential-check \
     --codex-home "$review_codex_home" >/dev/null 2>&1; then
     echo "==> lower-cost normal review is already configured"
     return 0

@@ -116,6 +116,55 @@ touchstone_review_render_profile() {
   fi
 }
 
+touchstone_review_codex() {
+  local codex_bin="$1"
+  shift
+
+  "$codex_bin" \
+    -p review-normal \
+    -c 'shell_environment_policy.filters.OPENROUTER_API_KEY="exclude"' \
+    -c 'allow_login_shell=false' \
+    --disable shell_snapshot \
+    --disable plugins \
+    --disable plugin_hooks \
+    --disable enable_mcp_apps \
+    "$@"
+}
+
+touchstone_review_validate_launch() {
+  local codex_bin="$1" repository_root="$2" git_bin="$3"
+  local output status=0
+  local sentinel="touchstone-review-config-check"
+
+  # Codex has no config-check command, and `codex sandbox` does not support
+  # strict parsing. An undefined provider makes exec parse the complete profile
+  # and stop locally before any model or network request.
+  output="$(
+    touchstone_review_codex "$codex_bin" \
+      --strict-config \
+      -c "model_provider=\"$sentinel\"" \
+      -a never \
+      exec --ephemeral --ignore-rules 'validate managed review configuration' \
+      2>&1
+  )" || status="$?"
+  if [ "$status" -ne 1 ] \
+    || ! printf '%s\n' "$output" | grep -qF "Model provider \`$sentinel\` not found"; then
+    touchstone_codex_fail "Codex rejected the managed review invocation: $output"
+    return
+  fi
+
+  if ! output="$(
+    touchstone_review_codex "$codex_bin" \
+      sandbox -P touchstone_review -C "$repository_root" \
+      "$git_bin" --no-optional-locks \
+      -c core.excludesFile=/dev/null status --short \
+      2>&1
+  )"; then
+    touchstone_codex_fail "Codex rejected the managed review profile or cannot inspect exact Git state: $output"
+    return
+  fi
+}
+
 touchstone_codex_physical_directory() {
   local requested="$1" previous="$PWD" directory
 
