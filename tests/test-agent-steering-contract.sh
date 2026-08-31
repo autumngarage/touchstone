@@ -374,11 +374,13 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "Exact-head review makes moving stacks mul
 assert_contains "$GIT_WORKFLOW_GUIDE" "Do not open dependent"
 assert_contains "$GIT_WORKFLOW_GUIDE" "while a parent is still finding-bearing"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  "- Review budget: v1 capability="
+  "- Review history: v2 capability="
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  "hosted rounds on"
+  "hosted_finding_heads=<comma-separated 40-character SHAs or none>"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  'prior_hosted_rounds'
+  "PR CLI neither parses"
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "Use the resulting commit SHA for a"
 
 echo "==> scope expansion checkpoints before independent edits"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \

@@ -18,7 +18,7 @@ touchstone pr answer PR --all-resolved-check
 ```
 
 Every command accepts `--project DIR`; every command except `answer` accepts `--json` (`answer` has no observation to report and refuses it). JSON has schema
-`touchstone.pr/v1`; adding fields or enum values is compatible, while changing
+`touchstone.pr/v2`; adding fields or enum values is compatible, while changing
 an existing value's meaning requires a new schema. Exit 0 means the reported state was verified, exit 1 is
 an operational or transport failure, and exit 2 is invalid or unsafe input. No
 command runs a daemon, stores credentials, or persists derived PR state.
@@ -28,9 +28,14 @@ refreshed a completed attempt; `already-active` means a behavior-v2 run is the
 authoritative evaluator and the client returned while that run waits. A
 successful guarded `merge` reports `verified-success`: it observed an existing
 policy-bound successful gate and did not request another evaluation.
-`open` and `status` also include an additive `reviewBudget` observation. It is
-round-accounting state, never a review verdict or permission to skip the
-required exact-head review.
+
+### v1 to v2 migration
+
+Schema v2 removes the additive v1 `reviewBudget` object. Consumers migrate by
+stopping reads of that field; every other field and meaning is unchanged. The
+CLI has no v1 compatibility mode because recreating that observation would
+restore the review-surface polling this boundary removed. Review history lives
+in the PR body for agent handoff and is not a CLI verdict.
 
 ## Operations and raw equivalents
 
@@ -75,10 +80,6 @@ taking this document's word for it.
   posted evidence cannot be stranded beyond its cutoff. A newly posted request
   uses the short request window; an idempotent retry that finds the exact
   request already present uses the longer review window.
-  Immediately before inspecting or posting that request, `open` reports the
-  same review-budget observation as `status`. It then re-reads the request
-  surface for sequencing; the earlier observation cannot suppress a request
-  after intervening PR or workflow activity.
   Raw equivalent: compare `git rev-parse HEAD` with `git ls-remote`, inspect
   `gh pr list`, create with `gh pr create`, re-read, then inspect comments
   before `gh pr comment --body "@codex review"`, then re-run a completed gate
@@ -133,20 +134,6 @@ taking this document's word for it.
   timestamp, status reports the ambiguity and their run ids instead of
   inventing an order.
 
-  The additive `reviewBudget` object combines a versioned PR-body record of
-  finding-bearing local rounds and hosted rounds from replaced PRs with
-  paginated current-PR review evidence. Current-PR hosted rounds are collapsed
-  by requested head, so retries for one head count once; clean rounds and
-  findings on an unrequested head do not spend the finding-bearing budget. The
-  object reports the capability, local/hosted/total counts, same-shape rounds
-  remaining from the three-round limit, exhaustion, the latest reviewed head,
-  cascade state, and selected exit. An older PR with no record reports local
-  totals and remaining rounds as `null` while still exposing its hosted count.
-  A malformed or duplicate record fails explicitly.
-  This is derived status plus the irreducible local-history input, not a second
-  verdict: exhaustion selects a stop path, while exact-head review remains
-  mandatory for the code that will merge.
-
   The additive `phase` field reduces those authoritative observations to one
   stable enum: `reviewing`, `fix-required`, `ready-to-queue`, `queued`,
   `merged`, or `action-required`. Its one-to-one `nextAction` values are
@@ -187,7 +174,7 @@ taking this document's word for it.
   lives in the central policy repository.
 
   Why not the raw sequence: over the raw call it adds bounded retries and the
-  versioned `touchstone.pr/v1` field names, so an agent parses one stable
+  versioned `touchstone.pr/v2` field names, so an agent parses one stable
   schema across all three operations instead of two.
 
   The failure it prevents is a driver trusting a local verdict over GitHub's.
