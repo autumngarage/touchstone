@@ -2,9 +2,9 @@
 # Staged in disposable Codex state by `touchstone review run`. No credentials.
 
 # Keep the normal-review cost boundary deterministic. Router defaults can admit
-# premium models, and Codex's Responses request reserves the selected model's
-# full completion ceiling. This coding model keeps that reservation economical.
-model = "qwen/qwen3-coder-next"
+# premium models. This economical model is also present in Codex's own catalog,
+# so Codex supplies its native review instructions and tool metadata.
+model = "openai/gpt-5.4-mini"
 model_provider = "openrouter"
 model_reasoning_effort = "medium"
 model_reasoning_summary = "none"
@@ -26,7 +26,11 @@ inherit = "core"
 GIT_CONFIG_NOSYSTEM = "1"
 GIT_CONFIG_GLOBAL = "/dev/null"
 GIT_CONFIG_SYSTEM = "/dev/null"
-GIT_CONFIG_COUNT = "0"
+GIT_CONFIG_COUNT = "2"
+GIT_CONFIG_KEY_0 = "core.excludesFile"
+GIT_CONFIG_VALUE_0 = "/dev/null"
+GIT_CONFIG_KEY_1 = "core.fsmonitor"
+GIT_CONFIG_VALUE_1 = "false"
 
 [shell_environment_policy.filters]
 OPENROUTER_API_KEY = "exclude"

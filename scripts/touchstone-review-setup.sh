@@ -150,12 +150,18 @@ prepare_review_runtime() {
   REVIEW_GIT_COMMON_DIR="$TOUCHSTONE_REVIEW_GIT_COMMON_DIR"
   unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
     GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES \
-    GIT_CONFIG GIT_CONFIG_PARAMETERS
+    GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 \
+    GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1
   GIT_CONFIG_NOSYSTEM=1
   GIT_CONFIG_GLOBAL=/dev/null
   GIT_CONFIG_SYSTEM=/dev/null
-  GIT_CONFIG_COUNT=0
-  export GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT
+  GIT_CONFIG_COUNT=2
+  GIT_CONFIG_KEY_0=core.excludesFile
+  GIT_CONFIG_VALUE_0=/dev/null
+  GIT_CONFIG_KEY_1=core.fsmonitor
+  GIT_CONFIG_VALUE_1=false
+  export GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT \
+    GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1
   cd "$REPOSITORY_ROOT"
   RUNTIME_HOME="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-review.XXXXXX")" \
     || die "could not create isolated Codex state for normal review"
@@ -197,9 +203,17 @@ case "$ACTION" in
   run)
     RUNTIME_HOME=""
     [ "$DRY_RUN" = false ] || die "--dry-run is not valid for run"
+    touchstone_review_resolve_git_context "$(pwd -P)" \
+      || die "$TOUCHSTONE_CODEX_ERROR"
+    touchstone_review_require_uncommitted_slice \
+      "$TOUCHSTONE_REVIEW_REPOSITORY_ROOT" \
+      || die "$TOUCHSTONE_CODEX_ERROR"
     require_keychain
     require_usable_key
     resolve_codex
+    resolve_review_git
+    PATH="$(dirname "$REVIEW_GIT_BIN"):${PATH:-/usr/bin:/bin}"
+    export PATH
     prepare_review_runtime
     OPENROUTER_API_KEY="$KEY_VALUE"
     unset KEY_VALUE
