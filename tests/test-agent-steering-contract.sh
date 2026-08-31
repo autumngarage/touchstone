@@ -376,9 +376,19 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "while a parent is still finding-bearing"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   "- Review budget: v1 capability="
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  "hosted rounds on"
+  "authoring step owns only the local facts"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  'prior_hosted_rounds'
+  "owns hosted-round accounting"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  'prior_hosted_rounds` therefore means *replaced PRs only*'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  'legacy `local_rounds` and `prior_hosted_rounds` values exactly'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "provider retry or"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "already-counted head adds nothing"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "do not add a CLI parser"
 
 echo "==> scope expansion checkpoints before independent edits"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \

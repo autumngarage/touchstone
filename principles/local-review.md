@@ -123,15 +123,14 @@ the PR is opened.
 Never claim a build, test, or manual validation happened unless it actually
 ran.
 
-The versioned `Review budget` row carries the parts of round history the current
-PR cannot expose: cumulative finding-bearing local rounds and hosted rounds on
-replaced PRs. Update it after the local pass and carry the current status count
-into `prior_hosted_rounds` when replacing a PR; a provider retry on the same
-head is not another round. `reviewed_head` records the exact head the local pass
-saw, `cascade=true` means a review fix created another defect, and `exit`
-records the chosen stop path. A missing row is compatible with older PRs but
-reports unknown cross-PR history; it never waives the required exact-head PR
-review.
+The authoring step owns only the local facts in the versioned `Review budget`
+row: increment `local_rounds` for a finding-bearing local pass and set
+`reviewed_head` to the exact head that pass saw. When composing a replacement
+PR, copy the `prior_hosted_rounds` value supplied by the outgoing PR's handoff
+unchanged; do not reconstruct or reset it here. `principles/git-workflow.md`
+owns hosted-round accounting plus the post-PR `cascade` and `exit` updates. A
+missing row is compatible with older PRs but reports unknown cross-PR history;
+it never waives the required exact-head PR review.
 
 ## Tier classification
 

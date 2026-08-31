@@ -556,6 +556,21 @@ paginated thread check above, then merge — answered findings satisfy the gate
 commit (dispositions 1–2), batch ALL of them into ONE commit, answer every
 thread, push, and request one review for the new head.
 
+**Record the handoff at the layer that owns it.** GitHub's reviews and comments
+are the durable record for finding-bearing heads on the current PR. The v1 PR
+body row's `prior_hosted_rounds` therefore means *replaced PRs only*; it never
+includes rounds visible on the current PR. Before a review-fix commit, preserve
+each finding's exact-head evidence and answer it with its disposition. Before
+replacing, stacking, or closing the PR, count each distinct finding-bearing
+hosted head on that outgoing PR once, add that count to its existing
+`prior_hosted_rounds`, and carry the total into any replacement PR. Preserve
+legacy `local_rounds` and `prior_hosted_rounds` values exactly; never reset them
+because their individual historical heads are unavailable. A provider retry or
+clean result on an already-counted head adds nothing. Update `cascade` when a
+review fix creates a defect and `exit` when choosing a stop path. These are
+human-readable handoff facts only: do not add a CLI parser, state store, poller,
+gate, or merge authorization for them.
+
 **The budget: three finding-bearing rounds per capability, never more than three
 on one PR.** This is a discipline, not an enforced limit — the wrapper that
 refused a fourth request is gone, and a rule enforced by a script you can
