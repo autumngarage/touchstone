@@ -21,10 +21,10 @@ the loop:
 
 The `touchstone review` command is the stable normal-review interface. Its
 versioned policy selects the backend and owns the cost limits, so the backend
-and routing strategy can evolve without changing the delivery workflow. The v1
-backend makes one OpenRouter Chat Completions request using Pareto Code's
-medium coding tier and absolute prompt/completion price ceilings. It names no
-concrete review model; OpenRouter selects the cheapest eligible model and the
+and routing strategy can evolve without changing the delivery workflow. The v2
+backend makes one OpenRouter Chat Completions request using Auto Router's
+low-cost tier and absolute prompt/completion price ceilings. It names no
+concrete review model; OpenRouter selects for the review prompt and the
 command reports what actually ran. The serious pass and PR-side reviewer
 remain on the default Codex path. The PR-side reviewer runs on open regardless
 and remains the merge authority.
@@ -204,8 +204,8 @@ steering install` offers this setup during interactive onboarding.
 
 The versioned non-secret policy is `config/review-normal.json`; the review
 instructions are `config/review-normal-prompt.md`. The current policy uses
-`openrouter/pareto-code`, the Pareto router's medium coding floor (`0.33`),
-provider price ceilings of $0.50 per million prompt tokens and $2.00 per million
+`openrouter/auto` with Auto Router's low-cost tier, provider price ceilings of
+$0.50 per million prompt tokens and $2.00 per million
 completion tokens, a 100,000-byte request ceiling, and 4,096 completion tokens.
 Changing those parameters or adding a backend is a reviewable policy/adapter
 change behind the same command.

@@ -159,13 +159,17 @@ assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'one direct reques
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'No tools or agent loop'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"schema": "touchstone.review/v1"'
+  '"schema": "touchstone.review/v2"'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
   '"backend": "openrouter-chat-completions"'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"model": "openrouter/pareto-code"'
+  '"model": "openrouter/auto"'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"minCodingScore": 0.33'
+  '"costTier": "low"'
+assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
+  '"model": "openai/'
+assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
+  '"model": "anthropic/'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
   '"maxPromptPricePerMillion": 0.5'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
@@ -651,7 +655,7 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "proje
 assert_not_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "It is the whole mechanism"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Parallel file-writing agents use worktrees by default"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "only model-routing decision"
-assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "OpenRouter Pareto Code"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "OpenRouter Auto Router"
 
 echo "==> active product surfaces do not reintroduce the retired model router"
 # The two compatibility helpers may name retired paths solely to back them up
@@ -1017,8 +1021,8 @@ for expected in \
 done
 assert_not_contains "$TEST_DIR/review-run.out" 'sk-or-v1-dummy-token'
 jq -e '
-  .model == "openrouter/pareto-code" and
-  .plugins == [{id: "pareto-router", min_coding_score: 0.33}] and
+  .model == "openrouter/auto" and
+  .plugins == [{id: "auto-router", cost_tier: "low"}] and
   .provider.require_parameters == true and
   .provider.max_price.prompt == 0.5 and
   .provider.max_price.completion == 2 and
@@ -1133,6 +1137,24 @@ for status_and_text in \
   [ $((after_calls - before_calls)) -eq 1 ] \
     || fail "HTTP $http_status review was retried"
 done
+PRICE_CAP_RESPONSE="$TEST_DIR/price-cap-response.json"
+jq -n '{error: {message: "No endpoints found that satisfy the max price for this request"}}' \
+  >"$PRICE_CAP_RESPONSE"
+before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+if (
+  cd "$REVIEW_WORKTREE"
+  TOUCHSTONE_FAKE_HTTP_STATUS=404 \
+    TOUCHSTONE_FAKE_REVIEW_RESPONSE="$PRICE_CAP_RESPONSE" \
+    review_command run --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/http-price-cap.out" 2>&1; then
+  fail "OpenRouter price-cap failure was accepted"
+elif ! grep -qF 'no model within the configured price ceilings' \
+  "$TEST_DIR/http-price-cap.out"; then
+  fail "OpenRouter price-cap failure was not actionable"
+fi
+after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+[ $((after_calls - before_calls)) -eq 1 ] \
+  || fail "OpenRouter price-cap failure was retried"
 before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
 if (
   cd "$REVIEW_WORKTREE"
@@ -1194,7 +1216,7 @@ fi
 after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
 [ "$before_calls" = "$after_calls" ] || fail "unsafe Keychain bytes reached curl"
 UNSUPPORTED_POLICY="$TEST_DIR/review-unsupported-policy.json"
-jq '.schema = "touchstone.review/v2"' \
+jq '.schema = "touchstone.review/v3"' \
   "$TOUCHSTONE_ROOT/config/review-normal.json" >"$UNSUPPORTED_POLICY"
 if TOUCHSTONE_REVIEW_POLICY_FILE="$UNSUPPORTED_POLICY" \
   review_command check --codex-home "$EMPTY_REVIEW_HOME" \

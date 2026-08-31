@@ -1,11 +1,11 @@
 {
-  "schema": "touchstone.review/v1",
+  "schema": "touchstone.review/v2",
   "backend": "openrouter-chat-completions",
   "endpoint": "https://openrouter.ai/api/v1/chat/completions",
   "router": {
-    "model": "openrouter/pareto-code",
-    "plugin": "pareto-router",
-    "minCodingScore": 0.33
+    "model": "openrouter/auto",
+    "plugin": "auto-router",
+    "costTier": "low"
   },
   "limits": {
     "maxInputBytes": 100000,
