@@ -1169,6 +1169,18 @@ if (
 elif ! grep -qF 'truncated the review' "$TEST_DIR/truncated-response.out"; then
   fail "truncated OpenRouter response lost its diagnostic"
 fi
+FILTERED_RESPONSE="$TEST_DIR/filtered-response.json"
+jq '.choices[0].finish_reason = "content_filter"' \
+  "$FAKE_RESPONSE" >"$FILTERED_RESPONSE"
+if (
+  cd "$REVIEW_WORKTREE"
+  TOUCHSTONE_FAKE_REVIEW_RESPONSE="$FILTERED_RESPONSE" \
+    review_command run --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/filtered-response.out" 2>&1; then
+  fail "non-success OpenRouter finish reason was accepted"
+elif ! grep -qF 'did not complete the review' "$TEST_DIR/filtered-response.out"; then
+  fail "non-success OpenRouter finish reason lost its fail-closed diagnostic"
+fi
 before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
 if (
   cd "$REVIEW_WORKTREE"

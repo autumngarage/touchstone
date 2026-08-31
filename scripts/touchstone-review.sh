@@ -294,8 +294,11 @@ print_response() {
   ' "$WORK_DIR/response.json" >/dev/null \
     || die "OpenRouter returned a malformed review response"
   finish_reason="$("$JQ_BIN" -r '.choices[0].finish_reason' "$WORK_DIR/response.json")"
-  [ "$finish_reason" != length ] \
-    || die "OpenRouter truncated the review at the configured completion limit; split the change"
+  case "$finish_reason" in
+    stop) ;;
+    length) die "OpenRouter truncated the review at the configured completion limit; split the change" ;;
+    *) die "OpenRouter did not complete the review; no local-review evidence was produced" ;;
+  esac
   "$JQ_BIN" -r '.choices[0].message.content' "$WORK_DIR/response.json" \
     >"$WORK_DIR/review.json" \
     || die "OpenRouter returned unreadable review content"
