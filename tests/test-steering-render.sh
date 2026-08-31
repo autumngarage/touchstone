@@ -565,6 +565,23 @@ else
 fi
 [ ! -e "$HQ/.claude/CLAUDE.md" ] || fail "install wrote into a refused home"
 
+# A renderer called as the left operand of `||` cannot rely on `set -e`:
+# Bash disables errexit inside that function. A newline makes the generated
+# sed expression invalid, so every content-producing command must propagate
+# its own failure before any staged driver file is published.
+HNEWLINE="$TMP_DIR/home
+with-newline"
+if bash "$INSTALL" install --home "$HNEWLINE" >"$TMP_DIR/hnewline.out" 2>&1; then
+  fail "install masked a failed canonical render"
+elif grep -q 'could not render canonical steering content' "$TMP_DIR/hnewline.out" \
+  && [ ! -e "$HNEWLINE/.claude/CLAUDE.md" ] \
+  && [ ! -e "$HNEWLINE/.codex/AGENTS.md" ] \
+  && [ ! -e "$HNEWLINE/.gemini/GEMINI.md" ]; then
+  pass "a failed canonical render leaves every driver file untouched"
+else
+  fail "a failed canonical render was not atomic: $(cat "$TMP_DIR/hnewline.out")"
+fi
+
 # A later release changes what the tool *ships*, not the copy on disk. Build a
 # second checkout with a modified source document and reinstall from it: the
 # installed copy still matches what the manifest recorded, so it is still
@@ -753,6 +770,11 @@ else
 fi
 
 echo "==> check distinguishes operator edits from real drift"
+if grep -F '/dev/stdout' "$INSTALL" "$REPO_ROOT/scripts/lib/touchstone-adopt-plan.sh" >/dev/null; then
+  fail "a renderer still opens /dev/stdout as a writable file"
+else
+  pass "render capture uses inherited stdout without opening /dev/stdout"
+fi
 H3="$TMP_DIR/h3"
 bash "$INSTALL" install --home "$H3" >/dev/null
 normal_check="$(bash "$INSTALL" check --home "$H3" 2>&1)"
