@@ -1144,11 +1144,16 @@ cat >"$FAKE_REVIEW_CODEX" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$TOUCHSTONE_FAKE_REVIEW_CODEX_LOG"
-if [ "${TOUCHSTONE_FAKE_REVIEW_CODEX_REJECT:-false}" = true ]; then
-  echo 'Error loading config.toml: unknown configuration field `projects.\"/private/tmp/worktree\"`' >&2
-  exit 1
-fi
 case " $* " in
+  *' --strict-config '*' model_provider="touchstone-review-config-check" '*)
+    if [ -f "$CODEX_HOME/review-normal.config.toml" ] \
+      && grep -qF 'unknown_touchstone_field' "$CODEX_HOME/review-normal.config.toml"; then
+      echo 'Error loading config.toml: unknown configuration field `unknown_touchstone_field`' >&2
+      exit 1
+    fi
+    echo 'Error: Model provider `touchstone-review-config-check` not found' >&2
+    exit 1
+    ;;
   *' sandbox -P touchstone_review -C '*" status --short ")
     exit 0
     ;;
@@ -1165,16 +1170,19 @@ if ! CODEX_HOME="$TEST_DIR" \
   "$FAKE_REVIEW_CODEX" "$REVIEW_WORKTREE_PHYSICAL" /usr/bin/git; then
   fail "normal-review launch preflight rejected the valid linked-worktree invocation: $TOUCHSTONE_CODEX_ERROR"
 fi
-[ "$(wc -l <"$FAKE_REVIEW_CODEX_LOG" | tr -d ' ')" = 1 ] \
-  || fail "normal-review launch preflight did not exercise its Codex/Git boundary exactly once"
-if CODEX_HOME="$TEST_DIR" \
+[ "$(wc -l <"$FAKE_REVIEW_CODEX_LOG" | tr -d ' ')" = 2 ] \
+  || fail "normal-review launch preflight did not exercise strict config and Git boundaries"
+BROKEN_REVIEW_HOME="$TEST_DIR/broken-review-home"
+mkdir -p "$BROKEN_REVIEW_HOME"
+cp "$RENDERED_REVIEW_PROFILE" "$BROKEN_REVIEW_HOME/review-normal.config.toml"
+printf '\nunknown_touchstone_field = true\n' >>"$BROKEN_REVIEW_HOME/review-normal.config.toml"
+if CODEX_HOME="$BROKEN_REVIEW_HOME" \
   TOUCHSTONE_FAKE_REVIEW_CODEX_LOG="$FAKE_REVIEW_CODEX_LOG" \
-  TOUCHSTONE_FAKE_REVIEW_CODEX_REJECT=true \
   touchstone_review_validate_launch \
   "$FAKE_REVIEW_CODEX" "$REVIEW_WORKTREE_PHYSICAL" /usr/bin/git; then
-  fail "normal-review launch preflight accepted a Codex parser rejection"
+  fail "normal-review launch preflight accepted an unknown strict profile field"
 elif ! printf '%s\n' "$TOUCHSTONE_CODEX_ERROR" \
-  | grep -qF 'unknown configuration field'; then
+  | grep -qF 'unknown_touchstone_field'; then
   fail "normal-review parser rejection lost its actionable diagnostic: $TOUCHSTONE_CODEX_ERROR"
 fi
 if touchstone_review_render_profile \
