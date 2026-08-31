@@ -311,7 +311,6 @@ installed_block_version() {
 }
 
 render_block() {
-  local out="$1"
   # The routing table names principles/*.md. Those documents are installed
   # beside the block, so the paths must resolve from the agent's home rather
   # than from a repository that no longer carries them.
@@ -326,14 +325,14 @@ EOF
     sed "s|\`principles/|\`$(sed_replacement "$principles_home")/|g" "$SOURCE"
     if [ -n "$(tail -c 1 "$SOURCE")" ]; then printf '\n'; fi
     printf '%s\n' "$END_MARKER"
-  } >"$out"
+  }
 }
 
 capture_rendered() {
   local output_name="$1" captured
   shift
   captured="$({
-    "$@" /dev/stdout || exit
+    "$@" || exit
     printf x
   })" \
     || die "could not render canonical steering content"
@@ -477,7 +476,7 @@ compose_removal() {
 BLOCK=""
 if [ "$ACTION" != check ]; then
   BLOCK="$TMP_DIR/block"
-  render_block "$BLOCK"
+  render_block >"$BLOCK" || die "could not render canonical steering content"
 else
   capture_rendered BLOCK render_block
 fi
@@ -587,12 +586,12 @@ preflight_principles() {
 # unrewritten, those links resolve nowhere on a machine whose repositories
 # carry no Touchstone files.
 render_principle() {
-  local source="$1" out="$2" principles_home="$HOME_DIR/$PRINCIPLES_RELATIVE"
+  local source="$1" principles_home="$HOME_DIR/$PRINCIPLES_RELATIVE"
   # Two spellings route to the installed copies: inline code (`principles/…`)
   # and a bare ` principles/…` path inside a command line. Both must resolve
   # beside the installed steering block, not inside a consumer repository.
   sed -e "s|\`principles/|\`$(sed_replacement "$principles_home")/|g" \
-    -e "s|\([[:space:]]\)principles/\([A-Za-z0-9._-]*\.md\)|\1'$(sed_replacement "$principles_home")/\2'|g" "$source" >"$out"
+    -e "s|\([[:space:]]\)principles/\([A-Za-z0-9._-]*\.md\)|\1'$(sed_replacement "$principles_home")/\2'|g" "$source"
 }
 
 # Ownership is recorded per entry as `checksum<TAB>name`; match on the name
@@ -666,7 +665,7 @@ install_principles() {
     mkdir -p "$(dirname "$destination/$name")" || die "could not create $(dirname "$SET_RELATIVE/$name")"
     stage_path "$(dirname "$destination/$name")" "$(basename "$name")"
     staged="$STAGED_PATH"
-    render_principle "$doc" "$staged" || {
+    render_principle "$doc" >"$staged" || {
       rm -f -- "$staged"
       die "could not stage $name"
     }
@@ -994,7 +993,7 @@ uninstall_set() {
         [ -n "$name" ] || continue
         doc="$SET_SOURCE/$name"
         [ -f "$principles_home/$name" ] || continue
-        if render_principle "$doc" "$TMP_DIR/.verify" \
+        if render_principle "$doc" >"$TMP_DIR/.verify" \
           && cmp -s "$TMP_DIR/.verify" "$principles_home/$name"; then
           # Same write-through rule as everywhere else: remove the referent
           # our bytes live at, then clear the pointer left dangling.
@@ -1067,7 +1066,7 @@ uninstall_set() {
         # release would install for that name and compare bytes. A file
         # identical to our own output is provably ours, and the check is
         # reproducible by anyone. Only that earns an outright delete.
-        if render_principle "$SET_SOURCE/$recorded" "$TMP_DIR/.verify" \
+        if render_principle "$SET_SOURCE/$recorded" >"$TMP_DIR/.verify" \
           && cmp -s "$TMP_DIR/.verify" "$principles_home/$recorded"; then
           # Install writes through a symlink, so uninstall must remove what
           # it wrote -- the referent -- and leave the operator's link. The

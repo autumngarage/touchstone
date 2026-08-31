@@ -8,7 +8,7 @@ toml_escape() {
 }
 
 render_contract() {
-  local output="$1" name path _profile task target required command
+  local name path _profile task target required command
   local setup_command="" setup_path setup_value setup_entry quoted_path
   {
     printf 'schema = 1\n\n'
@@ -41,13 +41,13 @@ render_contract() {
       printf 'command = "%s"\n' "$(toml_escape "$command")"
       printf 'required = %s\n' "$required"
     done < <(plan_records "$TASKS_FILE")
-  } >"$output" || operational_failure "could not render .touchstone.toml"
+  } || operational_failure "could not render .touchstone.toml"
 }
 
 capture_rendered_plan() {
   local output_name="$1" renderer="$2" rendered
   rendered="$({
-    "$renderer" /dev/stdout || exit
+    "$renderer" || exit
     printf x
   })" \
     || operational_failure "could not render adoption plan"
@@ -59,7 +59,7 @@ plan_rendered_file() {
   local relative="$1" renderer="$2" ownership="$3" proposed
   if [ "$PLAN_IN_MEMORY" = false ]; then
     proposed="$PLAN_ROOT/proposed-$(basename "$relative")"
-    "$renderer" "$proposed"
+    "$renderer" >"$proposed" || operational_failure "could not stage rendered plan for $relative"
     plan_file "$relative" "$proposed" "$ownership"
     return
   fi
@@ -83,14 +83,13 @@ plan_memory_file() {
 }
 
 render_tracker_contract() {
-  local output="$1"
   {
     printf 'schema = 1\n'
     printf 'type = "%s"\n' "$(toml_escape "$TRACKER_TYPE")"
     if [ "$TRACKER_TYPE" = linear ]; then
       printf 'key_prefix = "%s"\n' "$(toml_escape "$TRACKER_PREFIX")"
     fi
-  } >"$output" || operational_failure "could not render .touchstone-tracker.toml"
+  } || operational_failure "could not render .touchstone-tracker.toml"
 }
 
 safe_managed_path() {

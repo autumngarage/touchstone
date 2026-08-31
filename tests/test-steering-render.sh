@@ -753,6 +753,11 @@ else
 fi
 
 echo "==> check distinguishes operator edits from real drift"
+if grep -F '/dev/stdout' "$INSTALL" "$REPO_ROOT/scripts/lib/touchstone-adopt-plan.sh" >/dev/null; then
+  fail "a renderer still opens /dev/stdout as a writable file"
+else
+  pass "render capture uses inherited stdout without opening /dev/stdout"
+fi
 H3="$TMP_DIR/h3"
 bash "$INSTALL" install --home "$H3" >/dev/null
 normal_check="$(bash "$INSTALL" check --home "$H3" 2>&1)"
