@@ -74,34 +74,40 @@ and did not change the AUT-750 decision. It added 250 script lines and 85 test
 lines in #1048, then immediately created more correctness tasks. Historical
 review analytics belong in the bounded AUT-885 audit, not the merge client.
 
-### Delete: client/evaluator history reconstruction; retain current-state polling
+### Simplify cutoff logic without forgetting mutated findings
 
 Retain behavior-v2's useful invariant: one policy-owned exact-head run may poll
 the current GitHub review surface until it reaches a verdict or a bounded
-deadline. Delete the attempt-start/cutoff reconstruction used to decide which
-edits, deletions, tombstones, or prior answers existed at an historical instant.
-The evaluator should read current exact-head evidence on each poll; a successful
-CheckRun is the durable verdict, and later review activity makes that verdict
-stale. The client should preserve any unambiguous active policy-bound run for
-the exact head instead of predicting whether its private cutoff observed a
-request.
+deadline. Delete client prediction of the evaluator's private historical
+cutoff, but do not delete mutation history until an equally authoritative
+replacement is proven. GitHub's current review APIs remove deleted inline and
+body comments; a current-state-only rerun could otherwise forget a previously
+observed finding. The evaluator's bounded prior snapshot therefore remains the
+minimum integrity mechanism for an active run. A cross-run replacement may use
+GitHub's review-dismissal state and review/comment mutation events to leave a
+durable exact-head failure, but it must be designed and tested before deletion.
 
-This removes the bug class recorded in AUT-785 rather than adding four more
-cutoff exceptions. Exact-head, trusted-author, required-thread, expected-head,
-and merge-group checks remain fail closed. AUT-793 event wakeups stay deferred:
-observability or new triggers do not cure review-unit churn, and polling is the
-bounded recovery path.
+Likewise, an active policy-bound run is reused only while GitHub's run start and
+declared request/review windows prove it still has time to observe a new
+request. The existing deadline-safe refresh is retained; this is a server-owned
+time bound, not a reconstructed review verdict. AUT-785 is resolved only after
+the retained behavior is replaced safely or its four cases are fixed. Exact
+head, trusted author, required thread, expected head, and merge-group checks
+remain fail closed. Broad AUT-793 event wakeups stay deferred: any narrowly
+required mutation signal must not grow into a general event orchestrator.
 
 ## Approved implementation slices
 
 1. **Delete review-budget runtime state.** One deletion-only PR removes the
    sequencer/evaluator-adjacent ledger, docs, and tests; steering retains the
    stop rule. Close AUT-874/AUT-876 as obsolete only after the deletion merges.
-2. **Replace historical cutoff reconstruction with current-state polling.** A
-   separate PR changes the required evaluator and the smallest client reuse
-   branch together. Tests preserve exact-head/trust/thread failures and prove
-   an active bound run is reused without cutoff prediction. Close AUT-785 by
-   deletion of the faulty mechanism, not by patching its four cases.
+2. **Prove a mutation-safe cutoff simplification.** A separate design and
+   implementation must distinguish disposable client cutoff prediction from
+   the evaluator history that prevents deleted, cleared, or dismissed findings
+   from disappearing. Tests preserve exact-head/trust/thread failures and the
+   existing deadline-safe refresh. Delete history only after a GitHub-owned
+   mutation signal or equivalent durable mechanism passes those regressions;
+   otherwise retain the mechanism and fix AUT-785 narrowly.
 3. **Re-measure before any more status/event features.** AUT-885 captures model
    requests, finding-bearing heads, fix-created defects, Actions minutes, local
    compute, and elapsed time separately. AUT-793 and receipt caching remain
@@ -118,6 +124,7 @@ and fresh merge-group validation. Record first commit to PR, PR heads, hosted
 requests, finding-bearing rounds, Actions minutes by workflow/event, queue to
 merge, and any manual intervention. Stop after 10 representative PRs if the
 predeclared targets hold: zero local confirming reruns, median hosted requests
-at most one, no capability beyond three finding-bearing rounds without replan,
-zero continued patch-forward after a fix-created defect, zero automatic
+at most one, no duplicate request on one head, no PR above three initiated
+hosted requests, no capability beyond three finding-bearing rounds without
+replan, zero continued patch-forward after a fix-created defect, zero automatic
 CodeRabbit code reviews, and no unsafe validation skips.
