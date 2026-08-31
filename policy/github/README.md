@@ -84,23 +84,23 @@ native rules still apply, and the merge is not queued — the combination of
 two independently green PRs is validated by the next PR's run, not before
 landing. Regenerate without the flag when the plan or visibility changes.
 
-A consumer whose own workflow publishes a merge-blocking status the contract
-does not know about (convoy's `convoy/delivery-protocol` PR-body check) keeps
-it required with `--require-status CONTEXT` (repeatable): the derivation adds
-one `required_status_checks` rule naming those contexts and changes nothing
-else, so applying the policy never silently drops a gate the project relied
-on. The canonical rules are only ever joined, never removed or weakened.
-Such a policy depends on the repository's own publisher: if that workflow is
-removed or stops reporting the context, every merge blocks on a pending
-status until the policy is regenerated without the flag. The flag requires
-`--no-queue`: a `pull_request`-only publisher never reports on a merge-queue
-commit, so a queued consumer would reject every entry.
+A queue-less consumer whose own workflow publishes a merge-blocking status the
+contract does not know about keeps it required with `--require-status CONTEXT`
+(repeatable): the derivation adds one `required_status_checks` rule naming
+those contexts and changes nothing else, so applying the policy never silently
+drops a gate the project relied on. The canonical rules are only ever joined,
+never removed or weakened. Such a policy depends on the repository's own
+publisher: if that workflow is removed or stops reporting the context, every
+merge blocks on a pending status until the policy is regenerated without the
+flag. The flag requires `--no-queue`: a `pull_request`-only publisher never
+reports on a merge-queue commit, so a queued consumer would reject every entry.
 
 A queued consumer whose repository-owned workflow publishes the status on
 `merge_group` declares it with `--require-merge-group-status CONTEXT`
-(repeatable). This keeps the queue and records the publisher's event contract
-explicitly. Do not use it for a pull-request-only workflow: the queue commit
-would never receive the required context and GitHub would eject every entry.
+(repeatable). Convoy's `convoy/delivery-protocol` publisher uses this shape.
+This keeps the queue and records the publisher's event contract explicitly.
+Do not use it for a pull-request-only workflow: the queue commit would never
+receive the required context and GitHub would eject every entry.
 
 Every adopted repository's policy is an exact derivation of the canonical
 one — `scripts/derive-consumer-policy.sh REPOSITORY [--no-queue]

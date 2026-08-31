@@ -690,8 +690,8 @@ for consumer in "$ROOT"/policy/github/consumers/*.json; do
   name="$(basename "$consumer" .json)"
   # A queue-less consumer (private repository outside Enterprise Cloud) is the
   # same derivation with --no-queue; the checked-in file says which it is.
-  # A consumer-owned required status (convoy's delivery-protocol) is the same
-  # derivation with --require-status; the checked-in rule says which.
+  # A consumer-owned required status uses the flag matching its checked-in
+  # queue shape: pull_request-only when queue-less, merge_group when queued.
   derive_flags=()
   if jq -e '.managedRepositoryRuleset == null' "$consumer" >/dev/null; then
     derive_flags+=(--no-queue)
