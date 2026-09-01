@@ -485,7 +485,7 @@ incident and remain blocked. Never loop replacement requests, synthesize review
 evidence, merge on acceptance alone, or use emergency bypass for ordinary
 review-provider friction.
 
-**Never re-request review for an unchanged head-and-base binding** for thread-backed findings. The reviewer is non-deterministic, so re-asking about the same binding manufactures new findings instead of confirming the old ones. A new head gets exactly one ordinary request for its current base. Three cases permit another request while the head stays unchanged:
+**Never re-request review for an unchanged head-and-base binding** for thread-backed findings. The reviewer is non-deterministic, so re-asking about the same binding manufactures new findings instead of confirming the old ones. A new head gets exactly one ordinary request for its current base. Four cases permit another request while the head stays unchanged:
 
 1. **The base binding changed** — if the base ref or base SHA differs from the
    recorded request, that evidence is invalid. Before requesting against the
@@ -590,11 +590,15 @@ authorize further mutation after this stop signal.
 
 **The loop.** If the cascade rule has fired, take its exit instead of continuing
 this loop. Otherwise, if every finding resolves **without moving the head**
-(dispositions 3–4), answer every thread, prove none remain with the complete
-paginated thread check above, then merge — answered findings satisfy the gate
-(issue #751); do not request another review. If any allowed fix lands as a
-commit (dispositions 1–2), batch ALL of them into ONE commit, answer every
-thread, push, and request one review for the new head.
+(dispositions 3–4), answer every thread and prove none remain with the complete
+paginated thread check above. Where the effective gate implements behavior
+contract 3, resolving the last thread makes `touchstone pr answer` post the one
+idempotent attest request (exception 4 above); merge once the gate reports the
+clean exact-head verdict. Where only behavior v2 is effective, answered
+findings satisfy that gate directly (issue #751) — merge without requesting
+another review. If any allowed fix lands as a commit (dispositions 1–2), batch
+ALL of them into ONE commit, answer every thread, push, and request one review
+for the new head.
 
 **The budget: three finding-bearing rounds per capability, never more than three
 on one PR.** This is a discipline, not an enforced limit — the wrapper that
