@@ -852,10 +852,13 @@ you read back, never the call you made:
   an exception: the pull request lives in the upstream repository, so its
   `Closes #n` resolves there. Re-read the item rather than assuming the
   reference did its job.
-- Linear — nothing fires. GitHub resolves closing keywords only to its own
-  issues, so `Fixes KEY-123` in a PR body is inert on GitHub's side and records
-  intent only. Set the terminal state through the configured API or MCP and read
-  back the state it returns, the same authority rule claiming follows.
+- Linear — GitHub closes only its own issues, so `Fixes KEY-123` in a PR body is
+  inert on GitHub's side and records intent only. Whether anything moves the item
+  is repository configuration: where Linear's own GitHub integration is set to
+  update a linked issue on merge it may already have done so, and where it is not
+  configured nothing has. Re-read the item first, set the terminal state through
+  the configured API or MCP only if it is not already terminal, then read back
+  the state it returns — the same authority rule claiming follows.
 
 **Work that did not land is not In Progress either.** Routed, superseded,
 partially shipped, and abandoned work each get a terminal or explicitly parked
