@@ -5,13 +5,14 @@
 One person cannot read everything many agents produce. Touchstone exists so that they do not have to. It ships two things, and both are the product:
 
 1. **Guidance prompts** — the steering an agent reads to know how to work: branch first, one concern per commit, answer every finding, reconcile issues, never bypass the gate.
-2. **Push tooling** — the small script surface that makes an agent use GitHub *correctly*.
+2. **Push tooling** — the small CLI surface that makes an agent use GitHub *correctly*.
 
 The goal is that every Autumn Garage project gets the same dev flow by adopting Touchstone, and that the flow is industry-leading practice for GitHub and agent-driven delivery. Adoption is **set-and-forget**: an adopted repository must remain correct if Touchstone never rewrites it again. V1 serves one operator's portfolio through public-quality interfaces; it does not build a speculative third-party platform. The durable boundary is defined in `docs/product-contract.md`.
 
 **The second half is deliberately narrow.** The CLI validates declared project
-checks, verifies tracker claims, and exposes three bounded source-only PR
-operations. GitHub remains the review, findings, and merge surface; drivers
+checks, verifies tracker claims, applies and verifies the audited GitHub
+policy, and exposes four bounded PR operations (`open`, `status`, `merge`,
+`answer`). GitHub remains the review, findings, and merge surface; drivers
 reconcile delivered work through the configured tracker API or CLI.
 It does not stage, commit, or push code, and it never replaces GitHub's merge
 verdict. Every operation retains a documented raw `git`/`gh` recovery path.
@@ -22,115 +23,156 @@ verdict. Every operation retains a documented raw `git`/`gh` recovery path.
 
 Everything here exists to hold one of those three lines. To hold them, Touchstone does exactly three things:
 
-1. **Constrain** — GitHub rejects direct, forced, unvalidated, unreviewed, unanswered, stale-head, and unresolved delivery to the default branch.
+1. **Constrain** — GitHub rejects direct, forced, unvalidated, unreviewed, stale-head, and unresolved delivery to the default branch.
 2. **Make state legible** — what happened lives in git, PRs, and issues, verifiable without trusting an agent's narration.
 3. **Carry the contract** — the same rules reach every project and every agent.
 
-The operating rule that keeps it honest: **a rule must live at the layer that can actually enforce it.** GitHub enforces (rulesets, required checks). Prose instructs. Scripts observe and sequence — they never adjudicate. Nothing may live at two layers at once.
+The operating rule that keeps it honest: **a rule must live at the layer that can actually enforce it.** GitHub enforces (rulesets, required checks). Prose instructs. Scripts observe and sequence — they never adjudicate. Nothing may live at two layers at once. (Touchstone once grew to ~49,000 lines re-deciding locally what GitHub decides at the merge button; that machinery was deleted, and this rule is why it stays deleted.)
 
-## Current state — stripped, mid-rebuild
+## The merge gate — one exact-head verdict
 
-Touchstone had grown to roughly 49,000 lines, most of it re-implementing what GitHub already does. 43% of the two shipping scripts re-decided locally what GitHub decides at the merge button, and no line of the codebase ever read the server-side branch protection settings that already expressed the same rules.
+Every adopted repository is protected by an audited organization ruleset:
+PR-only delivery, no force pushes or deletions, required status checks, a
+merge queue validating the prospective merged result, and two required
+workflows pinned to an immutable revision of
+`autumngarage/touchstone-workflows` that no target PR can edit:
 
-That machinery has been deleted. What remains is the judgment layer plus a small script surface:
+- **validate** runs the repository's own `.touchstone.toml` declaration
+  through the pinned validation engine — deterministic, offline, no
+  third-party dependency.
+- **review-gate** (gate behavior contract 3) derives one normalized
+  reviewer verdict for the exact current PR head — `waiting`, `findings`,
+  `clean`, or `invalid` — and succeeds only on a trusted, unedited,
+  explicit **clean** result bound to that head. It never adjudicates
+  whether historical findings were answered: threads belong to GitHub's
+  native conversation-resolution rule, and the merged result to the merge
+  queue. Evidence collection is O(pages of current surfaces), independent
+  of how much review history a PR carries; anything ambiguous, edited,
+  stale, or unresolvable fails closed.
 
+The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so GitHub
+approval count does not represent it. Answering every finding and resolving
+every thread remain mandatory driver duties — the gate simply no longer
+replays that history; it asks for one fresh clean verdict instead.
+
+## Distribution
+
+```bash
+brew install autumngarage/touchstone/touchstone   # macOS
+touchstone upgrade                                # later upgrades (any platform)
 ```
-touchstone/
-├── TOUCHSTONE.md   # Canonical steering router — the universal contract for all drivers
-├── docs/           # Touchstone-specific product contract and project documentation
-├── principles/     # The judgment layer, routed to from TOUCHSTONE.md
-├── skills/         # User-scoped Claude Code skills
-├── hooks/          # branch-guard.sh — PreToolUse hook wired in .claude/settings.json
-├── policy/         # Audited desired GitHub policy and rollback baseline
-├── scripts/        # Issue, review, validation, compatibility, and policy operations
-├── audits/         # Dated drift/health reports
-├── feedback/       # Dated dogfooding notes from downstream projects
-└── tests/          # Self-tests
-```
 
-The broad legacy CLI, bootstrap, and auto-update machinery was deleted with the
-propagation channel: cutting propagation froze downstream projects safely on
-their existing committed copies. The repository now contains the narrow
-versioned CLI entrypoint, including read-only plan-first adoption; steering
-ships with the tool itself (`touchstone steering install`), so adoption writes
-declarations only. Homebrew distribution remains a separate replacement
-capability; neither may restore background propagation.
-The organization-required workflow remains pinned to an immutable Touchstone
-revision outside the consumer PR and executes the same project contract.
+Where Homebrew does not run (Windows Git Bash, Linux), `install.sh` from a
+release tag installs the same reviewed release under `~/.touchstone/`,
+verifying the tarball against the tap formula's recorded digest. A release is
+a name for reviewed state, never a new state; `touchstone version` reports the
+tool line, and the project-contract schema is versioned separately
+(`docs/product-contract.md`).
 
 Machine onboarding is one-time and keeps credentials out of review tools and
 durable review state:
 
 ```bash
-touchstone steering install
-touchstone review setup
+touchstone steering install   # user-scoped skills + steering surfaces
+touchstone review setup       # dedicated OpenRouter key into macOS Keychain
 ```
 
-The second command securely saves a dedicated OpenRouter key in macOS Keychain.
-`touchstone review check` validates the credential, local tools, and versioned
-review policy without a provider request. `touchstone review run` sends only the
-staged diff in one cost-bounded OpenRouter request, then reports the selected
-model, tokens, cost, and findings. The policy asks OpenRouter Auto Router for
-its low-cost tier under absolute price ceilings rather than naming one concrete
-model. Serious and PR-visible reviews remain on their default Codex paths.
+`touchstone review check` validates the credential, local tools, and
+versioned review policy without a provider request. `touchstone review run`
+sends only the staged diff in one cost-bounded OpenRouter request, then
+reports the selected model, tokens, cost, and findings. Serious and
+PR-visible reviews remain on their default Codex paths.
+
+## Delivery
+
+The installed CLI is the sequencer everywhere; raw `git`/`gh` is the
+documented recovery path, never the routine one.
+
+```bash
+git checkout -b fix/some-slug
+# ... edit, stage explicit paths, commit ...
+git push -u origin HEAD
+touchstone pr open --expect-branch fix/some-slug \
+  --title "fix: what changed" --body-file /tmp/pr-body
+touchstone pr status <n>
+touchstone pr merge <n> --head <reviewed-sha>
+```
+
+`open` creates or reuses the PR, posts the bound review request, and confirms
+the exact head and base binding; re-run it after any later push. It acts on
+the branch the invoking directory has checked out, which differs per
+worktree; `--expect-branch` states which one you meant, the way
+`merge --head` states which commit was reviewed. Write the branch name out —
+`$(git branch --show-current)` reads the same checkout the command reads, so
+it agrees with a wrong worktree and binds nothing.
+
+Answering an inline finding replies, records a versioned disposition marker,
+and resolves the thread in one audited step (GitHub needs four API calls to
+do this correctly):
+
+```bash
+touchstone pr answer <n> --comment-id <id> --body-file <file> --fix-commit <sha>
+touchstone pr answer <n> --comment-id <id> --body-file <file> --no-code-change
+touchstone pr answer <n> --all-resolved-check
+```
+
+Under gate behavior contract 3, answering the last open thread also posts the
+one fresh review request the clean exact-head verdict requires — idempotently,
+so retries never post a second one.
+
+The exact raw recovery path (CLI unavailable) remains:
+
+```bash
+cp .github/pull_request_template.md /tmp/pr-body
+# Fill every required section and Validation row; keep `Fixes AUT-123` in the body.
+gh pr create --title "fix: what changed" --body-file /tmp/pr-body
+# ... post `@codex review`, answer findings, resolve threads ...
+gh pr merge <n> --squash --match-head-commit "$(gh pr view <n> --json headRefOid --jq .headRefOid)"
+gh pr view <n> --json state,mergedAt   # confirm; the merge exit code lies in both directions
+```
+
+`principles/git-workflow.md` carries the full sequence, including thread resolution and the failure modes worth knowing about.
+
+## Adoption and policy
+
+```bash
+touchstone adopt --dry-run                 # plan-first, declarations only
+touchstone policy status --project <dir>
+touchstone policy apply --project <dir> --base main --authorize-admin
+```
+
+Adoption compiles project facts into an explicit versioned contract; an
+adopted repository carries declarations and narrow integration points, never
+copied Touchstone implementation. `policy apply` installs or updates the
+audited ruleset and verifies the effective rules before returning; rollback
+restores captured protection first, so neither direction leaves an
+unprotected interval. Consumers reference hooks by name
+(`touchstone hook branch-guard`), so settings never encode where the tool
+lives.
+
+## Architecture
+
+```text
+touchstone/
+├── TOUCHSTONE.md   # Canonical steering router — the universal contract for all drivers
+├── docs/           # Product contract, CLI/validation/tracker contracts
+├── principles/     # The judgment layer, routed to from TOUCHSTONE.md
+├── skills/         # User-scoped Claude Code skills
+├── hooks/          # branch-guard.sh — PreToolUse hook wired in .claude/settings.json
+├── policy/         # Audited desired GitHub policy, workflow pins, rollback baseline
+├── scripts/        # Issue, review, validation, policy, and PR-sequencing operations
+├── audits/         # Dated drift/health reports
+├── feedback/       # Dated dogfooding notes from downstream projects
+└── tests/          # Self-tests
+```
 
 `scripts/touchstone-run.sh` is the declaration-only validation engine,
 accepting schema 1 and schema 2; its contract lives in [docs/validation-contract.md](docs/validation-contract.md).
 `scripts/touchstone-tracker.sh` owns the tracker-neutral verified claim boundary;
 its versioned outcomes live in [docs/tracker-contract.md](docs/tracker-contract.md).
-Drivers reconcile delivered work through the configured tracker's API or CLI.
-`scripts/touchstone-pr.sh` owns the three bounded PR sequencing operations; its
+`scripts/touchstone-pr.sh` owns the four bounded PR sequencing operations; its
 versioned output and raw recovery equivalents live in
 [docs/pr-cli-contract.md](docs/pr-cli-contract.md).
-Current replacement scope and sequencing live in the [canonical Linear execution plan](https://linear.app/autumngarage/document/touchstone-execution-plan-post-strip-baseline-cac4c56e593e), not this durable overview.
-
-The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so GitHub approval count does not represent it. The required `review-gate` workflow instead binds trusted review evidence to the exact head and requires a later qualifying answer for every finding; GitHub independently requires every inline thread resolved.
-
-## Delivery
-
-Raw `git` and `gh` remain the active delivery workflow. Source contributors can
-exercise the three bounded operations after the branch is pushed:
-
-```bash
-bash bin/touchstone pr open --title "fix: some change" --body-file /tmp/pr-body \
-  --expect-branch fix/some-change
-bash bin/touchstone pr status <n>
-bash bin/touchstone pr merge <n> --head <reviewed-sha>
-```
-
-`open` acts on the branch the invoking directory has checked out, which
-differs per worktree; `--expect-branch` states which one you meant, the way
-`merge --head` states which commit was reviewed. Write the branch name out.
-`$(git branch --show-current)` reads the same checkout the command reads, so
-it agrees with a wrong worktree and binds nothing. Two pull requests were
-opened for the wrong branch before this option existed.
-
-The exact raw recovery path remains:
-
-```bash
-git checkout -b fix/some-slug
-# ... edit, then stage explicit paths ...
-git commit -m "fix: what changed"
-git push -u origin HEAD
-cp .github/pull_request_template.md /tmp/pr-body
-# Fill every required section and Validation row; keep `Fixes AUT-123` in the body.
-bash bin/touchstone pr open --title "fix: what changed" --body-file /tmp/pr-body \
-  --expect-branch fix/some-slug   # creates the PR and posts the bound review request
-# ... answer every finding, fix the high-severity ones, resolve every thread ...
-gh pr merge <n> --squash --match-head-commit "$(gh pr view <n> --json headRefOid --jq .headRefOid)"
-gh pr view <n> --json state,mergedAt      # confirm; the merge exit code lies in both directions
-```
-
-`principles/git-workflow.md` carries the full sequence, including thread resolution and the failure modes worth knowing about.
-
-Answering inline review findings still uses the existing script because GitHub
-needs four API calls to reply-and-resolve correctly:
-
-```bash
-bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file> --fix-commit <sha>
-bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file> --no-code-change
-bash scripts/respond-review.sh <pr> --all-resolved-check
-```
 
 ## Documentation
 
@@ -165,6 +207,6 @@ Lint is separate, at pre-commit: `shellcheck`, `shfmt`, `markdownlint`, `actionl
 
 ## Contributing
 
-Open a PR for improvements to principles, scripts, hooks, or skills. The same delivery workflow above applies here — Touchstone ships through its own gate.
+Open a PR for improvements to principles, scripts, hooks, or skills. The same delivery workflow above applies here — Touchstone ships through its own gate, including the exact-head verdict contract this repository was the canary for.
 
 Current replacement scope and sequencing live in the [canonical Linear execution plan](https://linear.app/autumngarage/document/touchstone-execution-plan-post-strip-baseline-cac4c56e593e), not this durable overview.
