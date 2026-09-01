@@ -1771,6 +1771,7 @@ Closes #42'
   echo "==> policy status and pr status report what GitHub enforces"
   run_pr "$TMP/out" policy-status --json
   assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"repositoryHost":"github.com"'
   assert_has "$TMP/out" '"enforcement":{"status":"partial","missing":["delivery-evidence workflow","merge queue","review-gate workflow","validate workflow"]}'
   run_pr "$TMP/out" policy-status
   assert_has "$TMP/out" 'enforcement: partial (missing: delivery-evidence workflow, merge queue, review-gate workflow, validate workflow)'

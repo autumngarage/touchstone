@@ -22,6 +22,23 @@ bash scripts/github-policy.sh verify
 bash scripts/github-policy.sh rollback policy/github/baseline-2026-08-13.json
 ```
 
+Those scripts are the policy-maintainer interface. An adopted Autumn Garage
+consumer uses the supported installed boundary instead:
+
+```bash
+touchstone policy apply --project /path/to/repository --base main --authorize-admin
+```
+
+That explicit command selects the checked-in consumer policy when the release
+declares a repository-specific variation, otherwise derives the default from
+the canonical policy in the same reviewed release. It delegates to the
+mutation engine above and returns only after `touchstone policy status`
+verifies the exact hostname, repository, and branch.
+It is non-interactive, idempotent, and does not store GitHub credentials; `gh`
+must already be authenticated as an organization administrator. Checked-in
+consumer files remain the authority for repositories that declare a reviewed
+variation such as an additional status context.
+
 `dry-run` performs all source checks without mutation. The reviewed commit used
 for `dry-run` and `apply` must remove every rollback-prerequisite file, and
 `apply` refuses a dirty checkout before mutation.
@@ -102,11 +119,14 @@ This keeps the queue and records the publisher's event contract explicitly.
 Do not use it for a pull-request-only workflow: the queue commit would never
 receive the required context and GitHub would eject every entry.
 
-Every adopted repository's policy is an exact derivation of the canonical
-one — `scripts/derive-consumer-policy.sh REPOSITORY [--no-queue]
+Every consumer policy is an exact derivation of the canonical one —
+`scripts/derive-consumer-policy.sh REPOSITORY [--no-queue]
 [--require-status CONTEXT]... [--require-merge-group-status CONTEXT]...` — checked in under
-`policy/github/consumers/` and refused by the test suite if it drifts. Apply
-one with `scripts/github-policy.sh apply policy/github/consumers/REPOSITORY.json`
+`policy/github/consumers/` when it carries a repository-specific variation,
+and refused by the test suite if it drifts. The installed public command
+derives the unmodified default in temporary storage instead of creating a
+second inventory. Apply a checked-in variation with
+`scripts/github-policy.sh apply policy/github/consumers/REPOSITORY.json`
 only once both hold: the repository has adopted (`touchstone adopt`), and
 its declaration runs on a bare hosted runner, because the pinned `validate`
 workflow executes it there on every pull request and queue commit. The

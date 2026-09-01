@@ -2,7 +2,7 @@
 # Diff, apply, verify, back up, or roll back Touchstone's GitHub policy.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 DEFAULT_POLICY="$ROOT/policy/github/touchstone-main.json"
 API_VERSION="2026-03-10"
 
@@ -542,9 +542,29 @@ verify_rollback_removal_planned() {
 }
 
 verify_clean_checkout() {
-  local status
-  status="$(git -C "$ROOT" status --porcelain --untracked-files=normal)" || return $?
-  [ -z "$status" ] || die "policy mutation requires a clean reviewed checkout"
+  local status tool_git_root version
+  tool_git_root="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -n "$tool_git_root" ] && [ -d "$tool_git_root" ]; then
+    tool_git_root="$(cd "$tool_git_root" && pwd -P)"
+  fi
+  if [ "$tool_git_root" = "$ROOT" ]; then
+    status="$(git -C "$ROOT" status --porcelain --untracked-files=normal)" || return $?
+    [ -z "$status" ] || die "policy mutation requires a clean reviewed checkout"
+    return 0
+  fi
+
+  # A release archive (including Hesperus's signed bundled copy) has no Git
+  # metadata. Its checksum or app signature is the reviewed-source boundary;
+  # requiring a development checkout here would make the supported installed
+  # API unusable. Refuse an incomplete or unnamed tree rather than silently
+  # treating any directory outside Git as a release.
+  version="$(head -n 1 "$ROOT/VERSION" 2>/dev/null || true)"
+  printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+    || die "policy mutation requires a clean reviewed checkout or a complete Touchstone release"
+  for required in bin/touchstone scripts/github-policy.sh scripts/derive-consumer-policy.sh policy/github/touchstone-main.json; do
+    [ -r "$ROOT/$required" ] \
+      || die "installed Touchstone release is incomplete: $required"
+  done
 }
 
 verify_rollback_files_absent() {

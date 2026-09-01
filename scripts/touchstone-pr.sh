@@ -1271,6 +1271,8 @@ policy_status() {
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"policy-status","repository":' "$OUTPUT_SCHEMA"
     json_string "$REPO"
+    printf ',"repositoryHost":'
+    json_string "$REPO_HOST"
     printf ',"baseRef":'
     json_string "$base_ref"
     printf ',"policy":'

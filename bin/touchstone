@@ -23,6 +23,7 @@ Usage:
   touchstone tracker claim [arguments]
   touchstone pr open|status|merge [arguments]
   touchstone policy status [--base BRANCH] [--project DIR] [--json]
+  touchstone policy apply --base BRANCH --project DIR --authorize-admin [--json]
   touchstone cleanup check [--project DIR] [--json]
   touchstone review setup|check|run|rotate|uninstall [--codex-home DIR] [--dry-run]
   touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change)
@@ -108,15 +109,20 @@ case "$COMMAND" in
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" "$@"
     ;;
   policy)
-    # What GitHub enforces on a branch, from its effective rules -- the one
-    # read an agent needs before trusting any merge.
+    # Reads stay on the PR status boundary. Mutation has its own versioned
+    # adapter: it derives the target from the shipped canonical policy, then
+    # delegates all GitHub semantics to github-policy.sh.
     case "${1:-}" in
       status)
         shift
         exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" policy-status "$@"
         ;;
+      apply)
+        shift
+        exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-policy.sh" apply "$@"
+        ;;
       *)
-        echo "ERROR: unknown policy command '${1:-<none>}'; available: status" >&2
+        echo "ERROR: unknown policy command '${1:-<none>}'; available: status, apply" >&2
         exit 2
         ;;
     esac
