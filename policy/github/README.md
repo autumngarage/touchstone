@@ -29,9 +29,11 @@ consumer uses the supported installed boundary instead:
 touchstone policy apply --project /path/to/repository --base main --authorize-admin
 ```
 
-That explicit command derives the default consumer policy from the canonical
-policy in the same reviewed release, delegates to the mutation engine above,
-and returns only after `touchstone policy status` verifies the exact target.
+That explicit command selects the checked-in consumer policy when the release
+declares a repository-specific variation, otherwise derives the default from
+the canonical policy in the same reviewed release. It delegates to the
+mutation engine above and returns only after `touchstone policy status`
+verifies the exact hostname, repository, and branch.
 It is non-interactive, idempotent, and does not store GitHub credentials; `gh`
 must already be authenticated as an organization administrator. Checked-in
 consumer files remain the authority for repositories that declare a reviewed

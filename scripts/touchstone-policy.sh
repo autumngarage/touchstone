@@ -121,7 +121,9 @@ if ! jq -e '
   .schema == "touchstone.pr/v2"
   and .operation == "policy-status"
   and (.repository | type == "string" and test("^[^/]+/[^/]+$"))
+  and (.repositoryHost | type == "string" and test("^[A-Za-z0-9.-]+(:[0-9]+)?$"))
   and (.baseRef | type == "string" and length > 0)
+  and (.policy | type == "string" and length > 0)
   and (.enforcement.status == "applied" or .enforcement.status == "partial" or .enforcement.status == "none")
   and (.enforcement.missing | type == "array")
 ' "$STATUS_FILE" >/dev/null; then
@@ -130,6 +132,7 @@ if ! jq -e '
 fi
 
 REPOSITORY="$(jq -r .repository "$STATUS_FILE")"
+REPOSITORY_HOST="$(jq -r .repositoryHost "$STATUS_FILE")"
 STATUS_BASE="$(jq -r .baseRef "$STATUS_FILE")"
 [ "$STATUS_BASE" = "$BASE" ] \
   || {
@@ -158,15 +161,42 @@ esac
 
 NAME="${REPOSITORY#*/}"
 DERIVED_POLICY="$TEMP_DIR/policy.json"
-if ! bash "$ROOT/scripts/derive-consumer-policy.sh" "$NAME" >"$DERIVED_POLICY" 2>"$DIAGNOSTIC_FILE"; then
-  emit action-required "$REPOSITORY" "Touchstone could not derive the supported delivery policy; reinstall Touchstone."
-  exit 1
-fi
+POLICY_SOURCE="$(jq -r .policy "$STATUS_FILE")"
+case "$POLICY_SOURCE" in
+  policy/github/touchstone-main.json)
+    CANONICAL_REPOSITORY="$(jq -r '"\(.organization)/\(.repository)"' "$CANONICAL_POLICY")"
+    if [ "$REPOSITORY" = "$CANONICAL_REPOSITORY" ]; then
+      emit action-required "$REPOSITORY" "Touchstone's own policy requires the maintainer workflow; use the reviewed source checkout."
+      exit 1
+    fi
+    if ! bash "$ROOT/scripts/derive-consumer-policy.sh" "$NAME" >"$DERIVED_POLICY" 2>"$DIAGNOSTIC_FILE"; then
+      emit action-required "$REPOSITORY" "Touchstone could not derive the supported delivery policy; reinstall Touchstone."
+      exit 1
+    fi
+    POLICY_FILE="$DERIVED_POLICY"
+    ;;
+  "policy/github/consumers/$NAME.json")
+    POLICY_FILE="$ROOT/$POLICY_SOURCE"
+    if [ ! -r "$POLICY_FILE" ] || ! jq -e \
+      --arg repository "$REPOSITORY" --arg base "$BASE" '
+        .contractVersion == 1
+        and "\(.organization)/\(.repository)" == $repository
+        and .branch == $base
+      ' "$POLICY_FILE" >/dev/null; then
+      emit action-required "$REPOSITORY" "The selected checked-in consumer policy is invalid; reinstall Touchstone."
+      exit 1
+    fi
+    ;;
+  *)
+    emit action-required "$REPOSITORY" "This repository uses a policy shape that the installed consumer apply command does not mutate."
+    exit 1
+    ;;
+esac
 
 # github-policy.sh is the sole mutation implementation. Its transaction owns
 # rollback and verification. Its operator diagnostics remain private so a
 # provider body or credential-adjacent detail can never cross this API.
-if ! bash "$ROOT/scripts/github-policy.sh" apply "$DERIVED_POLICY" \
+if ! GH_HOST="$REPOSITORY_HOST" bash "$ROOT/scripts/github-policy.sh" apply "$POLICY_FILE" \
   >"$DIAGNOSTIC_FILE" 2>&1; then
   emit action-required "$REPOSITORY" "GitHub did not accept the policy change. Sign in with an organization administrator account, confirm repository access, then retry."
   exit 1
@@ -179,10 +209,11 @@ if ! bash "$ROOT/scripts/touchstone-pr.sh" policy-status \
     .schema == "touchstone.pr/v2"
     and .operation == "policy-status"
     and .repository == $repository
+    and .repositoryHost == $repositoryHost
     and .baseRef == $base
     and .enforcement.status == "applied"
     and (.enforcement.missing | length) == 0
-  ' --arg repository "$REPOSITORY" --arg base "$BASE" "$STATUS_FILE" >/dev/null; then
+  ' --arg repository "$REPOSITORY" --arg repositoryHost "$REPOSITORY_HOST" --arg base "$BASE" "$STATUS_FILE" >/dev/null; then
   emit action-required "$REPOSITORY" "Touchstone changed policy but could not verify the exact repository and branch. Retry; the operation is idempotent."
   exit 1
 fi

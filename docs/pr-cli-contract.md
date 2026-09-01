@@ -27,10 +27,11 @@ command runs a daemon, stores credentials, or persists derived PR state.
 `policy apply` is the one exception to the PR schema: its deliberately smaller
 response uses `touchstone.policy/v1` and reports `applied`, `already-applied`,
 or `action-required`. It requires `--project`, `--base`, and the explicit
-`--authorize-admin` acknowledgement. The command derives an Autumn Garage
+`--authorize-admin` acknowledgement. The command selects an exact checked-in
+consumer variation when one exists or derives the default Autumn Garage
 consumer from the canonical policy shipped in the same reviewed release,
 delegates mutation and rollback to the existing policy engine, then accepts
-success only after `policy status` verifies the exact repository and branch.
+success only after `policy status` verifies the exact hostname, repository, and branch.
 It stores no credential and never returns the policy engine's provider
 diagnostics. Repeating it after a lost reply is safe: the verified policy is
 reported as `already-applied` without another mutation.

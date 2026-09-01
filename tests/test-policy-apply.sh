@@ -7,7 +7,7 @@ trap 'rm -rf "$TMP"' EXIT
 RELEASE="$TMP/release"
 PROJECT="$TMP/project"
 STATE="$TMP/state"
-mkdir -p "$RELEASE/bin" "$RELEASE/scripts" "$RELEASE/policy/github" "$PROJECT" "$STATE"
+mkdir -p "$RELEASE/bin" "$RELEASE/scripts" "$RELEASE/policy/github/consumers" "$PROJECT" "$STATE"
 cp "$ROOT/bin/touchstone" "$RELEASE/bin/touchstone"
 cp "$ROOT/scripts/touchstone-policy.sh" "$RELEASE/scripts/touchstone-policy.sh"
 cp "$ROOT/policy/github/touchstone-main.json" "$RELEASE/policy/github/touchstone-main.json"
@@ -30,7 +30,12 @@ if [ -f "$state/oversized" ]; then
 fi
 status=none
 [ ! -f "$state/applied" ] || status=applied
-jq -cn --arg status "$status" '{schema:"touchstone.pr/v2",operation:"policy-status",repository:"autumngarage/solo",baseRef:"main",policy:"policy/github/touchstone-main.json",policyRevision:"v9.9.9",enforcement:{status:$status,missing:(if $status == "applied" then [] else ["delivery"] end)}}'
+host=github.com
+[ ! -f "$state/enterprise-host" ] || host=github.example.test
+policy=policy/github/touchstone-main.json
+[ ! -f "$state/variation" ] || policy=policy/github/consumers/solo.json
+[ ! -f "$state/invalid-host" ] || host='github.com/another'
+jq -cn --arg status "$status" --arg host "$host" --arg policy "$policy" '{schema:"touchstone.pr/v2",operation:"policy-status",repository:"autumngarage/solo",repositoryHost:$host,baseRef:"main",policy:$policy,policyRevision:"v9.9.9",enforcement:{status:$status,missing:(if $status == "applied" then [] else ["delivery"] end)}}'
 EOF
 
 cat >"$RELEASE/scripts/derive-consumer-policy.sh" <<'EOF'
@@ -45,6 +50,10 @@ cat >"$RELEASE/scripts/github-policy.sh" <<'EOF'
 set -euo pipefail
 state="${TOUCHSTONE_POLICY_TEST_STATE:?}"
 [ "$1" = apply ] && [ -r "$2" ]
+printf '%s\n' "${GH_HOST-unset}" >"$state/mutation-host"
+if [ -f "$state/variation" ]; then
+  jq -e '.testVariation == "retained"' "$2" >/dev/null
+fi
 [ ! -f "$state/apply-must-not-run" ] || { touch "$state/apply-was-called"; exit 99; }
 printf 'SECRET PROVIDER BODY THAT MUST NEVER ESCAPE\n' >&2
 if [ -f "$state/permission-denied" ]; then exit 1; fi
@@ -52,6 +61,8 @@ touch "$state/applied"
 if [ -f "$state/lost-reply" ]; then exit 1; fi
 printf 'mutation internals that must never escape\n'
 EOF
+jq '.repository = "solo" | .testVariation = "retained"' \
+  "$RELEASE/policy/github/touchstone-main.json" >"$RELEASE/policy/github/consumers/solo.json"
 chmod +x "$RELEASE/bin/touchstone" "$RELEASE/scripts/"*.sh
 
 run() {
@@ -80,7 +91,31 @@ jq -e '.operation == "policy-apply" and .repository == "autumngarage/solo" and .
   || fail "new policy was not applied and verified"
 [ "$(wc -c <"$TMP/applied.json" | tr -d ' ')" -le 1024 ] || fail "success response is not bounded"
 ok "a new policy is applied through one bounded versioned response"
+[ "$(cat "$STATE/mutation-host")" = github.com ] || fail "mutation was not pinned to the resolved GitHub host"
 
+rm -f "$STATE/applied"
+touch "$STATE/enterprise-host"
+run >"$TMP/enterprise.json"
+[ "$(cat "$STATE/mutation-host")" = github.example.test ] || fail "enterprise mutation drifted from the resolved host"
+ok "mutation is bound to the hostname selected by repository resolution"
+rm -f "$STATE/applied" "$STATE/enterprise-host"
+
+touch "$STATE/variation"
+run >"$TMP/variation.json"
+jq -e '.status == "applied"' "$TMP/variation.json" >/dev/null \
+  || fail "checked-in consumer variation was not applied"
+ok "checked-in consumer policy variations remain authoritative"
+rm -f "$STATE/applied" "$STATE/variation"
+
+touch "$STATE/invalid-host" "$STATE/apply-must-not-run"
+if run >"$TMP/invalid-host.json"; then fail "invalid repository hostname reported success"; fi
+jq -e '.status == "action-required"' "$TMP/invalid-host.json" >/dev/null \
+  || fail "invalid repository hostname did not fail through the versioned schema"
+[ ! -e "$STATE/apply-was-called" ] || fail "invalid repository hostname reached mutation"
+ok "unsupported repository host identities fail before mutation"
+rm -f "$STATE/invalid-host" "$STATE/apply-must-not-run"
+
+: >"$STATE/applied"
 : >"$STATE/apply-must-not-run"
 run >"$TMP/already.json"
 jq -e '.status == "already-applied"' "$TMP/already.json" >/dev/null \
