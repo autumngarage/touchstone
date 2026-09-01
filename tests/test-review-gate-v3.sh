@@ -115,6 +115,18 @@ run_case "base advancing without head mutation" \
 run_case "base retargeted after the clean verdict" \
   '.pr.baseRetargetedAt = "2026-08-20T11:00:00Z" | del(.reviews[0])' waiting
 
+# Absent retarget evidence is not proof that no retarget occurred.
+run_case "missing base-retarget evidence fails closed" \
+  'del(.pr.baseRetargetedAt)' invalid "base-retarget evidence"
+
+run_case "malformed base-retarget evidence fails closed" \
+  '.pr.baseRetargetedAt = "yesterday"' invalid "base-retarget evidence"
+
+# The retarget cutoff must not silence evidence whose order cannot be proven.
+run_case "retarget cannot drop a malformed event before the fail-closed check" \
+  '.pr.baseRetargetedAt = "2026-08-20T10:30:00Z" | del(.reviews[0].submitted_at)' \
+  invalid "malformed timestamps"
+
 # Merge-group evaluation reads the same document; the workflow never waits
 # there, so the open states below must be conclusion=failure (asserted by
 # run_case for every non-clean verdict above).

@@ -84,7 +84,7 @@ def review_request:
 | ($input.trustedAuthors // []) as $trusted
 | (($input.pr.headSha // "") | ascii_downcase) as $head
 | ($input.pr.number // 0) as $number
-| ($input.pr.baseRetargetedAt // "") as $base_retargeted_at
+| ($input.pr.baseRetargetedAt) as $base_retargeted_at
 | (if ($input.issueComments | type) == "array" then $input.issueComments else null end) as $issue_comments
 | (if ($input.reviews | type) == "array" then $input.reviews else null end) as $reviews
 # Verdict events for the current head, in evidence-time order. A later
@@ -121,7 +121,10 @@ def review_request:
   ]
   # A verdict reviews the diff against the base the pull request had; after a
   # base retarget that diff no longer exists, so earlier verdicts are stale.
-  | map(select($base_retargeted_at == "" or .at > $base_retargeted_at))
+  # Only an event with a proven timestamp can be proven stale: unorderable
+  # events must survive this cutoff to reach the fail-closed check below.
+  | map(select((.kind == "malformed" or .kind == "unresolved")
+        or $base_retargeted_at == "" or .at > $base_retargeted_at))
   | sort_by(.at)) as $events
 | ($events | map(select(.kind == "clean")) | length) as $clean_count
 | ($events | map(select(.kind == "findings")) | length) as $findings_count
@@ -146,6 +149,14 @@ def review_request:
     if ($head | test("^[0-9a-f]{40}$") | not)
       then "current head SHA is missing or invalid" else empty end,
     if ($trusted | length) == 0 then "trusted reviewer allowlist is empty" else empty end,
+    # Absent retarget evidence is not proof that no retarget occurred: the
+    # collector must assert it explicitly — the empty-string sentinel for
+    # "never retargeted", or the whole-second UTC instant of the last one.
+    if (($input.pr | type) != "object"
+        or (($input.pr | has("baseRetargetedAt")) | not)
+        or ($base_retargeted_at | type) != "string"
+        or ($base_retargeted_at != "" and (($base_retargeted_at | valid_at) | not)))
+      then "base-retarget evidence is missing or malformed" else empty end,
     if (($input.pr.openHeadPulls // []) != [$number])
       then "head commit is not uniquely scoped to this open pull request" else empty end
   ] as $invariant_failures
