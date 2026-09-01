@@ -303,6 +303,28 @@ echo "==> canonical git workflow describes the PR-visible review loop"
 # consumer over-generalized "never force-push" and stalled on a permitted
 # amend (vesper PR #888). These assertions keep the rule present, pinned to
 # the safe lease form, and ordered rotation-before-rewrite for leaked secrets.
+# A claimed item's life after the claim is a behavior contract, so it is
+# asserted rather than left to prose drift. Sessions merged the PR and left the
+# item In Progress (2026-08-21); the read-back is what catches a closing
+# reference that never fired, and neither tracker may be written as the one
+# whose mechanism always works.
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Keeping a tracked item current, and closing it"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  'The proof is the state'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  'explicitly parked state'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  'may legitimately stay In Progress across sessions'
+# Neither bullet may claim its tracker's mechanism is unconditional: GitHub's
+# closing reference does not fire for every PR, and a Linear workspace may or
+# may not have the integration that moves a linked issue on merge.
+assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  'Linear — nothing fires'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  'Re-read the item first'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  'Work still moving stays In Progress'
+
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Rewriting an unmerged branch"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '--force-with-lease="$(git branch --show-current):$EXPECTED"'
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '--force-with-lease="<child-branch>:$EXPECTED"'

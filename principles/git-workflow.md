@@ -604,10 +604,10 @@ git push origin --force-with-lease=<branch>:<merged-sha> :<branch>   # delete th
 git status --porcelain --untracked-files=all   # must print nothing: remove test/build residue or ignore it
 ```
 
-Then the tracker: the item is in its terminal state with the merge SHA (the
-GitHub tracker closes it from the PR body's `Closes #n`; Linear needs the
-state change by hand until AUT-410). Scratch files under `$TMPDIR` that the
-session created go too.
+Then the tracker: every item this session claimed has been re-read and left in
+the state it should end in — "Keeping a tracked item current, and closing it"
+owns which state that is. Scratch files under `$TMPDIR` that the session
+created go too.
 
 `touchstone cleanup check` never deletes anything — what is finished is the
 driver's decision, and a tool that pruned branches on its own would be
@@ -823,6 +823,58 @@ verify assignees, and document a repository-specific bypass. Inspect that
 policy before relying on either behavior. Without such a check, the
 claim-and-reconcile discipline remains mandatory driver procedure; there is no
 universal bypass token.
+
+## Keeping a tracked item current, and closing it
+
+Claiming is the start of a task's life; this is the rest of it. The rules are
+the same for whichever tracker `.touchstone-tracker.toml` declares — only the
+transport differs.
+
+**One item per unit of work.** Independent work you discover mid-task gets its
+own item; do not widen the one you claimed. Work the approved acceptance
+criterion already implies — its regression test, the change that holds the same
+invariant — belongs to the item you are on.
+
+**Update it at each milestone, not in a batch at the end.** PR merged, finding
+routed, scope split, work blocked: move the state and add one comment naming
+the evidence — the PR and SHA where they exist, the blocker or the receiving
+item where they do not — in the same breath as the event. A tracker reconciled
+hours later is how someone following the work without reading your session gets
+a wrong answer from it.
+
+**Close it when the work lands, and confirm it closed.** The proof is the state
+you read back, never the call you made:
+
+- GitHub — `Closes #n` in the PR body closes the item on merge when it fires,
+  and silently does not for a PR merged into a non-default branch, a body edited
+  after the merge, or a reference to an issue in another repository
+  (`owner/repo#n`), which GitHub links but never closes. A PR from a fork is not
+  an exception: the pull request lives in the upstream repository, so its
+  `Closes #n` resolves there. Re-read the item rather than assuming the
+  reference did its job.
+- Linear — GitHub closes only its own issues, so `Fixes KEY-123` in a PR body is
+  inert on GitHub's side and records intent only. Whether anything moves the item
+  is repository configuration: where Linear's own GitHub integration is set to
+  update a linked issue on merge it may already have done so, and where it is not
+  configured nothing has. Re-read the item first, set the terminal state through
+  the configured API or MCP only if it is not already terminal, then read back
+  the state it returns — the same authority rule claiming follows.
+
+**Work that stopped is not In Progress.** Work you routed elsewhere,
+superseded, abandoned, or shipped in part and are not continuing gets a terminal
+or explicitly parked state, plus one comment naming what landed and what
+remains. Work still moving stays In Progress and gets the same comment — the
+next PR in a stack, or an item whose remaining approved scope you are still
+implementing, is owned, not stalled. This is the ledger from "Reconcile tracked
+work" closed out; "When to unassign" above covers the narrower case where you
+never started.
+
+**End the session with no item left In Progress by accident.** An item still
+being implemented may legitimately stay In Progress across sessions; what may
+not survive the session is one left there because attention moved on after the
+merge. This is the tracker half of "Leaving no mess", and no command reports it
+for you: a shell process has no transport to every tracker, so re-reading the
+items this session claimed is the driver's step.
 
 ## Parallel work with worktrees
 
