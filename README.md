@@ -121,7 +121,9 @@ tool line, and the project-contract schema is versioned separately
 (`docs/product-contract.md`).
 
 Machine onboarding is one-time and keeps credentials out of review tools and
-durable review state:
+durable review state (`review setup`, `check`, and `run` are macOS-only —
+they live on Keychain; on other platforms record the documented explicit
+review waiver instead):
 
 ```bash
 touchstone steering install   # user-scoped skills + steering surfaces
