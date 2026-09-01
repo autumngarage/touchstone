@@ -37,15 +37,18 @@ Agentic PR Review Loop
   | - required checks run
   | - the configured reviewer reviews the exact head
   | - the driver answers every comment and resolves its thread
-  | - a fully-answered head merges (clean verdict, or
-  |   findings with every thread resolved)
+  | - under gate behavior contract 3 the head merges on a trusted
+  |   clean exact-head verdict (the answer flow requests it when
+  |   the last thread resolves); under behavior v2, findings with
+  |   every thread resolved also merged
   |
   v
 Merge Gate
   |
   | ENFORCED by GitHub when the repository's effective policy requires them:
   |   pinned required validation workflow green
-  |   review-gate covers this head and every finding is answered
+  |   review-gate holds a trusted clean verdict for this exact head
+  |   (behavior v2: covered head with every finding answered)
   |   every review thread resolved
   |   no outstanding CHANGES_REQUESTED
   | Until adoption, the same exact-head review remains driver procedure;
