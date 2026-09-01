@@ -518,17 +518,27 @@ jq -e '
   and any(.managedRepositoryRuleset.rules[]; .type == "merge_queue" and .parameters == {
     check_response_timeout_minutes: 60,
     grouping_strategy: "ALLGREEN",
-    max_entries_to_build: 1,
+    max_entries_to_build: 3,
     max_entries_to_merge: 1,
     merge_method: "SQUASH",
     min_entries_to_merge: 1,
     min_entries_to_merge_wait_minutes: 0
   })
 ' "$POLICY" >/dev/null || fail "policy must carry the merge queue in the repository ruleset (GitHub rejects it in an organization ruleset) with no strict up-to-date rule"
-# One entry per merge commit: the queue branch names a single PR and the
-# publisher evaluates that PR, so a grouped merge commit would carry one PR's
-# verdict for several. Grouping is re-enabled only with a publisher that
-# aggregates every PR in the group.
+# One entry per merge *commit*, three builds in flight. The two limits are
+# independent, and the distinction is the whole safety argument:
+#   max_entries_to_merge: 1  -- the queue branch names a single PR and the
+#     publisher evaluates that PR, so a grouped merge commit would carry one
+#     PR's verdict for several. Merge grouping is re-enabled only with a
+#     publisher that aggregates every PR in the group.
+#   max_entries_to_build: 3  -- build concurrency only. GitHub dispatches one
+#     merge_group webhook per entry, each with its own pr-N-<sha> branch, so
+#     every PR is still gated by a run that evaluated that PR. Groups are
+#     speculative and cumulative (entry 3 contains 1 and 2), so a failure
+#     upstream discards the builds behind it -- redundant CI, never a
+#     borrowed verdict.
+# Raised from 1 because a strictly serial queue made every pull request wait a
+# full prospective-merge run behind every other one.
 # Every gate the queue waits on is a pinned required workflow that runs on
 # merge_group itself (asserted in touchstone-workflows); nothing in this
 # repository publishes a check, so there is no status-context rule to keep in
