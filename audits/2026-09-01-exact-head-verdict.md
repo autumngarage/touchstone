@@ -138,6 +138,21 @@ cutoff/prior-snapshot machinery, `evaluate.jq` (contract 4) and its tests —
 then AUT-785 and AUT-793 close as superseded, and AUT-1106 closes because
 evaluation cost no longer depends on history size.
 
+## Rollout observations (live, 2026-09-01)
+
+Shapes observed during the Phase 4 rollout that the 52-PR sample did not
+contain, none of which required an adapter change:
+
+- A clean result with appended prose — `Didn't find any major issues. Keep
+  it up!` — matched by the substring rule as designed.
+- A transient empty-body formal review bound to the head while the
+  reviewer's dashboard still said Running, with body and inline comments
+  attached minutes later. The adapter reads the shell as `findings` (the
+  safe direction) and supersession settles it when content arrives.
+- The behavior-v3 attest flow (answer resolves the last thread → one
+  idempotent fresh request) shipped in the sequencer ahead of the repin
+  (#1086) after hosted review caught the gap.
+
 ## Reproduction
 
 Snapshots were collected with `gh api` (REST + GraphQL, paginated,
