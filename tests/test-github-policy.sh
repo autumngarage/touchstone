@@ -732,10 +732,15 @@ jq -e 'any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")' \
   && ok "arpeggio declares a merge queue" \
   || fail "arpeggio lost its merge queue; regenerate it without --no-queue"
 # Hesperus (private, Enterprise Cloud) is queue-eligible from its first policy.
-jq -e 'any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")' \
+# Its repository-owned Mac product lane reports on merge_group, so the queue
+# must also wait for that exact prospective-merge verdict.
+jq -e '
+  any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")
+  and [.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] == ["App tests, Release bundle, and daemon smoke"]
+' \
   "$ROOT/policy/github/consumers/hesperus.json" >/dev/null \
-  && ok "hesperus declares a merge queue" \
-  || fail "hesperus lost its merge queue; regenerate it without --no-queue"
+  && ok "hesperus queues on its hosted Mac product verdict" \
+  || fail "hesperus must queue on the required App tests, Release bundle, and daemon smoke merge-group status"
 # Hesperus's persistent acceptance fixture exists to exercise that queue end to
 # end, so losing either its registration or its queue must fail independently
 # of the generic derivation loop above.
