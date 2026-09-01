@@ -205,11 +205,13 @@ before treating that red check as a review verdict.
 **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.** GitHub's review API can support approval for authorized integrations, but that is not this adapter's observed contract. Do not expect an approval here or treat its absence as a stalled review.
 
 **Where the repository's effective policy requires `review-gate`, it enforces
-the review contract.** It fails unless trusted review evidence covers the exact
-current head after the bound request and every inline or body-only finding has
-a qualifying later answer. Until that check is installed and verified as
-required, exact-head review remains mandatory driver procedure. GitHub
-conversation resolution separately requires every inline thread closed.
+the review contract.** Under gate behavior contract 3 it passes only on a
+trusted, unedited clean verdict bound to the exact current head; where
+behavior v2 remains effective it instead requires trusted evidence for the
+exact head after the bound request plus a qualifying later answer for every
+finding. Until that check is installed and verified as required,
+exact-head review remains mandatory driver procedure. GitHub conversation
+resolution separately requires every inline thread closed.
 `touchstone pr merge` observes that policy-owned exact-head verdict; it does
 not reconstruct a second verdict from mutable review timestamps. The merge
 queue is the atomic boundary: its merge-group run re-evaluates the complete
@@ -402,7 +404,7 @@ partial, or unrelated.
 
 ## Agentic PR Review Loop
 
-The PR is the only semantic review surface. Request one ordinary review per exact head-and-base binding: head SHA, base ref, and base SHA. The driving CLI watches the PR, fixes actionable findings, pushes a new head, and repeats until the current binding's review is answered — a clean verdict, or findings with every thread resolved.
+The PR is the only semantic review surface. Request one ordinary review per exact head-and-base binding: head SHA, base ref, and base SHA. The driving CLI watches the PR, fixes actionable findings, pushes a new head, and repeats until the current head carries a trusted clean verdict (under behavior v2, findings with every thread resolved also completed the round).
 
 ### Review-request states and bounded recovery
 
