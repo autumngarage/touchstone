@@ -5,7 +5,7 @@
   "repository": "touchstone-workflows",
   "sourceContract": {
     "manifestPath": ".touchstone-source-contract.json",
-    "gateBehaviorContractVersion": 2
+    "gateBehaviorContractVersion": 3
   },
   "branch": "main",
   "rollbackPrerequisites": {
