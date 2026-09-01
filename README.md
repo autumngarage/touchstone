@@ -177,7 +177,9 @@ The exact raw recovery path (CLI unavailable) remains:
 cp .github/pull_request_template.md /tmp/pr-body
 # Fill every required section and Validation row; keep `Fixes AUT-123` in the body.
 gh pr create --title "fix: what changed" --body-file /tmp/pr-body
-# ... post `@codex review`, answer findings, resolve threads ...
+# ... post `@codex review`; if the required review-gate run evaluated before
+# that comment existed, re-run it (Actions tab, or the run's rerun API) ...
+# ... answer findings, resolve threads ...
 reviewed="$(gh pr view <n> --json headRefOid --jq .headRefOid)"  # capture when the clean verdict arrives
 # confirm the verdict names $reviewed, then bind the merge to that saved value —
 # a live read here would accept any commit pushed after review, unreviewed

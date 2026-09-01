@@ -607,9 +607,11 @@ decline to run was never a rule. Closing, renaming, restacking, or reopening the
 same acceptance criterion does not reset its count. Past three rounds, the
 legitimate exits are:
 
-- **Merge if answered** — only when no known P0/P1 defect remains; all
-  threads resolved satisfies the gate, but routing a low-severity or
-  out-of-scope finding is not permission to ship a known serious regression;
+- **Merge if answered** — only when no known P0/P1 defect remains.
+  Where behavior v2 is effective, all threads resolved satisfies that gate;
+  under contract 3 the answer flow's attest request still supplies the final
+  clean verdict first. Routing a P2, P3, or out-of-scope finding is not
+  permission to ship a known serious regression;
 - **Split the PR** — only genuinely independent acceptance criteria receive
   independent budgets; a mechanical split is not budget laundering;
 - **Close it, preserving the corpus** on the tracking issue (the #706 pattern) — correct when successive fixes keep creating defects.
