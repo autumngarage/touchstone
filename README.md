@@ -53,6 +53,8 @@ flowchart TD
     subgraph github["GitHub — the enforcement authority"]
         V["validate
         pinned workflow runs the project's declared checks"]
+        D["delivery-evidence
+        PR body records tier and validation"]
         G["review-gate
         passes only on a trusted clean verdict
         bound to the current head"]
@@ -63,9 +65,11 @@ flowchart TD
     end
 
     A --> V
+    O --> D
     R -- "clean verdict for the exact head" --> G
     F --> T
     V --> Q
+    D --> Q
     G --> Q
     T --> Q
     Q --> M["merged to main"]
@@ -74,15 +78,19 @@ flowchart TD
 No arrow crosses from the agent into the merge decision: the CLI sequences
 and observes, the reviewer judges one commit, and GitHub alone decides.
 
-Every adopted repository is protected by an audited organization ruleset:
-PR-only delivery, no force pushes or deletions, required status checks, a
-merge queue validating the prospective merged result, and two required
-workflows pinned to an immutable revision of
+Where the Touchstone policy is installed and verified — adoption writes
+declarations; `touchstone policy apply` installs enforcement, and only the
+repository's effective rules prove it — an audited organization ruleset
+provides PR-only delivery, no force pushes or deletions, required status
+checks, a merge queue validating the prospective merged result, and three
+required workflows pinned to an immutable revision of
 `autumngarage/touchstone-workflows` that no target PR can edit:
 
 - **validate** runs the repository's own `.touchstone.toml` declaration
   through the pinned validation engine — deterministic, offline, no
   third-party dependency.
+- **delivery-evidence** verifies the PR body records its review tier and
+  validation evidence — shape and presence, never content quality.
 - **review-gate** (gate behavior contract 3) derives one normalized
   reviewer verdict for the exact current PR head — `waiting`, `findings`,
   `clean`, or `invalid` — and succeeds only on a trusted, unedited,
@@ -213,8 +221,9 @@ touchstone/
 accepting schema 1 and schema 2; its contract lives in [docs/validation-contract.md](docs/validation-contract.md).
 `scripts/touchstone-tracker.sh` owns the tracker-neutral verified claim boundary;
 its versioned outcomes live in [docs/tracker-contract.md](docs/tracker-contract.md).
-`scripts/touchstone-pr.sh` owns the four bounded PR sequencing operations; its
-versioned output and raw recovery equivalents live in
+`scripts/touchstone-pr.sh` owns the `open`, `status`, and `merge` sequencing
+operations, and `scripts/respond-review.sh` owns `answer`; the four-command
+CLI boundary, its versioned output, and the raw recovery equivalents live in
 [docs/pr-cli-contract.md](docs/pr-cli-contract.md).
 
 ## Documentation
