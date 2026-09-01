@@ -604,10 +604,10 @@ git push origin --force-with-lease=<branch>:<merged-sha> :<branch>   # delete th
 git status --porcelain --untracked-files=all   # must print nothing: remove test/build residue or ignore it
 ```
 
-Then the tracker: every item this session claimed is in a terminal or
-explicitly parked state — carrying the merge SHA where the work landed — and
-you have re-read it to confirm that; see "Keeping a tracked item current, and
-closing it". Scratch files under `$TMPDIR` that the session created go too.
+Then the tracker: every item this session claimed has been re-read and left in
+the state it should end in — "Keeping a tracked item current, and closing it"
+owns which state that is. Scratch files under `$TMPDIR` that the session
+created go too.
 
 `touchstone cleanup check` never deletes anything — what is finished is the
 driver's decision, and a tool that pruned branches on its own would be
