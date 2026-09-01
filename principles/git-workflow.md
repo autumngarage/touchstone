@@ -500,6 +500,12 @@ review-provider friction.
 3. **Body-only finding** — a non-clean verdict with no inline thread has
    nothing resolvable to answer, so one fresh request on the unchanged binding
    is the only path forward.
+4. **Behavior-v3 attest** — where the effective gate implements gate behavior
+   contract 3, answered findings never satisfy it: only a later trusted clean
+   verdict for the exact head does. Resolving the last thread-backed finding
+   therefore earns exactly one fresh request on the unchanged binding —
+   `touchstone pr answer` posts it automatically with a head-scoped
+   idempotency marker, so neither the driver nor a retry posts a second one.
 
 ### Babysitting a PR: the round discipline
 

@@ -318,9 +318,12 @@ VERIFY="$(graphql_with_retry \
   || fail "could not verify thread resolution for $THREAD_ID."
 [ "$VERIFY" = "true" ] || fail "thread $THREAD_ID is still unresolved after the mutation."
 
-# Answered findings satisfy the gate on an unchanged head (issue #751) — the
-# next step after resolving every thread is the MERGE GATE, never another
-# review request of the same head (PR #755 review, round 8).
+# Under behavior v2, answered findings satisfy the gate on an unchanged head
+# (issue #751) — the next step after resolving every thread is the MERGE
+# GATE, never another review request of the same head (PR #755 review,
+# round 8). Behavior v3 inverts that: only a later trusted clean verdict for
+# the exact head passes, so resolving the last open thread posts the one
+# fresh review request that lets the reviewer publish it (AUT-1132).
 # An answer is evidence the pinned review-gate has not seen. Where the base
 # branch requires that workflow, ask GitHub to re-run its run for this head;
 # a behavior-v1 run still in progress is waited for first, because it may have
@@ -341,7 +344,7 @@ BOUND_GATE_RUN_ID=""
 if PR_STATUS="$(bash "$TOOL_ROOT/scripts/touchstone-pr.sh" status "$PR_NUMBER" --json)"; then
   GATE_BEHAVIOR_VERSION="$(printf '%s' "$PR_STATUS" | jq -er '.reviewGateBehaviorContractVersion // 1')" \
     || fail "effective review-gate status reported an invalid behavior contract."
-  if [ "$GATE_BEHAVIOR_VERSION" = 2 ]; then
+  if [ "$GATE_BEHAVIOR_VERSION" = 2 ] || [ "$GATE_BEHAVIOR_VERSION" = 3 ]; then
     BOUND_GATE_RUN_ID="$(printf '%s' "$PR_STATUS" | jq -r \
       '.reviewGateCheck | select(.present == true and ((.unbound // false) | not)) | .workflowRunId // empty')"
     if [ -z "$BOUND_GATE_RUN_ID" ]; then
@@ -350,6 +353,33 @@ if PR_STATUS="$(bash "$TOOL_ROOT/scripts/touchstone-pr.sh" status "$PR_NUMBER" -
   fi
 else
   echo "WARNING: could not verify behavior v2; conservatively refreshing the gate through the behavior-v1 path." >&2
+fi
+if [ "$GATE_BEHAVIOR_VERSION" = 3 ]; then
+  # Behavior v3 accepts only a later trusted clean verdict for this exact
+  # head; answers and thread resolution alone can never pass. When this
+  # answer resolved the last open thread, post the one fresh review request
+  # that lets the reviewer publish that verdict — whether or not a bound
+  # gate run exists yet: whichever run evaluates this head needs the
+  # verdict either way. Earlier answers in the same round post nothing, and
+  # the head-scoped marker makes retries after a partial failure skip the
+  # post, so one binding yields exactly one request.
+  REMAINING_UNRESOLVED="$(list_unresolved_threads)" || fail "answers are recorded, but the unresolved-thread read failed; when every thread is resolved, post '@codex review' on PR #$PR_NUMBER for the behavior-v3 clean verdict."
+  if [ -z "$REMAINING_UNRESOLVED" ]; then
+    ATTEST_MARKER="<!-- touchstone:attest-request head=$HEAD_SHA -->"
+    EXISTING_ATTEST="$(gh_read api --paginate "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments?per_page=100" --jq '.[].body')" || fail "answers are recorded, but the attest-request idempotency read failed; verify PR #$PR_NUMBER carries one '@codex review' for this head."
+    if printf '%s\n' "$EXISTING_ATTEST" | grep -qF "$ATTEST_MARKER"; then
+      echo "==> Every thread is resolved; the behavior-v3 review request for this head already exists."
+    else
+      gh_read api "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments" -f body="@codex review
+
+$ATTEST_MARKER" --jq .id >/dev/null || fail "answers are recorded, but the fresh behavior-v3 review request failed; post '@codex review' on PR #$PR_NUMBER yourself."
+      # The pre-answer head check bounds the window, not the race: prove the
+      # coordinates survived the post, or say the request is stale-bound.
+      POST_HEAD="$(gh_read pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" || fail "posted the behavior-v3 review request, but the head re-read failed; verify PR #$PR_NUMBER still heads $HEAD_SHA."
+      [ "$POST_HEAD" = "$HEAD_SHA" ] || fail "PR head moved from $HEAD_SHA to $POST_HEAD while requesting the behavior-v3 verdict; the answers stand, but request review for the new head before merging."
+      echo "==> Every thread is resolved; posted a fresh review request for the behavior-v3 clean exact-head verdict."
+    fi
+  fi
 fi
 # Percent-encode one path segment with the base tool surface only: a branch
 # name may carry "/" or other bytes the rules endpoint cannot take raw.
@@ -394,7 +424,7 @@ if [ "$GATE_REQUIRED" = true ]; then
           end')" \
       || fail "GitHub returned malformed or ambiguous review-gate run data"
     read -r GATE_RUN GATE_STATUS GATE_STARTED_AT <<<"$GATE_ROW"
-    if [ -n "$GATE_RUN" ] && [ "$GATE_BEHAVIOR_VERSION" = 2 ] && [ "$GATE_RUN" = "$BOUND_GATE_RUN_ID" ]; then
+    if [ -n "$GATE_RUN" ] && { [ "$GATE_BEHAVIOR_VERSION" = 2 ] || [ "$GATE_BEHAVIOR_VERSION" = 3 ]; } && [ "$GATE_RUN" = "$BOUND_GATE_RUN_ID" ]; then
       case "$GATE_STATUS" in
         queued | requested | waiting | pending)
           echo "==> Review gate run $GATE_RUN is already evaluating this head; returning control while it waits for review evidence."

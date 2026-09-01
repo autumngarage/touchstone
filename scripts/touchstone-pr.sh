@@ -1047,7 +1047,7 @@ read_enforcement() {
             and startswith("/") == false
             and (split("/") | index("..") == null))
           and (.workflowSource.sourceContract.gateBehaviorContractVersion
-            | type == "number" and floor == . and (. == 1 or . == 2))
+            | type == "number" and floor == . and (. == 1 or . == 2 or . == 3))
         ' >/dev/null; then
           fail_operation "$policy_file has an invalid workflow source contract declaration" "Reinstall touchstone; the policy file is corrupt or incomplete."
         fi
@@ -1449,8 +1449,12 @@ rerun_required_workflow() {
 }
 
 effective_review_gate_accepts_active() {
+  # Behavior v2 and v3 both leave one authoritative polling run active per
+  # head; v3 changes what the run accepts (an exact-head clean verdict), not
+  # how a client waits on it.
   [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ] \
-    && [ "$ENFORCEMENT_GATE_BEHAVIOR_VERSION" = 2 ]
+    && { [ "$ENFORCEMENT_GATE_BEHAVIOR_VERSION" = 2 ] \
+      || [ "$ENFORCEMENT_GATE_BEHAVIOR_VERSION" = 3 ]; }
 }
 
 rerun_declared_review_gate() {

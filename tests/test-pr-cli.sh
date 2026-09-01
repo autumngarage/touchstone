@@ -572,7 +572,8 @@ case "$1 ${2:-}" in
       # overlapping pin whose other enforced revision is the compatible one.
       behavior_version=2
       [ ! -f "$GH_STATE/behavior-version-legacy" ] || behavior_version=1
-      [ ! -f "$GH_STATE/behavior-version-unsupported" ] || behavior_version=3
+      [ ! -f "$GH_STATE/behavior-version-unsupported" ] || behavior_version=4
+      [ ! -f "$GH_STATE/behavior-version-next" ] || behavior_version=3
       if [ -f "$GH_STATE/overlapping-pins" ] && has "?ref=$GH_MID_SHA" "$@"; then behavior_version=1; fi
       if [ -f "$GH_STATE/behavior-version-missing" ]; then
         printf '%s\n' '{"contractVersion":1}'
@@ -1293,7 +1294,7 @@ EOF
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
     || fail "behavior v2 open reused a run whose request-evidence window had expired"
   rm -f "$TMP/state/gate-in-progress"
-  jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 3' \
+  jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 4' \
     "$TMP/tool-v1/policy/github/touchstone-main.json" >"$TMP/tool-v1/policy/github/touchstone-main.next"
   mv "$TMP/tool-v1/policy/github/touchstone-main.next" "$TMP/tool-v1/policy/github/touchstone-main.json"
   touch "$TMP/state/behavior-version-unsupported"
@@ -1305,6 +1306,37 @@ EOF
     "$TMP/tool-v1/policy/github/touchstone-main.json" >"$TMP/tool-v1/policy/github/touchstone-main.next"
   mv "$TMP/tool-v1/policy/github/touchstone-main.next" "$TMP/tool-v1/policy/github/touchstone-main.json"
   rm -f "$TMP/state/behavior-version-unsupported"
+  rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns"
+
+  echo "==> a gate behavior contract 3 policy is accepted and reuses the active run"
+  mkdir -p "$TMP/tool-v3/bin" "$TMP/tool-v3/scripts" "$TMP/tool-v3/policy/github"
+  cp "$ROOT/bin/touchstone" "$TMP/tool-v3/bin/touchstone"
+  cp "$ROOT/scripts/touchstone-pr.sh" "$TMP/tool-v3/scripts/touchstone-pr.sh"
+  cp -R "$ROOT/policy/github/." "$TMP/tool-v3/policy/github/"
+  cat "$ROOT/VERSION" >"$TMP/tool-v3/VERSION"
+  jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 3' \
+    "$ROOT/policy/github/touchstone-main.json" >"$TMP/tool-v3/policy/github/touchstone-main.json"
+  run_pr_v3() {
+    local output="$1"
+    shift
+    : >"$GH_CALLS"
+    set +e
+    bash "$TMP/tool-v3/bin/touchstone" pr "$@" --project "$TMP/project" >"$output" 2>&1
+    RUN_RC=$?
+    set -e
+  }
+  touch "$TMP/state/behavior-version-next" "$TMP/state/review-gate" "$TMP/state/pr-exists"
+  run_pr_v3 "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewGateBehaviorContractVersion":3'
+  touch "$TMP/state/gate-fresh-active"
+  echo 30 >"$TMP/state/gate-in-progress"
+  run_pr_v3 "$TMP/out" open --title 'Gate v3' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"already-active"}'
+  [ ! -f "$TMP/state/gate-reruns" ] \
+    || fail "behavior v3 open re-ran an evaluation that was already active"
+  rm -f "$TMP/state/gate-in-progress" "$TMP/state/gate-fresh-active" "$TMP/state/behavior-version-next"
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns"
 
   echo "==> open refreshes required delivery evidence after body convergence (AUT-481)"
@@ -2363,6 +2395,10 @@ case "$1 $2" in
     field_value body "$@" >"$GH_STATE/reply-body"
     echo "71"
     ;;
+  "api repos/autumngarage/current/issues/7/comments")
+    field_value body "$@" >>"$GH_STATE/fresh-request"
+    echo "99"
+    ;;
   "api repos/autumngarage/current/commits/abc123")
     echo "abcdef0123456789abcdef0123456789abcdef01"
     ;;
@@ -2393,6 +2429,8 @@ case "$1 $2" in
   "api --paginate")
     if has 'actions/workflows' "$@"; then
       printf '1\n2\n3\n'
+    elif has 'issues/7/comments' "$@"; then
+      [ ! -f "$GH_STATE/fresh-request" ] || cat "$GH_STATE/fresh-request"
     elif [ -f "$GH_STATE/replies" ]; then
       echo "<!-- touchstone:respond-review comment=51 -->"
       [ -f "$GH_STATE/legacy-reply-only" ] \
@@ -2453,6 +2491,7 @@ set -euo pipefail
 version=null
 [ ! -f "$GH_STATE/status-fails" ] || exit 1
 [ ! -f "$GH_STATE/effective-behavior-v2" ] || version=2
+[ ! -f "$GH_STATE/effective-behavior-v3" ] || version=3
 gate_check='{"present":true,"workflowRunId":77}'
 [ ! -f "$GH_STATE/status-run-unbound" ] || gate_check='{"present":false,"unbound":true,"workflowRunId":77}'
 printf '{"schema":"touchstone.pr/v1","operation":"status","reviewGateBehaviorContractVersion":%s,"reviewGateCheck":%s}\n' "$version" "$gate_check"
@@ -2474,6 +2513,15 @@ STATUS_STUB
     bash "$RR/tool-v2/scripts/respond-review.sh" "$@" >"$RR/out" 2>&1
     RUN_RC=$?
     set -e
+  }
+  run_v3() {
+    rm -f "$GH_STATE/effective-behavior-v2"
+    touch "$GH_STATE/effective-behavior-v3"
+    set +e
+    bash "$RR/tool-v2/scripts/respond-review.sh" "$@" >"$RR/out" 2>&1
+    RUN_RC=$?
+    set -e
+    rm -f "$GH_STATE/effective-behavior-v3"
   }
 
   echo "==> --fix-commit is verified against the captured PR head before mutation"
@@ -2668,6 +2716,41 @@ STATUS_STUB
   grep -q 'conservatively refreshing the gate' "$RR/out" \
     || fail "answer silently hid its behavior-v1 fallback"
   rm -f "$GH_STATE/status-fails" "$GH_STATE/gate-reruns"
+  rm -f "$GH_STATE/effective-behavior-v2"
+
+  echo "==> a behavior v3 answer that resolves the last thread posts one fresh review request"
+  touch "$GH_STATE/gate-fresh-active"
+  echo 30 >"$GH_STATE/gate-in-progress"
+  run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "behavior v3 answer exited $RUN_RC: $(tail -3 "$RR/out")"
+  grep -qF '@codex review' "$GH_STATE/fresh-request" 2>/dev/null \
+    || fail "behavior v3 answer did not post the fresh review request for the clean verdict"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq 1 ] \
+    || fail "behavior v3 answer posted more than one review request"
+  grep -qF 'posted a fresh review request' "$RR/out" \
+    || fail "behavior v3 answer did not announce its review request"
+  grep -qF 'touchstone:attest-request head=abcdef0123456789abcdef0123456789abcdef01' "$GH_STATE/fresh-request" \
+    || fail "behavior v3 review request carries no head-scoped idempotency marker"
+
+  # A retry after the request was posted must not post a second one.
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
+  run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "behavior v3 retry exited $RUN_RC: $(tail -3 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq 1 ] \
+    || fail "behavior v3 retry posted a duplicate review request"
+  grep -qF 'already exists' "$RR/out" \
+    || fail "behavior v3 retry did not report the existing request"
+  rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request"
+
+  # Behavior v2 must never post one: answered findings satisfy that gate.
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
+  run_v2 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "behavior v2 answer exited $RUN_RC"
+  [ ! -f "$GH_STATE/fresh-request" ] \
+    || fail "behavior v2 answer posted a review request it must not post"
+  rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/gate-fresh-active"
   rm -f "$GH_STATE/effective-behavior-v2"
   rm -f "$GH_STATE/review-gate"
 
