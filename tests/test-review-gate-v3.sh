@@ -172,6 +172,16 @@ run_case "clean result with a missing timestamp fails closed" \
 run_case "findings review with a missing timestamp fails closed" \
   'del(.reviews[0].submitted_at)' invalid "malformed timestamps"
 
+# Shape alone is not validity: an impossible instant must fail closed too.
+run_case "clean result with an impossible timestamp fails closed" \
+  'del(.reviews[0])
+   | .issueComments[1].created_at = "2026-99-99T99:99:99Z"
+   | .issueComments[1].updated_at = "2026-99-99T99:99:99Z"' \
+  invalid "malformed timestamps"
+
+run_case "impossible base-retarget instant fails closed" \
+  '.pr.baseRetargetedAt = "2026-99-99T99:99:99Z"' invalid "base-retarget evidence"
+
 run_case "full-length reviewed commit binds" \
   '.issueComments[1].body = "Codex Review: Didn'"'"'t find any major issues.\n\n**Reviewed commit:** `'"$HEAD_SHA"'`"' clean
 

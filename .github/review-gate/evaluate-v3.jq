@@ -65,8 +65,14 @@ def provisional_quota_notice:
 def clean_sentence:
   (.body // "") | contains("Didn't find any major issues");
 
+# A whole-second UTC instant that actually exists: shape alone admits
+# impossible values such as 2026-99-99T99:99:99Z, so the value must survive
+# a parse round-trip unchanged.
 def valid_at:
-  type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
+  . as $value
+  | type == "string"
+  and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+  and ((try (fromdateiso8601 | todateiso8601) catch null) == $value);
 
 def reviewed_abbrev:
   (.body // "")
