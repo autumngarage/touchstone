@@ -813,6 +813,27 @@ fi
   || fail "apply checked checkout cleanliness after policy mutation"
 ok "apply requires committed removal and a clean reviewed checkout"
 
+echo "==> A complete installed release can apply its derived consumer policy"
+INSTALLED_RELEASE="$TMP_DIR/installed-release"
+mkdir -p "$INSTALLED_RELEASE/bin" "$INSTALLED_RELEASE/scripts" \
+  "$INSTALLED_RELEASE/policy/github/workflow-sources" "$INSTALLED_RELEASE/policy/github"
+cp "$ROOT/bin/touchstone" "$INSTALLED_RELEASE/bin/touchstone"
+cp "$SOURCE_SCRIPT" "$INSTALLED_RELEASE/scripts/github-policy.sh"
+cp "$ROOT/scripts/derive-consumer-policy.sh" "$INSTALLED_RELEASE/scripts/derive-consumer-policy.sh"
+cp "$POLICY" "$INSTALLED_RELEASE/policy/github/touchstone-main.json"
+cp "$SOURCE_POLICY" "$INSTALLED_RELEASE/policy/github/workflow-sources/touchstone-workflows.json"
+printf '9.9.9\n' >"$INSTALLED_RELEASE/VERSION"
+bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone >"$TMP_DIR/installed-consumer.json"
+init_branch
+PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" \
+  "$INSTALLED_RELEASE/scripts/github-policy.sh" apply "$TMP_DIR/installed-consumer.json" \
+  >"$TMP_DIR/installed-apply.out" 2>&1 \
+  || fail "installed release could not apply: $(cat "$TMP_DIR/installed-apply.out")"
+[ -f "$TMP_DIR/state/ruleset.json" ] && [ -f "$TMP_DIR/state/repo-ruleset.json" ] \
+  || fail "installed release did not apply the complete derived policy"
+ok "release integrity replaces source-checkout cleanliness for installed policy apply"
+init_branch
+
 echo "==> Required workflow source stays outside and protected from the target"
 jq '.workflowSource.repository = .repository' "$POLICY" >"$TMP_DIR/self-source-policy.json"
 if run_policy dry-run "$TMP_DIR/self-source-policy.json" >/dev/null 2>&1; then

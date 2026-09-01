@@ -13,6 +13,7 @@ touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
 touchstone pr status PR
 touchstone pr merge PR --head SHA [--unguarded]
 touchstone policy status [--base BRANCH]
+touchstone policy apply --base BRANCH --authorize-admin
 touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change)
 touchstone pr answer PR --all-resolved-check
 ```
@@ -22,6 +23,17 @@ Every command accepts `--project DIR`; every command except `answer` accepts `--
 an existing value's meaning requires a new schema. Exit 0 means the reported state was verified, exit 1 is
 an operational or transport failure, and exit 2 is invalid or unsafe input. No
 command runs a daemon, stores credentials, or persists derived PR state.
+
+`policy apply` is the one exception to the PR schema: its deliberately smaller
+response uses `touchstone.policy/v1` and reports `applied`, `already-applied`,
+or `action-required`. It requires `--project`, `--base`, and the explicit
+`--authorize-admin` acknowledgement. The command derives an Autumn Garage
+consumer from the canonical policy shipped in the same reviewed release,
+delegates mutation and rollback to the existing policy engine, then accepts
+success only after `policy status` verifies the exact repository and branch.
+It stores no credential and never returns the policy engine's provider
+diagnostics. Repeating it after a lost reply is safe: the verified policy is
+reported as `already-applied` without another mutation.
 When `open` requests a policy-declared review gate, its JSON result includes
 `reviewGate.runId` and `reviewGate.action`. `rerun-requested` means the client
 refreshed a completed attempt; `already-active` means a behavior-v2 run is the
