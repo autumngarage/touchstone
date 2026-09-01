@@ -604,10 +604,10 @@ git push origin --force-with-lease=<branch>:<merged-sha> :<branch>   # delete th
 git status --porcelain --untracked-files=all   # must print nothing: remove test/build residue or ignore it
 ```
 
-Then the tracker: the item is in its terminal state with the merge SHA (the
-GitHub tracker closes it from the PR body's `Closes #n`; Linear needs the
-state change by hand until AUT-410). Scratch files under `$TMPDIR` that the
-session created go too.
+Then the tracker: every item this session claimed is in a terminal or
+explicitly parked state — carrying the merge SHA where the work landed — and
+you have re-read it to confirm that; see "Keeping a tracked item current, and
+closing it". Scratch files under `$TMPDIR` that the session created go too.
 
 `touchstone cleanup check` never deletes anything — what is finished is the
 driver's decision, and a tool that pruned branches on its own would be
@@ -823,6 +823,44 @@ verify assignees, and document a repository-specific bypass. Inspect that
 policy before relying on either behavior. Without such a check, the
 claim-and-reconcile discipline remains mandatory driver procedure; there is no
 universal bypass token.
+
+## Keeping a tracked item current, and closing it
+
+Claiming is the start of a task's life; this is the rest of it. The rules are
+the same for whichever tracker `.touchstone-tracker.toml` declares — only the
+transport differs.
+
+**One item per unit of work.** Work you discover mid-task gets its own item.
+Do not widen the one you claimed.
+
+**Update it at each milestone, not in a batch at the end.** PR merged, finding
+routed, scope split, work blocked: move the state and add one comment naming
+the PR and SHA, in the same breath as the event. A tracker reconciled hours
+later is how someone following the work without reading your session gets a
+wrong answer from it.
+
+**Close it when the work lands, and confirm it closed.** The proof is the state
+you read back, never the call you made:
+
+- GitHub — `Closes #n` in the PR body closes the item on merge when it fires,
+  and silently does not for a PR based on a non-default branch, a body edited
+  after the merge, or a fork PR. Re-read the item rather than assuming the
+  reference did its job.
+- Linear — nothing fires. GitHub resolves closing keywords only to its own
+  issues, so `Fixes KEY-123` in a PR body is inert on GitHub's side and records
+  intent only. Set the terminal state through the configured API or MCP and read
+  back the state it returns, the same authority rule claiming follows.
+
+**Work that did not land is not In Progress either.** Routed, superseded,
+partially shipped, and abandoned work each get a terminal or explicitly parked
+state, plus one comment naming what landed and what remains. This is the ledger
+from "Reconcile tracked work" closed out; "When to unassign" above covers the
+narrower case where you never started.
+
+**End the session with nothing you touched still In Progress.** This is the
+tracker half of "Leaving no mess", and no command reports it for you: a shell
+process has no transport to every tracker, so re-reading the items this session
+claimed is the driver's step.
 
 ## Parallel work with worktrees
 
