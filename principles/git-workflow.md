@@ -860,16 +860,21 @@ you read back, never the call you made:
   the configured API or MCP only if it is not already terminal, then read back
   the state it returns — the same authority rule claiming follows.
 
-**Work that did not land is not In Progress either.** Routed, superseded,
-partially shipped, and abandoned work each get a terminal or explicitly parked
-state, plus one comment naming what landed and what remains. This is the ledger
-from "Reconcile tracked work" closed out; "When to unassign" above covers the
-narrower case where you never started.
+**Work that stopped is not In Progress.** Work you routed elsewhere,
+superseded, abandoned, or shipped in part and are not continuing gets a terminal
+or explicitly parked state, plus one comment naming what landed and what
+remains. Work still moving stays In Progress and gets the same comment — the
+next PR in a stack, or an item whose remaining approved scope you are still
+implementing, is owned, not stalled. This is the ledger from "Reconcile tracked
+work" closed out; "When to unassign" above covers the narrower case where you
+never started.
 
-**End the session with nothing you touched still In Progress.** This is the
-tracker half of "Leaving no mess", and no command reports it for you: a shell
-process has no transport to every tracker, so re-reading the items this session
-claimed is the driver's step.
+**End the session with no item left In Progress by accident.** An item still
+being implemented may legitimately stay In Progress across sessions; what may
+not survive the session is one left there because attention moved on after the
+merge. This is the tracker half of "Leaving no mess", and no command reports it
+for you: a shell process has no transport to every tracker, so re-reading the
+items this session claimed is the driver's step.
 
 ## Parallel work with worktrees
 

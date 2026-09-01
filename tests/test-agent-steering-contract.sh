@@ -312,9 +312,9 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Keeping a tracked
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
   'The proof is the state'
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
-  'is not In Progress either'
+  'explicitly parked state'
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
-  'nothing you touched still In Progress'
+  'may legitimately stay In Progress across sessions'
 # Neither bullet may claim its tracker's mechanism is unconditional: GitHub's
 # closing reference does not fire for every PR, and a Linear workspace may or
 # may not have the integration that moves a linked issue on merge.
@@ -322,6 +322,8 @@ assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
   'Linear — nothing fires'
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
   'Re-read the item first'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  'Work still moving stays In Progress'
 
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Rewriting an unmerged branch"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '--force-with-lease="$(git branch --show-current):$EXPECTED"'
