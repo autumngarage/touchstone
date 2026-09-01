@@ -115,6 +115,20 @@ run_case "base advancing without head mutation" \
 run_case "base retargeted after the clean verdict" \
   '.pr.baseRetargetedAt = "2026-08-20T11:00:00Z" | del(.reviews[0])' waiting
 
+# Publication time is not proof of reviewed base: a verdict arriving after
+# the retarget from an in-flight old-base review must not count. Only a
+# verdict preceded by a review request posted after the retarget does.
+run_case "verdict after retarget without a fresh request is not acceptable" \
+  '.pr.baseRetargetedAt = "2026-08-20T10:10:00Z" | del(.reviews[0])' waiting
+
+run_case "fresh request after retarget re-arms later verdicts" \
+  '.pr.baseRetargetedAt = "2026-08-20T10:10:00Z" | del(.reviews[0])
+   | .issueComments += [{"id":104,"created_at":"2026-08-20T10:15:00Z","updated_at":"2026-08-20T10:15:00Z","user":{"login":"henry"},"body":"@codex review"}]' clean
+
+run_case "fresh request does not re-arm a verdict that precedes it" \
+  '.pr.baseRetargetedAt = "2026-08-20T10:10:00Z" | del(.reviews[0])
+   | .issueComments += [{"id":104,"created_at":"2026-08-20T10:45:00Z","updated_at":"2026-08-20T10:45:00Z","user":{"login":"henry"},"body":"@codex review"}]' waiting
+
 # Absent retarget evidence is not proof that no retarget occurred.
 run_case "missing base-retarget evidence fails closed" \
   'del(.pr.baseRetargetedAt)' invalid "base-retarget evidence"

@@ -127,10 +127,23 @@ def review_request:
   ]
   # A verdict reviews the diff against the base the pull request had; after a
   # base retarget that diff no longer exists, so earlier verdicts are stale.
-  # Only an event with a proven timestamp can be proven stale: unorderable
-  # events must survive this cutoff to reach the fail-closed check below.
+  # Publication time alone is not proof either: a verdict can arrive after
+  # the retarget from a review already in flight against the old base. The
+  # reviewer starts only on request, so a verdict counts after a retarget
+  # only when a review request posted after the retarget precedes it — that
+  # review provably began against the new base. Only an event with a proven
+  # timestamp can be proven stale: unorderable events must survive this
+  # cutoff to reach the fail-closed check below.
+  | (if $base_retargeted_at == "" or ($base_retargeted_at | type) != "string" then null
+     else ([$issue_comments[]?
+            | select(review_request)
+            | (.created_at // "")
+            | select(valid_at)
+            | select(. > $base_retargeted_at)] | sort | first)
+     end) as $fresh_request_at
   | map(select((.kind == "malformed" or .kind == "unresolved")
-        or $base_retargeted_at == "" or .at > $base_retargeted_at))
+        or $base_retargeted_at == ""
+        or ($fresh_request_at != null and .at > $fresh_request_at)))
   | sort_by(.at)) as $events
 | ($events | map(select(.kind == "clean")) | length) as $clean_count
 | ($events | map(select(.kind == "findings")) | length) as $findings_count
