@@ -566,11 +566,11 @@ case "$1 ${2:-}" in
   api*)
     if has 'touchstone-workflows/contents/.touchstone-source-contract.json?ref=' "$@"; then
       [ ! -f "$GH_STATE/behavior-manifest-unreadable" ] || { printf 'Not Found\n' >&2; exit 1; }
-      # The source tree's own policies declare gate behavior 2, so a GitHub
+      # The source tree's own policies declare gate behavior 3, so a GitHub
       # that agrees with them is the default; each flag below is one drifted
-      # world -- the pre-rollout gate, an unsupported future one, or an
+      # world -- the pre-rollout gates, an unsupported future one, or an
       # overlapping pin whose other enforced revision is the compatible one.
-      behavior_version=2
+      behavior_version=3
       [ ! -f "$GH_STATE/behavior-version-legacy" ] || behavior_version=1
       [ ! -f "$GH_STATE/behavior-version-unsupported" ] || behavior_version=4
       [ ! -f "$GH_STATE/behavior-version-next" ] || behavior_version=3
@@ -1244,7 +1244,7 @@ EOF
   rm -f "$TMP/state/gate-reruns"
   run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"reviewGateBehaviorContractVersion":2'
+  assert_has "$TMP/out" '"reviewGateBehaviorContractVersion":3'
   touch "$TMP/state/gate-fresh-active"
   echo 30 >"$TMP/state/gate-in-progress"
   run_pr "$TMP/out" open --title 'Gate v2' --body-file "$TMP/body" --json
@@ -1995,14 +1995,14 @@ Closes #42'
   run_pr "$TMP/out" policy-status --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"partial"'
-  assert_has "$TMP/out" "does not declare supported gate behavior contract 2"
+  assert_has "$TMP/out" "does not declare supported gate behavior contract 3"
   assert_has "$TMP/out" "observed $GH_AHEAD_SHA"
   assert_has "$GH_CALLS" "touchstone-workflows/contents/.touchstone-source-contract.json?ref=$GH_AHEAD_SHA"
   rm -f "$TMP/state/ahead-pin" "$TMP/state/behavior-version-legacy"
   touch "$TMP/state/behavior-version-missing"
   run_pr "$TMP/out" policy-status --json
   assert_has "$TMP/out" '"status":"partial"'
-  assert_has "$TMP/out" "does not declare supported gate behavior contract 2"
+  assert_has "$TMP/out" "does not declare supported gate behavior contract 3"
   rm -f "$TMP/state/behavior-version-missing"
   touch "$TMP/state/behavior-manifest-unreadable"
   run_pr "$TMP/out" policy-status --json

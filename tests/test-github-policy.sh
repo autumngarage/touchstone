@@ -109,7 +109,7 @@ case "$method $endpoint" in
     ;;
   "GET repos/autumngarage/touchstone/contents/.touchstone-source-contract.json?ref=main")
     jq -n --arg context "${GH_FAKE_SOURCE_STATUS_CONTEXT:-source contract}" \
-      --argjson behaviorVersion "${GH_FAKE_GATE_BEHAVIOR_VERSION:-2}" '{
+      --argjson behaviorVersion "${GH_FAKE_GATE_BEHAVIOR_VERSION:-3}" '{
       contractVersion: 1,
       gateBehaviorContractVersion: $behaviorVersion,
       requiredStatusCheck: $context,
@@ -127,7 +127,7 @@ case "$method $endpoint" in
   "GET repos/autumngarage/touchstone-workflows/contents/.touchstone-source-contract.json?ref=$WORKFLOWS_PIN")
     jq -n --arg context "${GH_FAKE_SOURCE_STATUS_CONTEXT:-source contract}" \
       --arg nested "${GH_FAKE_SOURCE_NESTED_WORKFLOW:-}" \
-      --argjson behaviorVersion "${GH_FAKE_GATE_BEHAVIOR_VERSION:-2}" '{
+      --argjson behaviorVersion "${GH_FAKE_GATE_BEHAVIOR_VERSION:-3}" '{
       contractVersion: 1,
       gateBehaviorContractVersion: $behaviorVersion,
       requiredStatusCheck: $context,
@@ -466,7 +466,7 @@ jq -e '
   and .workflowSource.repository == "touchstone-workflows"
   and .workflowSource.sourceContract == {
     manifestPath: ".touchstone-source-contract.json",
-    gateBehaviorContractVersion: 2
+    gateBehaviorContractVersion: 3
   }
   and .workflowSource.repository != .repository
   and .rollbackPrerequisites.repositoryFiles == [
@@ -582,7 +582,7 @@ jq -e '
   and (has("workflowSource") | not)
   and .sourceContract == {
     manifestPath: ".touchstone-source-contract.json",
-    gateBehaviorContractVersion: 2
+    gateBehaviorContractVersion: 3
   }
   and .rollbackPrerequisites.repositoryFiles == []
   and any(.managedRuleset.rules[]; .type == "deletion")
@@ -624,7 +624,7 @@ cp "$SOURCE_POLICY" "$RUNNER_SOURCE_POLICY"
 GH_FAKE_SOURCE_STATUS_CONTEXT="renamed source contract" \
   run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null 2>&1 \
   && fail "workflow source policy accepted a status context that drifted from its manifest"
-GH_FAKE_GATE_BEHAVIOR_VERSION=3 \
+GH_FAKE_GATE_BEHAVIOR_VERSION=2 \
   run_policy dry-run "$RUNNER_SOURCE_POLICY" >/dev/null 2>&1 \
   && fail "workflow source policy accepted a gate behavior contract it does not declare"
 GH_FAKE_SOURCE_EXTRA_WORKFLOW=".github/workflows/undeclared.yaml" \
@@ -652,7 +652,7 @@ jq 'del(.workflowSource.sourceContract.gateBehaviorContractVersion)' \
   "$POLICY" >"$TMP_DIR/consumer-policy-no-behavior-contract.json"
 run_policy dry-run "$TMP_DIR/consumer-policy-no-behavior-contract.json" >/dev/null 2>&1 \
   && fail "consumer policy without a gate behavior contract was accepted"
-GH_FAKE_GATE_BEHAVIOR_VERSION=3 run_policy dry-run "$POLICY" >/dev/null 2>&1 \
+GH_FAKE_GATE_BEHAVIOR_VERSION=2 run_policy dry-run "$POLICY" >/dev/null 2>&1 \
   && fail "consumer policy accepted a pinned source revision with an unsupported gate behavior contract"
 ok "workflow source uses its manifest status while consumers still require external workflows"
 
@@ -2511,7 +2511,7 @@ echo "==> Every policy file pins the required workflows at one touchstone-workfl
 # same revision for all three workflows, and that revision is the one the
 # suite's own fixtures are written against -- so a revert or a partial bump
 # is a visible, reviewed change here, never a silent divergence.
-PINNED_WORKFLOWS_REVISION="32112651b5d13c6ec6b2614bdf17980044636097"
+PINNED_WORKFLOWS_REVISION="655e51f407c56c71cf210319c862b47c8c8c147c"
 for policy_file in "$ROOT"/policy/github/touchstone-main.json "$ROOT"/policy/github/consumers/*.json; do
   pins="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | .sha] | unique | join(" ")' "$policy_file")"
   [ "$pins" = "$PINNED_WORKFLOWS_REVISION" ] \
