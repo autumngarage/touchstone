@@ -572,7 +572,8 @@ case "$1 ${2:-}" in
       # overlapping pin whose other enforced revision is the compatible one.
       behavior_version=2
       [ ! -f "$GH_STATE/behavior-version-legacy" ] || behavior_version=1
-      [ ! -f "$GH_STATE/behavior-version-unsupported" ] || behavior_version=3
+      [ ! -f "$GH_STATE/behavior-version-unsupported" ] || behavior_version=4
+      [ ! -f "$GH_STATE/behavior-version-next" ] || behavior_version=3
       if [ -f "$GH_STATE/overlapping-pins" ] && has "?ref=$GH_MID_SHA" "$@"; then behavior_version=1; fi
       if [ -f "$GH_STATE/behavior-version-missing" ]; then
         printf '%s\n' '{"contractVersion":1}'
@@ -1293,7 +1294,7 @@ EOF
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
     || fail "behavior v2 open reused a run whose request-evidence window had expired"
   rm -f "$TMP/state/gate-in-progress"
-  jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 3' \
+  jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 4' \
     "$TMP/tool-v1/policy/github/touchstone-main.json" >"$TMP/tool-v1/policy/github/touchstone-main.next"
   mv "$TMP/tool-v1/policy/github/touchstone-main.next" "$TMP/tool-v1/policy/github/touchstone-main.json"
   touch "$TMP/state/behavior-version-unsupported"
@@ -1305,6 +1306,37 @@ EOF
     "$TMP/tool-v1/policy/github/touchstone-main.json" >"$TMP/tool-v1/policy/github/touchstone-main.next"
   mv "$TMP/tool-v1/policy/github/touchstone-main.next" "$TMP/tool-v1/policy/github/touchstone-main.json"
   rm -f "$TMP/state/behavior-version-unsupported"
+  rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns"
+
+  echo "==> a gate behavior contract 3 policy is accepted and reuses the active run"
+  mkdir -p "$TMP/tool-v3/bin" "$TMP/tool-v3/scripts" "$TMP/tool-v3/policy/github"
+  cp "$ROOT/bin/touchstone" "$TMP/tool-v3/bin/touchstone"
+  cp "$ROOT/scripts/touchstone-pr.sh" "$TMP/tool-v3/scripts/touchstone-pr.sh"
+  cp -R "$ROOT/policy/github/." "$TMP/tool-v3/policy/github/"
+  cat "$ROOT/VERSION" >"$TMP/tool-v3/VERSION"
+  jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 3' \
+    "$ROOT/policy/github/touchstone-main.json" >"$TMP/tool-v3/policy/github/touchstone-main.json"
+  run_pr_v3() {
+    local output="$1"
+    shift
+    : >"$GH_CALLS"
+    set +e
+    bash "$TMP/tool-v3/bin/touchstone" pr "$@" --project "$TMP/project" >"$output" 2>&1
+    RUN_RC=$?
+    set -e
+  }
+  touch "$TMP/state/behavior-version-next" "$TMP/state/review-gate" "$TMP/state/pr-exists"
+  run_pr_v3 "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewGateBehaviorContractVersion":3'
+  touch "$TMP/state/gate-fresh-active"
+  echo 30 >"$TMP/state/gate-in-progress"
+  run_pr_v3 "$TMP/out" open --title 'Gate v3' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"already-active"}'
+  [ ! -f "$TMP/state/gate-reruns" ] \
+    || fail "behavior v3 open re-ran an evaluation that was already active"
+  rm -f "$TMP/state/gate-in-progress" "$TMP/state/gate-fresh-active" "$TMP/state/behavior-version-next"
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns"
 
   echo "==> open refreshes required delivery evidence after body convergence (AUT-481)"

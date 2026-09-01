@@ -341,7 +341,7 @@ BOUND_GATE_RUN_ID=""
 if PR_STATUS="$(bash "$TOOL_ROOT/scripts/touchstone-pr.sh" status "$PR_NUMBER" --json)"; then
   GATE_BEHAVIOR_VERSION="$(printf '%s' "$PR_STATUS" | jq -er '.reviewGateBehaviorContractVersion // 1')" \
     || fail "effective review-gate status reported an invalid behavior contract."
-  if [ "$GATE_BEHAVIOR_VERSION" = 2 ]; then
+  if [ "$GATE_BEHAVIOR_VERSION" = 2 ] || [ "$GATE_BEHAVIOR_VERSION" = 3 ]; then
     BOUND_GATE_RUN_ID="$(printf '%s' "$PR_STATUS" | jq -r \
       '.reviewGateCheck | select(.present == true and ((.unbound // false) | not)) | .workflowRunId // empty')"
     if [ -z "$BOUND_GATE_RUN_ID" ]; then
@@ -394,7 +394,7 @@ if [ "$GATE_REQUIRED" = true ]; then
           end')" \
       || fail "GitHub returned malformed or ambiguous review-gate run data"
     read -r GATE_RUN GATE_STATUS GATE_STARTED_AT <<<"$GATE_ROW"
-    if [ -n "$GATE_RUN" ] && [ "$GATE_BEHAVIOR_VERSION" = 2 ] && [ "$GATE_RUN" = "$BOUND_GATE_RUN_ID" ]; then
+    if [ -n "$GATE_RUN" ] && { [ "$GATE_BEHAVIOR_VERSION" = 2 ] || [ "$GATE_BEHAVIOR_VERSION" = 3 ]; } && [ "$GATE_RUN" = "$BOUND_GATE_RUN_ID" ]; then
       case "$GATE_STATUS" in
         queued | requested | waiting | pending)
           echo "==> Review gate run $GATE_RUN is already evaluating this head; returning control while it waits for review evidence."
