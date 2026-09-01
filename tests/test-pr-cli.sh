@@ -2429,6 +2429,8 @@ case "$1 $2" in
   "api --paginate")
     if has 'actions/workflows' "$@"; then
       printf '1\n2\n3\n'
+    elif has 'issues/7/comments' "$@"; then
+      [ ! -f "$GH_STATE/fresh-request" ] || cat "$GH_STATE/fresh-request"
     elif [ -f "$GH_STATE/replies" ]; then
       echo "<!-- touchstone:respond-review comment=51 -->"
       [ -f "$GH_STATE/legacy-reply-only" ] \
@@ -2717,6 +2719,7 @@ STATUS_STUB
   rm -f "$GH_STATE/effective-behavior-v2"
 
   echo "==> a behavior v3 answer that resolves the last thread posts one fresh review request"
+  touch "$GH_STATE/gate-fresh-active"
   echo 30 >"$GH_STATE/gate-in-progress"
   run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 0 ] || fail "behavior v3 answer exited $RUN_RC: $(tail -3 "$RR/out")"
@@ -2726,15 +2729,28 @@ STATUS_STUB
     || fail "behavior v3 answer posted more than one review request"
   grep -qF 'posted a fresh review request' "$RR/out" \
     || fail "behavior v3 answer did not announce its review request"
+  grep -qF 'touchstone:attest-request head=abcdef0123456789abcdef0123456789abcdef01' "$GH_STATE/fresh-request" \
+    || fail "behavior v3 review request carries no head-scoped idempotency marker"
+
+  # A retry after the request was posted must not post a second one.
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
+  run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "behavior v3 retry exited $RUN_RC: $(tail -3 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq 1 ] \
+    || fail "behavior v3 retry posted a duplicate review request"
+  grep -qF 'already exists' "$RR/out" \
+    || fail "behavior v3 retry did not report the existing request"
   rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request"
 
   # Behavior v2 must never post one: answered findings satisfy that gate.
   echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
   run_v2 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 0 ] || fail "behavior v2 answer exited $RUN_RC"
   [ ! -f "$GH_STATE/fresh-request" ] \
     || fail "behavior v2 answer posted a review request it must not post"
-  rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns"
+  rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/gate-fresh-active"
   rm -f "$GH_STATE/effective-behavior-v2"
   rm -f "$GH_STATE/review-gate"
 

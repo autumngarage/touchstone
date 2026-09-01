@@ -354,16 +354,31 @@ if PR_STATUS="$(bash "$TOOL_ROOT/scripts/touchstone-pr.sh" status "$PR_NUMBER" -
 else
   echo "WARNING: could not verify behavior v2; conservatively refreshing the gate through the behavior-v1 path." >&2
 fi
-if [ "$GATE_BEHAVIOR_VERSION" = 3 ] && [ -n "$BOUND_GATE_RUN_ID" ]; then
+if [ "$GATE_BEHAVIOR_VERSION" = 3 ]; then
   # Behavior v3 accepts only a later trusted clean verdict for this exact
   # head; answers and thread resolution alone can never pass. When this
   # answer resolved the last open thread, post the one fresh review request
-  # that lets the reviewer publish that verdict. Earlier answers in the same
-  # round post nothing, so a multi-finding round yields exactly one request.
+  # that lets the reviewer publish that verdict — whether or not a bound
+  # gate run exists yet: whichever run evaluates this head needs the
+  # verdict either way. Earlier answers in the same round post nothing, and
+  # the head-scoped marker makes retries after a partial failure skip the
+  # post, so one binding yields exactly one request.
   REMAINING_UNRESOLVED="$(list_unresolved_threads)" || fail "answers are recorded, but the unresolved-thread read failed; when every thread is resolved, post '@codex review' on PR #$PR_NUMBER for the behavior-v3 clean verdict."
   if [ -z "$REMAINING_UNRESOLVED" ]; then
-    gh_read api "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments" -f body='@codex review' --jq .id >/dev/null || fail "answers are recorded, but the fresh behavior-v3 review request failed; post '@codex review' on PR #$PR_NUMBER yourself."
-    echo "==> Every thread is resolved; posted a fresh review request for the behavior-v3 clean exact-head verdict."
+    ATTEST_MARKER="<!-- touchstone:attest-request head=$HEAD_SHA -->"
+    EXISTING_ATTEST="$(gh_read api --paginate "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments?per_page=100" --jq '.[].body')" || fail "answers are recorded, but the attest-request idempotency read failed; verify PR #$PR_NUMBER carries one '@codex review' for this head."
+    if printf '%s\n' "$EXISTING_ATTEST" | grep -qF "$ATTEST_MARKER"; then
+      echo "==> Every thread is resolved; the behavior-v3 review request for this head already exists."
+    else
+      gh_read api "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments" -f body="@codex review
+
+$ATTEST_MARKER" --jq .id >/dev/null || fail "answers are recorded, but the fresh behavior-v3 review request failed; post '@codex review' on PR #$PR_NUMBER yourself."
+      # The pre-answer head check bounds the window, not the race: prove the
+      # coordinates survived the post, or say the request is stale-bound.
+      POST_HEAD="$(gh_read pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" || fail "posted the behavior-v3 review request, but the head re-read failed; verify PR #$PR_NUMBER still heads $HEAD_SHA."
+      [ "$POST_HEAD" = "$HEAD_SHA" ] || fail "PR head moved from $HEAD_SHA to $POST_HEAD while requesting the behavior-v3 verdict; the answers stand, but request review for the new head before merging."
+      echo "==> Every thread is resolved; posted a fresh review request for the behavior-v3 clean exact-head verdict."
+    fi
   fi
 fi
 # Percent-encode one path segment with the base tool surface only: a branch
