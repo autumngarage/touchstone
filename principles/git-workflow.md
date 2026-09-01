@@ -830,21 +830,27 @@ Claiming is the start of a task's life; this is the rest of it. The rules are
 the same for whichever tracker `.touchstone-tracker.toml` declares — only the
 transport differs.
 
-**One item per unit of work.** Work you discover mid-task gets its own item.
-Do not widen the one you claimed.
+**One item per unit of work.** Independent work you discover mid-task gets its
+own item; do not widen the one you claimed. Work the approved acceptance
+criterion already implies — its regression test, the change that holds the same
+invariant — belongs to the item you are on.
 
 **Update it at each milestone, not in a batch at the end.** PR merged, finding
 routed, scope split, work blocked: move the state and add one comment naming
-the PR and SHA, in the same breath as the event. A tracker reconciled hours
-later is how someone following the work without reading your session gets a
-wrong answer from it.
+the evidence — the PR and SHA where they exist, the blocker or the receiving
+item where they do not — in the same breath as the event. A tracker reconciled
+hours later is how someone following the work without reading your session gets
+a wrong answer from it.
 
 **Close it when the work lands, and confirm it closed.** The proof is the state
 you read back, never the call you made:
 
 - GitHub — `Closes #n` in the PR body closes the item on merge when it fires,
-  and silently does not for a PR based on a non-default branch, a body edited
-  after the merge, or a fork PR. Re-read the item rather than assuming the
+  and silently does not for a PR merged into a non-default branch, a body edited
+  after the merge, or a reference to an issue in another repository
+  (`owner/repo#n`), which GitHub links but never closes. A PR from a fork is not
+  an exception: the pull request lives in the upstream repository, so its
+  `Closes #n` resolves there. Re-read the item rather than assuming the
   reference did its job.
 - Linear — nothing fires. GitHub resolves closing keywords only to its own
   issues, so `Fixes KEY-123` in a PR body is inert on GitHub's side and records
