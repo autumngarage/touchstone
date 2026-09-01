@@ -318,9 +318,12 @@ VERIFY="$(graphql_with_retry \
   || fail "could not verify thread resolution for $THREAD_ID."
 [ "$VERIFY" = "true" ] || fail "thread $THREAD_ID is still unresolved after the mutation."
 
-# Answered findings satisfy the gate on an unchanged head (issue #751) — the
-# next step after resolving every thread is the MERGE GATE, never another
-# review request of the same head (PR #755 review, round 8).
+# Under behavior v2, answered findings satisfy the gate on an unchanged head
+# (issue #751) — the next step after resolving every thread is the MERGE
+# GATE, never another review request of the same head (PR #755 review,
+# round 8). Behavior v3 inverts that: only a later trusted clean verdict for
+# the exact head passes, so resolving the last open thread posts the one
+# fresh review request that lets the reviewer publish it (AUT-1132).
 # An answer is evidence the pinned review-gate has not seen. Where the base
 # branch requires that workflow, ask GitHub to re-run its run for this head;
 # a behavior-v1 run still in progress is waited for first, because it may have
@@ -350,6 +353,18 @@ if PR_STATUS="$(bash "$TOOL_ROOT/scripts/touchstone-pr.sh" status "$PR_NUMBER" -
   fi
 else
   echo "WARNING: could not verify behavior v2; conservatively refreshing the gate through the behavior-v1 path." >&2
+fi
+if [ "$GATE_BEHAVIOR_VERSION" = 3 ] && [ -n "$BOUND_GATE_RUN_ID" ]; then
+  # Behavior v3 accepts only a later trusted clean verdict for this exact
+  # head; answers and thread resolution alone can never pass. When this
+  # answer resolved the last open thread, post the one fresh review request
+  # that lets the reviewer publish that verdict. Earlier answers in the same
+  # round post nothing, so a multi-finding round yields exactly one request.
+  REMAINING_UNRESOLVED="$(list_unresolved_threads)" || fail "answers are recorded, but the unresolved-thread read failed; when every thread is resolved, post '@codex review' on PR #$PR_NUMBER for the behavior-v3 clean verdict."
+  if [ -z "$REMAINING_UNRESOLVED" ]; then
+    gh_read api "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments" -f body='@codex review' --jq .id >/dev/null || fail "answers are recorded, but the fresh behavior-v3 review request failed; post '@codex review' on PR #$PR_NUMBER yourself."
+    echo "==> Every thread is resolved; posted a fresh review request for the behavior-v3 clean exact-head verdict."
+  fi
 fi
 # Percent-encode one path segment with the base tool surface only: a branch
 # name may carry "/" or other bytes the rules endpoint cannot take raw.

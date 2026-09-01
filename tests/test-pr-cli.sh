@@ -2395,6 +2395,10 @@ case "$1 $2" in
     field_value body "$@" >"$GH_STATE/reply-body"
     echo "71"
     ;;
+  "api repos/autumngarage/current/issues/7/comments")
+    field_value body "$@" >>"$GH_STATE/fresh-request"
+    echo "99"
+    ;;
   "api repos/autumngarage/current/commits/abc123")
     echo "abcdef0123456789abcdef0123456789abcdef01"
     ;;
@@ -2485,6 +2489,7 @@ set -euo pipefail
 version=null
 [ ! -f "$GH_STATE/status-fails" ] || exit 1
 [ ! -f "$GH_STATE/effective-behavior-v2" ] || version=2
+[ ! -f "$GH_STATE/effective-behavior-v3" ] || version=3
 gate_check='{"present":true,"workflowRunId":77}'
 [ ! -f "$GH_STATE/status-run-unbound" ] || gate_check='{"present":false,"unbound":true,"workflowRunId":77}'
 printf '{"schema":"touchstone.pr/v1","operation":"status","reviewGateBehaviorContractVersion":%s,"reviewGateCheck":%s}\n' "$version" "$gate_check"
@@ -2506,6 +2511,15 @@ STATUS_STUB
     bash "$RR/tool-v2/scripts/respond-review.sh" "$@" >"$RR/out" 2>&1
     RUN_RC=$?
     set -e
+  }
+  run_v3() {
+    rm -f "$GH_STATE/effective-behavior-v2"
+    touch "$GH_STATE/effective-behavior-v3"
+    set +e
+    bash "$RR/tool-v2/scripts/respond-review.sh" "$@" >"$RR/out" 2>&1
+    RUN_RC=$?
+    set -e
+    rm -f "$GH_STATE/effective-behavior-v3"
   }
 
   echo "==> --fix-commit is verified against the captured PR head before mutation"
@@ -2700,6 +2714,27 @@ STATUS_STUB
   grep -q 'conservatively refreshing the gate' "$RR/out" \
     || fail "answer silently hid its behavior-v1 fallback"
   rm -f "$GH_STATE/status-fails" "$GH_STATE/gate-reruns"
+  rm -f "$GH_STATE/effective-behavior-v2"
+
+  echo "==> a behavior v3 answer that resolves the last thread posts one fresh review request"
+  echo 30 >"$GH_STATE/gate-in-progress"
+  run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "behavior v3 answer exited $RUN_RC: $(tail -3 "$RR/out")"
+  grep -qF '@codex review' "$GH_STATE/fresh-request" 2>/dev/null \
+    || fail "behavior v3 answer did not post the fresh review request for the clean verdict"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq 1 ] \
+    || fail "behavior v3 answer posted more than one review request"
+  grep -qF 'posted a fresh review request' "$RR/out" \
+    || fail "behavior v3 answer did not announce its review request"
+  rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request"
+
+  # Behavior v2 must never post one: answered findings satisfy that gate.
+  echo 30 >"$GH_STATE/gate-in-progress"
+  run_v2 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "behavior v2 answer exited $RUN_RC"
+  [ ! -f "$GH_STATE/fresh-request" ] \
+    || fail "behavior v2 answer posted a review request it must not post"
+  rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns"
   rm -f "$GH_STATE/effective-behavior-v2"
   rm -f "$GH_STATE/review-gate"
 
