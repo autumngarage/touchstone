@@ -120,9 +120,12 @@ def review_request:
      | select($binding != "stale")
      | {at: (.created_at // ""),
         kind: (if $binding == "unresolved" then "unresolved"
-               elif ((.created_at | valid_at) and (.updated_at | valid_at)) | not then "malformed"
-               elif clean_sentence | not then "unclassifiable"
+               # An update preceding creation is chronologically impossible:
+               # such a pair proves nothing about edit state.
+               elif ((.created_at | valid_at) and (.updated_at | valid_at)
+                     and .updated_at >= .created_at) | not then "malformed"
                elif (.updated_at > .created_at) then "edited-clean"
+               elif clean_sentence | not then "unclassifiable"
                else "clean" end)})
   ]
   # A verdict reviews the diff against the base the pull request had; after a

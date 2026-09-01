@@ -186,6 +186,12 @@ run_case "clean result with a missing timestamp fails closed" \
 run_case "findings review with a missing timestamp fails closed" \
   'del(.reviews[0].submitted_at)' invalid "malformed timestamps"
 
+run_case "clean result whose update precedes its creation fails closed" \
+  'del(.reviews[0])
+   | .issueComments[1].created_at = "2026-08-20T10:40:00Z"
+   | .issueComments[1].updated_at = "2026-08-20T10:39:00Z"' \
+  invalid "malformed timestamps"
+
 # Shape alone is not validity: an impossible instant must fail closed too.
 run_case "clean result with an impossible timestamp fails closed" \
   'del(.reviews[0])
