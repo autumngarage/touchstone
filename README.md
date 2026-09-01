@@ -31,6 +31,49 @@ The operating rule that keeps it honest: **a rule must live at the layer that ca
 
 ## The merge gate — one exact-head verdict
 
+```mermaid
+flowchart TD
+    H["Human approves the plan"] --> A
+
+    subgraph agent["Agent — any driving CLI"]
+        A["branch, commit, push"] --> O["touchstone pr open
+        creates the PR, posts the bound review request"]
+        F["touchstone pr answer
+        reply, record disposition, resolve the thread"]
+    end
+
+    subgraph reviewer["Hosted AI reviewer"]
+        R["reviews the exact pushed head"]
+    end
+
+    O --> R
+    R -- "findings" --> F
+    F -- "one fresh request, idempotent" --> R
+
+    subgraph github["GitHub — the enforcement authority"]
+        V["validate
+        pinned workflow runs the project's declared checks"]
+        G["review-gate
+        passes only on a trusted clean verdict
+        bound to the current head"]
+        T["conversation resolution
+        every review thread resolved"]
+        Q["merge queue
+        validates the prospective merged result"]
+    end
+
+    A --> V
+    R -- "clean verdict for the exact head" --> G
+    F --> T
+    V --> Q
+    G --> Q
+    T --> Q
+    Q --> M["merged to main"]
+```
+
+No arrow crosses from the agent into the merge decision: the CLI sequences
+and observes, the reviewer judges one commit, and GitHub alone decides.
+
 Every adopted repository is protected by an audited organization ruleset:
 PR-only delivery, no force pushes or deletions, required status checks, a
 merge queue validating the prospective merged result, and two required
