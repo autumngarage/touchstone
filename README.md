@@ -178,7 +178,10 @@ cp .github/pull_request_template.md /tmp/pr-body
 # Fill every required section and Validation row; keep `Fixes AUT-123` in the body.
 gh pr create --title "fix: what changed" --body-file /tmp/pr-body
 # ... post `@codex review`, answer findings, resolve threads ...
-gh pr merge <n> --squash --match-head-commit "$(gh pr view <n> --json headRefOid --jq .headRefOid)"
+reviewed="$(gh pr view <n> --json headRefOid --jq .headRefOid)"  # capture when the clean verdict arrives
+# confirm the verdict names $reviewed, then bind the merge to that saved value —
+# a live read here would accept any commit pushed after review, unreviewed
+gh pr merge <n> --squash --match-head-commit "$reviewed"
 gh pr view <n> --json state,mergedAt   # confirm; the merge exit code lies in both directions
 ```
 
