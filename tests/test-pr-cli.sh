@@ -282,6 +282,23 @@ case "$1 ${2:-}" in
       else
         printf '%s\n' 'Change summary.' '' 'Closes #42'
       fi
+    elif has '--json state,headRefOid,baseRefName,baseRefOid' "$@"; then
+      # The liveness precondition every GitHub-state wait re-reads each poll.
+      live_state=OPEN
+      live_head="$GH_HEAD"
+      live_base="$GH_BASE_REF"
+      live_base_sha="$GH_BASE_SHA"
+      [ ! -f "$GH_STATE/merged" ] || live_state=MERGED
+      case "${GH_MODE:-ok}" in
+        status_closed) live_state=CLOSED ;;
+        status_merged) live_state=MERGED ;;
+        moved_during_gate) live_head=moved-head ;;
+      esac
+      [ ! -f "$GH_STATE/wait-closed" ] || live_state=CLOSED
+      [ ! -f "$GH_STATE/wait-moved" ] || live_head=moved-head
+      [ ! -f "$GH_STATE/wait-retargeted" ] || live_base=release
+      [ ! -f "$GH_STATE/wait-base-advanced" ] || live_base_sha=advanced-base-sha
+      printf '%s\t%s\t%s\t%s\n' "$live_state" "$live_head" "$live_base" "$live_base_sha"
     elif has '--json state,url' "$@"; then
       if [ -f "$GH_STATE/merged" ]; then printf 'MERGED\thttps://example.test/pr/7\n'; else printf 'OPEN\thttps://example.test/pr/7\n'; fi
     elif [ -f "$GH_STATE/merged" ]; then
@@ -338,8 +355,26 @@ case "$1 ${2:-}" in
         merge_queue_existing) queue_state='"AWAITING_CHECKS"' ;;
         merge_queue_unknown_existing) queue_state='"FUTURE_STATE"' ;;
       esac
-      printf '{"head":"%s","autoMergeEnabledAt":%s,"mergeQueueState":%s}\n' \
-        "$observed_head" "$auto_merge_enabled_at" "$queue_state"
+      queue_position=null
+      [ "$queue_state" = null ] || queue_position=1
+      queue_events='[]'
+      # Eviction history: the newest queue event is a removal bound to the
+      # live head (touchstone#1092) -- or to an older head, which is history
+      # for a head that has since moved and must not read as evicted.
+      # Shapes taken from a live read of vesper#1136 on 2026-09-02: the
+      # removal's reason is GitHub's enum value and its beforeCommit is the
+      # merge-queue base, not the PR head.
+      if [ -f "$GH_STATE/queue-evicted" ]; then
+        queue_events='[{"type":"head_moved","createdAt":"2026-09-02T16:00:55Z","reason":null,"queueBase":null},{"type":"added","createdAt":"2026-09-02T16:13:23Z","reason":null,"queueBase":null},{"type":"removed","createdAt":"2026-09-02T16:51:33Z","reason":"failed_checks","queueBase":"dd69484b30f6"}]'
+      elif [ -f "$GH_STATE/queue-evicted-then-pushed" ]; then
+        queue_events='[{"type":"added","createdAt":"2026-09-02T16:13:23Z","reason":null,"queueBase":null},{"type":"removed","createdAt":"2026-09-02T16:51:33Z","reason":"failed_checks","queueBase":"dd69484b30f6"},{"type":"head_moved","createdAt":"2026-09-02T17:00:00Z","reason":null,"queueBase":null}]'
+      elif [ -f "$GH_STATE/queue-evicted-then-retargeted" ]; then
+        queue_events='[{"type":"added","createdAt":"2026-09-02T16:13:23Z","reason":null,"queueBase":null},{"type":"removed","createdAt":"2026-09-02T16:51:33Z","reason":"failed_checks","queueBase":"dd69484b30f6"},{"type":"base_changed","createdAt":"2026-09-02T17:00:00Z","reason":null,"queueBase":null}]'
+      elif [ -f "$GH_STATE/queue-requeued" ]; then
+        queue_events='[{"type":"removed","createdAt":"2026-09-02T16:51:33Z","reason":"failed_checks","queueBase":"dd69484b30f6"},{"type":"added","createdAt":"2026-09-02T17:08:34Z","reason":null,"queueBase":null}]'
+      fi
+      printf '{"head":"%s","autoMergeEnabledAt":%s,"mergeQueueState":%s,"mergeQueuePosition":%s,"mergeQueueEnqueuedAt":null,"queueEvents":%s}\n' \
+        "$observed_head" "$auto_merge_enabled_at" "$queue_state" "$queue_position" "$queue_events"
     elif has 'mergeQueueEntry' "$@"; then
       if [ "${GH_MODE:-ok}" = merge_reconcile_failed ]; then
         printf 'GraphQL unavailable\n' >&2
@@ -962,7 +997,7 @@ EOF
   assert_has "$TMP/out" '"status":"observed"'
   assert_has "$TMP/out" "\"head\":\"$HEAD_SHA\""
   assert_has "$TMP/out" "\"autoMerge\":{\"armed\":false,\"enabledAt\":null,\"head\":\"$HEAD_SHA\"}"
-  assert_has "$TMP/out" '"mergeQueue":null,"phase":"action-required","nextAction":"inspect"'
+  assert_has "$TMP/out" '"mergeQueue":null,"mergeQueueEviction":null,"phase":"action-required","nextAction":"inspect"'
   assert_has "$TMP/out" "\"reviewGateCheck\":{\"present\":false,\"head\":\"$HEAD_SHA\",\"configured\":false}"
   assert_has "$GH_CALLS" 'api graphql --hostname github.com -f owner=autumngarage -f name=current -F number=7'
   [ "$(grep -c '^pr view .*--json number,state,url,headRefOid' "$GH_CALLS")" -eq 2 ] \
@@ -1015,6 +1050,94 @@ EOF
   assert_has "$TMP/out" 'phase: ready-to-queue'
   assert_has "$TMP/out" 'next action: queue'
   assert_has "$TMP/out" "command: touchstone pr merge 7 --head $HEAD_SHA"
+
+  echo "==> a head the queue already evicted is evicted, not ready to queue (touchstone#1092)"
+  # Same green head, same successful gate, same CLEAN merge state -- the only
+  # difference is the queue's newest event for this head. On the old reader
+  # this was ready-to-queue with a merge command, and following it re-entered
+  # the eviction loop.
+  touch "$TMP/state/queue-evicted"
+  GH_MODE=status_gate_success run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"mergeQueue":null,"mergeQueueEviction":{"at":"2026-09-02T16:51:33Z","reason":"failed_checks","queueBase":"dd69484b30f6"},"phase":"evicted","nextAction":"inspect"'
+  assert_not_has "$TMP/out" '"phase":"ready-to-queue"'
+  GH_MODE=status_gate_success run_pr "$TMP/out" status 7
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'phase: evicted'
+  assert_has "$TMP/out" 'merge queue history: evicted at 2026-09-02T16:51:33Z (failed_checks)'
+  assert_not_has "$TMP/out" 'command: touchstone pr merge'
+  rm -f "$TMP/state/queue-evicted"
+  # A head pushed after the removal is a different head: the eviction is
+  # history and this head stays ready to queue.
+  touch "$TMP/state/queue-evicted-then-pushed"
+  GH_MODE=status_gate_success run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"mergeQueueEviction":null,"phase":"ready-to-queue","nextAction":"queue"'
+  rm -f "$TMP/state/queue-evicted-then-pushed"
+  # A retarget after the removal moves the PR to coordinates the queue never
+  # evaluated: the eviction is history. (A base that merely advanced leaves
+  # no PR event and stays conservatively evicted -- AUT-1183.)
+  touch "$TMP/state/queue-evicted-then-retargeted"
+  GH_MODE=status_gate_success run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"mergeQueueEviction":null,"phase":"ready-to-queue","nextAction":"queue"'
+  rm -f "$TMP/state/queue-evicted-then-retargeted"
+  # An eviction followed by a later re-queue is not the current state either.
+  touch "$TMP/state/queue-requeued"
+  GH_MODE=status_gate_success run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"mergeQueueEviction":null,"phase":"ready-to-queue","nextAction":"queue"'
+  rm -f "$TMP/state/queue-requeued"
+
+  echo "==> stale eviction history never outranks a policy that enforces no queue"
+  # A workflow-source policy with no managed ruleset expects no queue, so
+  # enforcement is applied even when the repository has none. Queue history
+  # left over from before such a policy change must not pin the phase to
+  # evicted: there is nothing to be evicted from.
+  mkdir -p "$TMP/tool-queueless/bin" "$TMP/tool-queueless/scripts" "$TMP/tool-queueless/policy/github/workflow-sources"
+  cp "$ROOT/bin/touchstone" "$TMP/tool-queueless/bin/touchstone"
+  cp "$ROOT/scripts/touchstone-pr.sh" "$TMP/tool-queueless/scripts/touchstone-pr.sh"
+  cp -R "$ROOT/policy/github/." "$TMP/tool-queueless/policy/github/"
+  cp "$ROOT/VERSION" "$TMP/tool-queueless/VERSION"
+  jq '.managedRepositoryRuleset = null' "$ROOT/policy/github/workflow-sources/touchstone-workflows.json" \
+    >"$TMP/tool-queueless/policy/github/workflow-sources/touchstone-workflows.json"
+  touch "$TMP/state/no-queue-rule" "$TMP/state/queue-evicted"
+  set +e
+  GH_FAKE_REPO=autumngarage/touchstone-workflows bash "$TMP/tool-queueless/bin/touchstone" pr status 7 --project "$TMP/project" --json >"$TMP/out" 2>&1
+  RUN_RC=$?
+  set -e
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  assert_has "$TMP/out" '"mergeQueueEviction":{"at":"2026-09-02T16:51:33Z","reason":"failed_checks","queueBase":"dd69484b30f6"}'
+  assert_not_has "$TMP/out" '"phase":"evicted"'
+  rm -f "$TMP/state/no-queue-rule" "$TMP/state/queue-evicted"
+
+  echo "==> a live queue entry reports its position (touchstone#1049)"
+  GH_MODE=status_gate_queued run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"mergeQueue":{"state":"AWAITING_CHECKS","position":1},"mergeQueueEviction":null,"phase":"queued","nextAction":"wait"'
+  GH_MODE=status_gate_queued run_pr "$TMP/out" status 7
+  assert_has "$TMP/out" 'merge queue: AWAITING_CHECKS (position 1)'
+
+  echo "==> under a merge queue, an armed auto-merge request with no entry is not queued (touchstone#1049)"
+  # GitHub armed auto-merge and never enqueued the head. The old reader
+  # called this queued, so "armed and waiting" and "armed and never admitted"
+  # were the same phase and a Dockmaster polled a PR that would never land.
+  GH_MODE=status_auto_merge run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"autoMerge":{"armed":true,"enabledAt":"2026-08-24T20:00:00Z"'
+  assert_has "$TMP/out" '"mergeQueue":null,"mergeQueueEviction":null,"phase":"armed-not-queued","nextAction":"inspect"'
+  assert_not_has "$TMP/out" '"phase":"queued"'
+  GH_MODE=status_auto_merge run_pr "$TMP/out" status 7
+  assert_has "$TMP/out" 'phase: armed-not-queued'
+
+  echo "==> a PR closed without merging is closed, a terminal phase (AUT-511)"
+  GH_MODE=status_closed run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"state":"CLOSED"'
+  assert_has "$TMP/out" '"phase":"closed","nextAction":"inspect"'
+  assert_not_has "$TMP/out" '"phase":"action-required"'
+
   GH_MODE=status_gate_blocked_success run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"mergeState":"BLOCKED"'
@@ -1039,7 +1162,7 @@ EOF
   assert_not_has "$GH_CALLS" '/pulls/7/comments?per_page=100'
   GH_MODE=status_gate_queued run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"mergeQueue":{"state":"AWAITING_CHECKS"},"phase":"queued","nextAction":"wait"'
+  assert_has "$TMP/out" '"mergeQueue":{"state":"AWAITING_CHECKS","position":1},"mergeQueueEviction":null,"phase":"queued","nextAction":"wait"'
   assert_not_has "$GH_CALLS" 'pr merge'
   assert_not_has "$GH_CALLS" 'pr comment'
 
@@ -1055,17 +1178,17 @@ EOF
   touch "$TMP/state/no-review-gate-rule"
   GH_MODE=status_gate_queued run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"mergeQueue":{"state":"AWAITING_CHECKS"},"phase":"action-required","nextAction":"inspect"'
+  assert_has "$TMP/out" '"mergeQueue":{"state":"AWAITING_CHECKS","position":1},"mergeQueueEviction":null,"phase":"action-required","nextAction":"inspect"'
   rm -f "$TMP/state/no-review-gate-rule"
   GH_MODE=status_merged run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"phase":"merged","nextAction":"done"'
   GH_MODE=status_gate_queue_unmergeable run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"mergeQueue":{"state":"UNMERGEABLE"},"phase":"action-required","nextAction":"inspect"'
+  assert_has "$TMP/out" '"mergeQueue":{"state":"UNMERGEABLE","position":1},"mergeQueueEviction":null,"phase":"action-required","nextAction":"inspect"'
   GH_MODE=status_gate_queue_unknown run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"mergeQueue":{"state":"FUTURE_STATE"},"phase":"action-required","nextAction":"inspect"'
+  assert_has "$TMP/out" '"mergeQueue":{"state":"FUTURE_STATE","position":1},"mergeQueueEviction":null,"phase":"action-required","nextAction":"inspect"'
   GH_MODE=status_head_moved run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" "moved from $HEAD_SHA to moved-head while status was being read"
@@ -1455,6 +1578,49 @@ EOF
   [ ! -f "$TMP/state/review-request" ] \
     && ok "a required-workflow transport failure stops before the review request" \
     || fail "a transport failure still posted a review request"
+  # The PR exists at this point: a failure that hides it sends the operator
+  # towards a duplicate PR or a deleted branch with an open PR on it (AUT-1038).
+  assert_has "$TMP/out" 'PR #7 exists at https://example.test/pr/7'
+  GH_MODE=delivery_rerun_failure run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body4" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" '"status":"failed"'
+  assert_has "$TMP/out" "\"pullRequest\":7,\"url\":\"https://example.test/pr/7\",\"head\":\"$HEAD_SHA\"}"
+  echo "==> a failure before any PR exists names none"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body4" --expect-branch not-this-branch --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"status":"failed"'
+  assert_not_has "$TMP/out" '"pullRequest":'
+
+  echo "==> a wait stops the moment the PR is closed instead of polling for a run that cannot come (AUT-511)"
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/review-request"
+  touch "$TMP/state/wait-closed"
+  TOUCHSTONE_GATE_ATTEMPTS=3 run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body4"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'closed without merging while this command was waiting'
+  assert_has "$TMP/out" 'PR #7 exists at https://example.test/pr/7'
+  assert_not_has "$TMP/out" 'retrying in'
+  assert_not_has "$GH_CALLS" 'actions/runs?head_sha='
+  rm -f "$TMP/state/wait-closed"
+  echo "==> a wait stops the moment the head moves, naming the live head"
+  touch "$TMP/state/wait-moved"
+  TOUCHSTONE_GATE_ATTEMPTS=3 run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body4"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" "moved from $HEAD_SHA to moved-head while this command was waiting"
+  assert_not_has "$TMP/out" 'retrying in'
+  rm -f "$TMP/state/wait-moved"
+  echo "==> a wait stops when the PR is retargeted or its base advances: the binding cannot succeed past either"
+  touch "$TMP/state/wait-retargeted"
+  TOUCHSTONE_GATE_ATTEMPTS=3 run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body4"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'was retargeted from main to release while this command was waiting'
+  assert_not_has "$TMP/out" 'retrying in'
+  rm -f "$TMP/state/wait-retargeted"
+  touch "$TMP/state/wait-base-advanced"
+  TOUCHSTONE_GATE_ATTEMPTS=3 run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body4"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" "base main advanced from $GH_BASE_SHA to advanced-base-sha while this command was waiting"
+  assert_not_has "$TMP/out" 'retrying in'
+  rm -f "$TMP/state/wait-base-advanced"
 
   # The edit above survived even though its rerun request did not. On retry,
   # the body is unchanged, but the older green attempt must not be reused.
@@ -2418,7 +2584,16 @@ case "$1 $2" in
   "pr view")
     # Coordinates (head + base) before the answer; the bare head re-read
     # after it. A moved_head state makes the re-read return a later push.
-    if value_after --json "$@" | grep -q baseRefName; then
+    if value_after --json "$@" | grep -q 'state,headRefOid,baseRefName'; then
+      rr_state=OPEN
+      rr_head=abcdef0123456789abcdef0123456789abcdef01
+      rr_base=main
+      [ ! -f "$GH_STATE/wait-retargeted" ] || rr_base=release
+      [ ! -f "$GH_STATE/merged" ] || rr_state=MERGED
+      [ ! -f "$GH_STATE/closed" ] || rr_state=CLOSED
+      [ ! -f "$GH_STATE/wait-moved-head" ] || rr_head=feedfacefeedfacefeedfacefeedfacefeedface
+      printf '%s\t%s\t%s\n' "$rr_state" "$rr_head" "$rr_base"
+    elif value_after --json "$@" | grep -q baseRefName; then
       printf 'abcdef0123456789abcdef0123456789abcdef01\tmain\n'
     elif [ -f "$GH_STATE/moved-head" ]; then
       printf 'feedfacefeedfacefeedfacefeedfacefeedface\n'
@@ -2718,6 +2893,47 @@ STATUS_STUB
   rm -f "$GH_STATE/status-fails" "$GH_STATE/gate-reruns"
   rm -f "$GH_STATE/effective-behavior-v2"
 
+  echo "==> an answer on a merged PR returns without waiting for a gate run that cannot exist (AUT-511, touchstone#1053)"
+  # The reply and resolution are the material work and have already
+  # succeeded by the time the gate wait begins. On the old code this loop
+  # polled for a run that a merged PR can never receive until GATE_ATTEMPTS
+  # ran out, and the operator killed it not knowing whether the answer stuck.
+  rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request" "$GH_STATE/gate-fresh-active"
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/merged"
+  TOUCHSTONE_GATE_ATTEMPTS=3 TOUCHSTONE_GATE_RETRY_DELAY=0 run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "answer on a merged PR exited $RUN_RC instead of returning: $(tail -3 "$RR/out")"
+  grep -qF 'PR #7 is MERGED; the reply and resolution are recorded and no review-gate re-run applies' "$RR/out" \
+    || fail "answer on a merged PR did not say why no gate re-run applies: $(tail -3 "$RR/out")"
+  ! grep -qF 'retrying in' "$RR/out" || fail "answer on a merged PR still polled for a gate run"
+  [ ! -f "$GH_STATE/gate-reruns" ] || fail "answer on a merged PR requested a gate re-run"
+  rm -f "$GH_STATE/merged"
+  touch "$GH_STATE/closed"
+  TOUCHSTONE_GATE_ATTEMPTS=3 TOUCHSTONE_GATE_RETRY_DELAY=0 run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "answer on a closed PR exited $RUN_RC instead of returning: $(tail -3 "$RR/out")"
+  grep -qF 'PR #7 is CLOSED; the reply and resolution are recorded and no review-gate re-run applies' "$RR/out" \
+    || fail "answer on a closed PR did not say why no gate re-run applies"
+  rm -f "$GH_STATE/closed" "$GH_STATE/gate-in-progress" "$GH_STATE/fresh-request"
+  echo "==> an answer whose head moves mid-wait stops and names the live head"
+  # moved-head flips the pre-wait re-read, which the exact-head guard already
+  # refuses; wait-moved-head moves the head only as seen by the liveness
+  # read, so the wait itself is what stops.
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/wait-moved-head"
+  TOUCHSTONE_GATE_ATTEMPTS=3 TOUCHSTONE_GATE_RETRY_DELAY=0 run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -ne 0 ] || fail "answer kept waiting after the head moved"
+  grep -qF 'moved from abcdef0123456789abcdef0123456789abcdef01 to feedfacefeedfacefeedfacefeedfacefeedface while waiting for the review gate' "$RR/out" \
+    || fail "answer did not name the live head when the wait stopped: $(tail -3 "$RR/out")"
+  rm -f "$GH_STATE/wait-moved-head" "$GH_STATE/gate-in-progress" "$GH_STATE/fresh-request"
+  echo "==> an answer whose PR is retargeted mid-wait stops and names the new base"
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/wait-retargeted"
+  TOUCHSTONE_GATE_ATTEMPTS=3 TOUCHSTONE_GATE_RETRY_DELAY=0 run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -ne 0 ] || fail "answer kept waiting after the PR was retargeted"
+  grep -qF 'was retargeted from main to release while waiting for the review gate' "$RR/out" \
+    || fail "answer did not name the new base when the wait stopped: $(tail -3 "$RR/out")"
+  rm -f "$GH_STATE/wait-retargeted" "$GH_STATE/gate-in-progress" "$GH_STATE/fresh-request"
+
   echo "==> a behavior v3 answer that resolves the last thread posts one fresh review request"
   touch "$GH_STATE/gate-fresh-active"
   echo 30 >"$GH_STATE/gate-in-progress"
@@ -2782,6 +2998,41 @@ STATUS_STUB
   else
     fail "the merged-stream guard pattern does not match its own positive sample"
   fi
+
+  echo "==> every GitHub-state wait re-checks liveness on each poll (AUT-1179)"
+  # A loop that sleeps on GATE_RETRY_DELAY is waiting for GitHub state to
+  # change. Between its "while :; do" and that sleep it must call the
+  # liveness precondition, so a PR that merged, closed, or moved its head
+  # ends the wait on the next poll instead of exhausting the attempt budget.
+  # Transport retries (GRAPHQL_RETRY_DELAY) are not state waits and are not
+  # covered.
+  wait_violations=""
+  wait_sleeps=0
+  for wait_script in touchstone-pr.sh respond-review.sh; do
+    found="$(awk -v file="$wait_script" '
+      /while :; do/ { in_loop = 1; live = 0; loop_line = NR }
+      /assert_wait_liveness|require_open_pr_head/ { if (in_loop) live = 1 }
+      /sleep "\$GATE_RETRY_DELAY"/ { sleeps++; if (in_loop && !live) print file ":" loop_line " waits on GitHub state without a liveness check" }
+      /^[[:space:]]*done([[:space:]]|$)/ { in_loop = 0 }
+      END { print "SLEEPS=" sleeps }' "$TOUCHSTONE_ROOT/scripts/$wait_script")"
+    wait_sleeps=$((wait_sleeps + $(printf '%s\n' "$found" | sed -n 's/^SLEEPS=//p')))
+    wait_violations="$wait_violations$(printf '%s\n' "$found" | grep -v '^SLEEPS=' || true)"
+  done
+  [ "$wait_sleeps" -ge 3 ] || fail "expected at least three GitHub-state waits to guard; found $wait_sleeps (the scan is not seeing the loops)"
+  [ -z "$wait_violations" ] && ok "every GitHub-state wait re-checks liveness on each poll" \
+    || fail "GitHub-state wait without a liveness check:
+  $wait_violations"
+
+  echo "==> the queue-history read includes every event that invalidates an eviction (AUT-1179)"
+  # The fake serves the post-jq event list, so it cannot prove which timeline
+  # item types the live query requests. This pins the contract: a retarget
+  # must be fetched, or an evicted PR that was retargeted stays evicted.
+  for item_type in ADDED_TO_MERGE_QUEUE_EVENT REMOVED_FROM_MERGE_QUEUE_EVENT PULL_REQUEST_COMMIT HEAD_REF_FORCE_PUSHED_EVENT BASE_REF_CHANGED_EVENT; do
+    grep -qF "$item_type" "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" \
+      || fail "the queue-history query no longer requests $item_type"
+  done
+  grep -qF '"BaseRefChangedEvent" then "base_changed"' "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" \
+    || fail "a retarget is no longer mapped to an eviction-invalidating event"
 
   echo "==> workflow-run mutation selectors never rank by creation id alone"
   creation_id_selector='sort_by(.id) | last | "\(.id'

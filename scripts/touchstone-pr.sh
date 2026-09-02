@@ -102,6 +102,13 @@ json_string() {
   printf '"'
 }
 
+# A mutation that partially succeeded must not report as though it did
+# nothing: once a command has created or reused a pull request, every exit
+# path names it, so an operator reading a failure knows the PR exists and
+# where to resume (AUT-1038). Set by open_pr the moment the PR is known.
+FAILURE_PR_NUMBER=""
+FAILURE_PR_URL=""
+FAILURE_PR_HEAD=""
 emit_error() {
   local reason="$1" remedy="$2"
   if [ "$JSON_MODE" = true ]; then
@@ -111,10 +118,18 @@ emit_error() {
     json_string "$reason"
     printf ',"remedy":'
     json_string "$remedy"
+    if [ -n "$FAILURE_PR_NUMBER" ]; then
+      printf ',"pullRequest":%s,"url":' "$FAILURE_PR_NUMBER"
+      json_string "$FAILURE_PR_URL"
+      printf ',"head":'
+      json_string "$FAILURE_PR_HEAD"
+    fi
     printf '}\n'
   else
     printf 'ERROR: %s\n' "$reason" >&2
     [ -z "$remedy" ] || printf '       %s\n' "$remedy" >&2
+    [ -z "$FAILURE_PR_NUMBER" ] \
+      || printf '       PR #%s exists at %s (head %s); resume from there.\n' "$FAILURE_PR_NUMBER" "$FAILURE_PR_URL" "$FAILURE_PR_HEAD" >&2
   fi
 }
 
@@ -1288,9 +1303,49 @@ policy_status() {
   fi
 }
 
+# Every loop that polls GitHub for state re-checks, on each poll, that the
+# state it is waiting for can still arrive. A PR that merged or closed gets
+# no further required-workflow runs; a head that moved is no longer the head
+# being waited on. Without this, a wait is only ever bounded by its attempt
+# budget, and it spends that budget polling for an event that became
+# impossible on the first poll (AUT-511, touchstone#1053, AUT-1179).
+assert_wait_liveness() {
+  local number="$1" head="$2" base_ref="${3:-}" base_sha="${4:-}" state live_head live_base live_base_sha
+  read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json state,headRefOid,baseRefName,baseRefOid \
+    --jq '[.state,.headRefOid,.baseRefName,.baseRefOid] | @tsv' \
+    || fail_operation "could not re-read PR #$number while waiting: $READ_OUTPUT" "Retry after GitHub recovers."
+  IFS="$(printf '\t')" read -r state live_head live_base live_base_sha <<<"$READ_OUTPUT"
+  case "$state" in
+    OPEN) ;;
+    MERGED)
+      fail_operation "PR #$number merged while this command was waiting; no further run applies to $head" \
+        "Nothing to do: the PR is merged."
+      ;;
+    CLOSED)
+      fail_operation "PR #$number was closed without merging while this command was waiting; no required workflow can run for $head" \
+        "Reopen the PR, or open a replacement and request review for its head."
+      ;;
+    *)
+      fail_operation "PR #$number reported unsupported state '${state:-empty}' while waiting" "Inspect the PR on GitHub."
+      ;;
+  esac
+  [ "$live_head" = "$head" ] \
+    || fail_operation "PR #$number moved from $head to $live_head while this command was waiting" \
+      "Re-run against the live head: touchstone pr open --expect-branch <branch>."
+  # The request binding and verify_live_coordinates refuse a changed base ref
+  # or an advanced base sha, so a wait past either cannot succeed either.
+  [ -z "$base_ref" ] || [ "$live_base" = "$base_ref" ] \
+    || fail_operation "PR #$number was retargeted from $base_ref to $live_base while this command was waiting" \
+      "Re-run against the live base: touchstone pr open --expect-branch <branch>."
+  [ -z "$base_sha" ] || [ "$live_base_sha" = "$base_sha" ] \
+    || fail_operation "PR #$number base $base_ref advanced from $base_sha to $live_base_sha while this command was waiting" \
+      "Integrate the live base, then re-run: touchstone pr open --expect-branch <branch>."
+}
+
 wait_for_new_attempt() {
-  local run_id="$1" prior="$2" workflow_name="$3" attempt=1 seen
+  local run_id="$1" prior="$2" workflow_name="$3" number="$4" head="$5" base_ref="${6:-}" base_sha="${7:-}" attempt=1 seen
   while :; do
+    assert_wait_liveness "$number" "$head" "$base_ref" "$base_sha"
     read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$run_id" --jq '.run_attempt' \
       || fail_operation "could not read $workflow_name run $run_id: $READ_OUTPUT" "Retry after GitHub recovers."
     seen="$READ_OUTPUT"
@@ -1310,6 +1365,7 @@ REQUIRED_WORKFLOW_MIN_ATTEMPT_RUN_ID=""
 rerun_required_workflow() {
   local number="$1" head="$2" workflow_name="$3" local_workflow_ids="$4" active_reuse_seconds="${5:-0}"
   local refresh_completed="${6:-true}" minimum_attempt="${7:-0}" minimum_attempt_run_id="${8:-}"
+  local base_ref="${9:-}" base_sha="${10:-}"
   local attempt=1 run_id run_node status conclusion selected_attempt run_started_at run_started_epoch now prior_attempt run_pages run_row workflow_ids workflow_id_count
   local run_identity active_run_bound
   REQUIRED_WORKFLOW_RUN_ID=""
@@ -1319,6 +1375,7 @@ rerun_required_workflow() {
     REQUIRED_WORKFLOW_MIN_ATTEMPT_RUN_ID=""
   fi
   while :; do
+    assert_wait_liveness "$number" "$head" "$base_ref" "$base_sha"
     # Scoped to this pull request: two open PRs can share a head SHA, and
     # re-running the other one's gate would prove nothing about this request.
     read_with_retry gh api --hostname "$REPO_HOST" --paginate \
@@ -1428,7 +1485,7 @@ rerun_required_workflow() {
       prior_attempt="$READ_OUTPUT"
       gh api --hostname "$REPO_HOST" -X POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>&1 \
         || fail_operation "could not re-run $workflow_name run $run_id" "Re-run it from the Actions tab, then retry."
-      wait_for_new_attempt "$run_id" "$prior_attempt" "$workflow_name"
+      wait_for_new_attempt "$run_id" "$prior_attempt" "$workflow_name" "$number" "$head" "$base_ref" "$base_sha"
       REQUIRED_WORKFLOW_MIN_ATTEMPT=$((prior_attempt + 1))
       REQUIRED_WORKFLOW_MIN_ATTEMPT_RUN_ID="$run_id"
       return 0
@@ -1458,8 +1515,8 @@ effective_review_gate_accepts_active() {
 }
 
 rerun_declared_review_gate() {
-  local active_reuse_seconds="$3"
-  rerun_required_workflow "$1" "$2" review-gate "$REQUIRED_WORKFLOW_LOCAL_IDS" "$active_reuse_seconds"
+  local active_reuse_seconds="$3" base_ref="${4:-}" base_sha="${5:-}"
+  rerun_required_workflow "$1" "$2" review-gate "$REQUIRED_WORKFLOW_LOCAL_IDS" "$active_reuse_seconds" true 0 "" "$base_ref" "$base_sha"
   REVIEW_GATE_RUN_ID="$REQUIRED_WORKFLOW_RUN_ID"
   if [ "$REQUIRED_WORKFLOW_ALREADY_ACTIVE" = true ]; then
     REVIEW_GATE_ACTION=already-active
@@ -1541,7 +1598,7 @@ wait_for_request_binding() {
         active_reuse_seconds="$GATE_V2_REQUEST_REUSE_SECONDS"
       fi
     fi
-    rerun_declared_review_gate "$number" "$head" "$active_reuse_seconds"
+    rerun_declared_review_gate "$number" "$head" "$active_reuse_seconds" "$base_ref" "$base_sha"
     verify_live_coordinates "$number" "$head" "$base_ref" "$base_sha"
     if [ "$JSON_MODE" = false ]; then
       if [ "$REVIEW_GATE_ACTION" = already-active ]; then
@@ -1642,6 +1699,10 @@ open_pr() {
     state=existing
   fi
   IFS="$(printf '\t')" read -r number url pr_head pr_base pr_base_sha <<<"$rows"
+  # From here on a PR exists (created or reused); every failure names it.
+  FAILURE_PR_NUMBER="$number"
+  FAILURE_PR_URL="$url"
+  FAILURE_PR_HEAD="$pr_head"
   [ "$pr_head" = "$local_head" ] \
     || fail_input "PR head $pr_head does not match local/remote head $local_head" "Refresh the PR branch before review."
   [ "$pr_base" = "$BASE_REF" ] \
@@ -1687,12 +1748,12 @@ open_pr() {
   if delivery_evidence_required "$pr_base"; then
     refuse_conflicting_open_pr "$number" "$local_head" "$pr_base" "$pr_base_sha"
     if [ "$state" = existing ]; then
-      rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS"
+      rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS" 0 true 0 "" "$pr_base" "$pr_base_sha"
       evidence_min_attempt="$REQUIRED_WORKFLOW_MIN_ATTEMPT"
       evidence_min_attempt_run_id="$REQUIRED_WORKFLOW_MIN_ATTEMPT_RUN_ID"
     fi
     rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS" 0 false \
-      "$evidence_min_attempt" "$evidence_min_attempt_run_id"
+      "$evidence_min_attempt" "$evidence_min_attempt_run_id" "$pr_base" "$pr_base_sha"
     verify_live_coordinates "$number" "$local_head" "$pr_base" "$pr_base_sha"
     verify_live_body "$number" "$wanted_body"
     if [ "$JSON_MODE" = false ]; then
@@ -1760,22 +1821,58 @@ read_pr_row() {
   PR_ROW="$READ_OUTPUT"
 }
 
+# The queue surface is the live entry AND its history for this head. A head
+# the queue already evicted for a failing required check reads exactly like
+# one that was never queued -- "not queued", CLEAN, gate green -- unless the
+# removal event is read too. Reporting it as ready-to-queue sent operators
+# back into the same eviction loop (touchstone#1092).
+MERGE_QUEUE_POSITION=""
+MERGE_QUEUE_ENQUEUED_AT=""
+MERGE_QUEUE_EVICTED=false
+MERGE_QUEUE_EVICTED_AT=""
+MERGE_QUEUE_EVICTION_REASON=""
+MERGE_QUEUE_EVICTION_BASE=""
 read_auto_merge_state() {
-  local number="$1" expected_head="$2" observation
+  local number="$1" expected_head="$2" observation eviction
   read_with_retry gh api graphql --hostname "$REPO_HOST" \
     -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F number="$number" \
-    -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid autoMergeRequest{enabledAt} mergeQueueEntry{state}}}}' \
-    --jq '.data.repository.pullRequest | {head:.headRefOid,autoMergeEnabledAt:(.autoMergeRequest.enabledAt // null),mergeQueueState:(.mergeQueueEntry.state // null)}' \
+    -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid autoMergeRequest{enabledAt} mergeQueueEntry{state position enqueuedAt} timelineItems(last:40,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT,PULL_REQUEST_COMMIT,HEAD_REF_FORCE_PUSHED_EVENT,BASE_REF_CHANGED_EVENT]){nodes{__typename ... on AddedToMergeQueueEvent{createdAt} ... on RemovedFromMergeQueueEvent{createdAt reason beforeCommit{oid}} ... on HeadRefForcePushedEvent{createdAt} ... on BaseRefChangedEvent{createdAt} ... on PullRequestCommit{commit{committedDate}}}}}}}' \
+    --jq '.data.repository.pullRequest | {head:.headRefOid,autoMergeEnabledAt:(.autoMergeRequest.enabledAt // null),mergeQueueState:(.mergeQueueEntry.state // null),mergeQueuePosition:(.mergeQueueEntry.position // null),mergeQueueEnqueuedAt:(.mergeQueueEntry.enqueuedAt // null),queueEvents:[(.timelineItems.nodes // [])[] | {type:(if .__typename == "RemovedFromMergeQueueEvent" then "removed" elif .__typename == "AddedToMergeQueueEvent" then "added" elif .__typename == "BaseRefChangedEvent" then "base_changed" else "head_moved" end),createdAt:(.createdAt // .commit.committedDate // null),reason:(.reason // null),queueBase:(.beforeCommit.oid // null)}]}' \
     || fail_operation "could not read auto-merge or merge-queue state for PR #$number: $READ_OUTPUT" "Retry after GitHub recovers."
   observation="$(printf '%s' "$READ_OUTPUT" | jq -ce '
     if (.head | type) != "string" or .head == "" then error("missing head")
     elif .autoMergeEnabledAt != null and (.autoMergeEnabledAt | type) != "string" then error("invalid auto-merge timestamp")
     elif .mergeQueueState != null and (.mergeQueueState | type) != "string" then error("invalid merge-queue state")
+    elif (.mergeQueuePosition // null) != null and (.mergeQueuePosition | type) != "number" then error("invalid merge-queue position")
+    elif (.mergeQueueEnqueuedAt // null) != null and (.mergeQueueEnqueuedAt | type) != "string" then error("invalid merge-queue enqueue timestamp")
+    elif (.queueEvents // null) != null and (.queueEvents | type) != "array" then error("invalid merge-queue event list")
     else . end')" \
     || fail_operation "GitHub returned malformed auto-merge or merge-queue state for PR #$number" "Retry after GitHub returns a complete pull-request observation."
   AUTO_MERGE_HEAD="$(printf '%s' "$observation" | jq -r .head)"
   AUTO_MERGE_ENABLED_AT="$(printf '%s' "$observation" | jq -r '.autoMergeEnabledAt // ""')"
   MERGE_QUEUE_STATE="$(printf '%s' "$observation" | jq -r '.mergeQueueState // ""')"
+  MERGE_QUEUE_POSITION="$(printf '%s' "$observation" | jq -r '.mergeQueuePosition // ""')"
+  MERGE_QUEUE_ENQUEUED_AT="$(printf '%s' "$observation" | jq -r '.mergeQueueEnqueuedAt // ""')"
+  # Evicted means: in the PR's timeline of queue additions, queue removals,
+  # head changes (commits and force-pushes), and retargets, the newest event
+  # is a removal. A later addition means the head was re-queued; a later
+  # commit, force-push, or retarget means the removal belonged to
+  # coordinates that no longer exist. A base that merely advanced leaves no
+  # event on the PR, so that case is reported conservatively as evicted
+  # (AUT-1183). The removal's beforeCommit is the merge-queue base the candidate
+  # was built on, never the PR head -- verified live on vesper#1136, where
+  # both evictions carried the queue generation's base SHA -- so it cannot
+  # bind the event to a head and is reported only as the queue base.
+  eviction="$(printf '%s' "$observation" | jq -c '
+    (.queueEvents // []) as $events
+    | if ($events | length) > 0 and $events[-1].type == "removed"
+      then {evicted:true, at:($events[-1].createdAt // null), reason:($events[-1].reason // null), queueBase:($events[-1].queueBase // null)}
+      else {evicted:false}
+      end')"
+  MERGE_QUEUE_EVICTED="$(printf '%s' "$eviction" | jq -r .evicted)"
+  MERGE_QUEUE_EVICTED_AT="$(printf '%s' "$eviction" | jq -r '.at // ""')"
+  MERGE_QUEUE_EVICTION_REASON="$(printf '%s' "$eviction" | jq -r '.reason // ""')"
+  MERGE_QUEUE_EVICTION_BASE="$(printf '%s' "$eviction" | jq -r '.queueBase // ""')"
   [ -n "$AUTO_MERGE_HEAD" ] \
     || fail_operation "GitHub returned no live head while reading auto-merge state for PR #$number" "Retry after GitHub recovers."
   [ "$AUTO_MERGE_HEAD" = "$expected_head" ] \
@@ -1842,6 +1939,13 @@ merge_queue_json() {
   else
     printf '{"state":'
     json_string "$MERGE_QUEUE_STATE"
+    if [ -n "$MERGE_QUEUE_POSITION" ]; then
+      printf ',"position":%s' "$MERGE_QUEUE_POSITION"
+    fi
+    if [ -n "$MERGE_QUEUE_ENQUEUED_AT" ]; then
+      printf ',"enqueuedAt":'
+      json_string "$MERGE_QUEUE_ENQUEUED_AT"
+    fi
     printf '}'
   fi
 }
@@ -1849,9 +1953,30 @@ merge_queue_json() {
 merge_queue_text() {
   if [ -n "$MERGE_QUEUE_STATE" ]; then
     printf '%s' "$MERGE_QUEUE_STATE"
+    [ -z "$MERGE_QUEUE_POSITION" ] || printf ' (position %s)' "$MERGE_QUEUE_POSITION"
   else
     printf 'not queued'
   fi
+}
+
+merge_queue_eviction_json() {
+  if [ "$MERGE_QUEUE_EVICTED" != true ]; then
+    printf 'null'
+    return 0
+  fi
+  printf '{"at":'
+  if [ -n "$MERGE_QUEUE_EVICTED_AT" ]; then json_string "$MERGE_QUEUE_EVICTED_AT"; else printf 'null'; fi
+  printf ',"reason":'
+  if [ -n "$MERGE_QUEUE_EVICTION_REASON" ]; then json_string "$MERGE_QUEUE_EVICTION_REASON"; else printf 'null'; fi
+  printf ',"queueBase":'
+  if [ -n "$MERGE_QUEUE_EVICTION_BASE" ]; then json_string "$MERGE_QUEUE_EVICTION_BASE"; else printf 'null'; fi
+  printf '}'
+}
+
+merge_queue_eviction_text() {
+  printf 'evicted'
+  [ -z "$MERGE_QUEUE_EVICTED_AT" ] || printf ' at %s' "$MERGE_QUEUE_EVICTED_AT"
+  [ -z "$MERGE_QUEUE_EVICTION_REASON" ] || printf ' (%s)' "$MERGE_QUEUE_EVICTION_REASON"
 }
 
 PR_PHASE=""
@@ -1867,6 +1992,14 @@ classify_pr_phase() {
   if [ "$state" = MERGED ]; then
     PR_PHASE=merged
     PR_NEXT_ACTION="done"
+    return 0
+  fi
+  # Closed without merging is terminal too: no required workflow can run
+  # for it, so every wait on this PR must stop rather than poll for a run
+  # that cannot appear (AUT-511, touchstone#1053).
+  if [ "$state" = CLOSED ]; then
+    PR_PHASE=closed
+    PR_NEXT_ACTION=inspect
     return 0
   fi
   [ "$state" = OPEN ] || return 0
@@ -1890,9 +2023,33 @@ classify_pr_phase() {
     *) return 0 ;;
   esac
 
+  # No live entry, and the newest of the PR's queue and head events is a
+  # removal: the required check failed on the queue branch and nothing has
+  # changed since. Everything else about the head still reads green, which
+  # is exactly why this fact has to be read rather than inferred --
+  # re-queueing it blindly is the loop (touchstone#1092).
+  # Only under an enforced queue: a policy that legitimately has no merge
+  # queue leaves nothing for the head to be evicted from, and stale queue
+  # history from before such a policy change must not outrank the current
+  # policy.
+  if [ "$MERGE_QUEUE_EVICTED" = true ] && [ "$ENFORCEMENT_QUEUE_APPLIED" = true ]; then
+    PR_PHASE=evicted
+    PR_NEXT_ACTION=inspect
+    return 0
+  fi
+
   if [ "$AUTO_MERGE_ARMED" = true ]; then
-    PR_PHASE=queued
-    PR_NEXT_ACTION="wait"
+    if [ "$ENFORCEMENT_QUEUE_APPLIED" = true ]; then
+      # Under a merge queue, an armed auto-merge request with no queue entry
+      # is not "queued": GitHub has not admitted the head and nothing here
+      # will land it. Reporting it as queued hid the difference between
+      # "waiting for checks" and "never enqueued" (touchstone#1049).
+      PR_PHASE=armed-not-queued
+      PR_NEXT_ACTION=inspect
+    else
+      PR_PHASE=queued
+      PR_NEXT_ACTION="wait"
+    fi
     return 0
   fi
   [ "$merge_state" != DIRTY ] || return 0
@@ -2246,6 +2403,8 @@ status_pr() {
     auto_merge_json
     printf ',"mergeQueue":'
     merge_queue_json
+    printf ',"mergeQueueEviction":'
+    merge_queue_eviction_json
     printf ',"phase":'
     json_string "$PR_PHASE"
     printf ',"nextAction":'
@@ -2264,6 +2423,7 @@ status_pr() {
   else
     printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  phase: %s\n  next action: %s\n  merge state: %s\n  draft: %s\n  auto-merge: %s\n  merge queue: %s\n  review gate: %s\n' \
       "$number" "$state" "$url" "$head" "$base" "$base_sha" "$PR_PHASE" "$PR_NEXT_ACTION" "$merge_state" "$draft" "$(auto_merge_text)" "$(merge_queue_text)" "$(review_gate_check_text)"
+    [ "$MERGE_QUEUE_EVICTED" != true ] || printf '  merge queue history: %s\n' "$(merge_queue_eviction_text)"
     printf '  policy: %s at %s\n  enforcement on %s: %s\n' \
       "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" "$base" "$(enforcement_text)"
     [ -z "$PR_NEXT_COMMAND" ] || printf '  command: %s\n' "$PR_NEXT_COMMAND"

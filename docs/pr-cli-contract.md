@@ -149,19 +149,37 @@ taking this document's word for it.
 
   The additive `phase` field reduces those authoritative observations to one
   stable enum: `reviewing`, `fix-required`, `ready-to-queue`, `queued`,
-  `merged`, or `action-required`. Its one-to-one `nextAction` values are
-  `wait`, `address-review`, `queue`, `done`, and `inspect`; both `reviewing`
-  and `queued` intentionally use `wait`. Human output prints the exact-head
-  `touchstone pr merge PR --head SHA` command only for `ready-to-queue`, where
-  that mutation is safe to attempt. No other phase invents a recovery command.
+  `evicted`, `armed-not-queued`, `merged`, `closed`, or `action-required`.
+  Its one-to-one `nextAction` values are `wait`, `address-review`, `queue`,
+  `done`, and `inspect`; both `reviewing` and `queued` intentionally use
+  `wait`. Human output prints the exact-head `touchstone pr merge PR --head
+  SHA` command only for `ready-to-queue`, where that mutation is safe to
+  attempt. No other phase invents a recovery command. The enum grows only by
+  addition: a consumer that switches on phase treats an unknown value as
+  `inspect`, and no existing value changes meaning.
 
-  Classification is deliberately small and fail closed. `MERGED` is terminal.
-  Any non-open or draft PR is `action-required`. Effective enforcement is
-  checked before queue state, so a queue entry never implies that review was
-  authorized in a partially adopted repository. A known live queue state is
-  `queued`; `UNMERGEABLE` or an unknown future queue state is
-  `action-required`. An armed legacy auto-merge request is also `queued`
-  because GitHub can land it without another local mutation. Conflicts,
+  Classification is deliberately small and fail closed. `MERGED` is terminal
+  (`merged`), and so is `CLOSED` without a merge (`closed`): neither receives
+  another required-workflow run, so every wait on such a PR stops rather than
+  polls for a run that cannot appear. Any other non-open or draft PR is
+  `action-required`. Effective enforcement is checked before queue state, so
+  a queue entry never implies that review was authorized in a partially
+  adopted repository. A known live queue state is `queued`; `UNMERGEABLE` or
+  an unknown future queue state is `action-required`. With no live entry, a
+  PR whose newest event among queue additions, queue removals, head changes
+  (commits and force-pushes), and retargets is a removal is `evicted` — the
+  required check failed on the queue branch and nothing has changed since.
+  Every other observation of the head still reads green, which is why the
+  event is read rather than inferred; re-queueing it unchanged repeats the
+  eviction. A later re-queue, head change, or retarget makes the removal
+  history. A base that has merely advanced leaves no event on the PR and is
+  still reported `evicted`, the conservative direction. The removal's
+  `beforeCommit` is the merge-queue base the candidate was built on, not the
+  PR head, and is reported as `queueBase` for diagnosis only. Under a policy that enforces a merge queue, an armed auto-merge
+  request with no queue entry is `armed-not-queued`: GitHub has not admitted
+  the head and nothing will land it without another mutation. Only where the
+  policy carries no queue is an armed auto-merge request `queued`, because
+  there GitHub can land it without another local mutation. Conflicts,
   ambiguous or unbound gates, and incomplete policy bindings are
   `action-required`. After that, only the policy-owned exact-head gate decides:
   active is `reviewing`, explicit `failure` is `fix-required`, and exact-head
@@ -174,12 +192,18 @@ taking this document's word for it.
 
   Status does not parse gate output or reviewer prose, recognize a reviewer,
   reconstruct auto-merge from local wait conditions, decide whether review is
-  complete, request review, enqueue, retry, or wait for delivery. Queue
-  position, ETA, and merge-group internals stay outside the versioned contract.
+  complete, request review, enqueue, retry, or wait for delivery.
+  Queue position and enqueue time are reported when a live entry exists
+  (`mergeQueue.position`, `mergeQueue.enqueuedAt`); the eviction fact is the
+  additive sibling `mergeQueueEviction` (`{at, reason, queueBase}`, or `null`). ETA and
+  merge-group internals stay outside the versioned contract.
   Raw equivalent: `gh pr view --json
   number,state,url,headRefOid,baseRefName,baseRefOid,mergeStateStatus,isDraft`
-  plus `autoMergeRequest { enabledAt }` and `mergeQueueEntry { state }` from
-  GitHub's GraphQL API and
+  plus `autoMergeRequest { enabledAt }`, `mergeQueueEntry { state position
+  enqueuedAt }`, and the PR's `timelineItems` filtered to
+  `ADDED_TO_MERGE_QUEUE_EVENT`, `REMOVED_FROM_MERGE_QUEUE_EVENT`,
+  `PULL_REQUEST_COMMIT`, `HEAD_REF_FORCE_PUSHED_EVENT`, and
+  `BASE_REF_CHANGED_EVENT` from GitHub's GraphQL API and
   `gh api repos/O/R/commits/HEAD/check-runs?check_name=review-gate&filter=all`
   plus the matching external workflow run and its current-attempt jobs, with
   exact-head and job-id filtering. The CheckRun endpoint belongs to the consumer
