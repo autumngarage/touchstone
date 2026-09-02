@@ -166,14 +166,16 @@ taking this document's word for it.
   a queue entry never implies that review was authorized in a partially
   adopted repository. A known live queue state is `queued`; `UNMERGEABLE` or
   an unknown future queue state is `action-required`. With no live entry, a
-  PR whose newest event among queue additions, queue removals, and head
-  changes (commits and force-pushes) is a removal is `evicted` — the
+  PR whose newest event among queue additions, queue removals, head changes
+  (commits and force-pushes), and retargets is a removal is `evicted` — the
   required check failed on the queue branch and nothing has changed since.
   Every other observation of the head still reads green, which is why the
   event is read rather than inferred; re-queueing it unchanged repeats the
-  eviction. A later re-queue or head change makes the removal history. The
-  removal's `beforeCommit` is the merge-queue base the candidate was built
-  on, not the PR head, and is reported as `queueBase` for diagnosis only. Under a policy that enforces a merge queue, an armed auto-merge
+  eviction. A later re-queue, head change, or retarget makes the removal
+  history. A base that has merely advanced leaves no event on the PR and is
+  still reported `evicted`, the conservative direction. The removal's
+  `beforeCommit` is the merge-queue base the candidate was built on, not the
+  PR head, and is reported as `queueBase` for diagnosis only. Under a policy that enforces a merge queue, an armed auto-merge
   request with no queue entry is `armed-not-queued`: GitHub has not admitted
   the head and nothing will land it without another mutation. Only where the
   policy carries no queue is an armed auto-merge request `queued`, because
@@ -200,8 +202,8 @@ taking this document's word for it.
   plus `autoMergeRequest { enabledAt }`, `mergeQueueEntry { state position
   enqueuedAt }`, and the PR's `timelineItems` filtered to
   `ADDED_TO_MERGE_QUEUE_EVENT`, `REMOVED_FROM_MERGE_QUEUE_EVENT`,
-  `PULL_REQUEST_COMMIT`, and `HEAD_REF_FORCE_PUSHED_EVENT` from GitHub's
-  GraphQL API and
+  `PULL_REQUEST_COMMIT`, `HEAD_REF_FORCE_PUSHED_EVENT`, and
+  `BASE_REF_CHANGED_EVENT` from GitHub's GraphQL API and
   `gh api repos/O/R/commits/HEAD/check-runs?check_name=review-gate&filter=all`
   plus the matching external workflow run and its current-attempt jobs, with
   exact-head and job-id filtering. The CheckRun endpoint belongs to the consumer

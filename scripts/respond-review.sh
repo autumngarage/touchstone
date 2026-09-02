@@ -410,10 +410,10 @@ if [ "$GATE_REQUIRED" = true ]; then
   # The material work is done by this point; a PR that is no longer open is
   # reported and the command returns success, not a hang.
   require_open_pr_head() {
-    local pr_state live_head
-    pr_state="$(gh_read pr view "$PR_NUMBER" --json state,headRefOid --jq '[.state,.headRefOid] | @tsv')" \
+    local pr_state live_head live_base
+    pr_state="$(gh_read pr view "$PR_NUMBER" --json state,headRefOid,baseRefName --jq '[.state,.headRefOid,.baseRefName] | @tsv')" \
       || fail "could not re-read PR #$PR_NUMBER while waiting for the review gate: $pr_state"
-    IFS="$(printf '\t')" read -r pr_state live_head <<<"$pr_state"
+    IFS="$(printf '\t')" read -r pr_state live_head live_base <<<"$pr_state"
     case "$pr_state" in
       OPEN) ;;
       MERGED | CLOSED)
@@ -424,6 +424,8 @@ if [ "$GATE_REQUIRED" = true ]; then
     esac
     [ "$live_head" = "$HEAD_SHA" ] \
       || fail "PR #$PR_NUMBER moved from $HEAD_SHA to $live_head while waiting for the review gate; request one review for the new head."
+    [ "$live_base" = "$BASE_REF" ] \
+      || fail "PR #$PR_NUMBER was retargeted from $BASE_REF to $live_base while waiting for the review gate; request one review for the new base."
   }
   attempt=1
   while :; do

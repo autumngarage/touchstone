@@ -282,10 +282,12 @@ case "$1 ${2:-}" in
       else
         printf '%s\n' 'Change summary.' '' 'Closes #42'
       fi
-    elif has '--json state,headRefOid' "$@"; then
+    elif has '--json state,headRefOid,baseRefName,baseRefOid' "$@"; then
       # The liveness precondition every GitHub-state wait re-reads each poll.
       live_state=OPEN
       live_head="$GH_HEAD"
+      live_base="$GH_BASE_REF"
+      live_base_sha="$GH_BASE_SHA"
       [ ! -f "$GH_STATE/merged" ] || live_state=MERGED
       case "${GH_MODE:-ok}" in
         status_closed) live_state=CLOSED ;;
@@ -294,7 +296,9 @@ case "$1 ${2:-}" in
       esac
       [ ! -f "$GH_STATE/wait-closed" ] || live_state=CLOSED
       [ ! -f "$GH_STATE/wait-moved" ] || live_head=moved-head
-      printf '%s\t%s\n' "$live_state" "$live_head"
+      [ ! -f "$GH_STATE/wait-retargeted" ] || live_base=release
+      [ ! -f "$GH_STATE/wait-base-advanced" ] || live_base_sha=advanced-base-sha
+      printf '%s\t%s\t%s\t%s\n' "$live_state" "$live_head" "$live_base" "$live_base_sha"
     elif has '--json state,url' "$@"; then
       if [ -f "$GH_STATE/merged" ]; then printf 'MERGED\thttps://example.test/pr/7\n'; else printf 'OPEN\thttps://example.test/pr/7\n'; fi
     elif [ -f "$GH_STATE/merged" ]; then
@@ -364,6 +368,8 @@ case "$1 ${2:-}" in
         queue_events='[{"type":"head_moved","createdAt":"2026-09-02T16:00:55Z","reason":null,"queueBase":null},{"type":"added","createdAt":"2026-09-02T16:13:23Z","reason":null,"queueBase":null},{"type":"removed","createdAt":"2026-09-02T16:51:33Z","reason":"failed_checks","queueBase":"dd69484b30f6"}]'
       elif [ -f "$GH_STATE/queue-evicted-then-pushed" ]; then
         queue_events='[{"type":"added","createdAt":"2026-09-02T16:13:23Z","reason":null,"queueBase":null},{"type":"removed","createdAt":"2026-09-02T16:51:33Z","reason":"failed_checks","queueBase":"dd69484b30f6"},{"type":"head_moved","createdAt":"2026-09-02T17:00:00Z","reason":null,"queueBase":null}]'
+      elif [ -f "$GH_STATE/queue-evicted-then-retargeted" ]; then
+        queue_events='[{"type":"added","createdAt":"2026-09-02T16:13:23Z","reason":null,"queueBase":null},{"type":"removed","createdAt":"2026-09-02T16:51:33Z","reason":"failed_checks","queueBase":"dd69484b30f6"},{"type":"base_changed","createdAt":"2026-09-02T17:00:00Z","reason":null,"queueBase":null}]'
       elif [ -f "$GH_STATE/queue-requeued" ]; then
         queue_events='[{"type":"removed","createdAt":"2026-09-02T16:51:33Z","reason":"failed_checks","queueBase":"dd69484b30f6"},{"type":"added","createdAt":"2026-09-02T17:08:34Z","reason":null,"queueBase":null}]'
       fi
@@ -1068,6 +1074,14 @@ EOF
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"mergeQueueEviction":null,"phase":"ready-to-queue","nextAction":"queue"'
   rm -f "$TMP/state/queue-evicted-then-pushed"
+  # A retarget after the removal moves the PR to coordinates the queue never
+  # evaluated: the eviction is history. (A base that merely advanced leaves
+  # no PR event and stays conservatively evicted -- AUT-1183.)
+  touch "$TMP/state/queue-evicted-then-retargeted"
+  GH_MODE=status_gate_success run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"mergeQueueEviction":null,"phase":"ready-to-queue","nextAction":"queue"'
+  rm -f "$TMP/state/queue-evicted-then-retargeted"
   # An eviction followed by a later re-queue is not the current state either.
   touch "$TMP/state/queue-requeued"
   GH_MODE=status_gate_success run_pr "$TMP/out" status 7 --json
@@ -1571,6 +1585,19 @@ EOF
   assert_has "$TMP/out" "moved from $HEAD_SHA to moved-head while this command was waiting"
   assert_not_has "$TMP/out" 'retrying in'
   rm -f "$TMP/state/wait-moved"
+  echo "==> a wait stops when the PR is retargeted or its base advances: the binding cannot succeed past either"
+  touch "$TMP/state/wait-retargeted"
+  TOUCHSTONE_GATE_ATTEMPTS=3 run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body4"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'was retargeted from main to release while this command was waiting'
+  assert_not_has "$TMP/out" 'retrying in'
+  rm -f "$TMP/state/wait-retargeted"
+  touch "$TMP/state/wait-base-advanced"
+  TOUCHSTONE_GATE_ATTEMPTS=3 run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body4"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" "base main advanced from $GH_BASE_SHA to advanced-base-sha while this command was waiting"
+  assert_not_has "$TMP/out" 'retrying in'
+  rm -f "$TMP/state/wait-base-advanced"
 
   # The edit above survived even though its rerun request did not. On retry,
   # the body is unchanged, but the older green attempt must not be reused.
@@ -2534,13 +2561,15 @@ case "$1 $2" in
   "pr view")
     # Coordinates (head + base) before the answer; the bare head re-read
     # after it. A moved_head state makes the re-read return a later push.
-    if value_after --json "$@" | grep -q 'state,headRefOid'; then
+    if value_after --json "$@" | grep -q 'state,headRefOid,baseRefName'; then
       rr_state=OPEN
       rr_head=abcdef0123456789abcdef0123456789abcdef01
+      rr_base=main
+      [ ! -f "$GH_STATE/wait-retargeted" ] || rr_base=release
       [ ! -f "$GH_STATE/merged" ] || rr_state=MERGED
       [ ! -f "$GH_STATE/closed" ] || rr_state=CLOSED
       [ ! -f "$GH_STATE/wait-moved-head" ] || rr_head=feedfacefeedfacefeedfacefeedfacefeedface
-      printf '%s\t%s\n' "$rr_state" "$rr_head"
+      printf '%s\t%s\t%s\n' "$rr_state" "$rr_head" "$rr_base"
     elif value_after --json "$@" | grep -q baseRefName; then
       printf 'abcdef0123456789abcdef0123456789abcdef01\tmain\n'
     elif [ -f "$GH_STATE/moved-head" ]; then
@@ -2873,6 +2902,14 @@ STATUS_STUB
   grep -qF 'moved from abcdef0123456789abcdef0123456789abcdef01 to feedfacefeedfacefeedfacefeedfacefeedface while waiting for the review gate' "$RR/out" \
     || fail "answer did not name the live head when the wait stopped: $(tail -3 "$RR/out")"
   rm -f "$GH_STATE/wait-moved-head" "$GH_STATE/gate-in-progress" "$GH_STATE/fresh-request"
+  echo "==> an answer whose PR is retargeted mid-wait stops and names the new base"
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/wait-retargeted"
+  TOUCHSTONE_GATE_ATTEMPTS=3 TOUCHSTONE_GATE_RETRY_DELAY=0 run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -ne 0 ] || fail "answer kept waiting after the PR was retargeted"
+  grep -qF 'was retargeted from main to release while waiting for the review gate' "$RR/out" \
+    || fail "answer did not name the new base when the wait stopped: $(tail -3 "$RR/out")"
+  rm -f "$GH_STATE/wait-retargeted" "$GH_STATE/gate-in-progress" "$GH_STATE/fresh-request"
 
   echo "==> a behavior v3 answer that resolves the last thread posts one fresh review request"
   touch "$GH_STATE/gate-fresh-active"
@@ -2962,6 +2999,17 @@ STATUS_STUB
   [ -z "$wait_violations" ] && ok "every GitHub-state wait re-checks liveness on each poll" \
     || fail "GitHub-state wait without a liveness check:
   $wait_violations"
+
+  echo "==> the queue-history read includes every event that invalidates an eviction (AUT-1179)"
+  # The fake serves the post-jq event list, so it cannot prove which timeline
+  # item types the live query requests. This pins the contract: a retarget
+  # must be fetched, or an evicted PR that was retargeted stays evicted.
+  for item_type in ADDED_TO_MERGE_QUEUE_EVENT REMOVED_FROM_MERGE_QUEUE_EVENT PULL_REQUEST_COMMIT HEAD_REF_FORCE_PUSHED_EVENT BASE_REF_CHANGED_EVENT; do
+    grep -qF "$item_type" "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" \
+      || fail "the queue-history query no longer requests $item_type"
+  done
+  grep -qF '"BaseRefChangedEvent" then "base_changed"' "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" \
+    || fail "a retarget is no longer mapped to an eviction-invalidating event"
 
   echo "==> workflow-run mutation selectors never rank by creation id alone"
   creation_id_selector='sort_by(.id) | last | "\(.id'
