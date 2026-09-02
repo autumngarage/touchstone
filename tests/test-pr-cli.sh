@@ -1089,6 +1089,29 @@ EOF
   assert_has "$TMP/out" '"mergeQueueEviction":null,"phase":"ready-to-queue","nextAction":"queue"'
   rm -f "$TMP/state/queue-requeued"
 
+  echo "==> stale eviction history never outranks a policy that enforces no queue"
+  # A workflow-source policy with no managed ruleset expects no queue, so
+  # enforcement is applied even when the repository has none. Queue history
+  # left over from before such a policy change must not pin the phase to
+  # evicted: there is nothing to be evicted from.
+  mkdir -p "$TMP/tool-queueless/bin" "$TMP/tool-queueless/scripts" "$TMP/tool-queueless/policy/github/workflow-sources"
+  cp "$ROOT/bin/touchstone" "$TMP/tool-queueless/bin/touchstone"
+  cp "$ROOT/scripts/touchstone-pr.sh" "$TMP/tool-queueless/scripts/touchstone-pr.sh"
+  cp -R "$ROOT/policy/github/." "$TMP/tool-queueless/policy/github/"
+  cp "$ROOT/VERSION" "$TMP/tool-queueless/VERSION"
+  jq '.managedRepositoryRuleset = null' "$ROOT/policy/github/workflow-sources/touchstone-workflows.json" \
+    >"$TMP/tool-queueless/policy/github/workflow-sources/touchstone-workflows.json"
+  touch "$TMP/state/no-queue-rule" "$TMP/state/queue-evicted"
+  set +e
+  GH_FAKE_REPO=autumngarage/touchstone-workflows bash "$TMP/tool-queueless/bin/touchstone" pr status 7 --project "$TMP/project" --json >"$TMP/out" 2>&1
+  RUN_RC=$?
+  set -e
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  assert_has "$TMP/out" '"mergeQueueEviction":{"at":"2026-09-02T16:51:33Z","reason":"failed_checks","queueBase":"dd69484b30f6"}'
+  assert_not_has "$TMP/out" '"phase":"evicted"'
+  rm -f "$TMP/state/no-queue-rule" "$TMP/state/queue-evicted"
+
   echo "==> a live queue entry reports its position (touchstone#1049)"
   GH_MODE=status_gate_queued run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0

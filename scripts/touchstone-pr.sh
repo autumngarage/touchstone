@@ -2028,7 +2028,11 @@ classify_pr_phase() {
   # changed since. Everything else about the head still reads green, which
   # is exactly why this fact has to be read rather than inferred --
   # re-queueing it blindly is the loop (touchstone#1092).
-  if [ "$MERGE_QUEUE_EVICTED" = true ]; then
+  # Only under an enforced queue: a policy that legitimately has no merge
+  # queue leaves nothing for the head to be evicted from, and stale queue
+  # history from before such a policy change must not outrank the current
+  # policy.
+  if [ "$MERGE_QUEUE_EVICTED" = true ] && [ "$ENFORCEMENT_QUEUE_APPLIED" = true ]; then
     PR_PHASE=evicted
     PR_NEXT_ACTION=inspect
     return 0
