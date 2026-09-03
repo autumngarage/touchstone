@@ -273,7 +273,7 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   assert_contains "$file" "Never manufacture an empty"
   assert_contains "$file" "trusted exact-head review evidence"
   assert_contains "$file" "merge on acceptance alone"
-  assert_contains "$file" "do not post a fourth request on the same"
+  assert_contains "$file" "do not push a fourth on the same"
   assert_contains "$file" "implementation shape"
   assert_contains "$file" "redesigned attempt"
   assert_contains "$file" "capability"
@@ -400,7 +400,7 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "only when no known P0/P1 defect remains"
 assert_contains "$GIT_WORKFLOW_GUIDE" "authorize further mutation after this stop signal"
 assert_contains "$GIT_WORKFLOW_GUIDE" "Do not grow the current PR one"
 assert_contains "$GIT_WORKFLOW_GUIDE" "scope containment is never permission to skip review"
-assert_contains "$GIT_WORKFLOW_GUIDE" "do not post a fourth request on the same"
+assert_contains "$GIT_WORKFLOW_GUIDE" "do not push a fourth on the same"
 assert_contains "$GIT_WORKFLOW_GUIDE" "implementation shape"
 assert_contains "$GIT_WORKFLOW_GUIDE" "split or close the"
 assert_contains "$GIT_WORKFLOW_GUIDE" "capability"
@@ -412,9 +412,12 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "Exact-head review makes moving stacks mul
 assert_contains "$GIT_WORKFLOW_GUIDE" "Do not open dependent"
 assert_contains "$GIT_WORKFLOW_GUIDE" "while a parent is still finding-bearing"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  "- Review budget: v1 capability="
+  "- Review budget: v2 capability="
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  "hosted rounds on"
+  "fix rounds already spent on this"
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  'prior_fix_rounds'
+# v1 stays parseable; the rename note is the compatibility record
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'prior_hosted_rounds'
 

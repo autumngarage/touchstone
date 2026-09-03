@@ -54,7 +54,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale lives
 - **File-writing subagents** — use worktrees; remove one only after final result delivery or confirmed cancellation.
 - **File tracked bugs** — file bugs found here or upstream in the configured tracker; don't silently work around them.
 - **Checkpoint scope expansion before editing** — a follow-up approves doing the work, not bundling it. Route independent additions pre-edit; file count alone never decides.
-- **Keep review subordinate to scope** — review cannot amend approved scope. A review-fix defect stops patching. A second ends same-shape work. Three rounds follow the capability across replacement PRs; closing or renaming never resets the budget.
+- **Keep review subordinate to scope** — review cannot amend approved scope. A review-fix defect stops patching. A second ends same-shape work. Three fix rounds follow the capability across replacement PRs; closing or renaming never resets the budget.
 - **Stop when the task is correct** — deterministic gates first. **The badge is the bar: fix P0/P1; answer and route every P2, P3, or unbadged finding — never fix one here, and never reopen the design space.** **Exact-head review after a fix commit is never skipped** and never authorizes mutation past a stop.
 
 ## Never commit on the default branch
