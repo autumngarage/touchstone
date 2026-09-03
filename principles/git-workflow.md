@@ -524,8 +524,10 @@ PR's bug.
 1. **Fix here** — a **P0 or P1** defect the diff creates, or a **P0 or P1**
    violation of a recorded acceptance criterion or invariant. Fix it in the
    batch.
-   A scope boundary never permits the PR to ship its own regression; fix or
-   revert that behavior here even when it falls outside the planned change.
+   A scope boundary never permits the PR to ship a **P0/P1** regression of its
+   own; fix or revert that behavior here even when it falls outside the
+   planned change. At P2 or P3 the badge rule below governs instead: route it,
+   and say in the answer that the diff created it.
    If the immediately preceding review fix created the regression, follow the
    cascade rule below instead of stacking another fix onto it.
 
