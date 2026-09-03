@@ -121,6 +121,7 @@ require_usable_key() {
 }
 
 validate_policy() {
+  local POLICY_ROW
   require_executable jq "$JQ_BIN"
   [ -r "$POLICY_SOURCE" ] || die "managed review policy is missing: $POLICY_SOURCE"
   [ -r "$PROMPT_SOURCE" ] || die "managed review prompt is missing: $PROMPT_SOURCE"
@@ -155,17 +156,11 @@ validate_policy() {
   ' "$POLICY_SOURCE" >/dev/null \
     || die "managed review policy is malformed or unsupported: $POLICY_SOURCE"
 
-  BACKEND="$("$JQ_BIN" -r '.backend' "$POLICY_SOURCE")"
-  ENDPOINT="$("$JQ_BIN" -r '.endpoint' "$POLICY_SOURCE")"
-  ROUTER_MODEL="$("$JQ_BIN" -r '.router.model' "$POLICY_SOURCE")"
-  ROUTER_PLUGIN="$("$JQ_BIN" -r '.router.plugin' "$POLICY_SOURCE")"
-  COST_TIER="$("$JQ_BIN" -r '.router.costTier' "$POLICY_SOURCE")"
-  MAX_INPUT_BYTES="$("$JQ_BIN" -r '.limits.maxInputBytes' "$POLICY_SOURCE")"
-  MAX_COMPLETION_TOKENS="$("$JQ_BIN" -r '.limits.maxCompletionTokens' "$POLICY_SOURCE")"
-  MAX_PROMPT_PRICE="$("$JQ_BIN" -r '.limits.maxPromptPricePerMillion' "$POLICY_SOURCE")"
-  MAX_COMPLETION_PRICE="$("$JQ_BIN" -r '.limits.maxCompletionPricePerMillion' "$POLICY_SOURCE")"
-  CONNECT_TIMEOUT="$("$JQ_BIN" -r '.limits.connectTimeoutSeconds' "$POLICY_SOURCE")"
-  REQUEST_TIMEOUT="$("$JQ_BIN" -r '.limits.requestTimeoutSeconds' "$POLICY_SOURCE")"
+  # One read for every value: the schema was validated above, so a single
+  # @tsv extraction replaces eleven jq forks with identical results.
+  POLICY_ROW="$("$JQ_BIN" -r '[.backend, .endpoint, .router.model, .router.plugin, .router.costTier, (.limits.maxInputBytes | tostring), (.limits.maxCompletionTokens | tostring), (.limits.maxPromptPricePerMillion | tostring), (.limits.maxCompletionPricePerMillion | tostring), (.limits.connectTimeoutSeconds | tostring), (.limits.requestTimeoutSeconds | tostring)] | @tsv' "$POLICY_SOURCE")" \
+    || die "managed review policy is unreadable: $POLICY_SOURCE"
+  IFS="$(printf '\t')" read -r BACKEND ENDPOINT ROUTER_MODEL ROUTER_PLUGIN COST_TIER MAX_INPUT_BYTES MAX_COMPLETION_TOKENS MAX_PROMPT_PRICE MAX_COMPLETION_PRICE CONNECT_TIMEOUT REQUEST_TIMEOUT <<<"$POLICY_ROW"
 }
 
 review_git() {
@@ -325,7 +320,7 @@ handle_http_error() {
 }
 
 print_response() {
-  local model prompt_tokens completion_tokens cost finding_count finish_reason
+  local model prompt_tokens completion_tokens cost finding_count finish_reason RESPONSE_ROW
 
   "$JQ_BIN" -e '
     (.model | type == "string" and length > 0) and
@@ -366,10 +361,11 @@ print_response() {
   ' "$WORK_DIR/review.json" >/dev/null \
     || die "OpenRouter returned review content outside the touchstone.review/v2 contract"
 
-  model="$("$JQ_BIN" -r '.model' "$WORK_DIR/response.json")"
-  prompt_tokens="$("$JQ_BIN" -r '.usage.prompt_tokens' "$WORK_DIR/response.json")"
-  completion_tokens="$("$JQ_BIN" -r '.usage.completion_tokens' "$WORK_DIR/response.json")"
-  cost="$("$JQ_BIN" -r '.usage.cost | tostring' "$WORK_DIR/response.json")"
+  # One read for the scalar response fields; the findings loop and summary
+  # stay separate because finding content may carry tabs or newlines.
+  RESPONSE_ROW="$("$JQ_BIN" -r '[.model, (.usage.prompt_tokens | tostring), (.usage.completion_tokens | tostring), (.usage.cost | tostring)] | @tsv' "$WORK_DIR/response.json")" \
+    || die "OpenRouter review response is unreadable"
+  IFS="$(printf '\t')" read -r model prompt_tokens completion_tokens cost <<<"$RESPONSE_ROW"
   finding_count="$("$JQ_BIN" -r '.findings | length' "$WORK_DIR/review.json")"
 
   echo "OpenRouter review"
