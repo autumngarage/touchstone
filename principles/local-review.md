@@ -135,8 +135,11 @@ replacing a PR; a provider retry on the same
 head is not a round, and neither is an attest request, because a fix round is a
 push of review-driven change (`principles/git-workflow.md`). Row version 2
 renamed `prior_hosted_rounds` to `prior_fix_rounds` when the budget moved from
-counting requests to counting mutation; a `v1` row still parses and still
-reports cross-PR history, with its count read as fix rounds. `reviewed_head` records the exact head the local pass
+counting requests to counting mutation. A `v1` count is **not** convertible:
+it counted finding-bearing rounds including answer-only ones, so reading it as
+fix rounds overstates the spend and can exhaust a replacement PR's budget
+against work that never spent it. Treat a `v1` count as unknown, or
+reconstruct the fix rounds from the replaced PR's pushed heads. `reviewed_head` records the exact head the local pass
 saw, `cascade=true` means a review fix created another defect, and `exit`
 records the chosen stop path. A missing row is compatible with older PRs but
 reports unknown cross-PR history; it never waives the required exact-head PR
