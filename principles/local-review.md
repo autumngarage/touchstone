@@ -244,8 +244,8 @@ plus recording that failure in the validation block. The PR-visible review is
 the authority either way.
 
 Afterwards: triage each finding as valid, false positive, duplicate, or out of
-scope; apply valid **high-severity** fixes and answer-and-route valid findings
-below the bar, exactly as the delivery contract does on the PR side; do not
+scope; apply valid **P0/P1** fixes and answer-and-route every valid P2 and P3,
+exactly as the delivery contract does on the PR side; do not
 re-run the pass to confirm the reviewer is now quiet; never expand the slice
 to address adjacent or pre-existing findings. If a review fix creates another
 defect, stop patching forward and follow the review-fix cascade rule in
