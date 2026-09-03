@@ -199,18 +199,22 @@ list_unresolved_threads() {
 }
 
 # The first-comment ids of every resolved thread this tool answered --
-# resolved, and carrying a `touchstone:review-answer` disposition marker in
-# one of its comments -- ascending, comma-joined: the identity of an answered
-# round. Every answer in a round reproduces it once the round is closed, so
-# a retry of any of them finds the round's request marker; a later finding
-# on the same head changes it. A thread someone resolved by hand, with no
-# answer from this tool, is not part of any round and never changes the key.
-ANSWERED_THREADS_QUERY='query($endCursor: String, $owner: String!, $name: String!, $pr: Int!) { repository(owner:$owner, name:$name) { pullRequest(number:$pr) { reviewThreads(first:100, after:$endCursor) { nodes { isResolved comments(first:50) { nodes { databaseId body } } } pageInfo { hasNextPage endCursor } } } } }'
+# resolved, and carrying this tool's disposition marker for that very thread
+# (`touchstone:review-answer v=1 id=<root comment id> `) in one of its
+# comments -- ascending, comma-joined: the identity of an answered round.
+# Every answer in a round reproduces it once the round is closed, so a retry
+# of any of them finds the round's request marker; a later finding on the
+# same head changes it. A thread someone resolved by hand, with no answer
+# from this tool, is not part of any round and never changes the key; nor
+# does a thread whose text merely mentions the marker. The root comment is
+# read first and the newest 49 after it: the tool's reply is the newest
+# comment when it answers, so a long thread cannot hide it.
+ANSWERED_THREADS_QUERY='query($endCursor: String, $owner: String!, $name: String!, $pr: Int!) { repository(owner:$owner, name:$name) { pullRequest(number:$pr) { reviewThreads(first:100, after:$endCursor) { nodes { isResolved root: comments(first:1) { nodes { databaseId } } comments(last:50) { nodes { body } } } pageInfo { hasNextPage endCursor } } } } }'
 list_resolved_thread_ids() {
   graphql_with_retry --paginate \
     -f owner="$REPO_OWNER" -f name="$REPO_NAME" -F pr="$PR_NUMBER" \
     -f query="$ANSWERED_THREADS_QUERY" \
-    --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == true) | select(any(.comments.nodes[]; (.body // "") | contains("touchstone:review-answer"))) | (.comments.nodes[0].databaseId | tostring)' \
+    --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == true) | (.root.nodes[0].databaseId | tostring) as $root | select(any(.comments.nodes[]; (.body // "") | contains("<!-- touchstone:review-answer v=1 id=" + $root + " "))) | $root' \
     | sort -n | paste -sd, -
 }
 
