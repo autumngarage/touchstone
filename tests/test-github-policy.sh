@@ -2517,7 +2517,7 @@ echo "==> Every policy file pins the required workflows at one touchstone-workfl
 # same revision for all three workflows, and that revision is the one the
 # suite's own fixtures are written against -- so a revert or a partial bump
 # is a visible, reviewed change here, never a silent divergence.
-PINNED_WORKFLOWS_REVISION="edb3718ad096e696b82e8bd606b393a3356e9ad9"
+PINNED_WORKFLOWS_REVISION="1eee5a695f34116e9355e9c1fd09d6529964bded"
 for policy_file in "$ROOT"/policy/github/touchstone-main.json "$ROOT"/policy/github/consumers/*.json; do
   pins="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | .sha] | unique | join(" ")' "$policy_file")"
   [ "$pins" = "$PINNED_WORKFLOWS_REVISION" ] \
