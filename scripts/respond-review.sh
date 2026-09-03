@@ -198,6 +198,26 @@ list_unresolved_threads() {
     --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | [.id, (.comments.nodes[0].databaseId | tostring), (.comments.nodes[0].path // "-")] | @tsv'
 }
 
+# The first-comment ids of every resolved thread this tool answered --
+# resolved, and carrying this tool's disposition marker for that very thread
+# (`touchstone:review-answer v=1 id=<root comment id> `) in one of its
+# comments -- ascending, comma-joined: the identity of an answered round.
+# Every answer in a round reproduces it once the round is closed, so a retry
+# of any of them finds the round's request marker; a later finding on the
+# same head changes it. A thread someone resolved by hand, with no answer
+# from this tool, is not part of any round and never changes the key; nor
+# does a thread whose text merely mentions the marker. The root comment is
+# read first and the newest 49 after it: the tool's reply is the newest
+# comment when it answers, so a long thread cannot hide it.
+ANSWERED_THREADS_QUERY='query($endCursor: String, $owner: String!, $name: String!, $pr: Int!) { repository(owner:$owner, name:$name) { pullRequest(number:$pr) { reviewThreads(first:100, after:$endCursor) { nodes { isResolved root: comments(first:1) { nodes { databaseId } } comments(last:50) { nodes { body } } } pageInfo { hasNextPage endCursor } } } } }'
+list_resolved_thread_ids() {
+  graphql_with_retry --paginate \
+    -f owner="$REPO_OWNER" -f name="$REPO_NAME" -F pr="$PR_NUMBER" \
+    -f query="$ANSWERED_THREADS_QUERY" \
+    --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == true) | (.root.nodes[0].databaseId | tostring) as $root | select(any(.comments.nodes[]; (.body // "") | contains("<!-- touchstone:review-answer v=1 id=" + $root + " "))) | $root' \
+    | sort -n | paste -sd, -
+}
+
 if [ "$ALL_RESOLVED_CHECK" = true ]; then
   UNRESOLVED="$(list_unresolved_threads)" || exit 1
   if [ -z "$UNRESOLVED" ]; then
@@ -360,19 +380,30 @@ if [ "$GATE_BEHAVIOR_VERSION" = 3 ]; then
   # answer resolved the last open thread, post the one fresh review request
   # that lets the reviewer publish that verdict — whether or not a bound
   # gate run exists yet: whichever run evaluates this head needs the
-  # verdict either way. Earlier answers in the same round post nothing, and
-  # the head-scoped marker makes retries after a partial failure skip the
-  # post, so one binding yields exactly one request.
+  # verdict either way. Earlier answers in the same round post nothing.
+  #
+  # The idempotency key is the round the answer closed — the set of
+  # resolved threads — not the head alone. A verdict can only be satisfied
+  # by a request posted after it, and a request that already exists for this
+  # head may predate the verdict whose findings were just answered — a
+  # second round of findings on an unchanged head — in which case the gate
+  # waits its whole evidence window for a verdict nobody asked for
+  # (AUT-1170). A retry of any answer in a closed round reproduces the same
+  # set and posts nothing, so one round yields exactly one request. The gate
+  # reads "@codex review", not the markers; they are this script's own record.
   REMAINING_UNRESOLVED="$(list_unresolved_threads)" || fail "answers are recorded, but the unresolved-thread read failed; when every thread is resolved, post '@codex review' on PR #$PR_NUMBER for the behavior-v3 clean verdict."
   if [ -z "$REMAINING_UNRESOLVED" ]; then
     ATTEST_MARKER="<!-- touchstone:attest-request head=$HEAD_SHA -->"
+    ROUND_IDS="$(list_resolved_thread_ids)" || fail "answers are recorded, but the resolved-thread read failed; when every thread is resolved, post '@codex review' on PR #$PR_NUMBER for the behavior-v3 clean verdict."
+    ROUND_MARKER="<!-- touchstone:attest-round head=$HEAD_SHA answered=${ROUND_IDS:-none} -->"
     EXISTING_ATTEST="$(gh_read api --paginate "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments?per_page=100" --jq '.[].body')" || fail "answers are recorded, but the attest-request idempotency read failed; verify PR #$PR_NUMBER carries one '@codex review' for this head."
-    if printf '%s\n' "$EXISTING_ATTEST" | grep -qF "$ATTEST_MARKER"; then
-      echo "==> Every thread is resolved; the behavior-v3 review request for this head already exists."
+    if printf '%s\n' "$EXISTING_ATTEST" | grep -qF "$ROUND_MARKER"; then
+      echo "==> Every thread is resolved; the behavior-v3 review request for this answer already exists."
     else
       gh_read api "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments" -f body="@codex review
 
-$ATTEST_MARKER" --jq .id >/dev/null || fail "answers are recorded, but the fresh behavior-v3 review request failed; post '@codex review' on PR #$PR_NUMBER yourself."
+$ATTEST_MARKER
+$ROUND_MARKER" --jq .id >/dev/null || fail "answers are recorded, but the fresh behavior-v3 review request failed; post '@codex review' on PR #$PR_NUMBER yourself."
       # The pre-answer head check bounds the window, not the race: prove the
       # coordinates survived the post, or say the request is stale-bound.
       POST_HEAD="$(gh_read pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" || fail "posted the behavior-v3 review request, but the head re-read failed; verify PR #$PR_NUMBER still heads $HEAD_SHA."

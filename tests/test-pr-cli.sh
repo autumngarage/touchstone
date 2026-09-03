@@ -2545,12 +2545,32 @@ case "$1 $2" in
   "api graphql")
     if has resolveReviewThread "$@"; then
       touch "$GH_STATE/resolved"
+      ! has THREAD_52 "$@" || touch "$GH_STATE/resolved-52"
       echo "true"
     elif has "node(id:" "$@"; then
       echo "true"
+    elif [ -f "$GH_STATE/second-round" ]; then
+      # A later verdict on the same head opened thread 52 after 51 was
+      # resolved; it stays open until its own answer resolves it.
+      has 'databaseId == 51' "$@" && echo "THREAD_51"
+      has 'databaseId == 52' "$@" && echo "THREAD_52"
+      if [ ! -f "$GH_STATE/resolved-52" ]; then
+        has 'isResolved == false' "$@" && printf 'THREAD_52\t52\tscripts/x.sh\n'
+        has 'isResolved == true' "$@" && echo "51"
+      else
+        has 'isResolved == true' "$@" && printf '51\n52\n'
+        # Thread 53 was resolved by hand and carries no answer from this
+        # tool: a query keyed on the tool's own disposition markers omits it;
+        # one keyed on resolution alone would count it.
+        if [ -f "$GH_STATE/externally-resolved-53" ] && has 'isResolved == true' "$@" \
+          && ! has 'touchstone:review-answer' "$@"; then
+          echo "53"
+        fi
+      fi
     elif [ -f "$GH_STATE/resolved" ]; then
       # Thread lookup after resolution: by first-comment id only.
       has 'databaseId == 51' "$@" && echo "THREAD_51"
+      has 'isResolved == true' "$@" && echo "51"
     else
       has 'databaseId == 51' "$@" && echo "THREAD_51"
       has 'isResolved == false' "$@" && printf 'THREAD_51\t51\tscripts/x.sh\n'
@@ -2560,6 +2580,11 @@ case "$1 $2" in
     echo 1 >>"$GH_STATE/replies"
     field_value body "$@" >"$GH_STATE/reply-body"
     echo "71"
+    ;;
+  "api repos/autumngarage/current/pulls/7/comments/52/replies")
+    echo 1 >>"$GH_STATE/replies"
+    field_value body "$@" >"$GH_STATE/reply-body"
+    echo "72"
     ;;
   "api repos/autumngarage/current/issues/7/comments")
     field_value body "$@" >>"$GH_STATE/fresh-request"
@@ -2959,6 +2984,54 @@ STATUS_STUB
     || fail "behavior v3 retry did not report the existing request"
   rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request"
 
+  # A later verdict on the unchanged head opens a new finding. Answering it
+  # closes a new round, and the gate can only be satisfied by a request that
+  # postdates that verdict — so the head-scoped request from the first round
+  # must not suppress a fresh one (AUT-1170).
+  echo "==> a second round of findings on the same head posts another fresh request"
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
+  echo "@codex review
+
+<!-- touchstone:attest-request head=abcdef0123456789abcdef0123456789abcdef01 -->
+<!-- touchstone:attest-round head=abcdef0123456789abcdef0123456789abcdef01 answered=51 -->" >"$GH_STATE/fresh-request"
+  touch "$GH_STATE/resolved"
+  touch "$GH_STATE/second-round"
+  run_v3 7 --comment-id 52 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "second-round answer exited $RUN_RC: $(tail -3 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq 2 ] \
+    || fail "a second round of findings did not post a fresh review request: $(cat "$GH_STATE/fresh-request")"
+  grep -qF 'touchstone:attest-round head=abcdef0123456789abcdef0123456789abcdef01 answered=51,52' "$GH_STATE/fresh-request" \
+    || fail "the second-round request does not name the round it closed: $(cat "$GH_STATE/fresh-request")"
+  grep -qF 'posted a fresh review request' "$RR/out" \
+    || fail "second-round answer did not announce its review request"
+  # ...and retrying that answer posts nothing more.
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
+  run_v3 7 --comment-id 52 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "second-round retry exited $RUN_RC: $(tail -3 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq 2 ] \
+    || fail "second-round retry posted a duplicate review request"
+  # ...and so does retrying the EARLIER answer of the closed round: the key
+  # is the round, so no answer in it posts again.
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
+  run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "earlier-answer retry exited $RUN_RC: $(tail -3 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq 2 ] \
+    || fail "retrying an earlier answer of a closed round posted a duplicate review request"
+  # A thread someone resolved by hand, with no answer from this tool, is not
+  # a round: it must not change the key and provoke another request.
+  touch "$GH_STATE/externally-resolved-53"
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
+  run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "retry after a hand-resolved thread exited $RUN_RC: $(tail -3 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq 2 ] \
+    || fail "a thread resolved by hand changed the round key and posted a duplicate review request"
+  rm -f "$GH_STATE/externally-resolved-53"
+  rm -f "$GH_STATE/second-round" "$GH_STATE/resolved-52" "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request"
+
   # Behavior v2 must never post one: answered findings satisfy that gate.
   echo 30 >"$GH_STATE/gate-in-progress"
   touch "$GH_STATE/gate-fresh-active"
@@ -2998,6 +3071,39 @@ STATUS_STUB
   else
     fail "the merged-stream guard pattern does not match its own positive sample"
   fi
+
+  echo "==> the answered-round query selects a thread by this tool's marker for its own root, in the newest comments"
+  # The fake serves pre-computed ids, so the jq that decides which resolved
+  # threads form a round is exercised here against real thread JSON: the
+  # script's own expression, extracted verbatim, over a long thread whose
+  # marker is the newest of 60 comments, a thread whose finding merely
+  # mentions the marker, a thread answered for a different root, and an
+  # unresolved answered thread.
+  ROUND_JQ="$(sed -nE "s/^[[:space:]]*--jq '(.*reviewThreads.*root.*review-answer.*)' \\\\\$/\\1/p" "$TOUCHSTONE_ROOT/scripts/respond-review.sh" | head -1)"
+  [ -n "$ROUND_JQ" ] || fail "could not extract the answered-round jq from respond-review.sh"
+  ROUND_QUERY="$(sed -nE "s/^ANSWERED_THREADS_QUERY='(.*)'\$/\\1/p" "$TOUCHSTONE_ROOT/scripts/respond-review.sh")"
+  printf '%s' "$ROUND_QUERY" | grep -qF 'comments(last:50)' \
+    || fail "the answered-round query must read the newest comments, not the first: $ROUND_QUERY"
+  printf '%s' "$ROUND_QUERY" | grep -qF 'root: comments(first:1)' \
+    || fail "the answered-round query must read the thread root separately: $ROUND_QUERY"
+  ROUND_THREADS_JSON="$(mktemp)"
+  long_thread_comments="$(jq -cn '[range(59) | {body: ("comment " + tostring)}] + [{body: "answered <!-- touchstone:review-answer v=1 id=41 disposition=no-code-change -->"}]')"
+  jq -n --argjson long "$long_thread_comments" '{data:{repository:{pullRequest:{reviewThreads:{nodes:[
+      {isResolved:true,  root:{nodes:[{databaseId:41}]}, comments:{nodes:$long}},
+      {isResolved:true,  root:{nodes:[{databaseId:42}]}, comments:{nodes:[{body:"the finding text mentions touchstone:review-answer v=1 id=42 by name"}]}},
+      {isResolved:true,  root:{nodes:[{databaseId:43}]}, comments:{nodes:[{body:"<!-- touchstone:review-answer v=1 id=41 disposition=no-code-change -->"}]}},
+      {isResolved:false, root:{nodes:[{databaseId:44}]}, comments:{nodes:[{body:"<!-- touchstone:review-answer v=1 id=44 disposition=no-code-change -->"}]}},
+      {isResolved:true,  root:{nodes:[{databaseId:45}]}, comments:{nodes:[{body:"resolved by hand, no answer"}]}}
+    ]}}}}}' >"$ROUND_THREADS_JSON"
+  ROUND_OUT="$(jq -r "$ROUND_JQ" "$ROUND_THREADS_JSON" | sort -n | paste -sd, -)"
+  [ "$ROUND_OUT" = "41" ] \
+    || fail "the answered-round jq selected '$ROUND_OUT'; expected only 41 (the marker for its own root, newest of 60 comments)"
+  # A window that read the first 50 would miss 41's marker: prove the fixture
+  # discriminates by dropping the newest comment from the long thread.
+  ROUND_OUT_TRUNCATED="$(jq -r "$ROUND_JQ" <(jq '.data.repository.pullRequest.reviewThreads.nodes[0].comments.nodes |= .[:50]' "$ROUND_THREADS_JSON") | sort -n | paste -sd, -)"
+  rm -f "$ROUND_THREADS_JSON"
+  [ -z "$ROUND_OUT_TRUNCATED" ] \
+    || fail "the long-thread fixture does not depend on the newest comment: '$ROUND_OUT_TRUNCATED'"
 
   echo "==> every GitHub-state wait re-checks liveness on each poll (AUT-1179)"
   # A loop that sleeps on GATE_RETRY_DELAY is waiting for GitHub state to
