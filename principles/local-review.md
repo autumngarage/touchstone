@@ -108,7 +108,7 @@ the PR is opened.
 - Automated tests: <exact command and result>
 - Manual validation: <specific scenario and result>
 - Local review: <normal: openrouter on the staged slice (review-normal): <n> findings, <disposition>; serious: codex on <captured-head-sha>: <n> findings, <disposition>; or n/a — <reason>>
-- Review budget: v1 capability=<tracker ref> local_rounds=<finding-bearing local rounds> prior_hosted_rounds=<finding-bearing hosted rounds on replaced PRs> reviewed_head=<40-character SHA or none> cascade=<true|false> exit=<continue|merge-answered|revert-simplify|split|close-replan>
+- Review budget: v2 capability=<tracker ref> local_rounds=<local review passes> fix_rounds=<fix rounds spent on this PR> prior_fix_rounds=<fix rounds on this capability's replaced PRs> reviewed_head=<40-character SHA or none> cascade=<true|false> exit=<continue|merge-answered|revert-simplify|split|close-replan>
 
 ## Out of scope
 <intentionally excluded related work>
@@ -123,11 +123,23 @@ the PR is opened.
 Never claim a build, test, or manual validation happened unless it actually
 ran.
 
-The versioned `Review budget` row carries the parts of round history the current
-PR cannot expose: cumulative finding-bearing local rounds and hosted rounds on
-replaced PRs. Update it after the local pass and carry the current status count
-into `prior_hosted_rounds` when replacing a PR; a provider retry on the same
-head is not another round. `reviewed_head` records the exact head the local pass
+The versioned `Review budget` row **is** the budget ledger; nothing else records
+what has been spent. `fix_rounds` counts the fix rounds spent on this PR and is
+incremented as each one is pushed, `prior_fix_rounds` carries those already spent
+on this capability's replaced PRs, and `local_rounds` counts local review passes.
+The count is written here rather than inferred from history because amend,
+squash, and rebase rewrite commit boundaries and lose push grouping
+(`principles/git-workflow.md`). Update the row after the local pass and as each
+fix round is pushed, and carry the current count into `prior_fix_rounds` when
+replacing a PR; a provider retry on the same
+head is not a round, and neither is an attest request, because a fix round is a
+push of review-driven change (`principles/git-workflow.md`). Row version 2
+renamed `prior_hosted_rounds` to `prior_fix_rounds` when the budget moved from
+counting requests to counting mutation. A `v1` count is **not** convertible:
+it counted finding-bearing rounds including answer-only ones, so reading it as
+fix rounds overstates the spend and can exhaust a replacement PR's budget
+against work that never spent it. Treat a `v1` count as unknown, or
+reconstruct the fix rounds from the replaced PR's pushed heads. `reviewed_head` records the exact head the local pass
 saw, `cascade=true` means a review fix created another defect, and `exit`
 records the chosen stop path. A missing row is compatible with older PRs but
 reports unknown cross-PR history; it never waives the required exact-head PR

@@ -585,7 +585,7 @@ preceding review fix, stop patch-forward work: restore the last known-good
 behavior by reverting that fix, or replace it with a materially simpler design,
 then audit the weak-point class before another mutation. A regression test
 records the failure; it does not justify retaining the failed fix. At the
-second fix-created defect, or the third finding-bearing round, end same-shape
+second fix-created defect, or the third fix round, end same-shape
 mutation: genuinely split the approved capability or close and replan it.
 Exact-head review remains mandatory for any head that might merge; it does not
 authorize further mutation after this stop signal.
@@ -602,12 +602,27 @@ another review. If any allowed fix lands as a commit (dispositions 1–2), batch
 ALL of them into ONE commit, answer every thread, push, and request one review
 for the new head.
 
-**The budget: three finding-bearing rounds per capability, never more than three
-on one PR.** This is a discipline, not an enforced limit — the wrapper that
-refused a fourth request is gone, and a rule enforced by a script you can
-decline to run was never a rule. Closing, renaming, restacking, or reopening the
-same acceptance criterion does not reset its count. Past three rounds, the
-legitimate exits are:
+**The budget: three fix rounds per capability, never more than three on one
+PR.** A *fix round* is one push of review-driven change. The budget counts
+mutation, never review requests, for two reasons. Requests cannot be counted
+reliably: the reviewer's findings arrive as inline review comments or
+conversation comments and do not all appear in the `pulls/{n}/reviews` API, so
+a request-based count is unauditable by the agent spending it and by anyone
+reading afterwards. Mutation can, but only if it is written down when spent:
+record each fix round in the PR body's `Review budget` row as it is pushed
+(`principles/local-review.md`). Do not reconstruct the count from `git log` —
+amend, squash, and rebase rewrite commit boundaries and lose push grouping, so
+a rewrite can hide earlier mutation and one push of several commits can be
+overcounted. The row is the ledger; history is not.
+Counting mutation also removes the
+conflict with the contract-3 attest, which follows no change and therefore
+consumes no budget — the answer flow and this budget never contend.
+
+This is a discipline, not an enforced limit — the wrapper that refused a fourth
+request is gone, and a rule enforced by a script you can decline to run was
+never a rule. Closing, renaming, restacking, or reopening the same acceptance
+criterion does not reset its count. Past three fix rounds, the legitimate exits
+are:
 
 - **Merge if answered** — only when no known P0/P1 defect remains.
   Where behavior v2 is effective, all threads resolved satisfies that gate;
@@ -618,9 +633,11 @@ legitimate exits are:
   independent budgets; a mechanical split is not budget laundering;
 - **Close it, preserving the corpus** on the tracking issue (the #706 pattern) — correct when successive fixes keep creating defects.
 
-After a third finding-bearing review, **do not post a fourth request on the same
-implementation shape**. Stop, audit the repeated failure class, and put the
-chosen exit plus evidence in the PR. A later request is justified only after a
+After a third fix round, **do not push a fourth on the same
+implementation shape**. Stop, audit the repeated failure class, and put the chosen exit plus
+evidence in the PR. The attest request is not a fourth anything: it carries no
+change, so it stays available to a fully answered head at any point in the
+budget. A later request is justified only after a
 durable root-cause record, a materially narrower acceptance boundary or
 replacement architecture, and a class-level guardrail. That redesigned attempt
 gets one validation round. If it produces another finding, split or close the
