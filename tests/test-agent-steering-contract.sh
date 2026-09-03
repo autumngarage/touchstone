@@ -265,7 +265,7 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   assert_contains "$file" "fall back to the original marker"
   assert_contains "$file" "exactly one replacement trigger"
   assert_contains "$file" "exact head-and-base binding"
-  assert_contains "$file" "Three cases permit another request while the head stays unchanged"
+  assert_contains "$file" "Four cases permit another request while the head stays unchanged"
   assert_contains "$file" "base ref or base SHA"
   assert_contains "$file" "earlier request is completed or explicitly failed"
   assert_contains "$file" "integrate the current base into the branch"
@@ -819,7 +819,7 @@ assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
 assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
   "A consumer PR cannot"
 assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
-  "resolution alone cannot satisfy"
+  "resolution alone still cannot satisfy"
 assert_not_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
   "A small workflow calls"
 

@@ -63,7 +63,7 @@ touchstone/
 | `principles/git-workflow.md` | The full delivery sequence in raw `git` + `gh`, including thread resolution |
 | `scripts/respond-review.sh` (`touchstone pr answer`) | Reply to a review finding and resolve its thread in one step (GitHub needs four API calls) |
 | `scripts/touchstone-tracker.sh` | Versioned tracker-neutral verified claim adapter |
-| `scripts/touchstone-pr.sh` | Source entrypoint for three bounded PR operations |
+| `scripts/touchstone-pr.sh` | Source entrypoint for the `open`/`status`/`merge` PR operations (`answer` lives in `respond-review.sh`) |
 | `scripts/claim-issue.sh` | GitHub transport used by the tracker adapter |
 | `hooks/branch-guard.sh` | Refuses `git commit` on the default branch at the Claude tool boundary |
 | `tests/test-steering-size-caps.sh` | Steering size caps plus path integrity — every path the docs name must exist |
@@ -72,10 +72,14 @@ Release history lives in `git log` and `gh release list` — there is no `CHANGE
 
 ## Delivery
 
-Raw `git` and `gh` remain the active delivery workflow until distribution
-lands. In this source checkout, `bash bin/touchstone pr open|status|merge|answer`
-exercises the four bounded operations (`answer` replies to a finding and resolves its thread); `docs/pr-cli-contract.md` records their stable
-schema and exact raw equivalents. Pass `--expect-branch <branch>` to `open` with the branch name written out:
+The installed CLI is the sequencer everywhere; raw `git` and `gh` are the
+documented recovery path. In this source checkout,
+`bash bin/touchstone pr open|status|merge|answer`
+exercises the four bounded operations (`answer` replies to a finding, records
+its disposition, resolves its thread, and — under gate behavior contract 3 —
+posts the one idempotent attest request when the last thread resolves);
+`docs/pr-cli-contract.md` records their stable schema and exact raw
+equivalents. Pass `--expect-branch <branch>` to `open` with the branch name written out:
 it acts on whatever branch the invoking directory has checked out, which
 differs per worktree. Never derive it from `$(git branch --show-current)` —
 that reads the same checkout the command reads, so it agrees with a wrong
@@ -95,4 +99,4 @@ gh release create vX.Y.Z --verify-tag --generate-notes
 
 Where Homebrew does not run — Windows Git Bash (Codex on convoy), Linux — `install.sh` installs the same reviewed release: it reads the tap formula as the one record of the release's tarball URL and sha256, verifies the download, and unpacks it under `~/.touchstone/` with a `bin/touchstone` wrapper (fetch `install.sh` from the release tag — `curl -fsSL -o install.sh https://raw.githubusercontent.com/autumngarage/touchstone/vX.Y.Z/install.sh` — and run the saved file; never pipe a moving branch into bash). `touchstone upgrade` re-runs it there and delegates to `brew upgrade` on a Homebrew install. Consumers reference hooks by name — `touchstone hook branch-guard` — so their settings never encode where the tool lives; settings that still point at the Homebrew libexec path (vesper, arpeggio, and the 2026-08-20 adoption audit) keep working on macOS and are migrated to the named form as each consumer is next touched. Touchstone does not write hook settings; the named form is what a consumer's own settings file should carry. `tests/test-project-root.sh` exercises the installer offline against a locally built archive and formula. Adoption compiles project facts into an explicit versioned contract, and already-correct consumers remain valid without routine sync. The tool version (`VERSION`, `touchstone version`) and the project-contract schema are separate lines; see `docs/product-contract.md`.
 
-The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so GitHub approval count does not represent it. The required `review-gate` workflow binds trusted review evidence to the exact head and requires a later qualifying answer for every finding; GitHub independently requires every inline thread resolved.
+The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so GitHub approval count does not represent it. The required `review-gate` workflow (gate behavior contract 3) accepts only a trusted, unedited clean verdict bound to the exact current head; answering findings is a driver duty, and GitHub independently requires every inline thread resolved.

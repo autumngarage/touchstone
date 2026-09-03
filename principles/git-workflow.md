@@ -205,11 +205,13 @@ before treating that red check as a review verdict.
 **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.** GitHub's review API can support approval for authorized integrations, but that is not this adapter's observed contract. Do not expect an approval here or treat its absence as a stalled review.
 
 **Where the repository's effective policy requires `review-gate`, it enforces
-the review contract.** It fails unless trusted review evidence covers the exact
-current head after the bound request and every inline or body-only finding has
-a qualifying later answer. Until that check is installed and verified as
-required, exact-head review remains mandatory driver procedure. GitHub
-conversation resolution separately requires every inline thread closed.
+the review contract.** Under gate behavior contract 3 it passes only on a
+trusted, unedited clean verdict bound to the exact current head; where
+behavior v2 remains effective it instead requires trusted evidence for the
+exact head after the bound request plus a qualifying later answer for every
+finding. Until that check is installed and verified as required,
+exact-head review remains mandatory driver procedure. GitHub conversation
+resolution separately requires every inline thread closed.
 `touchstone pr merge` observes that policy-owned exact-head verdict; it does
 not reconstruct a second verdict from mutable review timestamps. The merge
 queue is the atomic boundary: its merge-group run re-evaluates the complete
@@ -402,7 +404,7 @@ partial, or unrelated.
 
 ## Agentic PR Review Loop
 
-The PR is the only semantic review surface. Request one ordinary review per exact head-and-base binding: head SHA, base ref, and base SHA. The driving CLI watches the PR, fixes actionable findings, pushes a new head, and repeats until the current binding's review is answered — a clean verdict, or findings with every thread resolved.
+The PR is the only semantic review surface. Request one ordinary review per exact head-and-base binding: head SHA, base ref, and base SHA. The driving CLI watches the PR, fixes actionable findings, pushes a new head, and repeats until the current head carries a trusted clean verdict (under behavior v2, findings with every thread resolved also completed the round).
 
 ### Review-request states and bounded recovery
 
@@ -485,7 +487,7 @@ incident and remain blocked. Never loop replacement requests, synthesize review
 evidence, merge on acceptance alone, or use emergency bypass for ordinary
 review-provider friction.
 
-**Never re-request review for an unchanged head-and-base binding** for thread-backed findings. The reviewer is non-deterministic, so re-asking about the same binding manufactures new findings instead of confirming the old ones. A new head gets exactly one ordinary request for its current base. Three cases permit another request while the head stays unchanged:
+**Never re-request review for an unchanged head-and-base binding** for thread-backed findings. The reviewer is non-deterministic, so re-asking about the same binding manufactures new findings instead of confirming the old ones. A new head gets exactly one ordinary request for its current base. Four cases permit another request while the head stays unchanged:
 
 1. **The base binding changed** — if the base ref or base SHA differs from the
    recorded request, that evidence is invalid. Before requesting against the
@@ -590,11 +592,15 @@ authorize further mutation after this stop signal.
 
 **The loop.** If the cascade rule has fired, take its exit instead of continuing
 this loop. Otherwise, if every finding resolves **without moving the head**
-(dispositions 3–4), answer every thread, prove none remain with the complete
-paginated thread check above, then merge — answered findings satisfy the gate
-(issue #751); do not request another review. If any allowed fix lands as a
-commit (dispositions 1–2), batch ALL of them into ONE commit, answer every
-thread, push, and request one review for the new head.
+(dispositions 3–4), answer every thread and prove none remain with the complete
+paginated thread check above. Where the effective gate implements behavior
+contract 3, resolving the last thread makes `touchstone pr answer` post the one
+idempotent attest request (exception 4 above); merge once the gate reports the
+clean exact-head verdict. Where only behavior v2 is effective, answered
+findings satisfy that gate directly (issue #751) — merge without requesting
+another review. If any allowed fix lands as a commit (dispositions 1–2), batch
+ALL of them into ONE commit, answer every thread, push, and request one review
+for the new head.
 
 **The budget: three finding-bearing rounds per capability, never more than three
 on one PR.** This is a discipline, not an enforced limit — the wrapper that
@@ -603,9 +609,11 @@ decline to run was never a rule. Closing, renaming, restacking, or reopening the
 same acceptance criterion does not reset its count. Past three rounds, the
 legitimate exits are:
 
-- **Merge if answered** — only when no known P0/P1 defect remains; all
-  threads resolved satisfies the gate, but routing a low-severity or
-  out-of-scope finding is not permission to ship a known serious regression;
+- **Merge if answered** — only when no known P0/P1 defect remains.
+  Where behavior v2 is effective, all threads resolved satisfies that gate;
+  under contract 3 the answer flow's attest request still supplies the final
+  clean verdict first. Routing a P2, P3, or out-of-scope finding is not
+  permission to ship a known serious regression;
 - **Split the PR** — only genuinely independent acceptance criteria receive
   independent budgets; a mechanical split is not budget laundering;
 - **Close it, preserving the corpus** on the tracking issue (the #706 pattern) — correct when successive fixes keep creating defects.
