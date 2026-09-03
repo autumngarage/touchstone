@@ -3072,6 +3072,39 @@ STATUS_STUB
     fail "the merged-stream guard pattern does not match its own positive sample"
   fi
 
+  echo "==> the answered-round query selects a thread by this tool's marker for its own root, in the newest comments"
+  # The fake serves pre-computed ids, so the jq that decides which resolved
+  # threads form a round is exercised here against real thread JSON: the
+  # script's own expression, extracted verbatim, over a long thread whose
+  # marker is the newest of 60 comments, a thread whose finding merely
+  # mentions the marker, a thread answered for a different root, and an
+  # unresolved answered thread.
+  ROUND_JQ="$(sed -nE "s/^[[:space:]]*--jq '(.*reviewThreads.*root.*review-answer.*)' \\\\\$/\\1/p" "$TOUCHSTONE_ROOT/scripts/respond-review.sh" | head -1)"
+  [ -n "$ROUND_JQ" ] || fail "could not extract the answered-round jq from respond-review.sh"
+  ROUND_QUERY="$(sed -nE "s/^ANSWERED_THREADS_QUERY='(.*)'\$/\\1/p" "$TOUCHSTONE_ROOT/scripts/respond-review.sh")"
+  printf '%s' "$ROUND_QUERY" | grep -qF 'comments(last:50)' \
+    || fail "the answered-round query must read the newest comments, not the first: $ROUND_QUERY"
+  printf '%s' "$ROUND_QUERY" | grep -qF 'root: comments(first:1)' \
+    || fail "the answered-round query must read the thread root separately: $ROUND_QUERY"
+  ROUND_THREADS_JSON="$(mktemp)"
+  long_thread_comments="$(jq -cn '[range(59) | {body: ("comment " + tostring)}] + [{body: "answered <!-- touchstone:review-answer v=1 id=41 disposition=no-code-change -->"}]')"
+  jq -n --argjson long "$long_thread_comments" '{data:{repository:{pullRequest:{reviewThreads:{nodes:[
+      {isResolved:true,  root:{nodes:[{databaseId:41}]}, comments:{nodes:$long}},
+      {isResolved:true,  root:{nodes:[{databaseId:42}]}, comments:{nodes:[{body:"the finding text mentions touchstone:review-answer v=1 id=42 by name"}]}},
+      {isResolved:true,  root:{nodes:[{databaseId:43}]}, comments:{nodes:[{body:"<!-- touchstone:review-answer v=1 id=41 disposition=no-code-change -->"}]}},
+      {isResolved:false, root:{nodes:[{databaseId:44}]}, comments:{nodes:[{body:"<!-- touchstone:review-answer v=1 id=44 disposition=no-code-change -->"}]}},
+      {isResolved:true,  root:{nodes:[{databaseId:45}]}, comments:{nodes:[{body:"resolved by hand, no answer"}]}}
+    ]}}}}}' >"$ROUND_THREADS_JSON"
+  ROUND_OUT="$(jq -r "$ROUND_JQ" "$ROUND_THREADS_JSON" | sort -n | paste -sd, -)"
+  [ "$ROUND_OUT" = "41" ] \
+    || fail "the answered-round jq selected '$ROUND_OUT'; expected only 41 (the marker for its own root, newest of 60 comments)"
+  # A window that read the first 50 would miss 41's marker: prove the fixture
+  # discriminates by dropping the newest comment from the long thread.
+  ROUND_OUT_TRUNCATED="$(jq -r "$ROUND_JQ" <(jq '.data.repository.pullRequest.reviewThreads.nodes[0].comments.nodes |= .[:50]' "$ROUND_THREADS_JSON") | sort -n | paste -sd, -)"
+  rm -f "$ROUND_THREADS_JSON"
+  [ -z "$ROUND_OUT_TRUNCATED" ] \
+    || fail "the long-thread fixture does not depend on the newest comment: '$ROUND_OUT_TRUNCATED'"
+
   echo "==> every GitHub-state wait re-checks liveness on each poll (AUT-1179)"
   # A loop that sleeps on GATE_RETRY_DELAY is waiting for GitHub state to
   # change. Between its "while :; do" and that sleep it must call the
