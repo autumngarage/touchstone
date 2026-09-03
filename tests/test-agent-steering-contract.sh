@@ -414,9 +414,13 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "while a parent is still finding-bearing"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   "- Review budget: v2 capability="
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  "fix rounds already spent on this"
+  "the budget ledger; nothing else records"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'prior_fix_rounds'
+# the row is the ledger: this PR's own fix rounds are recorded, not inferred
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  'fix_rounds=<fix rounds spent on this PR>'
+assert_contains "$GIT_WORKFLOW_GUIDE" "The row is the ledger; history is not."
 # v1 stays parseable; the rename note is the compatibility record
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'prior_hosted_rounds'

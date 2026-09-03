@@ -608,9 +608,13 @@ mutation, never review requests, for two reasons. Requests cannot be counted
 reliably: the reviewer's findings arrive as inline review comments or
 conversation comments and do not all appear in the `pulls/{n}/reviews` API, so
 a request-based count is unauditable by the agent spending it and by anyone
-reading afterwards. Mutation can: fix rounds are commits on the branch after
-its first review request, visible in `git log` and unchanged by how the
-reviewer chose to deliver its findings. Counting mutation also removes the
+reading afterwards. Mutation can, but only if it is written down when spent:
+record each fix round in the PR body's `Review budget` row as it is pushed
+(`principles/local-review.md`). Do not reconstruct the count from `git log` —
+amend, squash, and rebase rewrite commit boundaries and lose push grouping, so
+a rewrite can hide earlier mutation and one push of several commits can be
+overcounted. The row is the ledger; history is not.
+Counting mutation also removes the
 conflict with the contract-3 attest, which follows no change and therefore
 consumes no budget — the answer flow and this budget never contend.
 

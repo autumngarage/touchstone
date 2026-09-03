@@ -108,7 +108,7 @@ the PR is opened.
 - Automated tests: <exact command and result>
 - Manual validation: <specific scenario and result>
 - Local review: <normal: openrouter on the staged slice (review-normal): <n> findings, <disposition>; serious: codex on <captured-head-sha>: <n> findings, <disposition>; or n/a — <reason>>
-- Review budget: v2 capability=<tracker ref> local_rounds=<local review passes> prior_fix_rounds=<fix rounds on this capability's replaced PRs> reviewed_head=<40-character SHA or none> cascade=<true|false> exit=<continue|merge-answered|revert-simplify|split|close-replan>
+- Review budget: v2 capability=<tracker ref> local_rounds=<local review passes> fix_rounds=<fix rounds spent on this PR> prior_fix_rounds=<fix rounds on this capability's replaced PRs> reviewed_head=<40-character SHA or none> cascade=<true|false> exit=<continue|merge-answered|revert-simplify|split|close-replan>
 
 ## Out of scope
 <intentionally excluded related work>
@@ -123,10 +123,15 @@ the PR is opened.
 Never claim a build, test, or manual validation happened unless it actually
 ran.
 
-The versioned `Review budget` row carries the parts of round history the current
-PR cannot expose: local review passes, and fix rounds already spent on this
-capability's replaced PRs. Update it after the local pass and carry the current
-count into `prior_fix_rounds` when replacing a PR; a provider retry on the same
+The versioned `Review budget` row **is** the budget ledger; nothing else records
+what has been spent. `fix_rounds` counts the fix rounds spent on this PR and is
+incremented as each one is pushed, `prior_fix_rounds` carries those already spent
+on this capability's replaced PRs, and `local_rounds` counts local review passes.
+The count is written here rather than inferred from history because amend,
+squash, and rebase rewrite commit boundaries and lose push grouping
+(`principles/git-workflow.md`). Update the row after the local pass and as each
+fix round is pushed, and carry the current count into `prior_fix_rounds` when
+replacing a PR; a provider retry on the same
 head is not a round, and neither is an attest request, because a fix round is a
 push of review-driven change (`principles/git-workflow.md`). Row version 2
 renamed `prior_hosted_rounds` to `prior_fix_rounds` when the budget moved from
