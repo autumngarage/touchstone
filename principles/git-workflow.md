@@ -620,7 +620,20 @@ legitimate exits are:
 
 After a third finding-bearing review, **do not post a fourth request on the same
 implementation shape**. Stop, audit the repeated failure class, and put the
-chosen exit plus evidence in the PR. A later request is justified only after a
+chosen exit plus evidence in the PR.
+
+**The contract-3 attest request is exempt from that limit**, because it is not
+a request on the same implementation shape: it asks the reviewer to confirm an
+unchanged, fully answered head, and under contract 3 the gate cannot pass
+without it. `touchstone pr answer` posts it automatically when the last thread
+resolves, so the routine answer path and the stop rule do not conflict — the
+budget governs *mutation*, and the attest mutates nothing. What the exhausted
+budget forbids is the mutation the attest's findings would otherwise invite:
+past three rounds a new finding on the attested head is answered and routed,
+or it takes the split or close exit. It is never a licence to patch again.
+If successive attests keep returning findings on an unchanged head, that is
+the reviewer's non-determinism (see the unchanged-binding rule above), not new
+evidence about the change; take an exit rather than re-attesting indefinitely. A later request is justified only after a
 durable root-cause record, a materially narrower acceptance boundary or
 replacement architecture, and a class-level guardrail. That redesigned attempt
 gets one validation round. If it produces another finding, split or close the
