@@ -700,6 +700,30 @@ COMMAND="${1:-}"
 }
 shift
 
+# A repin invalidates gate evidence produced by the outgoing revision:
+# touchstone pr status compares a run's workflow file revision against the
+# revisions this policy pins, so every open pull request whose gate already
+# passed reads as "unbound" the moment the pin moves. The check stays green in
+# GitHub's UI, which is what makes it confusing -- an agent sees a passing gate
+# and a CLI reporting no bound review, and reasonably concludes review never
+# happened. That cost a vesper agent an afternoon.
+#
+# Nothing here refuses the apply: the operator may well be repinning precisely
+# to fix a broken gate. It names the pull requests that will need their gates
+# re-run, and how.
+warn_about_inflight_review_evidence() {
+  local open_prs count
+  open_prs="$(api "repos/$ORG/$REPOSITORY/pulls?state=open&per_page=100" 2>/dev/null \
+    | jq -r '[.[] | select(.draft | not) | .number] | join(" ")' 2>/dev/null)" || return 0
+  [ -n "$open_prs" ] || return 0
+  count="$(printf '%s' "$open_prs" | wc -w | tr -d ' ')"
+  echo "Note: $ORG/$REPOSITORY has $count open pull request(s): $open_prs"
+  echo "  Gate evidence produced by the outgoing revision stops counting as bound once this applies."
+  echo "  Any of them that already passed review-gate must have it re-run, or they will"
+  echo "  report a passing check and an unbound gate at the same time."
+  echo "  Re-run by closing and reopening each pull request; editing it does not start a new run."
+}
+
 case "$COMMAND" in
   backup | rollback)
     ARTIFACT="${1:-}"
@@ -803,6 +827,7 @@ case "$COMMAND" in
     verify_clean_checkout
     verify_rollback_removal_planned
     verify_source
+    warn_about_inflight_review_evidence
     desired="$(jq -c '.managedRuleset' "$POLICY")"
     source_ruleset="$(managed_ruleset_json)"
     source_protection="$(branch_protection_json)"
