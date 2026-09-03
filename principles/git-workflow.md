@@ -631,9 +631,8 @@ budget governs *mutation*, and the attest mutates nothing. What the exhausted
 budget forbids is the mutation the attest's findings would otherwise invite:
 past three rounds a new finding on the attested head is answered and routed,
 or it takes the split or close exit. It is never a licence to patch again.
-If successive attests keep returning findings on an unchanged head, that is
-the reviewer's non-determinism (see the unchanged-binding rule above), not new
-evidence about the change; take an exit rather than re-attesting indefinitely. A later request is justified only after a
+The attest cadence itself belongs to `touchstone pr answer`, which posts one
+per fully answered round; this guide does not restate it. A later request is justified only after a
 durable root-cause record, a materially narrower acceptance boundary or
 replacement architecture, and a class-level guardrail. That redesigned attempt
 gets one validation round. If it produces another finding, split or close the
