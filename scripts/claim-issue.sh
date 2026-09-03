@@ -49,19 +49,28 @@ if ! GH_LOGIN="$(gh api user --jq '.login' 2>/dev/null)" || [ -z "$GH_LOGIN" ]; 
 fi
 
 log "Inspecting issue #$ISSUE_NUMBER ..."
-if ! ISSUE_STATE="$(gh issue view "$ISSUE_NUMBER" --json state --jq '.state' 2>/dev/null)"; then
+# One read for state and assignees: two calls here would re-fetch the same
+# object. Logins cannot contain commas, so the comma join survives the TSV
+# row; the post-claim re-read below stays separate because a mutation
+# (gh issue edit) happens in between.
+if ! ISSUE_ROW="$(gh issue view "$ISSUE_NUMBER" --json state,assignees --jq '[.state, (.assignees | map(.login) | join(","))] | @tsv' 2>/dev/null)"; then
   echo "ERROR: issue #$ISSUE_NUMBER not found." >&2
   exit 2
 fi
+case "$ISSUE_ROW" in
+  *$'\t'*) ;;
+  *)
+    echo "ERROR: issue #$ISSUE_NUMBER not found." >&2
+    exit 2
+    ;;
+esac
+ISSUE_STATE="${ISSUE_ROW%%$'\t'*}"
+PRE_ASSIGNEES="${ISSUE_ROW#*$'\t'}"
+PRE_ASSIGNEES="${PRE_ASSIGNEES//,/$'\n'}"
 
 if [ "$ISSUE_STATE" = "CLOSED" ]; then
   echo "ERROR: can't claim closed issue (#$ISSUE_NUMBER)." >&2
   exit 1
-fi
-
-if ! PRE_ASSIGNEES="$(gh issue view "$ISSUE_NUMBER" --json assignees --jq '.assignees | map(.login) | join("\n")' 2>/dev/null)"; then
-  echo "ERROR: failed to read assignees for issue #$ISSUE_NUMBER." >&2
-  exit 2
 fi
 
 OTHER_ASSIGNEE=""

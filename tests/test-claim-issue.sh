@@ -36,23 +36,17 @@ if [ "$cmd1" = "issue" ] && [ "$cmd2" = "view" ]; then
     exit 1
   fi
   case "$*" in
-    *"--json state"*)
-      echo "${GH_ISSUE_STATE:-OPEN}"
+    *"--json state,assignees"*)
+      # Pre-claim snapshot: state plus comma-joined assignees in one TSV row,
+      # matching the script's single read.
+      csv="$(printf '%s' "${GH_PRE_ASSIGNEES:-}" | paste -sd, -)"
+      printf '%s\t%s' "${GH_ISSUE_STATE:-OPEN}" "$csv"
       exit 0
       ;;
     *"--json assignees"*)
-      count_file="${GH_ASSIGNEE_VIEW_COUNT_FILE:?}"
-      count=0
-      if [ -f "$count_file" ]; then
-        count="$(cat "$count_file")"
-      fi
-      count=$((count + 1))
-      printf '%s' "$count" >"$count_file"
-      if [ "$count" -eq 1 ]; then
-        printf '%s' "${GH_PRE_ASSIGNEES:-}"
-      else
-        printf '%s' "${GH_POST_ASSIGNEES:-${GH_PRE_ASSIGNEES:-}}"
-      fi
+      # Post-claim freshness re-read only; the pre-claim state travels in the
+      # combined query above.
+      printf '%s' "${GH_POST_ASSIGNEES:-${GH_PRE_ASSIGNEES:-}}"
       exit 0
       ;;
     *)
@@ -117,7 +111,6 @@ run_claim_issue() {
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
     GH_COMMENT_LOG="$TEST_DIR/gh-comments.log" \
-    GH_ASSIGNEE_VIEW_COUNT_FILE="$TEST_DIR/gh-assignee-views.count" \
     GH_AUTH_EXIT="${GH_AUTH_EXIT:-0}" \
     GH_USER_LOGIN="${GH_USER_LOGIN:-me}" \
     GH_ISSUE_EXISTS="${GH_ISSUE_EXISTS:-true}" \
@@ -128,7 +121,7 @@ run_claim_issue() {
 }
 
 reset_case() {
-  rm -f "$TEST_DIR/gh-calls.log" "$TEST_DIR/gh-comments.log" "$TEST_DIR/gh-assignee-views.count"
+  rm -f "$TEST_DIR/gh-calls.log" "$TEST_DIR/gh-comments.log"
   GH_AUTH_EXIT=0
   GH_USER_LOGIN=me
   GH_ISSUE_EXISTS=true
@@ -146,6 +139,7 @@ if run_claim_issue "$OUT" 101 "dispatch: case1"; then
   assert_file_contains "$TEST_DIR/gh-calls.log" "issue edit 101 --add-assignee @me"
   assert_file_contains "$TEST_DIR/gh-calls.log" "issue comment 101 --body dispatch: case1"
   assert_file_contains "$OUT" "touchstone-claim-state: assignment-mutated"
+  assert_file_contains "$TEST_DIR/gh-calls.log" "issue view 101 --json state,assignees"
 else
   fail "case 1 expected exit 0"
   cat "$OUT" >&2
@@ -227,6 +221,19 @@ else
   assert_file_contains "$OUT" "not authenticated"
 fi
 
+echo "==> Case 8: several pre-claim assignees arrive in one row"
+reset_case
+OUT="$TEST_DIR/case8.out"
+GH_PRE_ASSIGNEES=$'alice\nbob'
+if run_claim_issue "$OUT" 108; then
+  fail "case 8 expected exit 1"
+else
+  rc=$?
+  assert_eq "case 8 rc" "1" "$rc"
+  assert_file_contains "$OUT" "already claimed by @alice"
+  assert_file_not_contains "$TEST_DIR/gh-calls.log" "issue edit 108 --add-assignee @me"
+fi
+
 if [ "$ERRORS" -gt 0 ]; then
   echo ""
   echo "==> FAIL: $ERRORS case(s) failed"
@@ -234,7 +241,7 @@ if [ "$ERRORS" -gt 0 ]; then
 fi
 
 echo ""
-echo "==> PASS: claim-issue.sh behaves correctly across 7 cases"
+echo "==> PASS: claim-issue.sh behaves correctly across 8 cases"
 
 (
   # tests/test-tracker-adapter.sh — tracker-neutral adapter contract tests.
@@ -277,7 +284,11 @@ case "$1 ${2:-}" in
   "auth status") [ "${GH_MODE:-ok}" != auth_fail ] ;;
 	"api user") printf '%s\n' henry ;;
   "issue view")
-    if printf '%s\n' "$*" | grep -q -- '--json state'; then
+    if printf '%s\n' "$*" | grep -q -- '--json state,assignees'; then
+      csv=""
+      if [ -s "$GH_STATE" ]; then csv="$(paste -sd, - "$GH_STATE")"; fi
+      printf '%s\t%s' OPEN "$csv"
+    elif printf '%s\n' "$*" | grep -q -- '--json state'; then
       printf '%s\n' OPEN
     elif [ "${GH_MODE:-ok}" = post_claim_read_fail ] && [ -s "$GH_STATE" ]; then
 			exit 1
