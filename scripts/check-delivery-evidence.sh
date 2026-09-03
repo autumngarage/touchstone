@@ -306,20 +306,25 @@ case "$TIER" in
           report "the Validation row '- Local review:' waiver stating why (reviewer CLI not installed, not authenticated, or out of quota)"
         fi
       else
-        # Normal review has had multiple documented backends. Preserve their
-        # recorded evidence as active compatibility while serious remains
-        # codex-only. The target shape is what preserves the tier boundary:
-        # normal names a staged slice, while serious names the bare revision
-        # it reviewed. A mention elsewhere is not the run record, and "codex
-        # not run" carries no count, so both are refused by the same check.
+        # Normal review has had multiple documented backends; their recorded
+        # evidence stays readable as active compatibility. Serious accepts
+        # codex or the bounded OpenRouter range pass that stands in when Codex
+        # is unavailable (AUT-1217): the tier whose changes are most expensive
+        # to roll back must not lose its local pass to an exhausted quota, and
+        # a waiver recording no review at all was the only alternative.
+        # The target shape, never the reviewer name, is what preserves the
+        # tier boundary -- normal names a staged slice, serious names the bare
+        # revision it reviewed. A mention elsewhere is not the run record, and
+        # "codex not run" carries no count, so both are refused by the same
+        # check.
         case "$TIER" in
           normal)
             lr_tool='openrouter, codex, or coderabbit'
             lr_reviewer="${lr_mark}(openrouter|codex|coderabbit)${lr_mark}"
             ;;
           serious)
-            lr_tool=codex
-            lr_reviewer="${lr_mark}codex${lr_mark}"
+            lr_tool='codex or openrouter'
+            lr_reviewer="${lr_mark}(codex|openrouter)${lr_mark}"
             ;;
         esac
         # The run record is the documented prefix "<reviewer> on <target>:";

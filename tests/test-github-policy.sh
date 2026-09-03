@@ -2408,7 +2408,13 @@ accepts && fail "a normal OpenRouter pass naming a bare revision was accepted" |
 lr_body '- Local review: coderabbit on the staged slice: 0 findings.' serious
 accepts && fail "a serious PR recording coderabbit was accepted" || ok "the wrong reviewer for the tier is refused (serious wants codex)"
 lr_body '- Local review: openrouter on the staged slice: 0 findings.' serious
-accepts && fail "a serious PR recording OpenRouter was accepted" || ok "serious review remains codex-only"
+accepts && fail "a serious PR naming a staged slice was accepted" || ok "the serious target is a revision whichever reviewer ran"
+lr_body '- Local review: openrouter on 1234567: 0 findings, codex is out of credits.' serious
+accepts && ok "the serious OpenRouter fallback is accepted (AUT-1217)" || fail "the serious OpenRouter fallback was refused"
+lr_body '- Local review: openrouter on 1234567: 2 findings, 1 fixed, 1 routed.' serious
+accepts && ok "the fallback carries the same disposition shape as codex" || fail "a fallback row with dispositions was refused"
+lr_body '- Local review: openrouter on origin/main: 0 findings.' serious
+accepts && fail "a fallback row naming its symbolic base was accepted" || ok "the fallback records the reviewed head, not the base"
 lr_body '- Local review: codex on the branch head: 0 findings.' serious
 accepts && fail "a serious codex pass naming no revision was accepted" || ok "a serious codex pass must name the revision it reviewed"
 lr_body '- Local review: codex on origin/main: 0 findings, accepted.' serious
@@ -2481,7 +2487,7 @@ set -e
 if [ "$actions_rc" -ne 0 ] \
   && grep -qF "::error title=Delivery evidence unreadable::the Validation row '- Local review:' is present but not in the shape" "$EVIDENCE_TMP/actions.out" \
   && grep -qF "the Validation row '- Local review:' is present but not in the shape" "$EVIDENCE_TMP/summary.md" \
-  && grep -qF "it must begin with 'codex on &lt;revision&gt;: &lt;n&gt; findings, &lt;disposition&gt;'" "$EVIDENCE_TMP/summary.md"; then
+  && grep -qF "it must begin with 'codex or openrouter on &lt;revision&gt;: &lt;n&gt; findings, &lt;disposition&gt;'" "$EVIDENCE_TMP/summary.md"; then
   ok "an unreadable row names the rejected row and expected shape on GitHub"
 else
   fail "an unreadable row lacked a useful Actions diagnostic: $(cat "$EVIDENCE_TMP/actions.out") $(cat "$EVIDENCE_TMP/summary.md")"

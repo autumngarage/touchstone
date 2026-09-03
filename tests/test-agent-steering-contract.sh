@@ -140,7 +140,7 @@ for file in \
   "$TOUCHSTONE_ROOT/.github/pull_request_template.md"; do
   assert_contains "$file" 'touchstone review check'
   assert_contains "$file" 'touchstone review run'
-  assert_contains "$file" 'codex review --base <default>'
+  assert_contains "$file" 'touchstone review run --base <default>'
   assert_not_contains "$file" 'coderabbit review --agent --uncommitted'
 done
 for file in \
@@ -148,7 +148,11 @@ for file in \
   "$TOUCHSTONE_ROOT/principles/local-review.md" \
   "$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md" \
   "$TOUCHSTONE_ROOT/.github/pull_request_template.md"; do
-  assert_contains "$file" 'may waive only when Codex is unavailable'
+  assert_contains "$file" 'may waive only when Codex and the fallback are both unavailable'
+  # A waiver documented without its alternative is how the tier lost its local
+  # pass to an exhausted quota in the first place (AUT-1217), so every surface
+  # that states the waiver states the fallback beside it.
+  assert_contains "$file" 'falls back to the bounded OpenRouter pass'
 done
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'touchstone review setup'
@@ -177,7 +181,9 @@ assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
 assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
   'gpt-5.6-sol'
 assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
-  'codex review'
+  'codex exec'
+assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
+  '--profile'
 assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
   'tools:'
 assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
@@ -462,9 +468,11 @@ for file in \
     "Run at most one tier-required local AI pass per coherent unit"
   assert_contains "$file" "none for trivial work"
   assert_contains "$file" \
-    'or Codex-unavailable waiver; never record the base'
+    'waiving only if both are gone; never record the base'
   assert_contains "$file" \
-    'record `codex on <head-sha>: <n> findings, <disposition>`'
+    'Codex first, bounded fallback on any non-success'
+  assert_contains "$file" \
+    'record `<reviewer> on <head-sha>: <n> findings, <disposition>`'
   assert_contains "$file" \
     "Hosted review owns exact heads"
   assert_contains "$file" "never rerun to confirm fixes"
@@ -484,7 +492,7 @@ assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'reviewed_head="$(git rev-parse HEAD)"'
 assert_contains "$TOUCHSTONE_ROOT/.github/pull_request_template.md" \
-  'begin serious with `codex on <captured-head-sha>: <n> findings, <disposition>`'
+  'begin serious with `<reviewer> on <captured-head-sha>: <n> findings, <disposition>`'
 
 echo "==> dirty PR recovery preserves authored work and re-ships the new head"
 assert_contains "$GIT_WORKFLOW_GUIDE" '## Recovering a `DIRTY` PR'
@@ -967,6 +975,7 @@ review_command() {
   TOUCHSTONE_REVIEW_PLATFORM=Darwin \
     TOUCHSTONE_REVIEW_SECURITY_BIN="$FAKE_SECURITY" \
     TOUCHSTONE_REVIEW_CURL_BIN="$FAKE_CURL" \
+    TOUCHSTONE_REVIEW_CODEX_BIN="${TOUCHSTONE_REVIEW_CODEX_BIN:-$TEST_DIR/absent-codex}" \
     TOUCHSTONE_FAKE_KEYCHAIN_DIR="$FAKE_KEYCHAIN_DIR" \
     TOUCHSTONE_FAKE_KEYCHAIN_LOG="$FAKE_KEYCHAIN_LOG" \
     TOUCHSTONE_FAKE_READBACK_FAIL="${TOUCHSTONE_FAKE_READBACK_FAIL:-false}" \
@@ -1124,6 +1133,193 @@ elif ! grep -qF 'configured limit is 100000 bytes' "$TEST_DIR/large-input.out"; 
 fi
 after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
 [ "$before_calls" = "$after_calls" ] || fail "large review reached OpenRouter"
+
+echo "==> --base reviews the committed branch range, not the index"
+# The serious tier's fallback: Codex reads the committed branch, so the
+# stand-in must read the same revisions -- not the index the normal tier
+# reviews, and not work that landed on the base after branching (AUT-1217).
+RANGE_REPOSITORY="$TEST_DIR/review-range-repository"
+mkdir -p "$RANGE_REPOSITORY"
+git init -q -b main "$RANGE_REPOSITORY"
+range_git() {
+  git -C "$RANGE_REPOSITORY" \
+    -c user.name=Touchstone -c user.email=touchstone@example.invalid "$@"
+}
+printf 'baseline\n' >"$RANGE_REPOSITORY/tracked.txt"
+range_git add tracked.txt
+range_git commit -qm initial
+range_git checkout -qb feature
+printf 'committed on the branch\n' >"$RANGE_REPOSITORY/tracked.txt"
+range_git add tracked.txt
+range_git commit -qm "branch work"
+range_git checkout -q main
+printf 'landed on the base after branching\n' >"$RANGE_REPOSITORY/base-only.txt"
+range_git add base-only.txt
+range_git commit -qm "base work"
+range_git checkout -q feature
+printf 'staged after the commit\n' >"$RANGE_REPOSITORY/tracked.txt"
+range_git add tracked.txt
+printf 'never reviewed\n' >"$RANGE_REPOSITORY/untracked.txt"
+RANGE_HEAD="$(range_git rev-parse HEAD)"
+(
+  cd "$RANGE_REPOSITORY"
+  review_command run --base main --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/range-review.out" 2>&1 \
+  || fail "range review failed: $(cat "$TEST_DIR/range-review.out")"
+assert_contains "$FAKE_CURL_CAPTURE" 'committed on the branch'
+assert_not_contains "$FAKE_CURL_CAPTURE" 'staged after the commit'
+assert_not_contains "$FAKE_CURL_CAPTURE" 'landed on the base after branching'
+assert_not_contains "$FAKE_CURL_CAPTURE" 'never reviewed'
+assert_contains "$FAKE_CURL_CAPTURE" 'Review only this Git branch diff'
+assert_not_contains "$FAKE_CURL_CAPTURE" 'staged Git diff'
+# The evidence target is the reviewed revision, which is the shape
+# delivery-evidence requires of a serious row.
+assert_contains "$TEST_DIR/range-review.out" "Evidence: openrouter on $RANGE_HEAD:"
+
+echo "==> the range scope carries its own ceiling and its own empty case"
+before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+if (
+  cd "$RANGE_REPOSITORY"
+  review_command run --base feature --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/range-empty.out" 2>&1; then
+  fail "range review accepted a branch with no commits beyond its base"
+elif ! grep -qF 'no changes between' "$TEST_DIR/range-empty.out"; then
+  fail "empty range was not actionable: $(cat "$TEST_DIR/range-empty.out")"
+fi
+after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+[ "$before_calls" = "$after_calls" ] || fail "an empty range reached OpenRouter"
+
+# One ceiling bounds both scopes, and fires before the network either way.
+SMALL_RANGE_POLICY="$TEST_DIR/review-small-range-policy.json"
+jq '.limits.maxInputBytes = 100' \
+  "$TOUCHSTONE_ROOT/config/review-normal.json" >"$SMALL_RANGE_POLICY"
+before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+if (
+  cd "$RANGE_REPOSITORY"
+  TOUCHSTONE_REVIEW_POLICY_FILE="$SMALL_RANGE_POLICY" \
+    review_command run --base main --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/range-limit.out" 2>&1; then
+  fail "range review accepted a request above the configured limit"
+elif ! grep -qF 'configured limit is 100 bytes' "$TEST_DIR/range-limit.out"; then
+  fail "the range limit failure was not actionable: $(cat "$TEST_DIR/range-limit.out")"
+fi
+after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+[ "$before_calls" = "$after_calls" ] || fail "an oversized range reached OpenRouter"
+
+echo "==> --base runs codex first, and falls back on every non-success"
+# The fallback is the script's decision, not the driver's. An agent that has to
+# notice the quota ran out is the same weak link that shipped four PRs with no
+# local pass at all (AUT-443, AUT-1217), so the sequence is exercised here.
+FAKE_CODEX="$TEST_DIR/codex"
+FAKE_CODEX_LOG="$TEST_DIR/codex-log"
+cat >"$FAKE_CODEX" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$TOUCHSTONE_FAKE_CODEX_LOG"
+printf 'codex review output\n'
+exit "${TOUCHSTONE_FAKE_CODEX_STATUS:-0}"
+EOF
+chmod +x "$FAKE_CODEX"
+
+serious_command() {
+  TOUCHSTONE_REVIEW_CODEX_BIN="$FAKE_CODEX" \
+    TOUCHSTONE_FAKE_CODEX_LOG="$FAKE_CODEX_LOG" \
+    TOUCHSTONE_FAKE_CODEX_STATUS="${TOUCHSTONE_FAKE_CODEX_STATUS:-0}" \
+    review_command "$@"
+}
+
+: >"$FAKE_CODEX_LOG"
+before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+(
+  cd "$RANGE_REPOSITORY"
+  serious_command run --base main --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/serious-ok.out" 2>&1 \
+  || fail "serious review failed while codex succeeded: $(cat "$TEST_DIR/serious-ok.out")"
+assert_contains "$FAKE_CODEX_LOG" 'review --base main'
+assert_contains "$TEST_DIR/serious-ok.out" 'codex review output'
+assert_contains "$TEST_DIR/serious-ok.out" "Evidence: codex on $RANGE_HEAD:"
+after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+[ "$before_calls" = "$after_calls" ] \
+  || fail "a successful codex review still spent an OpenRouter request"
+
+# Any non-success is unavailability: the reason is not parsed out of a
+# third-party CLI's stderr, it is simply not Codex's verdict.
+: >"$FAKE_CODEX_LOG"
+before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+(
+  cd "$RANGE_REPOSITORY"
+  TOUCHSTONE_FAKE_CODEX_STATUS=1 \
+    serious_command run --base main --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/serious-fallback.out" 2>&1 \
+  || fail "a failed codex review was not covered by the fallback: $(cat "$TEST_DIR/serious-fallback.out")"
+assert_contains "$FAKE_CODEX_LOG" 'review --base main'
+assert_contains "$TEST_DIR/serious-fallback.out" 'codex review exited 1'
+assert_contains "$TEST_DIR/serious-fallback.out" "Evidence: openrouter on $RANGE_HEAD:"
+after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+[ "$before_calls" != "$after_calls" ] \
+  || fail "the fallback never reached OpenRouter"
+# The fallback reviews the branch Codex would have read, not the index.
+assert_contains "$FAKE_CURL_CAPTURE" 'committed on the branch'
+assert_not_contains "$FAKE_CURL_CAPTURE" 'staged after the commit'
+
+# An absent CLI is the same path as a failed one.
+: >"$FAKE_CODEX_LOG"
+before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+(
+  cd "$RANGE_REPOSITORY"
+  TOUCHSTONE_REVIEW_CODEX_BIN="$TEST_DIR/no-such-codex" \
+    review_command run --base main --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/serious-absent.out" 2>&1 \
+  || fail "an absent codex was not covered by the fallback: $(cat "$TEST_DIR/serious-absent.out")"
+assert_contains "$TEST_DIR/serious-absent.out" 'codex is not installed'
+assert_contains "$TEST_DIR/serious-absent.out" "Evidence: openrouter on $RANGE_HEAD:"
+[ ! -s "$FAKE_CODEX_LOG" ] || fail "an absent codex path still invoked a CLI"
+after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+[ "$before_calls" != "$after_calls" ] \
+  || fail "the absent-codex fallback never reached OpenRouter"
+
+# A broken policy must stop before the expensive reviewer, not after it.
+SERIOUS_BAD_POLICY="$TEST_DIR/review-serious-bad-policy.json"
+jq '.schema = "touchstone.review/v3"' \
+  "$TOUCHSTONE_ROOT/config/review-normal.json" >"$SERIOUS_BAD_POLICY"
+: >"$FAKE_CODEX_LOG"
+if (
+  cd "$RANGE_REPOSITORY"
+  TOUCHSTONE_REVIEW_POLICY_FILE="$SERIOUS_BAD_POLICY" \
+    serious_command run --base main --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/serious-policy.out" 2>&1; then
+  fail "serious review ran with an unsupported policy"
+elif ! grep -qF 'malformed or unsupported' "$TEST_DIR/serious-policy.out"; then
+  fail "the serious policy fault was not actionable: $(cat "$TEST_DIR/serious-policy.out")"
+fi
+[ ! -s "$FAKE_CODEX_LOG" ] \
+  || fail "a broken policy spent a codex run before failing"
+
+# The normal tier is the same command without --base, and it never reaches
+# Codex even when a Codex binary is right there.
+: >"$FAKE_CODEX_LOG"
+(
+  cd "$RANGE_REPOSITORY"
+  serious_command run --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/staged-no-codex.out" 2>&1 \
+  || fail "staged review failed with a codex binary present: $(cat "$TEST_DIR/staged-no-codex.out")"
+[ ! -s "$FAKE_CODEX_LOG" ] || fail "a staged review invoked codex"
+
+echo "==> --base belongs to run alone and needs a revision"
+if (
+  cd "$RANGE_REPOSITORY"
+  review_command check --base main --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/range-check.out" 2>&1; then
+  fail "check accepted --base, which selects a scope it never reads"
+elif ! grep -qF 'only valid for' "$TEST_DIR/range-check.out"; then
+  fail "the misplaced --base was not explained: $(cat "$TEST_DIR/range-check.out")"
+fi
+if (
+  cd "$RANGE_REPOSITORY"
+  review_command run --base --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/range-bare.out" 2>&1; then
+  fail "--base accepted a following flag as its revision"
+fi
 
 echo "==> linked worktrees use their own staged index"
 REVIEW_WORKTREE="$TEST_DIR/review-linked-worktree"

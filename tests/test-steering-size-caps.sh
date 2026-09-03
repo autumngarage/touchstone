@@ -89,8 +89,14 @@ assert_under() {
 # (AUT-443: four PRs shipped without it and no gate could notice). Three
 # raises in one day is the signal AUT-438 (composite routing) answers if it
 # recurs; each raise here names the observed failure that earned it.
-echo "==> TOUCHSTONE.md size cap (11.5 KiB — lean router)"
-assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 11776
+#
+# Raised to 12 KiB on 2026-09-03 (AUT-1217). Step 5 used to route serious
+# review to Codex and, on failure, to a waiver — so an exhausted quota left the
+# highest-blast-radius tier with no local pass at all. Naming the command that
+# falls back costs ~70 bytes more than naming the waiver did, and the file was
+# already at the old cap exactly. AGENTS.md lands near 20.6 KiB of its 24 KiB.
+echo "==> TOUCHSTONE.md size cap (12 KiB — lean router)"
+assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 12288
 
 echo "==> AGENTS.md size cap (24 KiB — leaves headroom under Codex's 32 KiB default)"
 assert_under "AGENTS.md" "$TOUCHSTONE_ROOT/AGENTS.md" 24576
