@@ -2545,9 +2545,18 @@ case "$1 $2" in
   "api graphql")
     if has resolveReviewThread "$@"; then
       touch "$GH_STATE/resolved"
+      ! has THREAD_52 "$@" || touch "$GH_STATE/resolved-52"
       echo "true"
     elif has "node(id:" "$@"; then
       echo "true"
+    elif [ -f "$GH_STATE/second-round" ]; then
+      # A later verdict on the same head opened thread 52 after 51 was
+      # resolved; it stays open until its own answer resolves it.
+      has 'databaseId == 51' "$@" && echo "THREAD_51"
+      has 'databaseId == 52' "$@" && echo "THREAD_52"
+      if [ ! -f "$GH_STATE/resolved-52" ]; then
+        has 'isResolved == false' "$@" && printf 'THREAD_52\t52\tscripts/x.sh\n'
+      fi
     elif [ -f "$GH_STATE/resolved" ]; then
       # Thread lookup after resolution: by first-comment id only.
       has 'databaseId == 51' "$@" && echo "THREAD_51"
@@ -2560,6 +2569,11 @@ case "$1 $2" in
     echo 1 >>"$GH_STATE/replies"
     field_value body "$@" >"$GH_STATE/reply-body"
     echo "71"
+    ;;
+  "api repos/autumngarage/current/pulls/7/comments/52/replies")
+    echo 1 >>"$GH_STATE/replies"
+    field_value body "$@" >"$GH_STATE/reply-body"
+    echo "72"
     ;;
   "api repos/autumngarage/current/issues/7/comments")
     field_value body "$@" >>"$GH_STATE/fresh-request"
@@ -2958,6 +2972,35 @@ STATUS_STUB
   grep -qF 'already exists' "$RR/out" \
     || fail "behavior v3 retry did not report the existing request"
   rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request"
+
+  # A later verdict on the unchanged head opens a new finding. Answering it
+  # closes a new round, and the gate can only be satisfied by a request that
+  # postdates that verdict — so the head-scoped request from the first round
+  # must not suppress a fresh one (AUT-1170).
+  echo "==> a second round of findings on the same head posts another fresh request"
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
+  echo "@codex review
+
+<!-- touchstone:attest-request head=abcdef0123456789abcdef0123456789abcdef01 -->
+<!-- touchstone:attest-round head=abcdef0123456789abcdef0123456789abcdef01 answered=51 -->" >"$GH_STATE/fresh-request"
+  touch "$GH_STATE/second-round"
+  run_v3 7 --comment-id 52 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "second-round answer exited $RUN_RC: $(tail -3 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq 2 ] \
+    || fail "a second round of findings did not post a fresh review request: $(cat "$GH_STATE/fresh-request")"
+  grep -qF 'touchstone:attest-round head=abcdef0123456789abcdef0123456789abcdef01 answered=52' "$GH_STATE/fresh-request" \
+    || fail "the second-round request carries no round marker"
+  grep -qF 'posted a fresh review request' "$RR/out" \
+    || fail "second-round answer did not announce its review request"
+  # ...and retrying that answer posts nothing more.
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
+  run_v3 7 --comment-id 52 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "second-round retry exited $RUN_RC: $(tail -3 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq 2 ] \
+    || fail "second-round retry posted a duplicate review request"
+  rm -f "$GH_STATE/second-round" "$GH_STATE/resolved-52" "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request"
 
   # Behavior v2 must never post one: answered findings satisfy that gate.
   echo 30 >"$GH_STATE/gate-in-progress"
