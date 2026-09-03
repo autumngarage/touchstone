@@ -13,7 +13,7 @@
 - Automated tests:
 - Manual validation:
 - Local review:
-<!-- The tier's one local pass, recorded as it ran: normal → `touchstone review check`, then `touchstone review run` on the isolated staged slice before commit; serious → capture `git rev-parse HEAD`, then run `codex review --base <default>` on that committed branch before push. Begin normal with `openrouter on the staged slice (review-normal): <n> findings, <disposition>`; begin serious with `codex on <captured-head-sha>: <n> findings, <disposition>`. The serious SHA is the current head the pass reviewed; `<default>` is only the comparison boundary. Normal may waive for a failed configured check/pass; serious may waive only when Codex is unavailable. -->
+<!-- The tier's one local pass, recorded as it ran: normal → `touchstone review check`, then `touchstone review run` on the isolated staged slice before commit; serious → capture `git rev-parse HEAD`, then run `touchstone review run --base <default>` on that committed branch before push; It runs Codex and falls back to the bounded OpenRouter pass over the same branch on any Codex non-success, including an exhausted quota. Begin normal with `openrouter on the staged slice (review-normal): <n> findings, <disposition>`; begin serious with `<reviewer> on <captured-head-sha>: <n> findings, <disposition>` for whichever reviewer it reported. The serious SHA is the current head the pass reviewed; `<default>` is only the comparison boundary. Normal may waive for a failed configured check/pass; serious may waive only when Codex and the fallback are both unavailable. -->
 
 ## Out of scope
 <!-- Intentionally excluded related work, and where it is tracked. -->

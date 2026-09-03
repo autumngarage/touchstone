@@ -65,9 +65,12 @@ cost of the common review tier without changing the serious or PR-visible
 review paths. `touchstone review setup` stores a dedicated OpenRouter credential
 in macOS Keychain. `touchstone review check` validates the credential, local
 tools, and versioned policy without contacting the provider. `touchstone review
-run` reads only the staged Git diff and makes one direct OpenRouter Chat
-Completions request. A failed check or run permits the documented normal-tier
-waiver; it never permits fallback to an unbounded model path.
+run` reads only the staged Git diff — or, with `--base <ref>`, only the
+committed range `merge-base(<ref>, HEAD)..HEAD` — and makes one direct
+OpenRouter Chat Completions request. `--base` first runs `codex review` and
+falls back to that request on any non-success, so the serious tier keeps a
+bounded local pass when Codex is unavailable. A failed check or run permits the
+documented waiver; it never permits fallback to an unbounded model path.
 
 The stable interface is `touchstone review`; the versioned backend contract is
 `touchstone.review/v2`. Its canonical non-secret policy lives in

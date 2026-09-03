@@ -17,7 +17,7 @@ the loop:
 |---|---|---|
 | trivial | none | — |
 | normal | one direct, cost-bounded OpenRouter review of the staged slice | `touchstone review run` |
-| serious | one Codex review of the branch, pre-push | `codex review --base <default>` |
+| serious | one review of the committed branch, pre-push | `touchstone review run --base <default>` |
 
 The `touchstone review` command is the stable normal-review interface. Its
 versioned policy selects the backend and owns the cost limits, so the backend
@@ -25,9 +25,11 @@ and routing strategy can evolve without changing the delivery workflow. The v2
 backend makes one OpenRouter Chat Completions request using Auto Router's
 low-cost tier and absolute prompt/completion price ceilings. It names no
 concrete review model; OpenRouter selects for the review prompt and the
-command reports what actually ran. The serious pass and PR-side reviewer
-remain on the default Codex path. The PR-side reviewer runs on open regardless
-and remains the merge authority.
+command reports what actually ran. The serious pass still prefers Codex: `--base` runs
+`codex review` first and falls back to the same bounded request over the branch
+range when Codex is unavailable, so an exhausted quota degrades that review
+instead of removing it. The PR-side reviewer runs on open regardless and
+remains the merge authority.
 
 ## Work slicing
 
@@ -229,9 +231,10 @@ concise cause and stop; never fall back to an unbounded model path. Do not retry
 or inspect credentials. Use `touchstone review setup` for a missing credential
 or `touchstone review rotate` for a rejected one. For the serious pass, capture
 `reviewed_head="$(git rev-parse HEAD)"` immediately before
-`codex review --base <default>` after the branch is committed. The captured
-current head is the immutable revision the pass reviews; `<default>` is only
-its comparison boundary. Record the captured head, never the symbolic base.
+`touchstone review run --base <default>` after the branch is committed. It runs Codex and falls back to the bounded OpenRouter pass over the same branch on any Codex non-success, including an exhausted quota. Which one
+ran is in its output; record that reviewer. The captured current head is the
+immutable revision the pass reviews; `<default>` is only its comparison
+boundary. Record the captured head, never the symbolic base.
 The pass runs at most once before its first push.
 After allowed local findings are fixed, deterministic checks run again and the
 hosted PR reviewer owns exact-head review for every pushed head; another local
@@ -239,9 +242,10 @@ pass is neither required nor authorized.
 
 The one-request rule limits accidental spend and makes permanent provider
 failures terminal instead of retry loops. When a quota or key limit is
-exhausted, the tier's local obligation is satisfied by deterministic checks
-plus recording that failure in the validation block. The PR-visible review is
-the authority either way.
+exhausted, the normal tier's local obligation is satisfied by deterministic
+checks plus recording that failure in the validation block; the serious tier
+falls back first, and waives only if the fallback is also unavailable. The
+PR-visible review is the authority either way.
 
 Afterwards: triage each finding as valid, false positive, duplicate, or out of
 scope; apply valid **P0/P1** fixes and answer-and-route every valid P2 and P3,
@@ -272,21 +276,24 @@ the PR body's Validation block carries
 
 ```markdown
 - Local review: codex on abc1234: 3 findings, 2 fixed, 1 routed to AUT-n.
+- Local review: openrouter on abc1234: 2 findings, 1 fixed, 1 routed to AUT-n — codex is out of credits.
 - Local review: openrouter on the staged slice (review-normal): 0 findings.
 - Local review: n/a — `touchstone review check` reports that the OpenRouter credential is not configured.
 ```
 
 The row begins with `openrouter on the staged slice (review-normal): <n> findings`
-for normal, or `codex on <captured-head-sha>: <n> findings` for serious. Prose
-and dispositions go after the count; backticks around a SHA are fine — and
+for normal, or `<reviewer> on <captured-head-sha>: <n> findings` for serious,
+where the reviewer is whichever one the command reported. Prose and
+dispositions go after the count; backticks around a SHA are fine — and
 `delivery-evidence` refuses a normal or serious PR whose row is missing, a bare
-`n/a`, a serious reviewer other than Codex, a serious target without the
+`n/a`, a serious reviewer that is neither, a serious target without the
 reviewed revision, a normal target that is a bare revision, or a waiver without
-a reason.
+a reason. The target shape, not the reviewer name, keeps the tiers apart:
+serious names a revision, normal names a slice.
 When the row is present but unreadable it says so and quotes the line.
 The gate checks shape, not truth — it cannot see a terminal — but it can
-refuse silence, and silence was the failure. For normal, a waiver is only the
-configured check or run failing. Serious may waive only when Codex is unavailable.
+refuse silence, and silence was the failure. For normal, a waiver is only the configured check or run failing.
+Serious may waive only when Codex and the fallback are both unavailable.
 Either waiver says which concrete boundary failed.
 
 ## Stop conditions
@@ -300,9 +307,10 @@ is met:
 - **normal** — one local pass has run and its findings are triaged, **or**
   the recorded waiver applies (the configured check or run fails — recorded in
   the validation block).
-- **serious** — the pre-push local pass ran or its Codex-unavailable waiver is
-  recorded, and the PR-side review evidence covers the head that merges (the
-  gate enforces the latter). A normal-review failure never waives this pass.
+- **serious** — the pre-push local pass ran, under whichever reviewer the
+  command reached, or the waiver for both being unavailable is recorded, and
+  the PR-side review evidence covers the head that merges (the gate enforces
+  the latter). A normal-review failure never waives this pass.
 
 After a bounded pass, fix the valid findings, **re-run every applicable
 deterministic check and the intended validation scenario** — a valid fix can
