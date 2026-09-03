@@ -198,6 +198,18 @@ list_unresolved_threads() {
     --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | [.id, (.comments.nodes[0].databaseId | tostring), (.comments.nodes[0].path // "-")] | @tsv'
 }
 
+# The first-comment ids of every resolved thread, ascending, comma-joined:
+# the identity of an answered round. Every answer in a round reproduces it
+# once the round is closed, so a retry of any of them finds the round's
+# request marker; a later finding on the same head changes it.
+list_resolved_thread_ids() {
+  graphql_with_retry --paginate \
+    -f owner="$REPO_OWNER" -f name="$REPO_NAME" -F pr="$PR_NUMBER" \
+    -f query="$THREADS_QUERY" \
+    --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == true) | (.comments.nodes[0].databaseId | tostring)' \
+    | sort -n | paste -sd, -
+}
+
 if [ "$ALL_RESOLVED_CHECK" = true ]; then
   UNRESOLVED="$(list_unresolved_threads)" || exit 1
   if [ -z "$UNRESOLVED" ]; then
@@ -362,19 +374,20 @@ if [ "$GATE_BEHAVIOR_VERSION" = 3 ]; then
   # gate run exists yet: whichever run evaluates this head needs the
   # verdict either way. Earlier answers in the same round post nothing.
   #
-  # The idempotency key is the answer that closed the round, not the head
-  # alone. A verdict can only be satisfied by a request posted after it, and
-  # a request that already exists for this head may predate the verdict
-  # whose findings were just answered — a second round of findings on an
-  # unchanged head — in which case the gate waits its whole evidence window
-  # for a verdict nobody asked for (AUT-1170). A retry of the same answer
-  # after a partial failure still finds its own marker and posts nothing, so
-  # one round yields exactly one request. The gate reads "@codex review",
-  # not the markers; they are this script's own record.
+  # The idempotency key is the round the answer closed — the set of
+  # resolved threads — not the head alone. A verdict can only be satisfied
+  # by a request posted after it, and a request that already exists for this
+  # head may predate the verdict whose findings were just answered — a
+  # second round of findings on an unchanged head — in which case the gate
+  # waits its whole evidence window for a verdict nobody asked for
+  # (AUT-1170). A retry of any answer in a closed round reproduces the same
+  # set and posts nothing, so one round yields exactly one request. The gate
+  # reads "@codex review", not the markers; they are this script's own record.
   REMAINING_UNRESOLVED="$(list_unresolved_threads)" || fail "answers are recorded, but the unresolved-thread read failed; when every thread is resolved, post '@codex review' on PR #$PR_NUMBER for the behavior-v3 clean verdict."
   if [ -z "$REMAINING_UNRESOLVED" ]; then
     ATTEST_MARKER="<!-- touchstone:attest-request head=$HEAD_SHA -->"
-    ROUND_MARKER="<!-- touchstone:attest-round head=$HEAD_SHA answered=${COMMENT_ID:-all-resolved} -->"
+    ROUND_IDS="$(list_resolved_thread_ids)" || fail "answers are recorded, but the resolved-thread read failed; when every thread is resolved, post '@codex review' on PR #$PR_NUMBER for the behavior-v3 clean verdict."
+    ROUND_MARKER="<!-- touchstone:attest-round head=$HEAD_SHA answered=${ROUND_IDS:-none} -->"
     EXISTING_ATTEST="$(gh_read api --paginate "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments?per_page=100" --jq '.[].body')" || fail "answers are recorded, but the attest-request idempotency read failed; verify PR #$PR_NUMBER carries one '@codex review' for this head."
     if printf '%s\n' "$EXISTING_ATTEST" | grep -qF "$ROUND_MARKER"; then
       echo "==> Every thread is resolved; the behavior-v3 review request for this answer already exists."

@@ -2556,10 +2556,14 @@ case "$1 $2" in
       has 'databaseId == 52' "$@" && echo "THREAD_52"
       if [ ! -f "$GH_STATE/resolved-52" ]; then
         has 'isResolved == false' "$@" && printf 'THREAD_52\t52\tscripts/x.sh\n'
+        has 'isResolved == true' "$@" && echo "51"
+      else
+        has 'isResolved == true' "$@" && printf '51\n52\n'
       fi
     elif [ -f "$GH_STATE/resolved" ]; then
       # Thread lookup after resolution: by first-comment id only.
       has 'databaseId == 51' "$@" && echo "THREAD_51"
+      has 'isResolved == true' "$@" && echo "51"
     else
       has 'databaseId == 51' "$@" && echo "THREAD_51"
       has 'isResolved == false' "$@" && printf 'THREAD_51\t51\tscripts/x.sh\n'
@@ -2984,13 +2988,14 @@ STATUS_STUB
 
 <!-- touchstone:attest-request head=abcdef0123456789abcdef0123456789abcdef01 -->
 <!-- touchstone:attest-round head=abcdef0123456789abcdef0123456789abcdef01 answered=51 -->" >"$GH_STATE/fresh-request"
+  touch "$GH_STATE/resolved"
   touch "$GH_STATE/second-round"
   run_v3 7 --comment-id 52 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 0 ] || fail "second-round answer exited $RUN_RC: $(tail -3 "$RR/out")"
   [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq 2 ] \
     || fail "a second round of findings did not post a fresh review request: $(cat "$GH_STATE/fresh-request")"
-  grep -qF 'touchstone:attest-round head=abcdef0123456789abcdef0123456789abcdef01 answered=52' "$GH_STATE/fresh-request" \
-    || fail "the second-round request carries no round marker"
+  grep -qF 'touchstone:attest-round head=abcdef0123456789abcdef0123456789abcdef01 answered=51,52' "$GH_STATE/fresh-request" \
+    || fail "the second-round request does not name the round it closed: $(cat "$GH_STATE/fresh-request")"
   grep -qF 'posted a fresh review request' "$RR/out" \
     || fail "second-round answer did not announce its review request"
   # ...and retrying that answer posts nothing more.
@@ -3000,6 +3005,14 @@ STATUS_STUB
   [ "$RUN_RC" -eq 0 ] || fail "second-round retry exited $RUN_RC: $(tail -3 "$RR/out")"
   [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq 2 ] \
     || fail "second-round retry posted a duplicate review request"
+  # ...and so does retrying the EARLIER answer of the closed round: the key
+  # is the round, so no answer in it posts again.
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
+  run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "earlier-answer retry exited $RUN_RC: $(tail -3 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq 2 ] \
+    || fail "retrying an earlier answer of a closed round posted a duplicate review request"
   rm -f "$GH_STATE/second-round" "$GH_STATE/resolved-52" "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request"
 
   # Behavior v2 must never post one: answered findings satisfy that gate.
