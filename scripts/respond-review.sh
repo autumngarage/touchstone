@@ -198,15 +198,19 @@ list_unresolved_threads() {
     --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | [.id, (.comments.nodes[0].databaseId | tostring), (.comments.nodes[0].path // "-")] | @tsv'
 }
 
-# The first-comment ids of every resolved thread, ascending, comma-joined:
-# the identity of an answered round. Every answer in a round reproduces it
-# once the round is closed, so a retry of any of them finds the round's
-# request marker; a later finding on the same head changes it.
+# The first-comment ids of every resolved thread this tool answered --
+# resolved, and carrying a `touchstone:review-answer` disposition marker in
+# one of its comments -- ascending, comma-joined: the identity of an answered
+# round. Every answer in a round reproduces it once the round is closed, so
+# a retry of any of them finds the round's request marker; a later finding
+# on the same head changes it. A thread someone resolved by hand, with no
+# answer from this tool, is not part of any round and never changes the key.
+ANSWERED_THREADS_QUERY='query($endCursor: String, $owner: String!, $name: String!, $pr: Int!) { repository(owner:$owner, name:$name) { pullRequest(number:$pr) { reviewThreads(first:100, after:$endCursor) { nodes { isResolved comments(first:50) { nodes { databaseId body } } } pageInfo { hasNextPage endCursor } } } } }'
 list_resolved_thread_ids() {
   graphql_with_retry --paginate \
     -f owner="$REPO_OWNER" -f name="$REPO_NAME" -F pr="$PR_NUMBER" \
-    -f query="$THREADS_QUERY" \
-    --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == true) | (.comments.nodes[0].databaseId | tostring)' \
+    -f query="$ANSWERED_THREADS_QUERY" \
+    --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == true) | select(any(.comments.nodes[]; (.body // "") | contains("touchstone:review-answer"))) | (.comments.nodes[0].databaseId | tostring)' \
     | sort -n | paste -sd, -
 }
 

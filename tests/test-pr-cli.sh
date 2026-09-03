@@ -2559,6 +2559,13 @@ case "$1 $2" in
         has 'isResolved == true' "$@" && echo "51"
       else
         has 'isResolved == true' "$@" && printf '51\n52\n'
+        # Thread 53 was resolved by hand and carries no answer from this
+        # tool: a query keyed on the tool's own disposition markers omits it;
+        # one keyed on resolution alone would count it.
+        if [ -f "$GH_STATE/externally-resolved-53" ] && has 'isResolved == true' "$@" \
+          && ! has 'touchstone:review-answer' "$@"; then
+          echo "53"
+        fi
       fi
     elif [ -f "$GH_STATE/resolved" ]; then
       # Thread lookup after resolution: by first-comment id only.
@@ -3013,6 +3020,16 @@ STATUS_STUB
   [ "$RUN_RC" -eq 0 ] || fail "earlier-answer retry exited $RUN_RC: $(tail -3 "$RR/out")"
   [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq 2 ] \
     || fail "retrying an earlier answer of a closed round posted a duplicate review request"
+  # A thread someone resolved by hand, with no answer from this tool, is not
+  # a round: it must not change the key and provoke another request.
+  touch "$GH_STATE/externally-resolved-53"
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
+  run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "retry after a hand-resolved thread exited $RUN_RC: $(tail -3 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq 2 ] \
+    || fail "a thread resolved by hand changed the round key and posted a duplicate review request"
+  rm -f "$GH_STATE/externally-resolved-53"
   rm -f "$GH_STATE/second-round" "$GH_STATE/resolved-52" "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request"
 
   # Behavior v2 must never post one: answered findings satisfy that gate.
