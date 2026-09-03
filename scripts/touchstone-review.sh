@@ -305,8 +305,19 @@ prepare_request() {
   chmod 600 "$WORK_DIR/request.json" "$WORK_DIR/diff" \
     || die "could not restrict temporary review input"
   input_bytes="$(wc -c <"$WORK_DIR/request.json" | tr -d ' ')"
-  [ "$input_bytes" -le "$MAX_INPUT_BYTES" ] \
-    || die "review request is $input_bytes bytes; the configured limit is $MAX_INPUT_BYTES bytes; split the change or record the documented waiver"
+  if [ "$input_bytes" -gt "$MAX_INPUT_BYTES" ]; then
+    # Name what was measured. "Split the change" misleads when the reviewed
+    # slice is not the change: the normal scope reviews the staged slice, so
+    # anything else staged -- build output, a broad add -- lands here while
+    # the pull request stays small. A vesper 137-line pull request was
+    # refused this way and read as the tool sending whole files.
+    diff_bytes="$(wc -c <"$WORK_DIR/diff" | tr -d ' ')"
+    diff_files="$(grep -c '^diff --git ' "$WORK_DIR/diff" || printf '0')"
+    echo "The reviewed slice was $diff_bytes bytes across $diff_files file(s); the largest contributors were:" >&2
+    awk '/^diff --git /{ if (f) print n, f; f=$3; n=0 } { n += length($0) + 1 } END { if (f) print n, f }' \
+      "$WORK_DIR/diff" | sort -rn | head -5 | awk '{ printf "  %8d bytes  %s\n", $1, $2 }' >&2
+    die "review request is $input_bytes bytes; the configured limit is $MAX_INPUT_BYTES bytes. If the files above are not what this change touches, the reviewed slice is wrong -- the normal scope reviews the staged slice, not the pull request. Otherwise split the change or record the documented waiver"
+  fi
 }
 
 handle_http_error() {

@@ -8,7 +8,7 @@
     "costTier": "low"
   },
   "limits": {
-    "maxInputBytes": 100000,
+    "maxInputBytes": 400000,
     "maxCompletionTokens": 4096,
     "maxPromptPricePerMillion": 0.5,
     "maxCompletionPricePerMillion": 2,

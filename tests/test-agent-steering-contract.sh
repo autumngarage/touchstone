@@ -1126,7 +1126,7 @@ fi
 after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
 [ "$before_calls" = "$after_calls" ] || fail "oversized review reached OpenRouter"
 
-awk 'BEGIN { for (i = 0; i < 105000; i++) printf "x"; printf "\n" }' \
+awk 'BEGIN { for (i = 0; i < 405000; i++) printf "x"; printf "\n" }' \
   >"$REVIEW_REPOSITORY/staged.txt"
 git -C "$REVIEW_REPOSITORY" add staged.txt
 before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
@@ -1135,7 +1135,7 @@ if (
   review_command run --codex-home "$REVIEW_HOME"
 ) >"$TEST_DIR/large-input.out" 2>&1; then
   fail "normal review accepted a large request above the shipped limit"
-elif ! grep -qF 'configured limit is 100000 bytes' "$TEST_DIR/large-input.out"; then
+elif ! grep -qF 'configured limit is 400000 bytes' "$TEST_DIR/large-input.out"; then
   fail "the shipped large-input limit was not enforced"
 fi
 after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
