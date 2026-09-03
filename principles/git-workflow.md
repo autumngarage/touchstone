@@ -521,18 +521,46 @@ PR's bug.
 
 **Classify every finding before touching anything.** Four dispositions, in the order to consider them:
 
-1. **Fix here** — a *high-severity* defect the diff creates, or a
-   *high-severity* violation of a recorded acceptance criterion or invariant. High severity means
-   correctness, crashes, data loss, security, broken behaviour, unacceptable
-   performance, or lifecycle failure. Fix it in the batch.
+1. **Fix here** — a **P0 or P1** defect the diff creates, or a **P0 or P1**
+   violation of a recorded acceptance criterion or invariant. Fix it in the
+   batch.
    A scope boundary never permits the PR to ship its own regression; fix or
    revert that behavior here even when it falls outside the planned change.
    If the immediately preceding review fix created the regression, follow the
    cascade rule below instead of stacking another fix onto it.
-   A diff-created finding *below* that threshold takes disposition 4: answer
-   it, route it to an issue, resolve the thread. Fixing every low-severity
-   remark a reviewer raises is the expansion this budget exists to stop, and
-   "the diff created it" does not by itself make it worth another round.
+
+   **The badge is the bar; nothing else is.** Do not re-derive severity from a
+   finding's prose. The reviewer is instructed to report *only* concrete
+   correctness, security, data-loss, compatibility, lifecycle, and material
+   performance defects (`config/review-normal-prompt.md`), and only then to
+   rank them: P0 release-stopping, P1 high-impact, P2 ordinary, P3 low-impact.
+   Those categories are its *admission* criteria, not its severity scale —
+   every finding it is capable of emitting matches them. A bar phrased in
+   those categories selects everything, which is exactly how the old wording
+   ("high severity means correctness, crashes, data loss, security, broken
+   behaviour…") was read on #706, #755, and #1091: the reviewer's own words
+   were quoted back as proof the finding cleared the bar. Read the badge.
+
+   This rule has been written once before. The steering size cap was raised
+   deliberately on 2026-08-19 to carry "only high-severity findings are
+   implemented", because #925 had just spent twenty review rounds on a change
+   that was correct and tested after three
+   (`tests/test-steering-size-caps.sh`). It did not hold, and the reason was
+   the wording rather than the agent: a bar naming the reviewer's own
+   admission categories cannot exclude anything the reviewer says. Restating
+   it more forcefully would fail the same way. The badge is the only part of
+   a finding the agent cannot argue with, so the badge is the bar.
+
+   **P2 and P3 are never fixed in the PR that received them.** They take
+   disposition 3 or 4 — never 1 or 2. Push back where the finding is wrong;
+   otherwise answer, route to an issue, resolve the thread, and merge. That holds when the finding is correct, when the fix is one
+   line, when the file is already open in the diff, and when fixing looks
+   cheaper than writing the answer — those four are the rationalizations that
+   produced the loops, not exceptions to the rule. "The diff created it" does
+   not promote a P2. A finding with no badge, or an ambiguous one, is a P2.
+   If a P2 looks release-stopping to you, route it and say so in the answer;
+   promoting a finding is the human's call on the tracked issue, never a
+   reason to keep mutating the PR.
 2. **Fix and audit the class** — the in-scope finding is one instance of a
    shape. Grep for siblings before responding
    (`principles/audit-weak-points.md`); fix in-scope siblings and route any
@@ -573,7 +601,7 @@ decline to run was never a rule. Closing, renaming, restacking, or reopening the
 same acceptance criterion does not reset its count. Past three rounds, the
 legitimate exits are:
 
-- **Merge if answered** — only when no known high-severity defect remains; all
+- **Merge if answered** — only when no known P0/P1 defect remains; all
   threads resolved satisfies the gate, but routing a low-severity or
   out-of-scope finding is not permission to ship a known serious regression;
 - **Split the PR** — only genuinely independent acceptance criteria receive
