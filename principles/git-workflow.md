@@ -204,6 +204,20 @@ before treating that red check as a review verdict.
 
 **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.** GitHub's review API can support approval for authorized integrations, but that is not this adapter's observed contract. Do not expect an approval here or treat its absence as a stalled review.
 
+**More than one reviewer can satisfy the gate, so watch the gate rather than a
+reviewer.** Where the primary reviewer is unavailable — an exhausted quota, an
+outage — the pinned `review-gate` workflow reviews the head itself and decides
+from that. A green `review-gate` therefore means this head was reviewed, even
+with no review comment on the pull request from the reviewer you expected.
+Absence of that comment is not a missing review, and it is not a reason to
+wait, to re-request, or to record a waiver.
+
+Where the fallback's findings live differs, because the gate runs read-only and
+cannot post to the pull request: they are in the gate run's log and job
+summary, not in review threads. `gh run view <run-id> --log` reaches them, and
+the check's page shows the summary. A closed gate with no PR comment means
+findings are waiting there.
+
 **Where the repository's effective policy requires `review-gate`, it enforces
 the review contract.** Under gate behavior contract 3 it passes only on a
 trusted, unedited clean verdict bound to the exact current head; where
