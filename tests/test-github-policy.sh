@@ -2391,20 +2391,25 @@ lr_body '- Local review: openrouter on the staged slice (review-normal): 0 findi
 accepts && ok "a direct OpenRouter normal pass is accepted" || fail "an OpenRouter normal pass was refused"
 lr_body '- Local review: codex on    : 0 findings.' normal
 accepts && fail "a normal pass naming only whitespace as its target was accepted" || ok "a normal target contains non-whitespace text"
+# A normal row naming a bare revision is the range pass -- what `touchstone
+# review run --base` prints -- run on a normal change. It reviews the whole
+# committed branch instead of the staged slice, so it is strictly more
+# evidence. Refusing it punished the more rigorous choice and refused a row
+# the CLI itself had just produced (AUT-1250). The tier boundary that carries
+# weight is the other direction, asserted below: a serious change may not
+# record a staged slice.
 lr_body '- Local review: codex on 1234567: 0 findings.' normal
-accepts && fail "a normal pass naming a bare revision was accepted" || ok "a normal target is not a bare revision"
+accepts && ok "a normal pass may record the more rigorous range review" || fail "a normal range pass was refused (AUT-1250)"
 lr_body '- Local review: codex on `1234567`: 0 findings.' normal
-accepts && fail "a normal pass naming a decorated bare revision was accepted" || ok "normal target decoration cannot disguise a bare revision"
-lr_body '- Local review: codex on 1234567 : 0 findings.' normal
-accepts && fail "a normal pass naming a space-padded bare revision was accepted" || ok "normal target whitespace cannot disguise a bare revision"
-lr_body '- Local review: codex on  1234567: 0 findings.' normal
-accepts && fail "a normal pass naming a leading-padded bare revision was accepted" || ok "leading target whitespace cannot disguise a bare revision"
-lr_body '- Local review: codex on `1234567 `: 0 findings.' normal
-accepts && fail "a normal pass naming an inner-padded bare revision was accepted" || ok "whitespace inside target decoration cannot disguise a bare revision"
+accepts && ok "a decorated range revision is accepted on normal" || fail "a decorated normal range pass was refused"
 lr_body '- Local review: coderabbit on 1234567: 0 findings.' normal
-accepts && fail "a normal coderabbit pass naming a bare revision was accepted" || ok "the normal target rule applies to both transition reviewers"
+accepts && ok "the normal range pass is accepted for both transition reviewers" || fail "a coderabbit normal range pass was refused"
 lr_body '- Local review: openrouter on 1234567: 0 findings.' normal
-accepts && fail "a normal OpenRouter pass naming a bare revision was accepted" || ok "the normal target rule applies to OpenRouter"
+accepts && ok "the OpenRouter range pass the CLI prints is accepted on normal" || fail "the row touchstone review run --base prints was refused on normal (AUT-1250)"
+# The direction that still matters: a serious change reviewed only as a
+# staged slice records less than its tier requires.
+lr_body '- Local review: codex on the staged slice (review-normal): 0 findings.' serious
+accepts && fail "a serious PR recording only a staged slice was accepted" || ok "a serious change may not record a staged slice"
 lr_body '- Local review: coderabbit on the staged slice: 0 findings.' serious
 accepts && fail "a serious PR recording coderabbit was accepted" || ok "the wrong reviewer for the tier is refused (serious wants codex)"
 lr_body '- Local review: openrouter on the staged slice: 0 findings.' serious
@@ -2423,8 +2428,12 @@ lr_body '- Local review: n/a — the codex executable is missing from this runne
 accepts && ok "a waiver with any stated reason is accepted" || fail "a waiver stating a reason in its own words was refused"
 lr_body '- Local review: n/a —' serious
 accepts && fail "a waiver with an empty reason was accepted" || ok "a waiver with an empty reason is refused"
-lr_body '- Local review: codex on 1234567: 0 findings; coderabbit CLI was unavailable.' normal
-accepts && fail "a codex run mentioning coderabbit was accepted on normal" || ok "the reviewer must open the run record, a mention elsewhere does not count"
+# The fixture names no reviewer at the start: the mention later in the row is
+# what must not count. (It used to open with "codex on <revision>" and was
+# refused for naming a revision on normal, never for the mention -- so it
+# asserted its own name only by accident until AUT-1250 removed that rule.)
+lr_body '- Local review: ran the pass on the staged slice: 0 findings; coderabbit CLI was unavailable.' normal
+accepts && fail "a run record mentioning coderabbit was accepted on normal" || ok "the reviewer must open the run record, a mention elsewhere does not count"
 lr_body '- Local review: coderabbit on the staged slice: 1 finding (tests not run), fixed.' normal
 accepts && ok "a finding disposition may say 'not run' without being read as a skipped pass" || fail "a real pass was refused for a finding's wording"
 lr_body '- Local review: coderabbit not run: 0 findings.' normal

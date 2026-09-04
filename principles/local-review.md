@@ -292,7 +292,14 @@ the PR body's Validation block carries
 - Local review: openrouter on the staged slice (review-normal): 0 findings.
 - Local review: n/a — `touchstone review check` reports that the OpenRouter credential is not configured.
 - Local review: n/a — the gate is on its fallback reviewer, which shares the OpenRouter account with the local pass.
+- Local review: openrouter on abc1234: 0 findings.   # a normal change reviewed with --base
 ```
+
+A normal change may record the range pass (`touchstone review run --base
+<default>`, which names the revision it reviewed) instead of the staged
+slice: it reviews the whole committed branch, so it is more evidence, and the
+gate accepts it. The reverse is not true — a serious change must record the
+revision it reviewed, never a staged slice.
 
 While the pinned gate is reviewing heads itself (the primary reviewer is out
 of quota or down), waive the local pass with that last reason: the local pass
