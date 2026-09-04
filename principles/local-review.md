@@ -291,7 +291,13 @@ the PR body's Validation block carries
 - Local review: openrouter on abc1234: 2 findings, 1 fixed, 1 routed to AUT-n — codex is out of credits.
 - Local review: openrouter on the staged slice (review-normal): 0 findings.
 - Local review: n/a — `touchstone review check` reports that the OpenRouter credential is not configured.
+- Local review: n/a — the gate is on its fallback reviewer, which shares the OpenRouter account with the local pass.
 ```
+
+While the pinned gate is reviewing heads itself (the primary reviewer is out
+of quota or down), waive the local pass with that last reason: the local pass
+and the gate draw on one OpenRouter account, and a local pass that starves
+the gate delays the review that counts. The exact-head gate is the review.
 
 The row begins with `openrouter on the staged slice (review-normal): <n> findings`
 for normal, or `<reviewer> on <captured-head-sha>: <n> findings` for serious,
