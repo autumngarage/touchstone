@@ -227,6 +227,11 @@ case "$1 ${2:-}" in
     esac
     ;;
   "pr comment")
+    if has 'touchstone:review-fallback' "$@"; then
+      touch "$GH_STATE/fallback-announced"
+      printf '%s\n' https://example.test/pr/7#issuecomment-3
+      exit 0
+    fi
     if has 'touchstone:unguarded-merge' "$@"; then
       touch "$GH_STATE/unguarded-recorded"
       printf '%s\n' https://example.test/pr/7#issuecomment-9
@@ -550,7 +555,13 @@ case "$1 ${2:-}" in
     elif has '.[] | @base64' "$@"; then
       :
     elif has '/issues/7/comments' "$@"; then
-      if has 'updated_at // .created_at' "$@"; then
+      if has '[.id, (.user.login // ""), (.body // "")]' "$@"; then
+        case "${GH_MODE:-ok}" in
+          primary_quota) printf '2\tchatgpt-codex-connector[bot]\tYou have reached your Codex usage limits for code reviews.\n' ;;
+          primary_replied) printf '2\tchatgpt-codex-connector[bot]\tReviewed commit: %s\n' "$GH_HEAD" ;;
+        esac
+        [ ! -f "$GH_STATE/fallback-announced" ] || printf '3\talice\t<!-- touchstone:review-fallback head=%s -->\n' "$GH_HEAD"
+      elif has 'updated_at // .created_at' "$@"; then
         printf '%s\n' '2026-08-27T17:05:00Z'
       elif [ "${GH_MODE:-ok}" = many_requests ]; then
         for index in $(awk 'BEGIN { for (i = 1; i <= 4000; i++) print i }'); do
@@ -952,6 +963,8 @@ EOF
   export GH_LEGACY_POLICY_SHA
   export GH_BASE_REF=main GH_BASE_SHA=base-sha
   export TOUCHSTONE_READ_ATTEMPTS=2 TOUCHSTONE_REQUEST_ATTEMPTS=2 TOUCHSTONE_RETRY_DELAY=0 TOUCHSTONE_GATE_RETRY_DELAY=0
+  # The wait for the primary reviewer's reply is exercised by its own case.
+  export TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=0
 
   run_pr() {
     local output="$1"
@@ -1461,6 +1474,38 @@ EOF
     || fail "behavior v3 open re-ran an evaluation that was already active"
   rm -f "$TMP/state/gate-in-progress" "$TMP/state/gate-fresh-active" "$TMP/state/behavior-version-next"
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns"
+
+  echo "==> open asks the primary reviewer first and records the move to the fallback when it declines"
+  touch "$TMP/state/review-gate"
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/review-request" "$TMP/state/fallback-announced"
+  : >"$GH_CALLS"
+  TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 GH_MODE=primary_quota run_pr "$TMP/out" open --title 'Declined' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  grep -q '^pr comment' "$GH_CALLS" && grep -q 'touchstone:review-fallback' "$GH_CALLS" \
+    || fail "open did not record the fallback on the pull request after the primary declined"
+  assert_has "$TMP/out" '"reviewFallback":"fallback"'
+  grep -q '^pr comment.*@codex review' "$GH_CALLS" || fail "open did not ask the primary reviewer before recording the fallback"
+  # Idempotent per head: a re-run sees its own notice and posts nothing.
+  : >"$GH_CALLS"
+  TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 GH_MODE=primary_quota run_pr "$TMP/out" open --title 'Declined' --body-file "$TMP/body"
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'review: fallback'
+  [ "$(grep -c 'touchstone:review-fallback' "$GH_CALLS")" -eq 0 ] || fail "open posted a second fallback notice for the same head"
+  # A primary that answers is left to the gate; nothing is posted.
+  rm -f "$TMP/state/review-request" "$TMP/state/fallback-announced"
+  : >"$GH_CALLS"
+  TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 GH_MODE=primary_replied run_pr "$TMP/out" open --title 'Replied' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewFallback":"primary"'
+  assert_not_has "$GH_CALLS" 'touchstone:review-fallback'
+  # No reply within the bound: the gate decides, nothing is posted.
+  rm -f "$TMP/state/review-request"
+  : >"$GH_CALLS"
+  TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 run_pr "$TMP/out" open --title 'Silent' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewFallback":"pending"'
+  assert_not_has "$GH_CALLS" 'touchstone:review-fallback'
+  rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns" "$TMP/state/review-request" "$TMP/state/fallback-announced"
 
   echo "==> open refreshes required delivery evidence after body convergence (AUT-481)"
   # Put both the policy declaration and matching organization run on page two.

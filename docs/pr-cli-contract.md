@@ -229,6 +229,13 @@ taking this document's word for it.
   implementation is output formatting, and its read path is shared with
   `merge`. If it ever stops earning a public command, delete it.
 
+- `open` asks the primary reviewer first and then waits a bounded time for
+  its first reply to that request. A quota notice moves review to the gate's
+  fallback; `open` records that once per head on the pull request (a comment
+  carrying `<!-- touchstone:review-fallback head=<sha> -->`) and reports
+  `reviewFallback` as `fallback`, `primary`, or `pending`. It never skips the
+  request: the primary's own reply is the evidence the move rests on.
+
 - `merge` requires the caller's exact reviewed head, passes it through
   `--match-head-commit`, and re-reads state and head after the mutation. It
   accepts merged, queued, or auto-merge-enabled only while the reconciled head
