@@ -704,11 +704,15 @@ shift
 # invalidated is the failure this exists to prevent. The escape is for an
 # operator who wants the pin moved without touching pull requests.
 RETRIGGER_OPEN_PRS=true
+kept=()
 for arg in "$@"; do
-  [ "$arg" = "--no-retrigger" ] || continue
-  RETRIGGER_OPEN_PRS=false
+  if [ "$arg" = "--no-retrigger" ]; then
+    RETRIGGER_OPEN_PRS=false
+  else
+    kept+=("$arg")
+  fi
 done
-set -- "${@/--no-retrigger/}"
+set -- "${kept[@]+"${kept[@]}"}"
 
 # A repin invalidates gate evidence produced by the outgoing revision:
 # touchstone pr status compares a run's workflow file revision against the
@@ -743,6 +747,10 @@ retrigger_open_pull_requests() {
       && sleep 2 \
       && gh pr reopen "$number" --repo "$ORG/$REPOSITORY" >/dev/null 2>&1; then
       echo "  re-triggered #$number"
+      # Every re-trigger starts a gate run that calls the review provider.
+      # Firing them all at once is a burst on a shared rate limit, and a burst
+      # is exactly what trips it. Space them out.
+      sleep "${RETRIGGER_SPACING_SECONDS:-20}"
     else
       echo "  WARNING: could not re-trigger #$number; close and reopen it to re-run its gate." >&2
       failed=1
