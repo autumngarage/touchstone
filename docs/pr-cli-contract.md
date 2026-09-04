@@ -233,10 +233,11 @@ taking this document's word for it.
   `--match-head-commit`, and re-reads state and head after the mutation. It
   accepts merged, queued, or auto-merge-enabled only while the reconciled head
   still equals the reviewed head. Where the base branch requires the pinned
-  `review-gate` workflow, it requires the current policy-bound CheckRun to be
-  complete and successful for that head before asking GitHub to merge. A
-  pending, failed, absent, unbound, or ambiguous gate causes no merge or queue
-  mutation. Review is requested by `open` and refreshed by `answer`; `merge`
+  `review-gate` workflow, it reads the current policy-bound CheckRun for that
+  head: successful, it asks GitHub to merge; still evaluating, it arms
+  auto-merge bound to that head so GitHub admits it when the gate succeeds
+  (`reviewGate.action` is `arm-auto-merge`). A failed, absent, unbound, or
+  ambiguous gate causes no merge or queue mutation. Review is requested by `open` and refreshed by `answer`; `merge`
   never starts or waits for review. It also does not rebuild a second review
   verdict from mutable comment timestamps. A review-gated policy without a
   merge queue is reported as partial and requires the explicit audited
