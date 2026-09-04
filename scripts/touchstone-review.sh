@@ -266,7 +266,7 @@ prepare_request() {
             completion: $maxCompletionPrice
           }
         },
-        max_completion_tokens: $maxCompletionTokens,
+        max_tokens: $maxCompletionTokens,
         usage: {include: true},
         response_format: {
           type: "json_schema",

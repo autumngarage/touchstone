@@ -1064,7 +1064,7 @@ jq -e '
   .provider.require_parameters == true and
   .provider.max_price.prompt == 0.5 and
   .provider.max_price.completion == 2 and
-  .max_completion_tokens == 4096 and
+  .max_tokens == 4096 and
   .usage.include == true and
   .response_format.type == "json_schema" and
   (.tools == null)
