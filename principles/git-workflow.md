@@ -210,7 +210,11 @@ outage — the pinned `review-gate` workflow reviews the head itself and decides
 from that. A green `review-gate` therefore means this head was reviewed, even
 with no review comment on the pull request from the reviewer you expected.
 Absence of that comment is not a missing review, and it is not a reason to
-wait, to re-request, or to record a waiver.
+wait, to re-request, or to record a waiver. The primary is always asked
+first: `touchstone pr open` posts the request, waits briefly for the reply,
+and when the reply is a quota notice it records the move on the pull request
+("Review fallback in effect for `<head>`") and prints `review: fallback`.
+That notice, not the quota comment, is what to read.
 
 Where the fallback's findings live differs, because the gate runs read-only and
 cannot post to the pull request: they are in the gate run's log and job

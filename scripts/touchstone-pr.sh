@@ -15,6 +15,17 @@ PR_HEAD_ATTEMPTS=11
 # return control instead of polling the poller.
 GATE_ATTEMPTS="${TOUCHSTONE_GATE_ATTEMPTS:-60}"
 GATE_RETRY_DELAY="${TOUCHSTONE_GATE_RETRY_DELAY:-5}"
+# The primary reviewer's observed contract: it replies under this login, and
+# when it cannot review it says so in one of these sentences -- the same ones
+# the pinned gate reads to move to its fallback. The request is always made
+# first; the fallback is recorded only after the primary has declined.
+PRIMARY_REVIEWER_LOGIN="${TOUCHSTONE_PRIMARY_REVIEWER_LOGIN:-chatgpt-codex-connector[bot]}"
+PRIMARY_DECLINED_PATTERN='reached your .* usage limits|usage limits for code reviews|Review limit reached|reached its usage spending cap'
+# How long open waits for the primary's first reply to the request it just
+# posted. The reply normally lands within two minutes; past this bound the
+# gate decides on its own and a later re-run of open records the decline.
+REVIEW_RESPONSE_WAIT_SECONDS="${TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS:-180}"
+REVIEW_FALLBACK_STATE=""
 # Behavior v2 guarantees these minimum observation windows from workflow
 # start. Reusing a run only inside the relevant lower bound is conservative:
 # setup and state transitions can move the actual deadline later, never sooner.
@@ -456,6 +467,10 @@ emit_open_result() {
     json_string "$head"
     printf ',"reviewRequest":'
     json_string "$request"
+    if [ -n "$REVIEW_FALLBACK_STATE" ]; then
+      printf ',"reviewFallback":'
+      json_string "$REVIEW_FALLBACK_STATE"
+    fi
     if [ -n "$REVIEW_GATE_RUN_ID" ]; then
       printf ',"reviewGate":{"runId":'
       json_string "$REVIEW_GATE_RUN_ID"
@@ -471,6 +486,11 @@ emit_open_result() {
   else
     printf 'PR #%s: %s\n  url: %s\n  branch: %s\n  head: %s\n  review request: %s\n' \
       "$number" "$state" "$url" "$branch" "$head" "$request"
+    case "$REVIEW_FALLBACK_STATE" in
+      fallback) printf '  review: fallback — the primary reviewer declined (out of quota); the review-gate reviews this head itself. Not a blocker.\n' ;;
+      primary) printf '  review: primary reviewer replied; the review-gate decides.\n' ;;
+      pending) printf '  review: no reply from the primary reviewer yet; the review-gate decides.\n' ;;
+    esac
     [ -z "$BODY_APPLIED" ] || printf '  body: %s\n' "$BODY_APPLIED"
   fi
 }
@@ -1600,6 +1620,7 @@ wait_for_request_binding() {
     fi
     rerun_declared_review_gate "$number" "$head" "$active_reuse_seconds" "$base_ref" "$base_sha"
     verify_live_coordinates "$number" "$head" "$base_ref" "$base_sha"
+    announce_review_fallback "$number" "$head" "$request_url"
     if [ "$JSON_MODE" = false ]; then
       if [ "$REVIEW_GATE_ACTION" = already-active ]; then
         printf 'Review gate run %s is already evaluating this head; returning control while it waits for review evidence.\n' "$REVIEW_GATE_RUN_ID" >&2
@@ -1636,6 +1657,54 @@ wait_for_request_binding() {
     printf 'No pinned review gate protects %s here; %s at %s reports the gap, and nothing binds the posted request server-side. Track it.\n' "$base_ref" "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" >&2
   fi
   return 0
+}
+
+# Ask the primary reviewer first; if it declines, say so where the driver
+# and every later reader look. The gate moves to its fallback on the same
+# reply, but it runs read-only and cannot write that on the pull request, so
+# a declined reply used to sit there alone and read as "waiting on Codex".
+# One notice per head, posted by the driver's own identity, closes that gap.
+announce_review_fallback() {
+  local number="$1" head="$2" request_url="$3" request_id rows primary_reply marker step waited=0
+  REVIEW_FALLBACK_STATE=""
+  request_id="${request_url##*issuecomment-}"
+  case "$request_id" in '' | *[!0-9]*) return 0 ;; esac
+  case "$REVIEW_RESPONSE_WAIT_SECONDS" in '' | *[!0-9]* | 0) return 0 ;; esac
+  marker="<!-- touchstone:review-fallback head=$head -->"
+  step="$GATE_RETRY_DELAY"
+  [ "$step" -gt 0 ] 2>/dev/null || step=1
+  while :; do
+    assert_wait_liveness "$number" "$head"
+    read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$number/comments?per_page=100" \
+      --jq '.[] | [.id, (.user.login // ""), (.body // "")] | @tsv' \
+      || fail_operation "could not read the primary reviewer's reply on PR #$number: $READ_OUTPUT" "Retry after GitHub recovers."
+    rows="$READ_OUTPUT"
+    primary_reply="$(printf '%s\n' "$rows" | awk -F '\t' -v p="$PRIMARY_REVIEWER_LOGIN" -v after="$request_id" \
+      '$2 == p && ($1 + 0) > (after + 0) { print $3; exit }')"
+    if [ -n "$primary_reply" ]; then
+      if printf '%s' "$primary_reply" | grep -qiE "$PRIMARY_DECLINED_PATTERN"; then
+        REVIEW_FALLBACK_STATE=fallback
+        if ! printf '%s\n' "$rows" | grep -qF "$marker"; then
+          capture_command gh pr comment "$number" --repo "$REPO_SPEC" --body "$marker
+**Review fallback in effect for \`$head\`.** The primary reviewer (Codex) replied that it is out of quota, so the pinned \`review-gate\` workflow reviews this head itself. This is not a blocker: watch the \`review-gate\` check. Its findings are in the run log (\`gh run view <run-id> --log\`), each with an id; answer one with \`touchstone pr answer $number --finding <id> --body-file <reply> --no-code-change\` (refute) or \`--fix-commit <sha>\` (fixed), then run \`touchstone pr merge $number --head $head\`." \
+            || fail_operation "could not record the review fallback on PR #$number: $CAPTURE_ERROR" "Inspect comments before retrying."
+        fi
+        printf 'Primary reviewer declined (out of quota); the review-gate reviews %s itself. Not a blocker: watch the check.\n' "$head" >&2
+      else
+        REVIEW_FALLBACK_STATE=primary
+        printf 'Primary reviewer replied to the request for %s; the review-gate decides from its evidence.\n' "$head" >&2
+      fi
+      return 0
+    fi
+    waited=$((waited + step))
+    if [ "$waited" -ge "$REVIEW_RESPONSE_WAIT_SECONDS" ]; then
+      REVIEW_FALLBACK_STATE=pending
+      printf 'No reply from the primary reviewer within %ss; the review-gate decides for %s. Re-run this command later to record a declined reply.\n' \
+        "$REVIEW_RESPONSE_WAIT_SECONDS" "$head" >&2
+      return 0
+    fi
+    sleep "$GATE_RETRY_DELAY"
+  done
 }
 
 open_pr() {
