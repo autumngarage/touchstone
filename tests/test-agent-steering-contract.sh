@@ -1405,6 +1405,61 @@ if (
 elif ! grep -qF 'malformed review response' "$TEST_DIR/malformed-response.out"; then
   fail "malformed OpenRouter response lost its diagnostic"
 fi
+if ! grep -qF 'unusable: model, usage.prompt_tokens' \
+  "$TEST_DIR/malformed-response.out"; then
+  fail "malformed OpenRouter response did not name its unusable fields"
+fi
+
+# A response failing exactly one condition must name exactly that condition.
+# The seven-condition compound check this replaced exited through one generic
+# sentence, so a null cost read the same as an auth page, and the EXIT trap
+# deleted the only body that could have told them apart.
+NULL_COST_RESPONSE="$TEST_DIR/null-cost-response.json"
+jq '.usage.cost = null' "$FAKE_RESPONSE" >"$NULL_COST_RESPONSE"
+if (
+  cd "$REVIEW_WORKTREE"
+  TOUCHSTONE_FAKE_REVIEW_RESPONSE="$NULL_COST_RESPONSE" \
+    review_command run --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/null-cost-response.out" 2>&1; then
+  fail "OpenRouter response with an unusable cost was accepted"
+elif ! grep -qF 'unusable: usage.cost; model:' "$TEST_DIR/null-cost-response.out"; then
+  fail "single-field OpenRouter failure did not name exactly that field"
+fi
+REVIEW_KEPT_RESPONSE="$(sed -n 's/.*response kept at //p' \
+  "$TEST_DIR/null-cost-response.out" | head -1)"
+[ -n "$REVIEW_KEPT_RESPONSE" ] \
+  || fail "malformed OpenRouter response named no preserved body"
+[ -s "$REVIEW_KEPT_RESPONSE" ] \
+  || fail "preserved OpenRouter response is missing or empty: $REVIEW_KEPT_RESPONSE"
+jq -e '.usage.cost == null' "$REVIEW_KEPT_RESPONSE" >/dev/null \
+  || fail "preserved OpenRouter response is not the body that failed"
+rm -f "$REVIEW_KEPT_RESPONSE"
+
+# A 200 carrying a provider error and no choices is a transport failure, not a
+# malformed review. Verified live on the gate side before being fixed there.
+PROVIDER_ERROR_RESPONSE="$TEST_DIR/provider-error-response.json"
+jq -n '{error: {message: "temporarily rate-limited upstream. Please retry shortly"}}' \
+  >"$PROVIDER_ERROR_RESPONSE"
+before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+if (
+  cd "$REVIEW_WORKTREE"
+  TOUCHSTONE_FAKE_REVIEW_RESPONSE="$PROVIDER_ERROR_RESPONSE" \
+    review_command run --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/provider-error.out" 2>&1; then
+  fail "HTTP 200 carrying a provider error was accepted"
+elif ! grep -qF 'HTTP 200 with a provider error' "$TEST_DIR/provider-error.out"; then
+  fail "HTTP 200 provider error was not distinguished from a malformed review"
+elif ! grep -qF 'temporarily rate-limited upstream' "$TEST_DIR/provider-error.out"; then
+  fail "HTTP 200 provider error did not carry the provider's own message"
+elif ! grep -qF 'not retried' "$TEST_DIR/provider-error.out"; then
+  fail "HTTP 200 provider error did not say the request was not retried"
+fi
+after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+[ $((after_calls - before_calls)) -eq 1 ] \
+  || fail "HTTP 200 provider error was retried"
+REVIEW_KEPT_RESPONSE="$(sed -n 's/.*response kept at //p' \
+  "$TEST_DIR/provider-error.out" | head -1)"
+[ -z "$REVIEW_KEPT_RESPONSE" ] || rm -f "$REVIEW_KEPT_RESPONSE"
 TRUNCATED_RESPONSE="$TEST_DIR/truncated-response.json"
 jq '.choices[0].finish_reason = "length"' "$FAKE_RESPONSE" >"$TRUNCATED_RESPONSE"
 if (
