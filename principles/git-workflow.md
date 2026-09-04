@@ -216,7 +216,24 @@ Where the fallback's findings live differs, because the gate runs read-only and
 cannot post to the pull request: they are in the gate run's log and job
 summary, not in review threads. `gh run view <run-id> --log` reaches them, and
 the check's page shows the summary. A closed gate with no PR comment means
-findings are waiting there.
+findings are waiting there. Each finding is printed with its severity and a
+16-character id, and the verdict is recorded once per head: a re-run of the
+gate for the same head reuses it, so the ids do not change under you. P0 and
+P1 close the gate; P2 and P3 are reported only — route them, do not fix them.
+Answer a gate-reported finding with the same command and dispositions as a
+review thread:
+
+```bash
+touchstone pr answer <n> --finding <id> --body-file <reply> --no-code-change   # wrong or out of scope: refute with evidence
+touchstone pr answer <n> --finding <id> --body-file <reply> --fix-commit <sha> # fixed: the new head gets its own review
+```
+
+The answer is recorded in the pull request body, which the gate reads on its
+next run; a refuted finding stops blocking without a code change. A reviewer
+can be wrong — refute a wrong finding, never implement it to make the gate go
+green. Then run `touchstone pr merge <n> --head <sha>` at once: it arms
+auto-merge while the gate is still evaluating, and GitHub admits the head when
+the gate passes.
 
 **Where the repository's effective policy requires `review-gate`, it enforces
 the review contract.** Under gate behavior contract 3 it passes only on a
