@@ -251,8 +251,13 @@ if [ "$ALL_RESOLVED_CHECK" = true ]; then
   exit 1
 fi
 
-[ -n "$COMMENT_ID" ] || usage
-case "$COMMENT_ID" in *[!0-9]*) fail "--comment-id must be numeric, got: $COMMENT_ID" ;; esac
+# Either target is an answer; a thread id is numeric, a finding id is checked
+# where it is used. Guarding on the thread id alone made --finding unreachable
+# (3.10.1 printed usage for a valid finding answer).
+[ -n "$COMMENT_ID" ] || [ -n "$FINDING_ID" ] || usage
+if [ -n "$COMMENT_ID" ]; then
+  case "$COMMENT_ID" in *[!0-9]*) fail "--comment-id must be numeric, got: $COMMENT_ID" ;; esac
+fi
 [ -n "$BODY_FILE" ] || usage
 [ -f "$BODY_FILE" ] || fail "--body-file not found: $BODY_FILE"
 [ -s "$BODY_FILE" ] || fail "--body-file is empty: $BODY_FILE"
@@ -331,6 +336,23 @@ $FINDING_MARKER"
   else
     echo "    disposition: no-code-change; the finding no longer blocks, and the log records the dismissal every run."
   fi
+  # The gate reads the body on its next run, so ask for one: the latest
+  # review-gate run for this head is re-run when it is complete, and left
+  # alone when it is still evaluating (it reads the body when it decides).
+  GATE_ROW="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/actions/runs?head_sha=$HEAD_SHA&per_page=30" \
+    --jq '[.workflow_runs[] | select(.name == "review-gate")] | sort_by(.run_number) | last | if . == null then "" else [.id, .status] | @tsv end')" \
+    || fail "the answer is recorded, but the review-gate runs for $HEAD_SHA could not be listed: $GATE_ROW"
+  IFS="$(printf '\t')" read -r GATE_RUN GATE_STATUS <<<"$GATE_ROW"
+  if [ -z "$GATE_RUN" ]; then
+    echo "==> No review-gate run exists for $HEAD_SHA yet; the next one reads the answer."
+  elif [ "$GATE_STATUS" = completed ]; then
+    gh api -X POST "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$GATE_RUN/rerun" >/dev/null \
+      || fail "the answer is recorded, but review-gate run $GATE_RUN could not be re-run; re-run it from the Actions tab."
+    echo "==> Review gate re-run requested (run $GATE_RUN)."
+  else
+    echo "==> Review gate run $GATE_RUN is still evaluating this head; it reads the answer when it decides."
+  fi
+  echo "    then: touchstone pr merge $PR_NUMBER --head $HEAD_SHA"
   exit 0
 fi
 
