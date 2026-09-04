@@ -700,6 +700,57 @@ COMMAND="${1:-}"
 }
 shift
 
+# Re-running open pull requests' gates is the default because leaving them
+# invalidated is the failure this exists to prevent. The escape is for an
+# operator who wants the pin moved without touching pull requests.
+RETRIGGER_OPEN_PRS=true
+for arg in "$@"; do
+  [ "$arg" = "--no-retrigger" ] || continue
+  RETRIGGER_OPEN_PRS=false
+done
+set -- "${@/--no-retrigger/}"
+
+# A repin invalidates gate evidence produced by the outgoing revision:
+# touchstone pr status compares a run's workflow file revision against the
+# revisions the effective ruleset pins, so every open pull request whose gate
+# already passed reads as "unbound" the moment the pin moves. The check stays
+# green in GitHub's UI, which is what makes it confusing -- an agent sees a
+# passing gate and a CLI reporting no bound review, and reasonably concludes
+# review never happened.
+#
+# Accepting the outgoing revision as well would be the cheap fix and the wrong
+# one: a repin is often made precisely to replace a gate that was failing open,
+# and evidence from that gate is exactly what must stop counting.
+#
+# So the evidence is regenerated rather than grandfathered. Closing and
+# reopening re-runs the required workflows on the same head, which keeps the
+# reviewed SHA; editing does not start a new run.
+retrigger_open_pull_requests() {
+  local open_prs number failed=0
+  [ "${RETRIGGER_OPEN_PRS:-true}" = true ] || {
+    echo "Skipping pull-request re-trigger (--no-retrigger); open pull requests keep evidence this apply invalidated."
+    return 0
+  }
+  open_prs="$(api "repos/$ORG/$REPOSITORY/pulls?state=open&per_page=100" 2>/dev/null \
+    | jq -r '[.[] | select(.draft | not) | .number] | join(" ")' 2>/dev/null)" || {
+    echo "WARNING: could not list open pull requests in $ORG/$REPOSITORY; re-run their gates manually." >&2
+    return 0
+  }
+  [ -n "$open_prs" ] && [ "$open_prs" != "" ] || return 0
+  echo "Re-running required workflows on open pull requests whose evidence this apply invalidated:"
+  for number in $open_prs; do
+    if gh pr close "$number" --repo "$ORG/$REPOSITORY" >/dev/null 2>&1 \
+      && sleep 2 \
+      && gh pr reopen "$number" --repo "$ORG/$REPOSITORY" >/dev/null 2>&1; then
+      echo "  re-triggered #$number"
+    else
+      echo "  WARNING: could not re-trigger #$number; close and reopen it to re-run its gate." >&2
+      failed=1
+    fi
+  done
+  [ "$failed" -eq 0 ] || echo "Some pull requests were not re-triggered; their gates report a passing check and an unbound gate until they are." >&2
+}
+
 case "$COMMAND" in
   backup | rollback)
     ARTIFACT="${1:-}"
@@ -856,6 +907,7 @@ case "$COMMAND" in
       die "policy replacement failed; the complete prior policy state was restored"
     fi
     echo "Applied and verified GitHub policy without legacy branch protection."
+    retrigger_open_pull_requests
     echo "Merge the reviewed rollback-prerequisite removal, then run verify."
     ;;
   verify)
