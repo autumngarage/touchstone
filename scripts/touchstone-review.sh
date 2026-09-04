@@ -336,19 +336,77 @@ handle_http_error() {
   esac
 }
 
+# A provider response we could not use is the one failure the normal tier has
+# no second chance at: a failed local pass is a permitted waiver, so an
+# undiagnosable error quietly converts into lost review coverage. The three
+# helpers below exist so it cannot stay undiagnosable. Previously the check was
+# one compound jq over seven conditions leaving through a single generic
+# sentence, while the EXIT trap deleted WORK_DIR — so a rate-limited body, an
+# auth page, a null cost and a truncated payload were indistinguishable and
+# none of them left anything to read.
+preserve_response() {
+  local kept
+  [ -s "$WORK_DIR/response.json" ] || return 1
+  kept="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-response.XXXXXX")" || return 1
+  chmod 600 "$kept" || return 1
+  cat "$WORK_DIR/response.json" >"$kept" || return 1
+  printf '%s\n' "$kept"
+}
+
+# The Auto Router picks a model per request, so a shape failure is usually one
+# model's and not the profile's. Naming it is what makes the next occurrence
+# comparable to this one.
+die_response() {
+  local model kept
+  model="$("$JQ_BIN" -r '.model // empty' "$WORK_DIR/response.json" 2>/dev/null)" \
+    || model=""
+  [ -n "$model" ] || model="not reported"
+  if kept="$(preserve_response)"; then
+    die "$*; model: $model; response kept at $kept"
+  fi
+  die "$*; model: $model; the response could not be preserved for inspection"
+}
+
+# Only the fields this path actually consumes, named one by one so the error
+# says which were unusable instead of that seven of them might have been.
+response_unusable_fields() {
+  "$JQ_BIN" -r '
+    def bad($name; $ok): if $ok then empty else $name end;
+    [ bad("model"; .model | type == "string" and length > 0),
+      bad("usage.prompt_tokens";
+        .usage.prompt_tokens | type == "number" and floor == . and . >= 0),
+      bad("usage.completion_tokens";
+        .usage.completion_tokens | type == "number" and floor == . and . >= 0),
+      bad("usage.cost"; .usage.cost | type == "number" and . >= 0),
+      bad("choices"; .choices | type == "array" and length > 0),
+      bad("choices[0].finish_reason"; .choices[0].finish_reason | type == "string"),
+      bad("choices[0].message.content"; .choices[0].message.content | type == "string")
+    ] | join(", ")
+  ' "$WORK_DIR/response.json" 2>/dev/null || printf 'the body is not JSON\n'
+}
+
 print_response() {
   local model prompt_tokens completion_tokens cost finding_count finish_reason RESPONSE_ROW
+  local provider_error unusable
 
-  "$JQ_BIN" -e '
-    (.model | type == "string" and length > 0) and
-    (.usage.prompt_tokens | type == "number" and floor == . and . >= 0) and
-    (.usage.completion_tokens | type == "number" and floor == . and . >= 0) and
-    (.usage.cost | type == "number" and . >= 0) and
-    (.choices | type == "array" and length > 0) and
-    (.choices[0].finish_reason | type == "string") and
-    (.choices[0].message.content | type == "string")
-  ' "$WORK_DIR/response.json" >/dev/null \
-    || die "OpenRouter returned a malformed review response"
+  # A 200 carrying a provider error is a transport failure, not a malformed
+  # review, and OpenRouter delivers "temporarily rate-limited upstream" exactly
+  # this way with no choices at all. Classifying it is what tells the operator
+  # that re-running the command is a fresh pass rather than prohibited
+  # fallback to another profile.
+  provider_error="$("$JQ_BIN" -r '
+    if ((.error.message | type == "string") and ((.error.message | length) > 0)
+      and ((.choices | type != "array") or ((.choices | length) == 0)))
+    then .error.message else empty end
+  ' "$WORK_DIR/response.json" 2>/dev/null)" || provider_error=""
+  if [ -n "$provider_error" ]; then
+    die_response "OpenRouter answered HTTP 200 with a provider error and no completion: $provider_error; the request was not retried, so re-running the command is a fresh pass and not fallback"
+  fi
+
+  unusable="$(response_unusable_fields)"
+  if [ -n "$unusable" ]; then
+    die_response "OpenRouter returned a malformed review response; unusable: $unusable"
+  fi
   finish_reason="$("$JQ_BIN" -r '.choices[0].finish_reason' "$WORK_DIR/response.json")"
   case "$finish_reason" in
     stop) ;;
