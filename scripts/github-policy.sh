@@ -743,6 +743,10 @@ retrigger_open_pull_requests() {
       && sleep 2 \
       && gh pr reopen "$number" --repo "$ORG/$REPOSITORY" >/dev/null 2>&1; then
       echo "  re-triggered #$number"
+      # Every re-trigger starts a gate run that calls the review provider.
+      # Firing them all at once is a burst on a shared rate limit, and a burst
+      # is exactly what trips it. Space them out.
+      sleep "${RETRIGGER_SPACING_SECONDS:-20}"
     else
       echo "  WARNING: could not re-trigger #$number; close and reopen it to re-run its gate." >&2
       failed=1
