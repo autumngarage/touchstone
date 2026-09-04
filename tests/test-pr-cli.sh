@@ -2603,6 +2603,16 @@ has() { local needle="$1"; shift; for arg in "$@"; do [[ "$arg" == *"$needle"* ]
 value_after() { local wanted="$1"; shift; while [ "$#" -gt 0 ]; do if [ "$1" = "$wanted" ]; then printf '%s\n' "$2"; return 0; fi; shift; done; return 1; }
 field_value() { local wanted="$1"; shift; for arg in "$@"; do case "$arg" in "$wanted"=*) printf '%s\n' "${arg#*=}"; return 0 ;; esac; done; return 1; }
 case "$1 $2" in
+  "api repos/autumngarage/current/pulls/7")
+    printf '%s\n' "${GH_EXISTING_PR_BODY:-existing body}"
+    ;;
+  "api --method")
+    if has PATCH "$@" && has repos/autumngarage/current/pulls/7 "$@"; then
+      body_arg="$(field_value body "$@")"
+      cp "${body_arg#@}" "$GH_STATE/pr-body"
+      printf '7\n'
+    fi
+    ;;
   "repo view")
     if [ "${GH_MODE:-}" = fail_repo ]; then echo "gh: not a git repository" >&2; exit 1; fi
     echo "autumngarage/current"
@@ -2707,6 +2717,10 @@ case "$1 $2" in
     ;;
   "api repos/autumngarage/current/rules/branches/main")
     if [ -f "$GH_STATE/review-gate" ]; then echo true; else echo false; fi
+    ;;
+  "api repos/autumngarage/current/actions/runs?head_sha=abcdef0123456789abcdef0123456789abcdef01&per_page=30")
+    # The finding path asks for the latest review-gate run as "id<TAB>status".
+    printf '77\tcompleted\n'
     ;;
   "api repos/autumngarage/current/actions/runs?head_sha=abcdef0123456789abcdef0123456789abcdef01&per_page=100")
     if [ -f "$GH_STATE/review-gate" ]; then
@@ -2872,6 +2886,29 @@ STATUS_STUB
   [ "$RUN_RC" -eq 2 ] && grep -qF 'an answer must record its disposition' "$RR/out" \
     && ok "the disposition is validated before the repository is resolved" \
     || fail "a missing disposition reported a transport failure (rc=$RUN_RC): $(tail -2 "$RR/out")"
+
+  echo "==> a gate-reported finding is answered by id: recorded in the PR body, gate re-run (touchstone#1123)"
+  # 3.10.1 shipped --finding behind the thread-id guard: a valid finding
+  # answer printed usage and exited 2, so no agent could refute a finding.
+  rm -f "$GH_STATE/pr-body" "$GH_STATE/gate-reruns" "$GH_STATE/replies" "$GH_STATE/resolved"
+  run 7 --finding 0123456789abcdef --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] \
+    && grep -qF '<!-- touchstone:review-dismiss id=0123456789abcdef reason=' "$GH_STATE/pr-body" \
+    && grep -qF 'existing body' "$GH_STATE/pr-body" \
+    && grep -qF 'rerun 77' "$GH_STATE/gate-reruns" \
+    && [ ! -e "$GH_STATE/replies" ] && [ ! -e "$GH_STATE/resolved" ] \
+    && ok "a refuted finding is recorded in the PR body and the gate is re-run; no thread is touched" \
+    || fail "the finding answer did not land (rc=$RUN_RC): $(tail -3 "$RR/out")"
+  rm -f "$GH_STATE/pr-body" "$GH_STATE/gate-reruns"
+  run 7 --finding 0123456789abcdef --body-file "$RR/body" --fix-commit abc123
+  [ "$RUN_RC" -eq 0 ] \
+    && grep -qF '<!-- touchstone:review-answer v=1 finding=0123456789abcdef disposition=fixed fix=abcdef0123456789abcdef0123456789abcdef01 -->' "$GH_STATE/pr-body" \
+    && ok "a fixed finding records the canonical SHA in the PR body" \
+    || fail "the fixed finding answer did not record the canonical SHA: $(tail -2 "$RR/out")"
+  run 7 --finding nothex --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 2 ] && grep -qF '16-character id' "$RR/out" \
+    && ok "a malformed finding id is invalid input" \
+    || fail "a malformed finding id was accepted (rc=$RUN_RC)"
 
   echo "==> the recorded disposition is what the gate reads, never the prose"
   rm -f "$GH_STATE/replies" "$GH_STATE/reply-body" "$GH_STATE/resolved"
