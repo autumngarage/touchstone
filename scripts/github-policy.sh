@@ -704,11 +704,15 @@ shift
 # invalidated is the failure this exists to prevent. The escape is for an
 # operator who wants the pin moved without touching pull requests.
 RETRIGGER_OPEN_PRS=true
+kept=()
 for arg in "$@"; do
-  [ "$arg" = "--no-retrigger" ] || continue
-  RETRIGGER_OPEN_PRS=false
+  if [ "$arg" = "--no-retrigger" ]; then
+    RETRIGGER_OPEN_PRS=false
+  else
+    kept+=("$arg")
+  fi
 done
-set -- "${@/--no-retrigger/}"
+set -- "${kept[@]+"${kept[@]}"}"
 
 # A repin invalidates gate evidence produced by the outgoing revision:
 # touchstone pr status compares a run's workflow file revision against the
