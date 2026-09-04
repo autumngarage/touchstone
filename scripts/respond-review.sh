@@ -11,10 +11,19 @@
 # Usage:
 #   touchstone pr answer <pr-number> --comment-id <id> --body-file <file>
 #     (--fix-commit <sha> | --no-code-change)
+#   touchstone pr answer <pr-number> --finding <id> --body-file <file>
+#     (--fix-commit <sha> | --no-code-change)
 #   touchstone pr answer <pr-number> --all-resolved-check
 #   (installed name; from a source checkout: bash scripts/respond-review.sh …)
 #
 # Modes:
+#   --finding + --body-file      Answer a finding the gate reported itself,
+#                                which has no review thread because the gate
+#                                runs read-only. Same act, same dispositions,
+#                                same command: the answer is recorded in the
+#                                pull request body, which the gate reads and
+#                                only a collaborator can write. The id is
+#                                printed beside the finding in the run log.
 #   --comment-id + --body-file   Reply to the review comment (body read from
 #                                the file, avoiding shell-quoting hazards),
 #                                then resolve its thread and verify the
@@ -85,6 +94,7 @@ esac
 shift
 
 COMMENT_ID=""
+FINDING_ID=""
 BODY_FILE=""
 FIX_COMMIT=""
 NO_CODE_CHANGE=false
@@ -94,6 +104,10 @@ while [ "$#" -gt 0 ]; do
     --comment-id)
       shift
       COMMENT_ID="${1:-}"
+      ;;
+    --finding)
+      shift
+      FINDING_ID="${1:-}"
       ;;
     --body-file)
       shift
@@ -122,7 +136,9 @@ done
 if [ "$ALL_RESOLVED_CHECK" = true ]; then
   { [ -z "$FIX_COMMIT" ] && [ "$NO_CODE_CHANGE" = false ]; } \
     || invalid_input "--all-resolved-check reads state; it takes no disposition."
-elif [ -n "$COMMENT_ID" ] || [ -n "$BODY_FILE" ]; then
+elif [ -n "$COMMENT_ID" ] || [ -n "$FINDING_ID" ] || [ -n "$BODY_FILE" ]; then
+  [ -z "$COMMENT_ID" ] || [ -z "$FINDING_ID" ] \
+    || invalid_input "--comment-id answers a review thread and --finding answers a gate-reported finding; pass exactly one."
   if [ -n "$FIX_COMMIT" ] && [ "$NO_CODE_CHANGE" = true ]; then
     invalid_input "--fix-commit and --no-code-change are the two dispositions; pass exactly one."
   fi
@@ -130,6 +146,9 @@ elif [ -n "$COMMENT_ID" ] || [ -n "$BODY_FILE" ]; then
     invalid_input "an answer must record its disposition: pass --fix-commit <sha> for a commit already reachable from the PR head, or --no-code-change when the answer explains why no commit was needed."
   fi
 fi
+
+TMP_BODY_FILE="$(mktemp "${TMPDIR:-/tmp}/respond-review-body.XXXXXXXX")" || fail "could not create a temporary file for the pull request body."
+trap 'rm -f "$TMP_BODY_FILE"' EXIT
 
 REPO_WITH_OWNER="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)" \
   || fail "could not resolve the GitHub repository (gh repo view failed)."
@@ -263,6 +282,56 @@ if [ -n "$FIX_COMMIT" ]; then
     *) fail "--fix-commit $CANONICAL_FIX is not reachable from PR #$PR_NUMBER head $HEAD_SHA (relationship: ${FIX_RELATION:-<empty>})." ;;
   esac
   FIX_COMMIT="$CANONICAL_FIX"
+fi
+
+# A gate-reported finding has no review thread to reply to: the gate runs
+# read-only and cannot open one. The answer is the same act either way -- an
+# explanation plus a disposition -- so the driver runs the same command and
+# this decides where the answer is recorded. Learning a second workflow for
+# the same job is how the fallback became something agents mishandled.
+#
+# The record goes in the pull request body, which the gate reads and only a
+# collaborator can write.
+if [ -n "$FINDING_ID" ]; then
+  printf '%s' "$FINDING_ID" | grep -qE '^[0-9a-f]{16}$' \
+    || invalid_input "--finding takes the 16-character id printed beside the finding in the gate run log."
+  ANSWER_TEXT="$(cat "$BODY_FILE")"
+  REASON="$(printf '%s' "$ANSWER_TEXT" | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//' | cut -c1-200)"
+  if [ -n "$FIX_COMMIT" ]; then
+    # A fix moves the head, and the gate reviews the new head: nothing needs
+    # to be dismissed, so the answer is recorded and the finding is left to be
+    # re-decided on its merits.
+    FINDING_MARKER="<!-- touchstone:review-answer v=1 finding=$FINDING_ID disposition=fixed fix=$FIX_COMMIT -->"
+  else
+    FINDING_MARKER="<!-- touchstone:review-dismiss id=$FINDING_ID reason=$REASON -->"
+  fi
+
+  CURRENT_BODY="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER" --jq '.body // ""')" \
+    || fail "could not read the pull request body to record the answer: $CURRENT_BODY"
+  if printf '%s' "$CURRENT_BODY" | grep -qF "$FINDING_MARKER"; then
+    echo "==> Finding $FINDING_ID already answered with this disposition; nothing to record."
+  else
+    printf '%s' "$CURRENT_BODY" | grep -qE "touchstone:review-(dismiss id|answer v=1 finding)=$FINDING_ID" \
+      && fail "finding $FINDING_ID already carries a different answer in the pull request body; edit or remove it before recording another."
+    NEW_BODY="$CURRENT_BODY
+
+## Review answers
+
+$ANSWER_TEXT
+
+$FINDING_MARKER"
+    printf '%s' "$NEW_BODY" >"$TMP_BODY_FILE"
+    gh_read api --method PATCH "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER" \
+      -F "body=@$TMP_BODY_FILE" --jq '.number' >/dev/null \
+      || fail "could not record the answer in the pull request body"
+    echo "==> Recorded the answer for finding $FINDING_ID in the pull request body."
+  fi
+  if [ -n "$FIX_COMMIT" ]; then
+    echo "    disposition: fixed in $FIX_COMMIT; the gate reviews the new head."
+  else
+    echo "    disposition: no-code-change; the finding no longer blocks, and the log records the dismissal every run."
+  fi
+  exit 0
 fi
 
 REPLY_BODY="$(cat "$BODY_FILE")"
