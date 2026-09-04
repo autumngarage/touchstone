@@ -520,35 +520,52 @@ BASE_REF_ENCODED="$(uri_encode "$BASE_REF")"
 GATE_REQUIRED="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/rules/branches/$BASE_REF_ENCODED" \
   --jq '[.[] | select(.type == "workflows") | .parameters.workflows[]?.path] | any(. == ".github/workflows/review-gate.yml")')" \
   || fail "could not read the effective rules for $BASE_REF: $GATE_REQUIRED"
-if [ "$GATE_REQUIRED" = true ]; then
+# Contract 3 accepts only a later trusted clean verdict for this exact head,
+# and the block above already requested one the moment the last thread closed.
+# The behavior-v1 refresh below is the wrong machinery for it: the contract-3
+# gate long-polls, so an answer that races the run binding finds no re-runnable
+# run, polls until the attempt budget is spent, and then exits nonzero -- after
+# the reply, the thread resolution and the attest request have all succeeded.
+# An agent reads that exit as a failed answer and answers again, which is how a
+# completed round turns into another one (AUT-1225).
+# Re-checks that the run being waited for can still arrive: on every poll of
+# the behavior-v1 refresh, and once for a contract-3 answer, which waits for
+# nothing. A
+# merged or closed PR gets no further required-workflow runs, so waiting
+# for one spent the whole attempt budget on an impossible event after the
+# reply and resolution had already succeeded (AUT-511, touchstone#1053).
+# The material work is done by this point; a PR that is no longer open is
+# reported and the command returns success, not a hang.
+require_open_pr_head() {
+  local pr_state live_head live_base
+  pr_state="$(gh_read pr view "$PR_NUMBER" --json state,headRefOid,baseRefName --jq '[.state,.headRefOid,.baseRefName] | @tsv')" \
+    || fail "could not re-read PR #$PR_NUMBER while waiting for the review gate: $pr_state"
+  IFS="$(printf '\t')" read -r pr_state live_head live_base <<<"$pr_state"
+  case "$pr_state" in
+    OPEN) ;;
+    MERGED | CLOSED)
+      echo "==> PR #$PR_NUMBER is $pr_state; the reply and resolution are recorded and no review-gate re-run applies."
+      exit 0
+      ;;
+    *) fail "PR #$PR_NUMBER reported unsupported state '${pr_state:-empty}' while waiting for the review gate." ;;
+  esac
+  [ "$live_head" = "$HEAD_SHA" ] \
+    || fail "PR #$PR_NUMBER moved from $HEAD_SHA to $live_head while waiting for the review gate; request one review for the new head."
+  [ "$live_base" = "$BASE_REF" ] \
+    || fail "PR #$PR_NUMBER was retargeted from $BASE_REF to $live_base while waiting for the review gate; request one review for the new base."
+}
+
+if [ "$GATE_BEHAVIOR_VERSION" = 3 ]; then
+  # The material work is done and the verdict is requested; all that is left
+  # is to prove the coordinates it was recorded against are still the live
+  # ones. One check, not a poll -- there is nothing here to wait for.
+  require_open_pr_head
+  echo "==> Behavior contract 3: the exact-head verdict is requested by the answer flow above; no behavior-v1 gate refresh applies."
+elif [ "$GATE_REQUIRED" = true ]; then
   # The pinned gate runs under a workflow id the repository does not list; a
   # local workflow sharing the name is listed and is not the gate.
   LOCAL_WORKFLOW_IDS="$(gh_read api --paginate "repos/$REPO_OWNER/$REPO_NAME/actions/workflows?per_page=100" --jq '.workflows[].id' | awk 'BEGIN { printf "[" } NF { if (n++) printf ","; printf "%s", $1 } END { printf "]" }')" \
     || fail "could not list the repository's workflows: $LOCAL_WORKFLOW_IDS"
-  # Every poll re-checks that the run being waited for can still arrive. A
-  # merged or closed PR gets no further required-workflow runs, so waiting
-  # for one spent the whole attempt budget on an impossible event after the
-  # reply and resolution had already succeeded (AUT-511, touchstone#1053).
-  # The material work is done by this point; a PR that is no longer open is
-  # reported and the command returns success, not a hang.
-  require_open_pr_head() {
-    local pr_state live_head live_base
-    pr_state="$(gh_read pr view "$PR_NUMBER" --json state,headRefOid,baseRefName --jq '[.state,.headRefOid,.baseRefName] | @tsv')" \
-      || fail "could not re-read PR #$PR_NUMBER while waiting for the review gate: $pr_state"
-    IFS="$(printf '\t')" read -r pr_state live_head live_base <<<"$pr_state"
-    case "$pr_state" in
-      OPEN) ;;
-      MERGED | CLOSED)
-        echo "==> PR #$PR_NUMBER is $pr_state; the reply and resolution are recorded and no review-gate re-run applies."
-        exit 0
-        ;;
-      *) fail "PR #$PR_NUMBER reported unsupported state '${pr_state:-empty}' while waiting for the review gate." ;;
-    esac
-    [ "$live_head" = "$HEAD_SHA" ] \
-      || fail "PR #$PR_NUMBER moved from $HEAD_SHA to $live_head while waiting for the review gate; request one review for the new head."
-    [ "$live_base" = "$BASE_REF" ] \
-      || fail "PR #$PR_NUMBER was retargeted from $BASE_REF to $live_base while waiting for the review gate; request one review for the new base."
-  }
   attempt=1
   while :; do
     require_open_pr_head

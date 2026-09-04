@@ -3038,6 +3038,21 @@ STATUS_STUB
   rm -f "$GH_STATE/status-fails" "$GH_STATE/gate-reruns"
   rm -f "$GH_STATE/effective-behavior-v2"
 
+  echo "==> a contract-3 answer does not run the behavior-v1 gate refresh (AUT-1225)"
+  # The contract-3 gate long-polls, so an answer that races the run binding
+  # finds no re-runnable run. On the old code the v1 refresh below then polled
+  # until the attempt budget was spent and exited nonzero -- after the reply,
+  # the resolution and the attest request had all already succeeded. An agent
+  # reads that as a failed answer and answers again.
+  rm -f "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request" "$GH_STATE/gate-fresh-active"
+  echo 30 >"$GH_STATE/gate-in-progress"
+  TOUCHSTONE_GATE_ATTEMPTS=3 TOUCHSTONE_GATE_RETRY_DELAY=0 run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "a contract-3 answer exited $RUN_RC after its reply, resolution and attest succeeded: $(tail -3 "$RR/out")"
+  ! grep -qF 'did not reach a re-runnable state' "$RR/out" || fail "a contract-3 answer still failed through the behavior-v1 refresh"
+  ! grep -qF 'retrying in' "$RR/out" || fail "a contract-3 answer still polled for a re-runnable run"
+  grep -qF 'no behavior-v1 gate refresh applies' "$RR/out" || fail "a contract-3 answer did not say why it skipped the refresh: $(tail -3 "$RR/out")"
+  rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request"
+
   echo "==> an answer on a merged PR returns without waiting for a gate run that cannot exist (AUT-511, touchstone#1053)"
   # The reply and resolution are the material work and have already
   # succeeded by the time the gate wait begins. On the old code this loop
