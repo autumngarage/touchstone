@@ -338,6 +338,10 @@ case "$1 ${2:-}" in
     ;;
   "api user") printf '%s\n' alice ;;
   "api graphql")
+    if has 'reviewThreads(first:100){nodes{isResolved}}' "$@"; then
+      if [ "${GH_MODE:-ok}" = status_auto_merge_threads ]; then printf '2\n'; else printf '0\n'; fi
+      exit 0
+    fi
     if has 'autoMergeEnabledAt' "$@"; then
       if [ "${GH_MODE:-ok}" = status_observation_failure ]; then
         printf 'GraphQL unavailable\n' >&2
@@ -346,7 +350,7 @@ case "$1 ${2:-}" in
       observed_head="$GH_HEAD"
       [ "${GH_MODE:-ok}" != status_head_moved ] || observed_head=moved-head
       auto_merge_enabled_at=null
-      [ "${GH_MODE:-ok}" != status_auto_merge ] || auto_merge_enabled_at='"2026-08-24T20:00:00Z"'
+      case "${GH_MODE:-ok}" in status_auto_merge | status_auto_merge_blocked | status_auto_merge_threads) auto_merge_enabled_at='"2026-08-24T20:00:00Z"' ;; esac
       queue_state=null
       case "${GH_MODE:-ok}" in
         status_gate_queued) queue_state='"AWAITING_CHECKS"' ;;
@@ -599,6 +603,14 @@ case "$1 ${2:-}" in
     printf '%s\n' 71
     ;;
   api*)
+    if has "commits/$GH_HEAD/check-runs?per_page=100" "$@"; then
+      case "${GH_MODE:-ok}" in
+        status_auto_merge_blocked) printf '%s\n' '{"check_runs":[{"name":"review-gate","status":"completed","conclusion":"success"},{"name":"validate","status":"completed","conclusion":"failure"}]}' ;;
+        status_auto_merge) printf '%s\n' '{"check_runs":[{"name":"review-gate","status":"completed","conclusion":"success"},{"name":"Build, test, and smoke","status":"in_progress","conclusion":null}]}' ;;
+        *) printf '%s\n' '{"check_runs":[{"name":"review-gate","status":"completed","conclusion":"success"}]}' ;;
+      esac
+      exit 0
+    fi
     if has 'touchstone-workflows/contents/.touchstone-source-contract.json?ref=' "$@"; then
       [ ! -f "$GH_STATE/behavior-manifest-unreadable" ] || { printf 'Not Found\n' >&2; exit 1; }
       # The source tree's own policies declare gate behavior 3, so a GitHub
@@ -1126,10 +1138,21 @@ EOF
   GH_MODE=status_auto_merge run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"autoMerge":{"armed":true,"enabledAt":"2026-08-24T20:00:00Z"'
-  assert_has "$TMP/out" '"mergeQueue":null,"mergeQueueEviction":null,"phase":"armed-not-queued","nextAction":"inspect"'
+  # ...and since pr merge arms auto-merge while checks still run, the phase
+  # says what GitHub is waiting on instead of sending the driver to inspect.
+  assert_has "$TMP/out" '"mergeQueue":null,"mergeQueueEviction":null,"phase":"armed-waiting-checks","nextAction":"wait","blockers":{"failedChecks":"","pendingChecks":"Build, test, and smoke (in_progress)","unresolvedThreads":0}'
   assert_not_has "$TMP/out" '"phase":"queued"'
   GH_MODE=status_auto_merge run_pr "$TMP/out" status 7
-  assert_has "$TMP/out" 'phase: armed-not-queued'
+  assert_has "$TMP/out" 'phase: armed-waiting-checks'
+  assert_has "$TMP/out" 'waiting on: Build, test, and smoke (in_progress)'
+  assert_has "$TMP/out" 'review: this head is reviewed (review-gate passed); a reviewer quota notice on the PR is not a blocker.'
+  GH_MODE=status_auto_merge_blocked run_pr "$TMP/out" status 7 --json
+  assert_has "$TMP/out" '"phase":"armed-blocked","nextAction":"inspect","blockers":{"failedChecks":"validate (failure)"'
+  GH_MODE=status_auto_merge_blocked run_pr "$TMP/out" status 7
+  assert_has "$TMP/out" 'blocked by: validate (failure)'
+  GH_MODE=status_auto_merge_threads run_pr "$TMP/out" status 7
+  assert_has "$TMP/out" 'phase: armed-blocked'
+  assert_has "$TMP/out" 'blocked by: 2 unresolved review thread(s)'
 
   echo "==> a PR closed without merging is closed, a terminal phase (AUT-511)"
   GH_MODE=status_closed run_pr "$TMP/out" status 7 --json

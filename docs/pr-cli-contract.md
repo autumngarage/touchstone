@@ -149,7 +149,8 @@ taking this document's word for it.
 
   The additive `phase` field reduces those authoritative observations to one
   stable enum: `reviewing`, `fix-required`, `ready-to-queue`, `queued`,
-  `evicted`, `armed-not-queued`, `merged`, `closed`, or `action-required`.
+  `evicted`, `armed-waiting-checks`, `armed-blocked`, `armed-not-queued`,
+  `merged`, `closed`, or `action-required`.
   Its one-to-one `nextAction` values are `wait`, `address-review`, `queue`,
   `done`, and `inspect`; both `reviewing` and `queued` intentionally use
   `wait`. Human output prints the exact-head `touchstone pr merge PR --head
@@ -176,8 +177,14 @@ taking this document's word for it.
   still reported `evicted`, the conservative direction. The removal's
   `beforeCommit` is the merge-queue base the candidate was built on, not the
   PR head, and is reported as `queueBase` for diagnosis only. Under a policy that enforces a merge queue, an armed auto-merge
-  request with no queue entry is `armed-not-queued`: GitHub has not admitted
-  the head and nothing will land it without another mutation. Only where the
+  request with no queue entry is read with what GitHub is waiting on, in
+  GitHub's terms: a check run for the head still running is
+  `armed-waiting-checks` (`wait`; GitHub enqueues the head when it passes); a
+  failed check run or an unresolved review thread is `armed-blocked`
+  (`inspect`; `blockers` names them); neither is `armed-not-queued`: GitHub
+  has not admitted the head and nothing will land it without another
+  mutation. Since `merge` arms auto-merge while the gate is still evaluating,
+  the waiting state is the ordinary state of a fresh head. Only where the
   policy carries no queue is an armed auto-merge request `queued`, because
   there GitHub can land it without another local mutation. Conflicts,
   ambiguous or unbound gates, and incomplete policy bindings are
