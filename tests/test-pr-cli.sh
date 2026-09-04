@@ -1905,11 +1905,12 @@ Closes #42'
   rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun" "$TMP/state/merged"
   : >"$GH_CALLS"
   GH_MODE=status_gate_pending run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
-  assert_rc "$RUN_RC" 2
-  assert_has "$TMP/out" 'is still evaluating'
-  assert_not_has "$GH_CALLS" 'pr merge'
+  assert_rc "$RUN_RC" 0
+  grep -q '^pr merge.*--auto' "$GH_CALLS" || fail "merge did not arm auto-merge for a pending gate: $(grep '^pr merge' "$GH_CALLS")"
+  assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"arm-auto-merge"}'
   [ ! -e "$TMP/state/gate-reruns" ] \
     || fail "merge mutated a pending review evaluation"
+  rm -f "$TMP/state/merged"
   : >"$GH_CALLS"
   GH_MODE=status_gate_failure run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 2
@@ -1928,14 +1929,13 @@ Closes #42'
   assert_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
 
-  echo "==> behavior v2 merge returns control without arming an active evaluation"
+  echo "==> behavior v2 merge arms auto-merge on an active evaluation without re-running it"
   touch "$TMP/state/review-gate"
   rm -f "$TMP/state/merged" "$TMP/state/gate-reruns"
   : >"$GH_CALLS"
   GH_MODE=status_gate_pending run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
-  assert_rc "$RUN_RC" 2
-  assert_has "$TMP/out" 'is still evaluating'
-  assert_not_has "$GH_CALLS" 'pr merge'
+  assert_rc "$RUN_RC" 0
+  grep -q '^pr merge.*--auto' "$GH_CALLS" || fail "behavior v2 merge did not arm auto-merge for a pending gate"
   [ ! -f "$TMP/state/gate-reruns" ] \
     || fail "behavior v2 merge re-ran an evaluation that was already active"
   rm -f "$TMP/state/review-gate" "$TMP/state/merged"

@@ -2361,8 +2361,12 @@ require_review_gate_success() {
 
   case "$gate_status" in
     queued | requested | waiting | pending | in_progress)
-      fail_input "review gate for $head is still evaluating: $gate_text" \
-        "Wait for touchstone pr status to report a successful exact-head gate, then retry this merge command."
+      # An evaluation is bound to this exact head and GitHub owns its verdict:
+      # arming auto-merge hands delivery to the ruleset, which admits the head
+      # only when that gate succeeds. Refusing here made every driver poll and
+      # come back, re-deciding locally what the merge button decides.
+      REVIEW_GATE_ACTION=arm-auto-merge
+      return 0
       ;;
     *)
       fail_input "review gate for $head is not successful: $gate_text" \
@@ -2448,8 +2452,9 @@ merge_pr() {
     [ "$state" = OPEN ] || fail_input "PR #$PR_NUMBER is $state" "Only an open or merged PR is supported."
     # Queue admission is the final delivery mutation, not a way to wait for
     # review. The open/answer paths request the policy-owned evaluation. Merge
-    # observes that exact-head verdict and refuses without arming auto-merge or
-    # entering the queue until it is already successful.
+    # observes that exact-head verdict: successful, it enters the queue; still
+    # evaluating, it arms auto-merge so GitHub admits the head when the gate
+    # succeeds; failed, absent, or unbound, it refuses.
     # The guarded path is taken only when enforcement is fully applied --
     # the gate present at the policy's repository and ref, at the policy's
     # revision or a descendant of it published there, with the queue and
@@ -2466,7 +2471,11 @@ merge_pr() {
       if [ "$ENFORCEMENT_EXPECTS_REVIEW_GATE" = true ]; then
         require_review_gate_success "$head" "$number"
         if [ "$JSON_MODE" = false ]; then
-          printf 'Review gate run %s already accepts this exact head.\n' "$REVIEW_GATE_RUN_ID" >&2
+          if [ "$REVIEW_GATE_ACTION" = arm-auto-merge ]; then
+            printf 'Review gate run %s is still evaluating this exact head; arming auto-merge so GitHub admits it on success.\n' "$REVIEW_GATE_RUN_ID" >&2
+          else
+            printf 'Review gate run %s already accepts this exact head.\n' "$REVIEW_GATE_RUN_ID" >&2
+          fi
         fi
       elif [ "$JSON_MODE" != true ]; then
         printf 'Workflow-source policy applied; GitHub merges when its required source check passes.\n' >&2
@@ -2534,8 +2543,10 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
       # Without a merge queue there is nothing to enter: GitHub refuses a plain
       # merge while required checks are still running, so arm auto-merge and
       # let it land when they pass (the state `auto-merge-enabled` below).
+      # With a queue, a head whose gate is still evaluating is armed the same
+      # way: GitHub enqueues it once the required gate succeeds.
       merge_auto=()
-      [ "$ENFORCEMENT_QUEUE_APPLIED" = true ] || merge_auto=(--auto)
+      [ "$ENFORCEMENT_QUEUE_APPLIED" = true ] && [ "$REVIEW_GATE_ACTION" != arm-auto-merge ] || merge_auto=(--auto)
       merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash ${merge_auto[@]+"${merge_auto[@]}"} \
         --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
       merge_diagnostic="$(clean_diagnostic "$merge_output")"

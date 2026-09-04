@@ -320,11 +320,13 @@ state that masks a discarded fixture or precondition.
 touchstone pr merge <n> --head <reviewed-sha>
 ```
 
-It requires the policy-owned gate to have already succeeded for that exact
-head, asks GitHub to merge bound to it, and reports merged, queued, or
-auto-merge-enabled only while the head still equals the reviewed one. It never
-starts or waits for review, or reconstructs another verdict from review
-timestamps. Where the CLI is absent, first verify that effective enforcement
+Run it once the head is pushed and its review is requested; do not poll for
+the gate first. A successful policy-owned gate for that exact head enters the
+queue; a gate still evaluating arms auto-merge bound to that head, and GitHub
+admits it when the gate succeeds; a failed or unbound gate is refused. It
+reports merged, queued, or auto-merge-enabled only while the head still equals
+the reviewed one. It never starts or waits for review, or reconstructs another
+verdict from review timestamps. Where the CLI is absent, first verify that effective enforcement
 includes both the declared exact-head gate and the merge queue. Without the
 queue, stop and repair enforcement: raw recovery cannot preserve review
 freshness. With both applied, verify the gate is successful and immediately
