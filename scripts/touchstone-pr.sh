@@ -1953,6 +1953,45 @@ read_auto_merge_state() {
   fi
 }
 
+# What GitHub is still waiting on for this head, in GitHub's own terms: the
+# head's check runs that are not yet successful, and the review threads not
+# yet resolved. Read only where auto-merge is armed and nothing has queued.
+HEAD_FAILED_CHECKS=""
+HEAD_PENDING_CHECKS=""
+HEAD_UNRESOLVED_THREADS=0
+read_head_blockers() {
+  local number="$1" head="$2"
+  HEAD_FAILED_CHECKS=""
+  HEAD_PENDING_CHECKS=""
+  HEAD_UNRESOLVED_THREADS=0
+  read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/commits/$head/check-runs?per_page=100" \
+    --jq '[.check_runs[] | {name, status, conclusion}]' \
+    || fail_operation "could not read the check runs for $head: $READ_OUTPUT" "Retry after GitHub recovers."
+  # Accept the filtered array or the raw page: the shape is not the contract.
+  HEAD_FAILED_CHECKS="$(printf '%s' "$READ_OUTPUT" | jq -r '
+    (if type == "object" then .check_runs else . end) as $runs
+    | [$runs[] | select(.status == "completed" and ((.conclusion // "") | IN("success", "skipped", "neutral") | not))
+         | .name + " (" + (.conclusion // "unknown") + ")"] | unique | join(", ")')"
+  HEAD_PENDING_CHECKS="$(printf '%s' "$READ_OUTPUT" | jq -r '
+    (if type == "object" then .check_runs else . end) as $runs
+    | [$runs[] | select(.status != "completed") | .name + " (" + .status + ")"] | unique | join(", ")')"
+  read_with_retry gh api graphql --hostname "$REPO_HOST" \
+    -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F number="$number" \
+    -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved}}}}}' \
+    --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)] | length' \
+    || fail_operation "could not read the review threads of PR #$number: $READ_OUTPUT" "Retry after GitHub recovers."
+  HEAD_UNRESOLVED_THREADS="$READ_OUTPUT"
+  case "$HEAD_UNRESOLVED_THREADS" in '' | *[!0-9]*) HEAD_UNRESOLVED_THREADS=0 ;; esac
+}
+
+head_blockers_json() {
+  printf '{"failedChecks":'
+  json_string "$HEAD_FAILED_CHECKS"
+  printf ',"pendingChecks":'
+  json_string "$HEAD_PENDING_CHECKS"
+  printf ',"unresolvedThreads":%s}' "$HEAD_UNRESOLVED_THREADS"
+}
+
 ACCEPTED_DELIVERY_STATE=""
 DELIVERY_STATE_CLASS=""
 classify_delivery_state() {
@@ -2112,9 +2151,22 @@ classify_pr_phase() {
       # Under a merge queue, an armed auto-merge request with no queue entry
       # is not "queued": GitHub has not admitted the head and nothing here
       # will land it. Reporting it as queued hid the difference between
-      # "waiting for checks" and "never enqueued" (touchstone#1049).
-      PR_PHASE=armed-not-queued
-      PR_NEXT_ACTION=inspect
+      # "waiting for checks" and "never enqueued" (touchstone#1049). Since
+      # pr merge arms auto-merge while the gate still runs, this is now the
+      # ordinary state of a fresh head, so say what GitHub is waiting on:
+      # a check still running is a wait; a failed check or an unresolved
+      # thread is what to inspect.
+      read_head_blockers "$number" "$head"
+      if [ -n "$HEAD_FAILED_CHECKS" ] || [ "$HEAD_UNRESOLVED_THREADS" -gt 0 ]; then
+        PR_PHASE=armed-blocked
+        PR_NEXT_ACTION=inspect
+      elif [ -n "$HEAD_PENDING_CHECKS" ]; then
+        PR_PHASE=armed-waiting-checks
+        PR_NEXT_ACTION="wait"
+      else
+        PR_PHASE=armed-not-queued
+        PR_NEXT_ACTION=inspect
+      fi
     else
       PR_PHASE=queued
       PR_NEXT_ACTION="wait"
@@ -2482,6 +2534,12 @@ status_pr() {
     json_string "$PR_PHASE"
     printf ',"nextAction":'
     json_string "$PR_NEXT_ACTION"
+    case "$PR_PHASE" in
+      armed-blocked | armed-waiting-checks | armed-not-queued)
+        printf ',"blockers":'
+        head_blockers_json
+        ;;
+    esac
     printf ',"reviewGateCheck":%s' "$REVIEW_GATE_CHECK_JSON"
     printf ',"reviewGateBehaviorContractVersion":'
     if [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ] && [ -n "$ENFORCEMENT_GATE_BEHAVIOR_VERSION" ]; then
@@ -2497,6 +2555,17 @@ status_pr() {
     printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  phase: %s\n  next action: %s\n  merge state: %s\n  draft: %s\n  auto-merge: %s\n  merge queue: %s\n  review gate: %s\n' \
       "$number" "$state" "$url" "$head" "$base" "$base_sha" "$PR_PHASE" "$PR_NEXT_ACTION" "$merge_state" "$draft" "$(auto_merge_text)" "$(merge_queue_text)" "$(review_gate_check_text)"
     [ "$MERGE_QUEUE_EVICTED" != true ] || printf '  merge queue history: %s\n' "$(merge_queue_eviction_text)"
+    case "$PR_PHASE" in
+      armed-blocked)
+        [ -z "$HEAD_FAILED_CHECKS" ] || printf '  blocked by: %s\n' "$HEAD_FAILED_CHECKS"
+        [ "$HEAD_UNRESOLVED_THREADS" -eq 0 ] || printf '  blocked by: %s unresolved review thread(s)\n' "$HEAD_UNRESOLVED_THREADS"
+        [ -z "$HEAD_PENDING_CHECKS" ] || printf '  still running: %s\n' "$HEAD_PENDING_CHECKS"
+        ;;
+      armed-waiting-checks) printf '  waiting on: %s\n' "$HEAD_PENDING_CHECKS" ;;
+    esac
+    if [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '(.present // false) and (.status // "") == "completed" and (.conclusion // "") == "success"')" = true ]; then
+      printf '  review: this head is reviewed (review-gate passed); a reviewer quota notice on the PR is not a blocker.\n'
+    fi
     printf '  policy: %s at %s\n  enforcement on %s: %s\n' \
       "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" "$base" "$(enforcement_text)"
     [ -z "$PR_NEXT_COMMAND" ] || printf '  command: %s\n' "$PR_NEXT_COMMAND"
