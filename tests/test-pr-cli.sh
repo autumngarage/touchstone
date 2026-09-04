@@ -1014,6 +1014,21 @@ EOF
     set -e
   }
 
+  echo "==> policy status names the pinned gate revision, not just the local tool version (AUT-1249)"
+  # "policy: ... at v3.10.1" is the document this compared against; it says
+  # nothing about which workflow revision GitHub will run, and a reader took
+  # the version as the rules in force while a pre-3.10.1 rule enforced.
+  touch "$TMP/state/review-gate"
+  run_pr "$TMP/out" policy-status --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"pinnedReviewGate":{"sourceRepository":"autumngarage/touchstone-workflows"'
+  assert_has "$TMP/out" "\"revisions\":[\"$GH_POLICY_SHA\"]"
+  run_pr "$TMP/out" policy-status
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "pinned review-gate: autumngarage/touchstone-workflows@"
+  assert_has "$TMP/out" "$GH_POLICY_SHA"
+  rm -f "$TMP/state/review-gate"
+
   echo "==> status is versioned, read-only, and retries bounded transport failures"
   touch "$TMP/state/pr-exists"
   GH_MODE=read_retry run_pr "$TMP/out" status 7 --json

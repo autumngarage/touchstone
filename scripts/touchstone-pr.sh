@@ -1300,6 +1300,34 @@ policy_binding_json_fields() {
   fi
 }
 
+# What GitHub will actually run, as distinct from the policy document this
+# command compared against. `policy: ... at v3.10.1` names the local tool's
+# release; it says nothing about which workflow revision is pinned in the
+# effective ruleset, and a reader took the version as the rules in force
+# (AUT-1249). The revisions are already read for run binding -- report them.
+pinned_review_gate_text() {
+  local revisions
+  [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ] \
+    || {
+      printf 'none pinned on this base'
+      return 0
+    }
+  revisions="$(printf '%s' "$ENFORCEMENT_REVIEW_GATE_REVISIONS" | jq -r 'join(", ")')"
+  printf '%s@%s at %s' "$ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY" "$ENFORCEMENT_REVIEW_GATE_REF" "${revisions:-unknown}"
+}
+
+pinned_review_gate_json() {
+  if [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" != true ]; then
+    printf 'null'
+    return 0
+  fi
+  printf '{"sourceRepository":'
+  json_string "$ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY"
+  printf ',"ref":'
+  json_string "$ENFORCEMENT_REVIEW_GATE_REF"
+  printf ',"revisions":%s}' "$ENFORCEMENT_REVIEW_GATE_REVISIONS"
+}
+
 policy_status() {
   local base_ref="${BASE_REF:-$DEFAULT_REF}"
   read_enforcement "$base_ref"
@@ -1314,11 +1342,15 @@ policy_status() {
     json_string "$ENFORCEMENT_POLICY_SOURCE"
     printf ',"policyRevision":'
     json_string "$ENFORCEMENT_POLICY_REVISION"
+    printf ',"pinnedReviewGate":'
+    pinned_review_gate_json
     printf ',"enforcement":'
     enforcement_json
     printf '}\n'
   else
-    printf 'repository: %s\n  base: %s\n  policy: %s at %s\n  enforcement: %s\n' "$REPO" "$base_ref" "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" "$(enforcement_text)"
+    printf 'repository: %s\n  base: %s\n  policy: %s at %s\n' "$REPO" "$base_ref" "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION"
+    printf '  pinned review-gate: %s\n' "$(pinned_review_gate_text)"
+    printf '  enforcement: %s\n' "$(enforcement_text)"
     [ -z "$ENFORCEMENT_MISSING" ] || printf '  remedy: %s\n' "$(enforcement_remedy)"
   fi
 }

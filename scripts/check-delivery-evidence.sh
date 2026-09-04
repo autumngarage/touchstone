@@ -256,6 +256,19 @@ done <<<"$VALIDATION_ROWS"
 [ -z "$TIER" ] || filled "$(section "Why this tier")" \
   || report "a '## Why this tier' section justifying the '$TIER' classification"
 
+# Which revision of this checker refused a row. The enforcing workflow pins
+# it independently of the installed CLI, so a row the CLI just printed can be
+# refused by a checker that predates it, and the author cannot tell "your body
+# is wrong" from "the gate is stale" -- they demand opposite fixes (AUT-1249).
+# Absent on a workflow revision that does not pass it: say nothing rather than
+# guess.
+checker_revision_note() {
+  [ -n "${TOUCHSTONE_EVIDENCE_CHECKER_REVISION:-}" ] \
+    || return 0
+  printf ' [refused by the evidence checker pinned at touchstone %s; if that predates the CLI that produced the row, the gate is stale -- repin it, do not rewrite the row]' \
+    "$TOUCHSTONE_EVIDENCE_CHECKER_REVISION"
+}
+
 # The bar rises with the tier, because the cost of an unreviewed mistake does.
 # The local review pass is the one step of the delivery contract nothing
 # else witnesses (hooks gate commits, this gate the body, review-gate the
@@ -337,7 +350,15 @@ case "$TIER" in
         case "$TIER" in
           normal)
             lr_prefix="^[[:space:]]*${lr_reviewer} on [^:]*[^[:space:]:][[:space:]]*:"
-            lr_wrong_target="^[[:space:]]*${lr_reviewer} on[[:space:]]+${lr_mark}[[:space:]]*[0-9a-f]{7,40}[[:space:]]*${lr_mark}[[:space:]]*:"
+            # A normal row naming a bare revision is the serious tier's range
+            # pass run on a normal change: strictly more evidence than the
+            # staged slice, and what `touchstone review run --base` prints.
+            # Refusing it punished the more rigorous choice and refused a row
+            # the CLI itself produced, with a message that read like a
+            # formatting complaint (AUT-1250). The boundary that carries
+            # weight is the other direction, and serious still enforces it:
+            # a serious change may not record a staged slice.
+            lr_wrong_target=
             ;;
           serious)
             lr_prefix="^[[:space:]]*${lr_reviewer} on ${lr_mark}[0-9a-f]{7,40}${lr_mark}:"
@@ -349,7 +370,7 @@ case "$TIER" in
           # The row is present: say that, show what was read, and name the
           # shape it must begin with -- "missing" sends the author hunting
           # for an absent row, or weakening a true claim (AUT-468).
-          report_unreadable "the Validation row '- Local review:' is present but not in the shape the gate reads: it must begin with '$lr_tool on <$([ "$TIER" = serious ] && echo revision || echo staged slice)>: <n> findings, <disposition>' (the $TIER tier's reviewer; backticks are fine) -- got: '$local_review'"
+          report_unreadable "the Validation row '- Local review:' is present but not in the shape the gate reads: it must begin with '$lr_tool on <$([ "$TIER" = serious ] && echo revision || echo "staged slice, or a revision for a range pass")>: <n> findings, <disposition>' (the $TIER tier's reviewer; backticks are fine) -- got: '$local_review'$(checker_revision_note)"
         fi
       fi
     fi
