@@ -173,10 +173,15 @@ Manual validation"
 # fenced text for filled() to judge, so the fence is tracked again here with
 # the same CommonMark rule (a backtick info string may not contain a backtick;
 # a tilde fence has no such rule).
+# A label may carry one parenthetical qualifier before its colon --
+# `- Manual validation (preview beta):` -- because that is how an author
+# says which build they validated, and refusing it as "missing" sent three
+# complete bodies back for a rebind in one day (AUT-1294). The qualifier is
+# not read; the row is.
 row_text() {
   printf '%s\n' "$1" | awk -v label="$2" '
     # Four or more leading spaces is indented code (CommonMark), not a row.
-    BEGIN { pattern = "^ {0,3}[-*+][[:space:]]+" label ":" }
+    BEGIN { pattern = "^ {0,3}[-*+][[:space:]]+" label "( \\([^)]*\\))?:" }
     in_fence {
       if (match($0, /^ {0,3}(`{3,}|~{3,})[[:space:]]*$/)) {
         seg = $0
@@ -245,17 +250,6 @@ esac
 filled "$(section "Intent")" || report "a '## Intent' section stating what behavior this change creates or fixes"
 VALIDATION_SECTION="$(section "Validation")"
 filled "$VALIDATION_SECTION" || report "a '## Validation' section recording what actually ran"
-while IFS= read -r row; do
-  [ -n "$row" ] || continue
-  if ! value="$(row_text "$VALIDATION_SECTION" "$row")"; then
-    report "the Validation row '- $row:' present (the template ships it; record what ran, or n/a with a reason)"
-  elif ! filled "$value"; then
-    report "the Validation row '- $row:' filled in (what ran and its result, or n/a with a reason)"
-  fi
-done <<<"$VALIDATION_ROWS"
-[ -z "$TIER" ] || filled "$(section "Why this tier")" \
-  || report "a '## Why this tier' section justifying the '$TIER' classification"
-
 # Which revision of this checker refused a row. The enforcing workflow pins
 # it independently of the installed CLI, so a row the CLI just printed can be
 # refused by a checker that predates it, and the author cannot tell "your body
@@ -268,6 +262,31 @@ checker_revision_note() {
   printf ' [refused by the evidence checker pinned at touchstone %s; if that predates the CLI that produced the row, the gate is stale -- repin it, do not rewrite the row]' \
     "$TOUCHSTONE_EVIDENCE_CHECKER_REVISION"
 }
+
+# The row's label is there but the colon is not where the gate reads it
+# (extra words after the label, a colon dropped): report the line that was
+# read and the one that would pass, rather than "missing" for a row the
+# author can see (AUT-1294).
+row_lookalike() {
+  printf '%s\n' "$1" | awk -v label="$2" '
+    BEGIN { pattern = "^ {0,3}[-*+][[:space:]]+" label }
+    $0 ~ pattern { print; found = 1; exit }
+    END { if (!found) exit 1 }'
+}
+while IFS= read -r row; do
+  [ -n "$row" ] || continue
+  if ! value="$(row_text "$VALIDATION_SECTION" "$row")"; then
+    if lookalike="$(row_lookalike "$VALIDATION_SECTION" "$row")"; then
+      report_unreadable "the Validation row '- $row:' is present but not in the shape the gate reads: it must begin with '- $row:' (one parenthetical qualifier before the colon is fine, e.g. '- $row (preview beta): <what ran>') -- got: '$lookalike'$(checker_revision_note)"
+    else
+      report "the Validation row '- $row:' present (the template ships it; record what ran, or n/a with a reason)"
+    fi
+  elif ! filled "$value"; then
+    report "the Validation row '- $row:' filled in (what ran and its result, or n/a with a reason)"
+  fi
+done <<<"$VALIDATION_ROWS"
+[ -z "$TIER" ] || filled "$(section "Why this tier")" \
+  || report "a '## Why this tier' section justifying the '$TIER' classification"
 
 # The bar rises with the tier, because the cost of an unreviewed mistake does.
 # The local review pass is the one step of the delivery contract nothing

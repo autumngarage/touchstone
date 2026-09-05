@@ -1317,6 +1317,67 @@ else
   fail "the gate refused a fully recorded pull request"
 fi
 
+echo "==> a row label may carry one parenthetical qualifier (AUT-1294)"
+body '## Intent
+Ship the picker.
+
+## Invariants
+- One.
+
+## Validation
+- Build: swift build passed.
+- Automated tests: swift test passed.
+- Manual validation (preview beta): clicked through the picker.
+- Local review: openrouter on the staged slice (review-normal): 0 findings, accepted.
+
+## Review tier
+normal
+
+## Why this tier
+Contained.'
+if accepts; then
+  ok "a qualified row label is read as the row"
+else
+  fail "the gate refused a row whose label carries a parenthetical qualifier"
+fi
+
+echo "==> a row whose label is decorated past the gate's shape is unreadable, not missing"
+body '## Intent
+Ship the picker.
+
+## Invariants
+- One.
+
+## Validation
+- Build: swift build passed.
+- Automated tests: swift test passed.
+- Manual validation on the preview beta: clicked through the picker.
+- Local review: openrouter on the staged slice (review-normal): 0 findings, accepted.
+
+## Review tier
+normal
+
+## Why this tier
+Contained.'
+if accepts; then
+  fail "the gate accepted a row it cannot read by label"
+fi
+refusal="$(bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/body.md" 2>&1 || true)"
+case "$refusal" in
+  *"unreadable: the Validation row '- Manual validation:' is present but not in the shape the gate reads"*"got: '- Manual validation on the preview beta: clicked through the picker.'"*)
+    ok "a decorated label is reported as unreadable with the line that was read"
+    ;;
+  *) fail "expected an unreadable report naming the decorated row, got: $refusal" ;;
+esac
+case "$refusal" in
+  *"e.g. '- Manual validation (preview beta): <what ran>'"*) ok "the refusal shows a line that would pass" ;;
+  *) fail "the refusal does not show a passing example: $refusal" ;;
+esac
+case "$refusal" in
+  *"missing: the Validation row '- Manual validation:'"*) fail "a present row was also reported missing" ;;
+  *) ok "a present row is not reported missing" ;;
+esac
+
 echo "==> an unedited template is absence, not evidence"
 body '## Intent
 <State exactly what behavior this change creates.>
