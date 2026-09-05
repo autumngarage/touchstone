@@ -238,6 +238,15 @@ case "$COMMAND" in
           BREW_OPT="$(brew --prefix touchstone 2>/dev/null || true)"
           if [ -n "$BREW_OPT" ] && [ -d "$BREW_OPT/libexec" ] \
             && [ "$(cd -P "$BREW_OPT/libexec" && pwd)" = "$TOUCHSTONE_ROOT" ]; then
+            # Refresh tap metadata first. `brew upgrade` reads the cached
+            # formula, and Homebrew's own auto-update is time-boxed, so a
+            # release cut minutes ago is invisible: the upgrade no-ops, prints
+            # "already installed", and the steering step then reports "already
+            # current" — a success message for having done nothing. That is how
+            # a released steering fix stayed undeployed while the tool said it
+            # was current. Not fatal on its own: a tap that cannot be fetched
+            # should still allow an upgrade from cache, loudly.
+            brew update || echo "WARNING: could not refresh Homebrew metadata; upgrading from cache, which may not see a recent release" >&2
             brew upgrade touchstone
             converge_upgraded_steering "$BREW_OPT/libexec/bin/touchstone"
             exit 0
