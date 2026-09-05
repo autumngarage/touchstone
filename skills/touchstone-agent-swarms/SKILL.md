@@ -1,5 +1,5 @@
 ---
-name: agent-swarms
+name: touchstone-agent-swarms
 description: Use when parallelizing work across multiple agents — applies the four-question gate before fanning out (clean context, different tools, skeptical verifier, parallel work).
 ---
 
