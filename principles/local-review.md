@@ -59,6 +59,27 @@ atomic correctness change merely to reduce line count. A migration, API
 change, or invariant change stays one slice when its pieces must land
 together.
 
+## Cadence
+
+Commits and PRs have different costs, so they get different rhythms.
+
+A commit costs nothing: the PR squash-merges, so intra-PR history is never
+the deliverable. Commit at every green working state and push after the
+first commit. An uncommitted hour is unrecoverable work; an unpushed branch
+can be dropped by a sibling session sharing the checkout. Never hold edits
+back to make a tidier history.
+
+A PR carries fixed overhead regardless of size: the evidence body, the
+tier's local pass, the hosted gate run, and a merge-queue entry. Spend it
+once per complete invariant. Open the PR the moment one invariant is green
+and validated; do not wait for the conversation, the plan, or the session
+to end. Do not open one per commit either — a PR that ships half an
+invariant pays the overhead twice and reviews a state nothing can validate.
+
+Ship what is done when a branch would outlive the session or another PR
+merges beneath it. A long-lived branch converts every later merge into
+rebase work and every review finding into a wider diff.
+
 ## Scope-expansion checkpoint
 
 A follow-up request approves doing the work; it does not automatically make
