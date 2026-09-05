@@ -307,12 +307,15 @@ assert_contains "$GIT_WORKFLOW_SKILL" "answering is not implementing"
 assert_contains "$GIT_WORKFLOW_SKILL" "Stop only widened work and requests on that shape"
 assert_contains "$GIT_WORKFLOW_SKILL" "in-scope fixes continue to exact-head review"
 
-echo "==> Claude entry files import the TOUCHSTONE.md steering router"
-# CLAUDE.md uses @TOUCHSTONE.md (Claude Code resolves @-imports transitively),
-# so the contract phrases are inlined into agent context via TOUCHSTONE.md
-# rather than literally appearing in CLAUDE.md. Asserting the import is the
-# verification contract.
-assert_contains "$TOUCHSTONE_ROOT/CLAUDE.md" "@TOUCHSTONE.md"
+echo "==> CLAUDE.md loads the steering router once, not twice"
+# `touchstone steering install` writes the TOUCHSTONE.md block into
+# ~/.claude/CLAUDE.md, which Claude loads in every session on that machine.
+# An @TOUCHSTONE.md import here loaded the identical block a second time
+# (about 3,100 tokens per session). CLAUDE.md now names the router and tells
+# an agent on an uninstalled machine to read it; it must not import it.
+assert_not_contains "$TOUCHSTONE_ROOT/CLAUDE.md" "@TOUCHSTONE.md"
+assert_contains "$TOUCHSTONE_ROOT/CLAUDE.md" 'read `TOUCHSTONE.md` before the first edit'
+assert_contains "$TOUCHSTONE_ROOT/CLAUDE.md" "touchstone steering install"
 
 echo "==> Gemini entry files name the driving CLI role inline"
 # GEMINI.md carries the managed block inline, so the contract phrases must
@@ -1646,6 +1649,11 @@ assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" 'Do not rerun'
 assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" 'protected hosted workflow'
 assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" 'If it is absent, run the complete suite locally'
 assert_contains "$TOUCHSTONE_ROOT/CLAUDE.md" 'protected hosted workflow owns the complete suite'
+# The Claude testing guidance is a path-scoped rule so docs-only sessions do
+# not pay for it; it must still say what the hosted gate owns.
+assert_contains "$TOUCHSTONE_ROOT/.claude/rules/testing.md" 'protected'
+assert_contains "$TOUCHSTONE_ROOT/.claude/rules/testing.md" 'run the complete suite locally'
+assert_contains "$TOUCHSTONE_ROOT/.claude/rules/testing.md" 'paths:'
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'otherwise run the complete'
 assert_contains "$TOUCHSTONE_ROOT/.touchstone.toml" 'for test in tests/test-*.sh'
 

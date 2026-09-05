@@ -8,7 +8,7 @@ Codex and other AGENTS.md-native tools read `AGENTS.md`; Gemini CLI reads `GEMIN
 
 ## Universal steering
 
-@TOUCHSTONE.md
+The universal contract is `TOUCHSTONE.md`. `touchstone steering install` puts it in `~/.claude/CLAUDE.md`, so it is already loaded here on any machine with the install; this file does not import it a second time. If `/context` lists no Touchstone steering block under Memory files, read `TOUCHSTONE.md` before the first edit.
 
 Codex and Gemini read the same block through the managed markers in `AGENTS.md` and `GEMINI.md`. **Edit `TOUCHSTONE.md`, then run `bash scripts/render-steering.sh`**; `tests/test-steering-render.sh` fails on drift.
 
@@ -19,23 +19,6 @@ Codex and Gemini read the same block through the managed markers in `AGENTS.md` 
 - **Delete by default.** The burden of proof is on keeping. A deletion is recoverable from git history; a file kept on "it might be useful" accretes tests, findings, and dependents. A change earns its way in when a real failure demanded it — not because a review round suggested it.
 - **Self-tests are mandatory.** Run focused deterministic tests for changed behavior before pushing. The protected hosted workflow owns the complete suite; do not repeat it locally as confirmation. If effective policy lacks that workflow, run the complete suite locally and track the rollout gap.
 - **Downstream projects are frozen, deliberately.** anima, vesper, arpeggio, and convoy carry committed copies of the old scripts. Deleting the bootstrap means no stripped release can reach them: they keep working exactly as they did. Re-adoption is a separate, later decision — do not "fix" them from here.
-
-## Testing
-
-Run the smallest deterministic test files that exercise the changed behavior,
-then run pre-commit on the changed files. The complete suite is the protected
-hosted gate — deterministic, offline, and fetching nothing. The protected
-workflow pinned by `policy/github/touchstone-main.json` runs the one
-`.touchstone.toml` command, with no third-party dependency. The target
-repository carries no duplicate validation workflow. That is deliberate: a
-required check that can go red because a package host had a bad minute is not a
-gate (#742, #803, #808).
-
-This local optimization is conditional on effective policy containing the
-protected workflow. Without it, run the complete suite locally and track the
-rollout gap.
-
-Lint is not part of the test suite. It runs at pre-commit and via `pre-commit run --all-files`: `shellcheck`, `shfmt`, `markdownlint`, and `actionlint`. `.pre-commit-config.yaml` and `.markdownlint.json` are the canonical config.
 
 ## Key Files
 
