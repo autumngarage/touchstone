@@ -2624,6 +2624,24 @@ status_pr() {
   fi
 }
 
+# The evicted head's refusal, with the one mutation that keeps it refused:
+# an armed auto-merge request would let GitHub re-queue the same red head
+# on the next base movement, so it is disarmed first, and the message says
+# whether it was.
+refuse_evicted_head() {
+  local number="$1" head="$2" disarm_output disarm_status=0 disarmed=""
+  if [ "$AUTO_MERGE_ARMED" = true ]; then
+    disarm_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$number" --repo "$REPO_SPEC" --disable-auto 2>&1)" || disarm_status=$?
+    if [ "$disarm_status" -ne 0 ]; then
+      fail_operation "PR #$number head $head was removed from the merge queue at ${MERGE_QUEUE_EVICTED_AT:-an unknown time} (${MERGE_QUEUE_EVICTION_REASON:-no reason recorded}) and nothing has changed since, but its armed auto-merge request could not be disarmed: $(clean_diagnostic "$disarm_output")" \
+        "Run gh pr merge $number --repo $REPO_SPEC --disable-auto so GitHub cannot re-queue this head, fix the failing check on a new head, then run touchstone pr merge $number --head <new head>."
+    fi
+    disarmed="; its armed auto-merge request was disarmed so GitHub does not re-queue this head meanwhile"
+  fi
+  fail_input "PR #$number head $head was removed from the merge queue at ${MERGE_QUEUE_EVICTED_AT:-an unknown time} (${MERGE_QUEUE_EVICTION_REASON:-no reason recorded}) and nothing has changed since; re-queueing it would repeat the eviction, so no merge was requested$disarmed" \
+    "Fix the failing check on a new head, push it, then run touchstone pr merge $number --head <new head>. touchstone pr status $number shows the eviction."
+}
+
 merge_pr() {
   local number state url head head_repo base base_sha merge_state draft merge_output merge_status=0
   local merge_diagnostic final_state="" final_row final_head auto_merge queue_state unguarded_marker prior_records record_author merge_auto
@@ -2656,6 +2674,25 @@ merge_pr() {
         || printf 'Candidate %s at %s is %s.\n' "$ENFORCEMENT_CANDIDATE_SOURCE" "$ENFORCEMENT_CANDIDATE_REVISION" "$ENFORCEMENT_CANDIDATE_ROLE" >&2
     fi
     if [ "$ENFORCEMENT_STATUS" = applied ]; then
+      # A head the queue already evicted for a failing required check reads
+      # green everywhere else -- gate successful, CLEAN, "not queued" -- so
+      # arming it again is exactly what a driver does next, and GitHub does
+      # the same on its own once the base moves while auto-merge stays armed
+      # (vesper#1171, 2026-09-05: the same red head was re-queued eight hours
+      # after its eviction with no new commit, and a full runner cycle was
+      # spent learning what the first eviction already said). Nothing has
+      # changed since the removal, so the eviction is the verdict for this
+      # head: refuse, and where GitHub still holds an armed request for it,
+      # disarm it so the queue cannot re-admit the head while the fix is
+      # written. The disarm is the only mutation; no merge is requested.
+      # A head pushed, force-pushed, or retargeted after the removal is a
+      # different head and takes the ordinary path (AUT-1290).
+      if [ "$ENFORCEMENT_QUEUE_APPLIED" = true ]; then
+        read_auto_merge_state "$number" "$head"
+        if [ "$MERGE_QUEUE_EVICTED" = true ]; then
+          refuse_evicted_head "$number" "$head"
+        fi
+      fi
       if [ "$ENFORCEMENT_EXPECTS_REVIEW_GATE" = true ]; then
         require_review_gate_success "$head" "$number"
         if [ "$JSON_MODE" = false ]; then

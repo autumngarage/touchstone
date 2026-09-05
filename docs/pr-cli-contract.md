@@ -251,7 +251,20 @@ taking this document's word for it.
   head: successful, it asks GitHub to merge; still evaluating, it arms
   auto-merge bound to that head so GitHub admits it when the gate succeeds
   (`reviewGate.action` is `arm-auto-merge`). A failed, absent, unbound, or
-  ambiguous gate causes no merge or queue mutation. Review is requested by `open` and refreshed by `answer`; `merge`
+  ambiguous gate causes no merge or queue mutation. Under a policy that
+  enforces a merge queue, a head whose newest queue event is a removal (the
+  `evicted` phase `status` reports) is refused with exit 2 and no merge
+  mutation: the required check already failed on this exact head and nothing
+  has changed since, so re-queueing it would repeat the eviction and spend a
+  runner cycle on a known result. Where GitHub still holds an armed
+  auto-merge request for that head, `merge` disarms it first
+  (`gh pr merge --disable-auto`) and says so, because an armed request lets
+  GitHub re-queue the same red head on its own when the base moves
+  (vesper#1171, 2026-09-05: re-queued eight hours after its eviction with no
+  new commit). A disarm GitHub refuses is an operational failure (exit 1)
+  naming the raw command. The recovery is a new head: fix the failing check,
+  push, then `merge --head <new head>`; a push, force-push, or retarget after
+  the removal makes the eviction history (AUT-1290). Review is requested by `open` and refreshed by `answer`; `merge`
   never starts or waits for review. It also does not rebuild a second review
   verdict from mutable comment timestamps. A review-gated policy without a
   merge queue is reported as partial and requires the explicit audited

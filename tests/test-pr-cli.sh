@@ -329,6 +329,13 @@ case "$1 ${2:-}" in
     fi
     ;;
   "pr merge")
+    # Disarming an armed request is its own mutation, recorded in GH_CALLS
+    # like every other; it never merges.
+    if has '--disable-auto' "$@"; then
+      if [ -f "$GH_STATE/disarm-fails" ]; then printf 'auto-merge could not be disabled\n' >&2; exit 1; fi
+      rm -f "$GH_STATE/auto-merge-armed"
+      exit 0
+    fi
     if [ "${GH_MODE:-ok}" = merge_failed ]; then exit 1; fi
     if [ "${GH_MODE:-ok}" = merge_reconcile_failed ]; then
       printf 'merge rejected by rules\n' >&2
@@ -356,6 +363,8 @@ case "$1 ${2:-}" in
       [ "${GH_MODE:-ok}" != status_head_moved ] || observed_head=moved-head
       auto_merge_enabled_at=null
       case "${GH_MODE:-ok}" in status_auto_merge | status_auto_merge_blocked | status_auto_merge_threads) auto_merge_enabled_at='"2026-08-24T20:00:00Z"' ;; esac
+      # An armed request that outlived a queue eviction (vesper#1171).
+      [ ! -f "$GH_STATE/auto-merge-armed" ] || auto_merge_enabled_at='"2026-09-05T02:38:11Z"'
       queue_state=null
       case "${GH_MODE:-ok}" in
         status_gate_queued) queue_state='"AWAITING_CHECKS"' ;;
@@ -2015,6 +2024,58 @@ Closes #42'
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns" "$TMP/state/gate-after-rerun"
+
+  echo "==> merge refuses to re-arm a head the queue already evicted (AUT-1290)"
+  # Same green head, same successful gate, same CLEAN merge state as the
+  # accepted merge above; the only difference is the queue's newest event
+  # for this head. Re-queueing it repeats the eviction (vesper#1171 spent a
+  # full runner cycle that way on 2026-09-05), so merge refuses it.
+  touch "$TMP/state/review-gate" "$TMP/state/pr-exists" "$TMP/state/queue-evicted"
+  rm -f "$TMP/state/merged" "$TMP/state/auto-merge-armed"
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'removed from the merge queue at 2026-09-02T16:51:33Z (failed_checks) and nothing has changed since'
+  assert_has "$TMP/out" 'no merge was requested'
+  assert_has "$TMP/out" "touchstone pr merge 7 --head <new head>"
+  assert_not_has "$TMP/out" 'was disarmed'
+  # Nothing armed, so nothing to disarm: no mutation of any kind.
+  assert_not_has "$GH_CALLS" 'pr merge'
+  # An armed request that outlived the eviction is what lets GitHub re-queue
+  # the same red head when the base moves; it is disarmed, and the refusal
+  # says so. The disarm is the only mutation.
+  touch "$TMP/state/auto-merge-armed"
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'was disarmed so GitHub does not re-queue this head'
+  grep -q '^pr merge 7 .*--disable-auto' "$GH_CALLS" || fail "merge did not disarm the evicted head's auto-merge request: $(cat "$GH_CALLS")"
+  assert_not_has "$GH_CALLS" '--squash'
+  [ ! -f "$TMP/state/auto-merge-armed" ] || fail "the fake still holds an armed request after the disarm"
+  # A disarm GitHub refuses is an operational failure with the raw remedy,
+  # never a silent fall-through into the merge.
+  touch "$TMP/state/auto-merge-armed" "$TMP/state/disarm-fails"
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'could not be disarmed: auto-merge could not be disabled'
+  assert_has "$TMP/out" 'gh pr merge 7 --repo github.com/autumngarage/current --disable-auto'
+  assert_not_has "$GH_CALLS" '--squash'
+  rm -f "$TMP/state/disarm-fails" "$TMP/state/auto-merge-armed"
+  # The human output carries the same refusal.
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'ERROR: PR #7 head'
+  assert_has "$TMP/out" 'removed from the merge queue'
+  rm -f "$TMP/state/queue-evicted"
+  # A head pushed after the removal is a different head: the eviction is
+  # history and this head merges on the ordinary path.
+  touch "$TMP/state/queue-evicted-then-pushed"
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'pr merge'
+  rm -f "$TMP/state/queue-evicted-then-pushed" "$TMP/state/merged" "$TMP/state/review-gate"
 
   echo "==> behavior v2 merge arms auto-merge on an active evaluation without re-running it"
   touch "$TMP/state/review-gate"
