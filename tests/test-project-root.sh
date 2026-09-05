@@ -481,6 +481,40 @@ HOME="$UPGRADE_HOME" bash "$PREFIX/bin/touchstone" steering install >"$INSTALL_T
   || fail "the documented one-time steering migration failed: $(cat "$INSTALL_TMP/transition-steering.out")"
 HOME="$UPGRADE_HOME" bash "$PREFIX/bin/touchstone" steering check >/dev/null 2>&1 \
   || fail "the one-time transition did not converge machine steering"
+
+echo "==> steering check reports a repository's own committed block without failing"
+# A committed block is a second, unversioned contract sitting where project
+# guidance outranks the machine-wide default. It must be visible — and must not
+# fail, because `touchstone upgrade` gates on this exit status and the
+# repositories carrying such blocks are the ones that most need the new tool.
+REPO_BLOCK_DIR="$INSTALL_TMP/consumer-with-block"
+mkdir -p "$REPO_BLOCK_DIR"
+(cd "$REPO_BLOCK_DIR" && git init -q .)
+cat >"$REPO_BLOCK_DIR/AGENTS.md" <<'EOF'
+project content the operator owns
+<!-- touchstone:steering:start -->
+<!-- Installed by touchstone 2.9.0. Superseded contract. -->
+OLD MANAGED CONTRACT
+<!-- touchstone:steering:end -->
+EOF
+(cd "$REPO_BLOCK_DIR" \
+  && HOME="$UPGRADE_HOME" bash "$PREFIX/bin/touchstone" steering check) \
+  >"$INSTALL_TMP/repo-block.out" 2>&1 \
+  || fail "a repository-level block made steering check fail, which would block touchstone upgrade there: $(cat "$INSTALL_TMP/repo-block.out")"
+grep -qF 'carries its own committed steering block' "$INSTALL_TMP/repo-block.out" \
+  || fail "steering check did not report the repository's committed steering block"
+grep -qF 'AGENTS.md (block from touchstone 2.9.0)' "$INSTALL_TMP/repo-block.out" \
+  || fail "steering check did not name the file and the version of the committed block"
+
+echo "==> steering check never reports the Touchstone source checkout's own block"
+# TOUCHSTONE.md plus scripts/render-steering.sh is the source of the contract;
+# its AGENTS.md and GEMINI.md carry the block by construction.
+(cd "$REPO_ROOT" \
+  && HOME="$UPGRADE_HOME" bash "$PREFIX/bin/touchstone" steering check) \
+  >"$INSTALL_TMP/source-block.out" 2>&1 || true
+grep -qF 'carries its own committed steering block' "$INSTALL_TMP/source-block.out" \
+  && fail "steering check reported the Touchstone source checkout as carrying a legacy block" \
+  || true
 grep -qF 'Installed by touchstone 9.9.2.' "$UPGRADE_HOME/.codex/AGENTS.md" \
   || fail "the one-time transition did not install the new steering version"
 grep -qF 'operator prefix' "$UPGRADE_HOME/.codex/AGENTS.md" \
