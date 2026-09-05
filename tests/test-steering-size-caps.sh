@@ -140,6 +140,7 @@ done < <(
       "$TOUCHSTONE_ROOT/README.md"
     find "$TOUCHSTONE_ROOT/principles" -name '*.md' -type f 2>/dev/null
     find "$TOUCHSTONE_ROOT/skills" -name 'SKILL.md' -type f 2>/dev/null
+    find "$TOUCHSTONE_ROOT/.claude/rules" -name '*.md' -type f 2>/dev/null
     find "$TOUCHSTONE_ROOT/templates" -maxdepth 1 -name '*.md' -type f 2>/dev/null
   } | sort -u
 )
