@@ -487,7 +487,10 @@ emit_open_result() {
     printf 'PR #%s: %s\n  url: %s\n  branch: %s\n  head: %s\n  review request: %s\n' \
       "$number" "$state" "$url" "$branch" "$head" "$request"
     case "$REVIEW_FALLBACK_STATE" in
-      fallback) printf '  review: fallback — the primary reviewer declined (out of quota); the review-gate reviews this head itself. Not a blocker.\n' ;;
+      fallback)
+        printf '  review: the pinned review-gate reviews this head itself — complete review evidence, not a degraded mode (the primary reviewer is at capacity).\n'
+        printf '  answer a finding: touchstone pr answer %s --finding <id> --body-file <reply> --no-code-change (refute) or --fix-commit <sha> (fixed)\n' "$number"
+        ;;
       primary) printf '  review: primary reviewer replied; the review-gate decides.\n' ;;
       pending) printf '  review: no reply from the primary reviewer yet; the review-gate decides.\n' ;;
     esac
@@ -1696,6 +1699,12 @@ wait_for_request_binding() {
 # reply, but it runs read-only and cannot write that on the pull request, so
 # a declined reply used to sit there alone and read as "waiting on Codex".
 # One notice per head, posted by the driver's own identity, closes that gap.
+# The agent-facing channel is stderr, not that comment, so both must carry the
+# same two facts: this is complete review evidence rather than a degraded mode,
+# and its findings are answerable with `pr answer --finding`. Shipping the
+# remedy only in the comment left the alarm reaching the driver without it, and
+# a driver that reads "declined (out of quota)" with no next step concludes
+# delivery is blocked on a provider it cannot influence.
 announce_review_fallback() {
   local number="$1" head="$2" request_url="$3" request_id rows primary_reply marker step waited=0
   REVIEW_FALLBACK_STATE=""
@@ -1718,10 +1727,11 @@ announce_review_fallback() {
         REVIEW_FALLBACK_STATE=fallback
         if ! printf '%s\n' "$rows" | grep -qF "$marker"; then
           capture_command gh pr comment "$number" --repo "$REPO_SPEC" --body "$marker
-**Review fallback in effect for \`$head\`.** The primary reviewer (Codex) replied that it is out of quota, so the pinned \`review-gate\` workflow reviews this head itself. This is not a blocker: watch the \`review-gate\` check. Its findings are in the run log (\`gh run view <run-id> --log\`), each with an id; answer one with \`touchstone pr answer $number --finding <id> --body-file <reply> --no-code-change\` (refute) or \`--fix-commit <sha>\` (fixed), then run \`touchstone pr merge $number --head $head\`." \
+**The pinned \`review-gate\` reviews \`$head\` itself.** The primary reviewer replied that it is at capacity, so the gate authored the verdict for this exact head — complete review evidence, not a degraded mode. This is not a blocker and not a wait: watch the \`review-gate\` check rather than waiting for the primary. Its findings are in the run log (\`gh run view <run-id> --log\`), each with an id; answer one with \`touchstone pr answer $number --finding <id> --body-file <reply> --no-code-change\` (refute) or \`--fix-commit <sha>\` (fixed), then run \`touchstone pr merge $number --head $head\`." \
             || fail_operation "could not record the review fallback on PR #$number: $CAPTURE_ERROR" "Inspect comments before retrying."
         fi
-        printf 'Primary reviewer declined (out of quota); the review-gate reviews %s itself. Not a blocker: watch the check.\n' "$head" >&2
+        printf 'The pinned review-gate reviews %s itself: complete review evidence, not a degraded mode (the primary reviewer is at capacity). Watch the review-gate check.\n' "$head" >&2
+        printf 'Its findings are in the review-gate run log, each with an id. Answer one with: touchstone pr answer %s --finding <id> --body-file <reply> --no-code-change (refute) or --fix-commit <sha> (fixed).\n' "$number" >&2
       else
         REVIEW_FALLBACK_STATE=primary
         printf 'Primary reviewer replied to the request for %s; the review-gate decides from its evidence.\n' "$head" >&2
@@ -2596,7 +2606,7 @@ status_pr() {
       armed-waiting-checks) printf '  waiting on: %s\n' "$HEAD_PENDING_CHECKS" ;;
     esac
     if [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '(.present // false) and (.status // "") == "completed" and (.conclusion // "") == "success"')" = true ]; then
-      printf '  review: this head is reviewed (review-gate passed); a reviewer quota notice on the PR is not a blocker.\n'
+      printf '  review: this head is reviewed (review-gate passed); a reviewer quota notice on the PR is not a blocker and not a wait.\n'
     fi
     printf '  policy: %s at %s\n  enforcement on %s: %s\n' \
       "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" "$base" "$(enforcement_text)"
