@@ -513,12 +513,36 @@ run_openrouter() {
 # promised to phrase the same way twice. The fallback is one cheap bounded
 # request, so running it after a Codex failure that had already printed
 # findings costs little.
+# A base behind its own upstream does not merely widen the slice, it fills it
+# with work that is already merged -- which is why a reviewer rejects it as
+# wrong rather than large. Reported 2026-09-05: a worktree's local main was 35
+# commits stale, the slice came out at 138 files, and the provider refused it
+# (AUT-1287). Nothing pulls a worktree's default branch, so this is the
+# ordinary case rather than the careless one.
+#
+# This runs before any reviewer is invoked, not inside the request path: the
+# tier allows one pass, and a stale base must not consume it against a slice
+# nobody wanted. An earlier revision of this check sat in prepare_request and
+# fired only after codex had already been spent.
+assert_base_not_behind_upstream() {
+  local root="$1" upstream behind
+  [ -n "$REVIEW_BASE" ] || return 0
+  upstream="$(review_git -C "$root" rev-parse --abbrev-ref --symbolic-full-name "$REVIEW_BASE@{upstream}" 2>/dev/null || printf '')"
+  [ -n "$upstream" ] || return 0
+  behind="$(review_git -C "$root" rev-list --count "$REVIEW_BASE..$upstream" 2>/dev/null || printf '0')"
+  case "$behind" in
+    '' | 0) return 0 ;;
+  esac
+  die "'$REVIEW_BASE' is $behind commit(s) behind '$upstream', so the reviewed slice would include work already merged; review against '$upstream' (after a fetch) or update '$REVIEW_BASE'"
+}
+
 run_branch_review() {
   local reviewed_head codex_status
 
   require_executable git "$GIT_BIN"
   reviewed_head="$(review_git -C "$(pwd -P)" rev-parse --verify --quiet 'HEAD^{commit}')" \
     || die "serious review needs a committed HEAD; commit the branch before reviewing it"
+  assert_base_not_behind_upstream "$(pwd -P)"
 
   if [ -n "$CODEX_BIN" ] && [ -x "$CODEX_BIN" ]; then
     echo "==> codex review --base $REVIEW_BASE (reviewing $reviewed_head)"
