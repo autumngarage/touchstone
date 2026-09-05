@@ -1271,6 +1271,46 @@ after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
 [ "$before_calls" = "$after_calls" ] \
   || fail "a successful codex review still spent an OpenRouter request"
 
+echo "==> a base behind its upstream is refused before any reviewer runs"
+# A stale base fills the slice with already-merged work, so the reviewer
+# rejects it as wrong rather than large (AUT-1287). The tier allows one pass,
+# so the refusal has to land before a reviewer is spent -- the first version of
+# this check sat in the request path and fired only after codex had run.
+# Its own repository: mutating a shared fixture's branch would leak into the
+# cases below.
+STALE_REPO="$TEST_DIR/stale-base-repository"
+STALE_ORIGIN="$TEST_DIR/stale-base-origin.git"
+git init -q --bare "$STALE_ORIGIN"
+git init -q -b main "$STALE_REPO"
+stale_git() { git -C "$STALE_REPO" -c user.email=t@t -c user.name=t "$@"; }
+printf 'one\n' >"$STALE_REPO/f.txt"
+stale_git add f.txt
+stale_git commit -qm one
+stale_git remote add origin "$STALE_ORIGIN"
+stale_git push -q -u origin main
+printf 'two\n' >>"$STALE_REPO/f.txt"
+stale_git commit -qam two
+stale_git push -q origin main
+stale_git reset -q --hard HEAD~1
+stale_git checkout -qb feature
+printf 'three\n' >>"$STALE_REPO/f.txt"
+stale_git commit -qam three
+: >"$FAKE_CODEX_LOG"
+before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+if (
+  cd "$STALE_REPO"
+  serious_command run --base main --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/serious-stale.out" 2>&1; then
+  fail "a base behind its upstream was accepted: $(cat "$TEST_DIR/serious-stale.out")"
+fi
+assert_contains "$TEST_DIR/serious-stale.out" "behind 'origin/main'"
+assert_contains "$TEST_DIR/serious-stale.out" "already merged"
+[ ! -s "$FAKE_CODEX_LOG" ] \
+  || fail "a stale base spent a codex review before being refused: $(cat "$FAKE_CODEX_LOG")"
+after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
+[ "$before_calls" = "$after_calls" ] \
+  || fail "a stale base spent an OpenRouter request before being refused"
+
 # Any non-success is unavailability: the reason is not parsed out of a
 # third-party CLI's stderr, it is simply not Codex's verdict.
 : >"$FAKE_CODEX_LOG"
