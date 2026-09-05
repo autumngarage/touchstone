@@ -92,6 +92,18 @@ EOF
 )
 ```
 
+A `Validation` row records what was **observed at the reviewed head**, and
+nothing else.
+A step that can only happen after the merge is recorded as pending, never as done.
+Writing "effective rulesets on all six repositories
+read `<sha>` after apply" in a pin-bump body claims a deployment the reviewed
+head cannot have produced, and the gate reads only the body, so nothing
+contradicts it. Touchstone#1137 carried exactly that sentence, nothing had been
+applied anywhere, and the pin it deployed took every gate in the repository
+down. Say "deployed by `github-policy.sh apply` after merge; not yet applied"
+instead — the sequencer already prints `is desired-after-merge` for such a
+branch, so the honest row agrees with the tool rather than contradicting it.
+
 The installed CLI is the PR-open sequencer on every machine: it creates or
 reuses the PR for the branch, waits for the policy-declared
 `delivery-evidence` workflow to accept the surviving body, then posts the
