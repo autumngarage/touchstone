@@ -1190,6 +1190,40 @@ fi
 after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
 [ "$before_calls" = "$after_calls" ] || fail "large review reached OpenRouter"
 
+echo "==> deleted and vendored files are named, not sent"
+# A deletion's removed lines and a linguist-vendored tree have no line-level
+# review value and used to blow the byte ceiling, which agents then recorded
+# as an unavailable reviewer (vesper #1154, #1157, #1160). The request must
+# carry the change's own diff, name the excluded paths, and leave their
+# bodies out.
+STUB_REPOSITORY="$TEST_DIR/review-stub-repository"
+mkdir -p "$STUB_REPOSITORY/vendor/lib"
+stub_git() {
+  git -C "$STUB_REPOSITORY" \
+    -c user.name=Touchstone -c user.email=touchstone@example.invalid "$@"
+}
+git init -q "$STUB_REPOSITORY"
+printf 'vendor/** linguist-vendored\n' >"$STUB_REPOSITORY/.gitattributes"
+printf 'DELETED_BODY_MARKER\n' >"$STUB_REPOSITORY/old.txt"
+printf 'vendored baseline\n' >"$STUB_REPOSITORY/vendor/lib/dep.js"
+printf 'own baseline\n' >"$STUB_REPOSITORY/own.txt"
+stub_git add .gitattributes old.txt vendor/lib/dep.js own.txt
+stub_git commit -qm initial
+stub_git rm -q old.txt
+printf 'VENDORED_BODY_MARKER\n' >"$STUB_REPOSITORY/vendor/lib/dep.js"
+printf 'OWN_CHANGE_MARKER\n' >"$STUB_REPOSITORY/own.txt"
+stub_git add vendor/lib/dep.js own.txt
+(
+  cd "$STUB_REPOSITORY"
+  review_command run --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/stub-review.out" 2>&1 \
+  || fail "review with deleted and vendored files failed: $(cat "$TEST_DIR/stub-review.out")"
+assert_contains "$FAKE_CURL_CAPTURE" 'OWN_CHANGE_MARKER'
+assert_not_contains "$FAKE_CURL_CAPTURE" 'DELETED_BODY_MARKER'
+assert_not_contains "$FAKE_CURL_CAPTURE" 'VENDORED_BODY_MARKER'
+assert_contains "$FAKE_CURL_CAPTURE" 'deleted: old.txt'
+assert_contains "$FAKE_CURL_CAPTURE" 'linguist-vendored: vendor/lib/dep.js'
+
 echo "==> --base reviews the committed branch range, not the index"
 # The serious tier's fallback: Codex reads the committed branch, so the
 # stand-in must read the same revisions -- not the index the normal tier
@@ -1261,6 +1295,10 @@ elif ! grep -qF 'configured limit is 100 bytes' "$TEST_DIR/range-limit.out"; the
 fi
 after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
 [ "$before_calls" = "$after_calls" ] || fail "an oversized range reached OpenRouter"
+
+echo "==> the byte ceiling names a slicing error, never a waiver"
+assert_contains "$TEST_DIR/small-limit.out" 'not a waiver'
+assert_contains "$TEST_DIR/range-limit.out" 'not a waiver'
 
 echo "==> --base runs codex first, and falls back on every non-success"
 # The fallback is the script's decision, not the driver's. An agent that has to

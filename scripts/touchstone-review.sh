@@ -179,11 +179,51 @@ WORK_DIR=""
 # One diff invocation for both review scopes. The range scope passes
 # merge-base..HEAD revs; the normal scope passes --cached. Diagnostics stay
 # with the caller so each tier keeps its own error strings.
+# Deleted files and vendored or generated paths are named, not sent. A
+# deletion's every removed line has no review value beyond the fact of the
+# deletion, and a vendored tree marked `linguist-vendored` or
+# `linguist-generated` in .gitattributes is not this change's code. Both used
+# to flood the request past its byte ceiling, and the refusal then read as
+# "the reviewer is unavailable" -- vesper #1154, #1157 and #1160 waived the
+# whole local pass on that reading. The summary keeps the paths visible to the
+# reviewer while the ceiling bounds what the change actually wrote.
 write_review_diff() {
   local repository_root="$1" output="$2"
   shift 2
-  review_git -C "$repository_root" diff --no-ext-diff \
-    --find-renames --no-color --ignore-submodules=none "$@" >"$output"
+  local -a exclude_specs=()
+  local path attr value summary
+  summary=""
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    exclude_specs+=(":(exclude,literal)$path")
+    summary="$summary
+deleted: $path"
+  done < <(review_git -C "$repository_root" diff --no-ext-diff --no-color \
+    --ignore-submodules=none --diff-filter=D --name-only "$@")
+  while IFS= read -r -d '' path && IFS= read -r -d '' attr && IFS= read -r -d '' value; do
+    case "$value" in
+      unspecified | unset | false) continue ;;
+    esac
+    case " ${exclude_specs[*]-} " in
+      *":(exclude,literal)$path "*) continue ;;
+    esac
+    exclude_specs+=(":(exclude,literal)$path")
+    summary="$summary
+$attr: $path"
+  done < <(review_git -C "$repository_root" diff --no-ext-diff --no-color \
+    --ignore-submodules=none --diff-filter=d --name-only -z "$@" \
+    | review_git -C "$repository_root" check-attr --stdin -z \
+      linguist-vendored linguist-generated 2>/dev/null || true)
+  if [ "${#exclude_specs[@]}" -gt 0 ]; then
+    review_git -C "$repository_root" diff --no-ext-diff \
+      --find-renames --no-color --ignore-submodules=none --diff-filter=d "$@" \
+      -- . "${exclude_specs[@]}" >"$output" || return 1
+    printf '\n# Not sent line by line (deleted, or marked linguist-vendored / linguist-generated in .gitattributes):%s\n' \
+      "$summary" >>"$output"
+  else
+    review_git -C "$repository_root" diff --no-ext-diff \
+      --find-renames --no-color --ignore-submodules=none "$@" >"$output"
+  fi
 }
 cleanup_work_dir() {
   local status="$?"
@@ -316,7 +356,7 @@ prepare_request() {
     echo "The reviewed slice was $diff_bytes bytes across $diff_files file(s); the largest contributors were:" >&2
     awk '/^diff --git /{ if (f) print n, f; f=$3; n=0 } { n += length($0) + 1 } END { if (f) print n, f }' \
       "$WORK_DIR/diff" | sort -rn | head -5 | awk '{ printf "  %8d bytes  %s\n", $1, $2 }' >&2
-    die "review request is $input_bytes bytes; the configured limit is $MAX_INPUT_BYTES bytes. If the files above are not what this change touches, the reviewed slice is wrong -- the normal scope reviews the staged slice, not the pull request. Otherwise split the change or record the documented waiver"
+    die "review request is $input_bytes bytes; the configured limit is $MAX_INPUT_BYTES bytes. This is a slicing error, not a reviewer failure, so it is not a waiver: if the files above are not what this change touches, the reviewed slice is wrong (normal reviews the staged index -- unstage the rest; a range pass reviews merge-base..HEAD -- fetch and name the branch's real base, the parent branch for a stacked child); otherwise split the change into reviewable slices and run the pass on each"
   fi
 }
 
