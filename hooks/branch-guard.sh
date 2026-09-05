@@ -36,11 +36,14 @@ if ! grep -qE '"command"[[:space:]]*:[[:space:]]*"[^"]*\bgit([[:space:]]+-c[[:sp
   exit 0
 fi
 
-# Past the fast path: we need to parse JSON. Skip gracefully if jq missing
-# (downstream projects may not have it) — same pattern as test-shellcheck.sh.
+# Past the fast path: we need to parse JSON. A guard that cannot decide must
+# refuse, not wave the commit through: exit 0 here would log the bypass to
+# debug output nobody reads and leave a commit on main looking like the
+# hook's approval. Exit 2 surfaces the missing dependency on the call that
+# needed it.
 if ! command -v jq >/dev/null 2>&1; then
-  echo "branch-guard: jq not installed — hook bypassed (install jq to enable)" >&2
-  exit 0
+  echo "branch-guard: jq is not installed, so the guarded 'git commit' cannot be checked. Install jq (brew install jq) and re-run." >&2
+  exit 2
 fi
 
 command="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"

@@ -1,5 +1,5 @@
 ---
-name: audit-weak-points
+name: touchstone-audit-weak-points
 description: Use after finding a structural bug to systematically audit the codebase for the same anti-pattern, fix instances by tier, and add a guardrail that catches the next one before it ships.
 ---
 

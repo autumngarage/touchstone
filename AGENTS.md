@@ -145,21 +145,6 @@ gap; missing enforcement never authorizes missing validation.
 
 Lint is not part of the test suite. It runs at pre-commit and via `pre-commit run --all-files`: `shellcheck`, `shfmt`, `markdownlint`, and `actionlint`.
 
-### Architecture
-
-```
-touchstone/
-├── TOUCHSTONE.md   # Canonical steering router — the universal contract
-├── docs/           # Touchstone-specific product contract and project documentation
-├── principles/     # The judgment layer, routed to from TOUCHSTONE.md
-├── skills/         # User-scoped Claude Code skills
-├── hooks/          # branch-guard.sh — PreToolUse hook wired in .claude/settings.json
-├── scripts/        # claim-issue, respond-review, touchstone-run
-├── audits/         # Dated drift/health reports (never auto-modified)
-├── feedback/       # Dated dogfooding notes from downstream projects
-└── tests/          # Self-tests
-```
-
 ## Review Guide
 
 You are reviewing pull requests for the **touchstone** repo — the baseline that governs how every project ships. A bug here becomes a bug everywhere.
