@@ -17,7 +17,7 @@ the loop:
 |---|---|---|
 | trivial | none | — |
 | normal | one direct, cost-bounded OpenRouter review of the staged slice | `touchstone review run` |
-| serious | one review of the committed branch, pre-push | `touchstone review run --base <default>` |
+| serious | one review of the committed branch, pre-push | `touchstone review run --base origin/<default>` |
 
 The `touchstone review` command is the stable normal-review interface. Its
 versioned policy selects the backend and owns the cost limits, so the backend
@@ -243,7 +243,7 @@ concise cause and stop; never fall back to an unbounded model path. Do not retry
 or inspect credentials. Use `touchstone review setup` for a missing credential
 or `touchstone review rotate` for a rejected one. For the serious pass, capture
 `reviewed_head="$(git rev-parse HEAD)"` immediately before
-`touchstone review run --base <default>` after the branch is committed. It runs Codex and falls back to the bounded OpenRouter pass over the same branch on any Codex non-success, including an exhausted quota. Which one
+`touchstone review run --base origin/<default>` after the branch is committed. **`origin/` is load-bearing.** A worktree's local default branch is routinely behind — 35 commits behind, in the 2026-09-05 report — and `--base` picks the merge base, so a stale local ref inflates the reviewed slice with work that is already merged. That report's 138-file slice blew the size limit and the provider then rejected the request, none of which the diff itself caused. Fetch before reviewing; `origin/<default>` is only as current as your last fetch. It runs Codex and falls back to the bounded OpenRouter pass over the same branch on any Codex non-success, including an exhausted quota. Which one
 ran is in its output; record that reviewer. The captured current head is the
 immutable revision the pass reviews; `<default>` is only its comparison
 boundary. Record the captured head, never the symbolic base.
@@ -296,7 +296,7 @@ the PR body's Validation block carries
 ```
 
 A normal change may record the range pass (`touchstone review run --base
-<default>`, which names the revision it reviewed) instead of the staged
+origin/<default>`, which names the revision it reviewed) instead of the staged
 slice: it reviews the whole committed branch, so it is more evidence, and the
 gate accepts it. The reverse is not true — a serious change must record the
 revision it reviewed, never a staged slice.
