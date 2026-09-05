@@ -3286,6 +3286,31 @@ STATUS_STUB
     || fail "creation-id-only workflow-run selector found:
   $stale_selectors"
 
+  echo "==> every command form the CLI prints is documented by a help surface"
+  # A driver probes `--help` before trusting a subcommand, so a form the tool
+  # tells them to run and the help denies exists reads as "missing command".
+  # That happened on 2026-09-05: `pr open` printed `pr answer ... --finding`,
+  # `touchstone pr --help` listed only open|status|merge|policy, and the driver
+  # concluded the command was absent and hand-posted a body marker instead --
+  # the path that fails review-binding and wedges `pr open`.
+  # Truncate at the next command so trailing guidance ("then run touchstone pr
+  # merge ... --head") is not mistaken for an answer flag, and drop --help,
+  # which is a universal flag and a cross-reference rather than a command form.
+  printed_answer_flags="$(grep -ho -- "touchstone pr answer[^\"']*" \
+    "$TOUCHSTONE_ROOT"/scripts/*.sh \
+    | sed -e 's/touchstone pr merge.*//' -e 's/ or run .*//' \
+    | grep -oE -- '--[a-z-]+' | grep -v '^--help$' | sort -u)"
+  [ -n "$printed_answer_flags" ] \
+    || fail "no printed 'touchstone pr answer' guidance found; this guardrail now covers nothing"
+  for printed_flag in $printed_answer_flags; do
+    grep -qF -- "$printed_flag" "$TOUCHSTONE_ROOT/bin/touchstone" \
+      || fail "the CLI prints 'touchstone pr answer $printed_flag' but bin/touchstone's usage does not document it"
+    awk '/^Usage:/, /^EOF$/' "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" \
+      | grep -qF -- "$printed_flag" \
+      || fail "the CLI prints 'touchstone pr answer $printed_flag' but 'touchstone pr --help' does not document it"
+  done
+  ok "every printed pr answer form is documented in both help surfaces"
+
   echo "==> a capacity notice never reaches the driver without its remedy"
   # The alarm and the remedy must travel together on the channel the driver
   # actually reads. The remedy shipped only in the pull-request comment while
