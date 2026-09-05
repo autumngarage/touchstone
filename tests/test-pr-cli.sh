@@ -1173,7 +1173,7 @@ EOF
   GH_MODE=status_auto_merge run_pr "$TMP/out" status 7
   assert_has "$TMP/out" 'phase: armed-waiting-checks'
   assert_has "$TMP/out" 'waiting on: Build, test, and smoke (in_progress)'
-  assert_has "$TMP/out" 'review: this head is reviewed (review-gate passed); a reviewer quota notice on the PR is not a blocker.'
+  assert_has "$TMP/out" 'a reviewer quota notice on the PR is not a blocker and not a wait.'
   GH_MODE=status_auto_merge_blocked run_pr "$TMP/out" status 7 --json
   assert_has "$TMP/out" '"phase":"armed-blocked","nextAction":"inspect","blockers":{"failedChecks":"validate (failure)"'
   GH_MODE=status_auto_merge_blocked run_pr "$TMP/out" status 7
@@ -1527,7 +1527,11 @@ EOF
   : >"$GH_CALLS"
   TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 GH_MODE=primary_quota run_pr "$TMP/out" open --title 'Declined' --body-file "$TMP/body"
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" 'review: fallback'
+  # The summary names the state and its remedy, never "fallback" as prose.
+  assert_has "$TMP/out" 'the pinned review-gate reviews this head itself'
+  assert_has "$TMP/out" 'complete review evidence, not a degraded mode'
+  assert_has "$TMP/out" 'answer a finding: touchstone pr answer'
+  assert_not_has "$TMP/out" 'review: fallback'
   [ "$(grep -c 'touchstone:review-fallback' "$GH_CALLS")" -eq 0 ] || fail "open posted a second fallback notice for the same head"
   # A primary that answers is left to the gate; nothing is posted.
   rm -f "$TMP/state/review-request" "$TMP/state/fallback-announced"
@@ -3281,6 +3285,32 @@ STATUS_STUB
   [ -z "$stale_selectors" ] && ok "no creation-id-only workflow-run selector remains" \
     || fail "creation-id-only workflow-run selector found:
   $stale_selectors"
+
+  echo "==> a capacity notice never reaches the driver without its remedy"
+  # The alarm and the remedy must travel together on the channel the driver
+  # actually reads. The remedy shipped only in the pull-request comment while
+  # stderr carried "primary reviewer declined (out of quota)" alone, and a
+  # driver reading that concluded a working gate-authored review was a blocked
+  # delivery it had to warn about. Any message naming the primary's capacity
+  # must name how to answer what the gate reports, within the same group.
+  capacity_lines="$(grep -n "at capacity" "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" | cut -d: -f1)"
+  [ -n "$capacity_lines" ] \
+    || fail "no capacity notice found in touchstone-pr.sh; this guardrail now covers nothing"
+  for capacity_line in $capacity_lines; do
+    sed -n "${capacity_line},$((capacity_line + 3))p" \
+      "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" | grep -qF -- '--finding' \
+      || fail "the capacity notice at scripts/touchstone-pr.sh:$capacity_line does not name 'pr answer --finding' within 3 lines"
+  done
+  ok "every capacity notice names pr answer --finding"
+
+  echo "==> no user-facing message frames the gate-authored review as degraded"
+  # "fallback" survives as the reviewFallback JSON enum value, which is a
+  # documented compatibility boundary. It must not reappear in prose that tells
+  # a driver the review it just got is second-best.
+  grep -nE "printf.*(declined \(out of quota\)|review: fallback)" \
+    "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" \
+    && fail "a user-facing message still frames the gate-authored review as a decline or a fallback" \
+    || ok "no user-facing degradation framing remains"
 
   if [ "$ERRORS" -gt 0 ]; then
     echo "==> FAIL: $ERRORS respond-review assertion(s) failed" >&2

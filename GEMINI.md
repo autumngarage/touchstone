@@ -19,7 +19,7 @@ That division is the entire product; everything Touchstone ships exists to hold 
 
 **Review is always required, and `review-gate` is what represents it — not any one reviewer.** The AI reviewer reports `COMMENTED`, not `APPROVED`, so approval count does not represent it either. More than one reviewer can satisfy the gate: where the primary is unavailable, the pinned gate reviews the head itself. **A green `review-gate` means the head was reviewed; the absence of a comment from a particular reviewer does not mean it was not.** Read the check, not the commenter. Where that gate is absent, exact-head review remains mandatory driver procedure — a rollout gap, not permission to skip it.
 
-**A security-review quota notice is never a blocker.** It is provisional, not review evidence. Keep watching, then use bounded stalled-request recovery.
+**A reviewer quota notice is not a blocker and not a wait.** The pinned gate then reviews the head itself; answer what it reports with `pr answer --finding`.
 
 To hold those lines, Touchstone does three things and nothing else:
 

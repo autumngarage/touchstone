@@ -391,8 +391,12 @@ Repository identity includes the canonical GitHub hostname as well as
 cannot drift from GitHub Enterprise to `github.com`.
 
 Security-review quota notices are provisional observations, never trusted
-review evidence and never a blocker. `open` leaves the request recorded and the
-driver waits for exact-head review; `merge` delegates GitHub's complete verdict
+review evidence and never a blocker — and, under gate behavior contract 3, never
+a wait either: the pinned `review-gate` reviews that exact head itself, so what
+follows is complete review evidence rather than a degraded mode. `open` leaves
+the request recorded and reports the move; the driver watches the `review-gate`
+check and answers what it reports with `pr answer --finding`, rather than
+continuing to watch the primary. `merge` delegates GitHub's complete verdict
 while binding both the mutation and reconciliation to the reviewed head.
 
 ## Ownership boundary

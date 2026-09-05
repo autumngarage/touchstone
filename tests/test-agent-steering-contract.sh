@@ -64,8 +64,14 @@ for file in \
   assert_not_contains "$file" "list every GitHub issue found"
   assert_contains "$file" "Do not infer adoption from this document"
   assert_contains "$file" "a rollout gap, not permission to skip it"
-  assert_contains "$file" "A security-review quota notice is never a blocker"
-  assert_contains "$file" "bounded stalled-request recovery"
+  # A quota notice resolves into a gate-authored verdict; it is neither a
+  # blocker nor something to wait out. The contract used to say "keep watching,
+  # then use bounded stalled-request recovery", which contradicted the paragraph
+  # above it and told every driver to treat a completed review as a stall.
+  assert_contains "$file" "not a blocker and not a wait"
+  assert_contains "$file" "pinned gate then reviews the head itself"
+  assert_contains "$file" 'pr answer --finding'
+  assert_not_contains "$file" "Keep watching, then use bounded stalled-request recovery"
   assert_contains "$file" "Keep review subordinate to scope"
   assert_contains "$file" "review cannot amend approved scope"
   assert_contains "$file" "Checkpoint scope expansion before editing"
@@ -253,8 +259,10 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   assert_contains "$file" "submitted, accepted, and completed states"
   assert_contains "$file" "PR conversation comments"
   assert_contains "$file" "accepted but stalled"
-  assert_contains "$file" "Provisional quota signal"
-  assert_contains "$file" "never a blocker or a terminal review result"
+  assert_contains "$file" "A quota notice resolves; it is not a blocker and not a wait"
+  assert_contains "$file" "complete review evidence, not a degraded mode"
+  assert_contains "$file" 'touchstone pr answer <n> --finding <id>'
+  assert_not_contains "$file" "keep watching the complete PR surface through the completion deadline"
   assert_contains "$file" "at least 30 minutes after submission"
   assert_contains "$file" "earliest acceptance signal"
   assert_contains "$file" "immediately before posting"

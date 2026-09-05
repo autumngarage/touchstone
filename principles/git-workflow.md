@@ -464,10 +464,16 @@ number 827. Then distinguish these states:
    result may be a formal review or a provider-owned PR conversation comment;
    findings may also appear in inline threads.
 4. **Provisional quota signal** — the provider reports a security-review quota
-   or usage limit. This signal is never a blocker or a terminal review result;
-   treat it as acceptance and keep watching through the completion deadline
-   measured from the earliest provider-owned signal. It is not review evidence,
-   so merge remains gated until trusted evidence covers the exact head.
+   or usage limit.
+   **A quota notice resolves; it is not a blocker and not a wait.** The pinned
+   `review-gate` reviews that exact head itself in response, so what it produces
+   is **complete review evidence, not a degraded mode**. Watch the `review-gate`
+   check rather than continuing to watch the primary, and do not reach for
+   stalled-request recovery. Its findings carry ids in the run log; answer one
+   with `touchstone pr answer <n> --finding <id> --body-file <reply>
+   --no-code-change` (refute) or `--fix-commit <sha>` (fixed). The notice itself
+   is never review evidence, so merge still needs trusted evidence covering the
+   exact head.
 5. **Explicitly failed** — the provider reports a terminal no-review result or
    error other than a security-review quota notice and makes clear that the job
    will not continue.
