@@ -7,7 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR\"/hooks/branch-guard.sh"
+            "command": "bash",
+            "args": ["${CLAUDE_PROJECT_DIR}/hooks/branch-guard.sh"]
           }
         ]
       }

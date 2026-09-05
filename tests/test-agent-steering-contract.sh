@@ -646,6 +646,30 @@ if [ "$guard_status" -ne 2 ]; then
   fail "large git commit input on main must be blocked (status $guard_status)"
 fi
 
+echo "==> branch guard fails closed when jq is missing"
+# The old guard exited 0 with a stderr note when jq was absent. On PreToolUse,
+# exit-0 stderr is debug output, so the bypass was invisible and a commit on
+# main carried the hook's implied approval. Build a PATH with every tool the
+# guard needs except jq; the guarded commit must be refused, not waved through.
+NOJQ_BIN="$TEST_DIR/bin-nojq"
+mkdir -p "$NOJQ_BIN"
+for tool in bash grep sed tr cat git awk; do
+  ln -s "$(command -v "$tool")" "$NOJQ_BIN/$tool"
+done
+set +e
+printf '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"},"cwd":"%s"}' "$GUARD_REPO" \
+  | PATH="$NOJQ_BIN" bash "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" \
+    >"$TEST_DIR/branch-guard-nojq.out" 2>"$TEST_DIR/branch-guard-nojq.err"
+nojq_status=$?
+set -e
+if [ "$nojq_status" -ne 2 ]; then
+  sed -n '1,5p' "$TEST_DIR/branch-guard-nojq.err" >&2
+  fail "guarded commit without jq must be refused with exit 2 (status $nojq_status)"
+fi
+if ! grep -q 'jq is not installed' "$TEST_DIR/branch-guard-nojq.err"; then
+  fail "guarded commit without jq must name the missing dependency"
+fi
+
 echo "==> stacked-PR recovery uses the retained remote parent ref"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
   'child local until its parent merges'
