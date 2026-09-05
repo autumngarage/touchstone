@@ -588,6 +588,15 @@ fi
 # reports "already current" for having done nothing.
 [ "$(tr '\n' ' ' <"$BREW_PREFIX/brew-calls")" = "update upgrade " ] \
   || fail "Homebrew upgrade did not refresh tap metadata before upgrading: $(tr '\n' ' ' <"$BREW_PREFIX/brew-calls")"
+# An upgrade that moved nothing must say so. "already installed" plus "already
+# current" are two locally true lines that together read as success for having
+# done nothing, which is how a released fix stayed undelivered.
+grep -qE '^==> (no new release installed: still touchstone|touchstone .* -> )' \
+  "$INSTALL_TMP/brew-upgrade.out" \
+  || fail "Homebrew upgrade did not report the version transition: $(cat "$INSTALL_TMP/brew-upgrade.out")"
+# And it must verify the result rather than trust that install had nothing to do.
+grep -qF 'verified: machine steering matches touchstone' "$INSTALL_TMP/brew-upgrade.out" \
+  || fail "Homebrew upgrade did not verify the installed steering it just refreshed"
 HOME="$BREW_HOME" bash "$BREW_PREFIX/libexec/bin/touchstone" steering check >/dev/null 2>&1 \
   || fail "Homebrew upgrade left machine steering stale"
 grep -qF 'brew operator content' "$BREW_HOME/.codex/AGENTS.md" \
