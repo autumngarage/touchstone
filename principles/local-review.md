@@ -259,8 +259,12 @@ absolute price ceilings, and prints the selected model, prompt/completion
 tokens, exact reported cost, findings, and evidence prefix. Provider, timeout,
 malformed-output, and truncation failures stop without retrying.
 
-If the check or run fails, record a reasoned normal-tier `n/a` waiver naming its
-concise cause and stop; never fall back to an unbounded model path. Do not retry
+If the check or run fails because the reviewer is unavailable (no credential,
+rejected credential, quota, provider error, timeout), record a reasoned
+normal-tier `n/a` waiver naming its concise cause and stop; never fall back to
+an unbounded model path. A byte-ceiling refusal is not that failure and is
+never a waiver: the reviewer was reachable and refused the slice, not the
+change. Re-slice and run the pass (see "An oversized slice" below). Do not retry
 or inspect credentials. Use `touchstone review setup` for a missing credential
 or `touchstone review rotate` for a rejected one. For the serious pass, capture
 `reviewed_head="$(git rev-parse HEAD)"` immediately before
@@ -340,7 +344,31 @@ When the row is present but unreadable it says so and quotes the line.
 The gate checks shape, not truth — it cannot see a terminal — but it can
 refuse silence, and silence was the failure. For normal, a waiver is only the configured check or run failing.
 Serious may waive only when Codex and the fallback are both unavailable.
-Either waiver says which concrete boundary failed.
+Either waiver says which concrete boundary failed, and neither may cite the
+byte ceiling: the gate refuses a waiver whose reason is the size limit.
+
+## An oversized slice
+
+`review request is N bytes; the configured limit is M bytes` means the slice
+is wrong, not that the reviewer is gone. Three vesper PRs (vesper#1154,
+vesper#1157, vesper#1160) recorded it as "both reviewers gone" and shipped
+300 to 500 added lines with no local pass; their requests were ten times the
+size of their diffs, because the slice was not the change. Diagnose in this
+order:
+
+1. **The slice is not the change.** Normal reviews the staged index: unstage
+   anything that is not this unit. A range pass reviews
+   merge-base(`<base>`, HEAD)..HEAD: fetch first, and name the branch's real
+   base. A stacked child reviews against `origin/<parent-branch>`, not the
+   default branch, or it re-reviews its parent's commits.
+2. **Deletions and vendored trees.** The command sends neither line by line:
+   a deleted file and any path marked `linguist-vendored` or
+   `linguist-generated` in `.gitattributes` appear as a one-line summary. If a
+   vendored tree is not marked, mark it; that is a repository fact, not a
+   review setting.
+3. **The change is genuinely that large.** Split it into reviewable slices
+   and run the pass on each. The ceiling is the review's attention budget;
+   a change that cannot fit it cannot be reviewed well by anyone.
 
 ## Stop conditions
 
