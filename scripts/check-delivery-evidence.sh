@@ -336,6 +336,13 @@ case "$TIER" in
         if ! printf '%s\n' "$lr_norm" | grep -qE "^[[:space:]]*${lr_mark}n/a[^[:alnum:]<]*[[:alnum:]]" \
           || printf '%s\n' "$lr_norm" | grep -q '<'; then
           report "the Validation row '- Local review:' waiver stating why (reviewer CLI not installed, not authenticated, or out of quota)"
+        elif printf '%s\n' "$lr_norm" | grep -qE 'configured limit is [0-9]+ bytes|size limit|input limit'; then
+          # The one reason that is not a waiver. The byte ceiling refuses a
+          # slice, not a reviewer: the reviewer was reachable and would have
+          # reviewed a correctly sliced change. Three vesper PRs recorded it
+          # as "both reviewers gone" and shipped hundreds of lines with no
+          # local pass; the fix is to re-slice and run, so the gate says so.
+          report "the Validation row '- Local review:' recording a pass, not a waiver: a size-limit refusal is a slicing error (stage only the change, fetch and review against the branch's real base, or split), not an unavailable reviewer -- re-slice and run the tier's pass"
         fi
       else
         # Normal review has had multiple documented backends; their recorded

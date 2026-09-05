@@ -1317,6 +1317,59 @@ else
   fail "the gate refused a fully recorded pull request"
 fi
 
+echo "==> a size-limit refusal is not a waiver"
+# The byte ceiling refuses a slice, not a reviewer. Recording it as "both
+# reviewers gone" shipped vesper #1154, #1157 and #1160 with no local pass.
+for tier in normal serious; do
+  body "## Intent
+Real intent.
+
+## Invariants
+- Something true.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+- Local review: n/a — codex refused: usage limit exhausted; the bounded OpenRouter fallback refused (\`review request is 362235 bytes; the configured limit is 100000 bytes\`). Both reviewers gone for this unit.
+
+## Review tier
+$tier
+
+## Why this tier
+Because."
+  size_waiver_out="$(bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/body.md" 2>&1 || true)"
+  if accepts; then
+    fail "the gate accepted a $tier size-limit refusal recorded as a waiver"
+  elif ! grep -q 'slicing error' <<<"$size_waiver_out"; then
+    fail "the $tier size-limit refusal was not named as a slicing error: $size_waiver_out"
+  else
+    ok "a $tier size-limit refusal is refused as a waiver"
+  fi
+done
+body '## Intent
+Real intent.
+
+## Invariants
+- Something true.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+- Local review: n/a — codex refused: usage limit exhausted until 2026-09-06; the bounded OpenRouter fallback timed out after 120s (curl 28).
+
+## Review tier
+serious
+
+## Why this tier
+Because.'
+if accepts; then
+  ok "a waiver naming unavailable reviewers still passes"
+else
+  fail "the gate refused a legitimate both-reviewers-unavailable waiver"
+fi
+
 echo "==> a row label may carry one parenthetical qualifier (AUT-1294)"
 body '## Intent
 Ship the picker.
