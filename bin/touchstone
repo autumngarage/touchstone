@@ -206,17 +206,37 @@ case "$COMMAND" in
         exit 1
       }
     fi
+    VERSION_BEFORE_UPGRADE="$(head -n 1 "$TOUCHSTONE_ROOT/VERSION" 2>/dev/null || printf 'unknown')"
     converge_upgraded_steering() {
-      local upgraded_cli="$1"
-      [ "$STEERING_WAS_MANAGED" = true ] || return 0
+      local upgraded_cli="$1" version_after
       [ -x "$upgraded_cli" ] || {
         echo "ERROR: the upgrade succeeded, but the new Touchstone CLI is missing at $upgraded_cli; repair the install, then run 'touchstone steering install'" >&2
         exit 1
       }
+      # Report the transition, including when there was none. A package manager
+      # that upgrades nothing prints "already installed", and the steering step
+      # then reports "already current" — two locally true lines that together
+      # read as success for having done nothing. That is how v3.10.6 sat
+      # undelivered while this command said the machine was up to date.
+      version_after="$(bash "$upgraded_cli" version 2>/dev/null | head -n 1 || printf 'unknown')"
+      version_after="${version_after#touchstone v}"
+      if [ "$version_after" = "$VERSION_BEFORE_UPGRADE" ]; then
+        printf '==> no new release installed: still touchstone %s\n' "$VERSION_BEFORE_UPGRADE"
+      else
+        printf '==> touchstone %s -> %s\n' "$VERSION_BEFORE_UPGRADE" "$version_after"
+      fi
+      [ "$STEERING_WAS_MANAGED" = true ] || return 0
       bash "$upgraded_cli" steering install --non-interactive || {
         echo "ERROR: Touchstone was upgraded, but its machine-level steering could not be refreshed; fix the reported error, then run 'touchstone steering install'" >&2
         exit 1
       }
+      # Verify rather than trust. `steering install` reporting "already current"
+      # is not evidence the installed contract matches this CLI's own copy.
+      bash "$upgraded_cli" steering check >/dev/null || {
+        echo "ERROR: machine steering still does not match touchstone $version_after after install; run 'touchstone steering check' for the detail" >&2
+        exit 1
+      }
+      printf '==> verified: machine steering matches touchstone %s\n' "$version_after"
       echo "Restart or reload already-running coding-agent sessions so they read the refreshed Touchstone contract."
     }
     INSTALL_PREFIX=""
