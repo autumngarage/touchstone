@@ -260,6 +260,11 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   assert_contains "$file" "PR conversation comments"
   assert_contains "$file" "accepted but stalled"
   assert_contains "$file" "A quota notice resolves; it is not a blocker and not a wait"
+  # A Validation row may not assert state the reviewed head cannot have
+  # produced. #1137 claimed six applied rulesets, none had been applied, and the
+  # pin it deployed broke every gate in the repository.
+  assert_contains "$file" "observed at the reviewed head"
+  assert_contains "$file" "recorded as pending, never as done"
   assert_contains "$file" "complete review evidence, not a degraded mode"
   assert_contains "$file" 'touchstone pr answer <n> --finding <id>'
   assert_not_contains "$file" "keep watching the complete PR surface through the completion deadline"
