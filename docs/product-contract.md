@@ -61,8 +61,9 @@ touched; `uninstall` removes the block and leaves the rest byte-identical.
 ## Normal-review cost lane
 
 Normal local review is intentionally routed through OpenRouter to reduce the
-cost of the common review tier without changing the serious or PR-visible
-review paths. `touchstone review setup` stores a dedicated OpenRouter credential
+cost of the common review tier. It leaves the PR-visible review path untouched.
+It does change the serious tier, which now runs `codex review` first and falls
+back to one bounded request over the same branch on any non-success. `touchstone review setup` stores a dedicated OpenRouter credential
 in macOS Keychain. `touchstone review check` validates the credential, local
 tools, and versioned policy without contacting the provider. `touchstone review
 run` reads only the staged Git diff — or, with `--base <ref>`, only the
