@@ -82,7 +82,15 @@ Usage:
                      [--expect-branch BRANCH] [--project DIR] [--json]
   touchstone pr status PR [--project DIR] [--json]
   touchstone pr merge PR --head SHA [--unguarded] [--project DIR] [--json]
+  touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change)
+  touchstone pr answer PR --finding ID --body-file FILE (--fix-commit SHA | --no-code-change)
+  touchstone pr answer PR --all-resolved-check
   touchstone policy status [--base BRANCH] [--project DIR] [--json]
+
+`pr answer` is implemented in respond-review.sh and dispatched by the same
+`touchstone pr` prefix; run `touchstone pr answer --help` for its full usage.
+It is listed here because this is the help a driver reads before running a
+`pr` subcommand, and omitting it read as "the command does not exist".
 EOF
   exit 2
 }

@@ -146,7 +146,7 @@ for file in \
   "$TOUCHSTONE_ROOT/.github/pull_request_template.md"; do
   assert_contains "$file" 'touchstone review check'
   assert_contains "$file" 'touchstone review run'
-  assert_contains "$file" 'touchstone review run --base <default>'
+  assert_contains "$file" 'touchstone review run --base origin/<default>'
   assert_not_contains "$file" 'coderabbit review --agent --uncommitted'
 done
 for file in \
@@ -267,6 +267,11 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   # A closed issue reads as current state. Leaving a claim its own fix
   # invalidated is how AUT-1236 sent a later session down four wrong turns.
   assert_contains "$file" "that the change invalidated"
+  # A worktree's local default branch is routinely stale, and --base picks the
+  # merge base, so naming the local ref inflates the reviewed slice with merged
+  # work. Reported 2026-09-05: 35 commits stale, 138 files, size limit blown.
+  assert_contains "$file" 'review run --base origin/<default>'
+  assert_not_contains "$file" 'review run --base <default>'
   assert_contains "$file" 'Corrected <date>'
   assert_contains "$file" "recorded as pending, never as done"
   assert_contains "$file" "complete review evidence, not a degraded mode"
