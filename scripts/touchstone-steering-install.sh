@@ -1148,6 +1148,42 @@ uninstall_set() {
   fi
 }
 
+# A repository that carries its own committed copy of the steering block is a
+# second, unversioned contract sitting where project guidance normally outranks
+# the machine-wide default. `steering check` used to pass beside one without
+# mentioning it, so the drift was invisible unless somebody surveyed by hand.
+#
+# Reported, never failed. Two reasons, both deliberate:
+#   * `touchstone upgrade` gates on this command's exit status, so a non-zero
+#     exit here would refuse to upgrade the tool in exactly the repositories
+#     that need the newer contract most;
+#   * the repositories carrying these blocks are deliberately frozen, so their
+#     removal is a decision per repository rather than something a check may
+#     force.
+report_repository_block() {
+  local root file found=0
+  root="$(git rev-parse --show-toplevel 2>/dev/null)" || root=""
+  [ -n "$root" ] || root="$(pwd -P)"
+  # The Touchstone source checkout is the origin of the contract: its
+  # AGENTS.md and GEMINI.md carry the block by construction, rendered from
+  # TOUCHSTONE.md by scripts/render-steering.sh. Reporting those would be
+  # reporting the source as drift.
+  if [ -f "$root/TOUCHSTONE.md" ] && [ -f "$root/scripts/render-steering.sh" ]; then
+    return 0
+  fi
+  for file in AGENTS.md CLAUDE.md GEMINI.md; do
+    [ -f "$root/$file" ] || continue
+    grep -Eq "$BEGIN_MARKER_ANY" "$root/$file" || continue
+    if [ "$found" -eq 0 ]; then
+      printf '  NOTE: this repository carries its own committed steering block; the machine-wide contract is the one Touchstone manages\n' >&2
+      found=1
+    fi
+    printf '        %s (block from touchstone %s)\n' \
+      "$file" "$(installed_block_version "$root/$file")" >&2
+  done
+  [ "$found" -eq 0 ] || printf '        Remove the block between the markers in each file; everything outside them is the project\x27s own. Not failed here: removal is a per-repository decision.\n' >&2
+}
+
 case "$ACTION" in
   check)
     for document_set in $DOCUMENT_SETS; do
@@ -1157,6 +1193,7 @@ case "$ACTION" in
         DRIFTED=$((DRIFTED + 1))
       fi
     done
+    report_repository_block
     if [ "$DRIFTED" -ne 0 ]; then
       echo "ERROR: $DRIFTED user-level steering file(s) do not carry this tool's contract" >&2
       echo "Run: touchstone steering install -- it rewrites only the block between the markers in each driver file and the routed documents it installed under ~/.touchstone/principles and ~/.claude/skills (idempotent; everything outside them is untouched). The supported 'touchstone upgrade' path refreshes them; a direct package-manager upgrade does not." >&2
