@@ -567,7 +567,11 @@ cat >"$BREW_BIN/brew" <<'EOF'
 set -euo pipefail
 case "${1:-} ${2:-}" in
   '--prefix touchstone') printf '%s\n' "$TOUCHSTONE_TEST_BREW_PREFIX" ;;
-  'upgrade touchstone') printf 'upgraded\n' >"$TOUCHSTONE_TEST_BREW_PREFIX/brew-upgraded" ;;
+  'update ') printf 'update\n' >>"$TOUCHSTONE_TEST_BREW_PREFIX/brew-calls" ;;
+  'upgrade touchstone')
+    printf 'upgrade\n' >>"$TOUCHSTONE_TEST_BREW_PREFIX/brew-calls"
+    printf 'upgraded\n' >"$TOUCHSTONE_TEST_BREW_PREFIX/brew-upgraded"
+    ;;
   *) exit 2 ;;
 esac
 EOF
@@ -579,6 +583,11 @@ if grep -qF 'Set up lower-cost normal reviews through OpenRouter now?' "$INSTALL
   fail "Homebrew upgrade prompted for unrelated credential setup"
 fi
 [ -f "$BREW_PREFIX/brew-upgraded" ] || fail "Homebrew upgrade adapter did not run"
+# Tap metadata must be refreshed before the upgrade reads the formula. Without
+# it `brew upgrade` no-ops against a cached release and the steering step then
+# reports "already current" for having done nothing.
+[ "$(tr '\n' ' ' <"$BREW_PREFIX/brew-calls")" = "update upgrade " ] \
+  || fail "Homebrew upgrade did not refresh tap metadata before upgrading: $(tr '\n' ' ' <"$BREW_PREFIX/brew-calls")"
 HOME="$BREW_HOME" bash "$BREW_PREFIX/libexec/bin/touchstone" steering check >/dev/null 2>&1 \
   || fail "Homebrew upgrade left machine steering stale"
 grep -qF 'brew operator content' "$BREW_HOME/.codex/AGENTS.md" \
