@@ -264,6 +264,10 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   # produced. #1137 claimed six applied rulesets, none had been applied, and the
   # pin it deployed broke every gate in the repository.
   assert_contains "$file" "observed at the reviewed head"
+  # A closed issue reads as current state. Leaving a claim its own fix
+  # invalidated is how AUT-1236 sent a later session down four wrong turns.
+  assert_contains "$file" "that the change invalidated"
+  assert_contains "$file" 'Corrected <date>'
   assert_contains "$file" "recorded as pending, never as done"
   assert_contains "$file" "complete review evidence, not a degraded mode"
   assert_contains "$file" 'touchstone pr answer <n> --finding <id>'
