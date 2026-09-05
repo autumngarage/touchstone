@@ -120,6 +120,41 @@ a name for reviewed state, never a new state; `touchstone version` reports the
 tool line, and the project-contract schema is versioned separately
 (`docs/product-contract.md`).
 
+### Cutting a release
+
+Bump `VERSION` through an ordinary PR, then tag the reviewed main sha:
+
+```bash
+git tag -a vX.Y.Z -m "touchstone X.Y.Z" <reviewed main sha>
+git push origin vX.Y.Z
+gh release create vX.Y.Z --verify-tag --generate-notes
+```
+
+`.github/workflows/release.yml` reacts to the published release and rewrites
+the tap formula's `url` and `sha256` through the shared `homebrew-bump`
+workflow; `brew upgrade touchstone` sees it about a minute later. Homebrew
+upgrades the installed tool only and never mutates a repository.
+
+Where Homebrew does not run, fetch `install.sh` from the release tag and run
+the saved file (never pipe a moving branch into bash):
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/autumngarage/touchstone/vX.Y.Z/install.sh
+bash install.sh
+```
+
+It reads the tap formula as the one record of the release's tarball URL and
+sha256, verifies the download, and unpacks it under `~/.touchstone/` with a
+`bin/touchstone` wrapper. `touchstone upgrade` re-runs it there and delegates
+to `brew upgrade` on a Homebrew install. `tests/test-project-root.sh`
+exercises the installer offline against a locally built archive and formula.
+
+Consumers reference hooks by name (`touchstone hook branch-guard`) so their
+settings never encode where the tool lives. Settings that still point at the
+Homebrew libexec path keep working on macOS and are migrated to the named
+form as each consumer is next touched; Touchstone does not write hook
+settings.
+
 Machine onboarding is one-time and keeps credentials out of review tools and
 durable review state (`review setup`, `check`, and `run` are macOS-only —
 they live on Keychain; on other platforms record the documented explicit
