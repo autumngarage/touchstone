@@ -1320,6 +1320,94 @@ else
   fail "the gate refused a fully recorded pull request"
 fi
 
+# AUT-1241. The row is read only when the author wrote it: it does not ship in
+# every consumer template yet, so requiring it would fail every pull request
+# already open across five repositories. Present-and-over-budget is a different
+# claim from absent, and only the first is refused.
+echo "==> the Review budget row is enforced when present and ignored when absent"
+budget_body() {
+  body "## Intent
+Real intent.
+
+## Invariants
+- One invariant.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: full suite, pass.
+- Manual validation: exercised the path by hand.
+- Local review: openrouter on the staged slice (review-normal): 0 findings, accepted.
+- Review budget: $1
+
+## Review tier
+normal
+
+## Why this tier
+Ordinary change."
+}
+
+budget_body "v2 capability=AUT-1 local_rounds=1 fix_rounds=2 prior_fix_rounds=0 reviewed_head=none cascade=false exit=continue"
+if accepts; then
+  ok "a body inside its fix-round budget passes"
+else
+  fail "the gate refused a body inside its fix-round budget"
+fi
+
+budget_body "v2 capability=AUT-1 local_rounds=1 fix_rounds=4 prior_fix_rounds=0 reviewed_head=none cascade=false exit=continue"
+if accepts; then
+  fail "the gate accepted exit=continue past the fix-round budget"
+else
+  ok "exit=continue past the budget is refused"
+fi
+
+# The budget follows the capability: rounds spent on a replaced PR still count,
+# so closing and reopening cannot launder them.
+budget_body "v2 capability=AUT-1 local_rounds=1 fix_rounds=2 prior_fix_rounds=3 reviewed_head=none cascade=false exit=continue"
+if accepts; then
+  fail "the gate ignored prior_fix_rounds, so replacing a PR resets the budget"
+else
+  ok "prior_fix_rounds count against the same capability"
+fi
+
+# Past the budget the exits are the point: declaring one is how a PR leaves.
+budget_body "v2 capability=AUT-1 local_rounds=1 fix_rounds=9 prior_fix_rounds=0 reviewed_head=none cascade=false exit=merge-answered"
+if accepts; then
+  ok "a declared terminal exit past the budget passes"
+else
+  fail "the gate refused a body that declared a terminal exit"
+fi
+
+budget_body "v2 capability=AUT-1 local_rounds=1 reviewed_head=none cascade=false exit=continue"
+if accepts; then
+  fail "the gate accepted a Review budget row that names no fix_rounds count"
+else
+  ok "a budget row without a fix_rounds count is unreadable, not absent"
+fi
+
+# Absent stays absent until the row ships everywhere: this is the migration.
+body '## Intent
+Real intent.
+
+## Invariants
+- One invariant.
+
+## Validation
+- Build: n/a — shell
+- Automated tests: full suite, pass.
+- Manual validation: exercised the path by hand.
+- Local review: openrouter on the staged slice (review-normal): 0 findings, accepted.
+
+## Review tier
+normal
+
+## Why this tier
+Ordinary change.'
+if accepts; then
+  ok "a body with no Review budget row is still accepted during the migration"
+else
+  fail "requiring the Review budget row would fail every pull request already open"
+fi
+
 echo "==> a size-limit refusal is not a waiver"
 # The byte ceiling refuses a slice, not a reviewer. Recording it as "both
 # reviewers gone" shipped vesper #1154, #1157 and #1160 with no local pass.

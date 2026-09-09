@@ -403,6 +403,36 @@ case "$TIER" in
     ;;
 esac
 
+# The `Review budget` row is the contract's ledger of what has been spent
+# (principles/local-review.md). It is read here only when the author wrote it:
+# the row does not yet ship in every consumer's template, so requiring it would
+# fail every pull request already open across five repositories. Present-and-
+# over-budget is a different claim from absent, and only the first is refused.
+#
+# This is the declaration half of the bound. The counting half lives in
+# `touchstone pr answer`, which derives rounds from its own append-only round
+# markers and stops driving the loop -- because a self-reported ledger is the
+# first thing an agent in a loop stops maintaining. hesperus#311 spent 30
+# commits and 28 review requests against a cap of three while carrying no row
+# at all, and nothing objected (AUT-1241).
+BUDGET_ROW="$(row_text "$VALIDATION_SECTION" "Review budget" || true)"
+if [ -n "$BUDGET_ROW" ]; then
+  budget_spent="$(printf '%s\n' "$BUDGET_ROW" | sed -n 's/.*[^_a-z]fix_rounds=\([0-9][0-9]*\).*/\1/p' | head -1)"
+  budget_prior="$(printf '%s\n' "$BUDGET_ROW" | sed -n 's/.*prior_fix_rounds=\([0-9][0-9]*\).*/\1/p' | head -1)"
+  budget_exit="$(printf '%s\n' "$BUDGET_ROW" | sed -n 's/.*exit=\([a-z-][a-z-]*\).*/\1/p' | head -1)"
+  if [ -z "$budget_spent" ]; then
+    report_unreadable "the Validation row '- Review budget:' is present but names no fix_rounds count: it must carry 'fix_rounds=<n>' (principles/local-review.md)"
+  else
+    # The budget follows the capability, so rounds already spent on a replaced
+    # PR count against this one; closing or renaming never resets it.
+    budget_total=$((budget_spent + ${budget_prior:-0}))
+    if [ "$budget_total" -gt "${TOUCHSTONE_FIX_ROUND_BUDGET:-3}" ] \
+      && { [ -z "$budget_exit" ] || [ "$budget_exit" = continue ]; }; then
+      report "a declared exit for a capability past its fix-round budget: this body records $budget_total fix rounds (fix_rounds=$budget_spent plus prior_fix_rounds=${budget_prior:-0}) against a budget of ${TOUCHSTONE_FIX_ROUND_BUDGET:-3}, and 'exit=${budget_exit:-none}' is not one of them -- more rounds is not an exit. Declare exit=merge-answered, revert-simplify, split, or close-replan (principles/git-workflow.md)"
+    fi
+  fi
+fi
+
 if [ "$FAILURES" -ne 0 ]; then
   printf '\nThis pull request does not record the evidence its tier requires.\n' >&2
   printf 'The required sections are in .github/pull_request_template.md;\n' >&2
