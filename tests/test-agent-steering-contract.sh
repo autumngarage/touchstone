@@ -1654,8 +1654,14 @@ elif ! grep -qF 'stopped at the configured completion limit' "$TEST_DIR/truncate
 # no legal move. The message must name the budget and refuse the waiver.
 elif ! grep -qF 'not evidence that the change is too large' "$TEST_DIR/truncated-response.out"; then
   fail "budget diagnostic still blames the size of the change"
-elif ! grep -qF 'never a waiver' "$TEST_DIR/truncated-response.out"; then
-  fail "budget diagnostic does not refuse the waiver"
+# The one-request rule is the other half: principles/local-review.md makes
+# truncation failures terminal ("stop without retrying", "the pass runs at most
+# once"). A diagnostic that tells the agent to run the pass again instructs a
+# contract violation, however reasonable the retry looks in the moment.
+elif ! grep -qF 'Stop without retrying' "$TEST_DIR/truncated-response.out"; then
+  fail "budget diagnostic does not stop the pass"
+elif grep -qiE 'Re-run the pass|try again' "$TEST_DIR/truncated-response.out"; then
+  fail "budget diagnostic instructs a second pass, against the one-request rule"
 fi
 FILTERED_RESPONSE="$TEST_DIR/filtered-response.json"
 jq '.choices[0].finish_reason = "content_filter"' \

@@ -452,7 +452,7 @@ print_response() {
   # out before or during the answer.
   finish_reason="$("$JQ_BIN" -r '.choices[0].finish_reason // empty' "$WORK_DIR/response.json" 2>/dev/null || true)"
   if [ "$finish_reason" = length ]; then
-    die "OpenRouter stopped at the configured completion limit (limits.maxCompletionTokens in the managed review policy) before finishing the review. A reasoning model spends its thinking from this same budget, so this is not evidence that the change is too large -- it has fired on a 24-line diff -- and re-slicing may not clear it. Re-run the pass; if it persists, raise limits.maxCompletionTokens. This is a failed pass, never a waiver."
+    die "OpenRouter stopped at the configured completion limit (limits.maxCompletionTokens in the managed review policy) before producing a review. A reasoning model spends its thinking from this same budget, so this is not evidence that the change is too large -- it has fired on a 24-line diff. It is also not a byte-ceiling refusal: the slice was accepted and the reviewer produced nothing, so re-slicing is not the remedy. Stop without retrying, as principles/local-review.md requires for every truncation failure; the durable fix is to raise limits.maxCompletionTokens."
   fi
   unusable="$(response_unusable_fields)"
   if [ -n "$unusable" ]; then
