@@ -22,6 +22,9 @@ Usage:
   touchstone adopt [--check|--dry-run] [arguments]
   touchstone tracker claim [arguments]
   touchstone pr open|status|merge [arguments]
+  touchstone paths classify --set NAME --policy FILE --base REV --head REV [--project DIR] [--json]
+  touchstone paths match --set NAME --policy FILE PATH...
+  touchstone paths check --policy FILE
   touchstone policy status [--base BRANCH] [--project DIR] [--json]
   touchstone policy apply --base BRANCH --project DIR --authorize-admin [--json]
   touchstone cleanup check [--project DIR] [--json]
@@ -48,6 +51,9 @@ case "$COMMAND" in
     ;;
   tracker)
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-tracker.sh" "$@"
+    ;;
+  paths)
+    exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-paths.sh" "$@"
     ;;
   pr)
     # `pr answer` is the reply-and-resolve step: it lives in

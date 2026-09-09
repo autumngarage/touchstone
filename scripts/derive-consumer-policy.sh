@@ -38,7 +38,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 usage() {
-  echo "usage: derive-consumer-policy.sh REPOSITORY [--no-queue] [--require-status CONTEXT]... [--require-merge-group-status CONTEXT]..." >&2
+  echo "usage: derive-consumer-policy.sh REPOSITORY [--no-queue] [--require-status CONTEXT]... [--require-merge-group-status CONTEXT]... [--path-set NAME=FILE]..." >&2
   exit 2
 }
 REPOSITORY="${1:-}"
@@ -52,6 +52,9 @@ STATUS_CONTEXTS=()
 # array is an unbound-variable error.
 STATUS_COUNT=0
 STATUS_EVENT=""
+PATH_SET_NAMES=()
+PATH_SET_FILES=()
+PATH_SET_COUNT=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --no-queue)
@@ -83,6 +86,36 @@ while [ "$#" -gt 0 ]; do
       STATUS_EVENT=merge_group
       shift 2
       ;;
+    --path-set)
+      # NAME=FILE, the file holding the set's patterns in gitignore syntax.
+      # A file rather than an inline list because the patterns are a
+      # multi-line language whose comments and blank lines are part of it,
+      # and because the declaration should be reviewable as itself.
+      [ "$#" -ge 2 ] || usage
+      case "$2" in
+        *=*) ;;
+        *) usage ;;
+      esac
+      ps_name="${2%%=*}"
+      ps_file="${2#*=}"
+      case "$ps_name" in
+        "" | *[!A-Za-z0-9._-]*) usage ;;
+      esac
+      [ -n "$ps_file" ] && [ -f "$ps_file" ] || {
+        echo "derive-consumer-policy.sh: --path-set $ps_name names no readable file: $ps_file" >&2
+        exit 2
+      }
+      for existing in ${PATH_SET_NAMES+"${PATH_SET_NAMES[@]}"}; do
+        [ "$existing" != "$ps_name" ] || {
+          echo "derive-consumer-policy.sh: --path-set $ps_name declared twice" >&2
+          exit 2
+        }
+      done
+      PATH_SET_NAMES+=("$ps_name")
+      PATH_SET_FILES+=("$ps_file")
+      PATH_SET_COUNT=$((PATH_SET_COUNT + 1))
+      shift 2
+      ;;
     *) usage ;;
   esac
 done
@@ -102,7 +135,47 @@ if [ "$STATUS_COUNT" -gt 0 ]; then
 else
   contexts_json='[]'
 fi
-jq --arg repo "$REPOSITORY" --argjson queue "$QUEUE" --argjson contexts "$contexts_json" '
+
+# Path sets are omitted entirely when none is declared, rather than emitted as
+# an empty object: no repository gains classification behaviour by accident,
+# and a consumer asking for a set it never declared must get the error, not an
+# empty set that silently classifies every head as `none`.
+path_sets_json='null'
+if [ "$PATH_SET_COUNT" -gt 0 ]; then
+  path_sets_json='{}'
+  i=0
+  while [ "$i" -lt "$PATH_SET_COUNT" ]; do
+    ps_name="${PATH_SET_NAMES[$i]}"
+    ps_file="${PATH_SET_FILES[$i]}"
+    # Blank lines and whole-line comments are gitignore's own syntax for the
+    # declaration file; they carry no rule, so they do not reach the policy.
+    # A pattern that really begins with '#' is written '\#' in gitignore and
+    # survives, because only an unescaped leading '#' is a comment.
+    # `|| true` on the filter: a file of nothing but comments makes grep exit
+    # 1, and under `set -o pipefail` that aborted the script with status 1
+    # before the "declares no patterns" refusal below could run. Exit 1 is a
+    # meaningful answer elsewhere in this surface, so an input error arriving
+    # as 1 is the same defect the matcher's EXIT trap had.
+    # Only a CR is stripped, and only because it is a line-ending artefact of a
+    # file authored on Windows. Trailing whitespace is NOT stripped: gitignore
+    # gives it meaning -- `foo\ ` is a pattern ending in a literal space -- and
+    # normalising it here would store a pattern that differs from the
+    # declaration, which the drift check cannot catch because it re-derives
+    # from what was already stored. git owns these semantics; this does not.
+    ps_filtered="$(tr -d '\r' <"$ps_file" \
+      | { grep -v -e '^[[:space:]]*$' -e '^#' || true; })"
+    [ -n "$ps_filtered" ] || {
+      echo "derive-consumer-policy.sh: --path-set $ps_name declares no patterns: $ps_file" >&2
+      exit 2
+    }
+    patterns_json="$(printf '%s\n' "$ps_filtered" | jq -R . | jq -sc .)"
+    path_sets_json="$(jq -c --arg n "$ps_name" --argjson p "$patterns_json" \
+      '.[$n] = $p' <<<"$path_sets_json")"
+    i=$((i + 1))
+  done
+fi
+
+derived="$(jq --arg repo "$REPOSITORY" --argjson queue "$QUEUE" --argjson contexts "$contexts_json" --argjson pathSets "$path_sets_json" '
   .repository = $repo
   | .rollbackPrerequisites.repositoryFiles = []
   | .managedRuleset.name = "Touchstone policy v\(.contractVersion): \(.organization)/\($repo)@\(.branch)"
@@ -122,4 +195,24 @@ jq --arg repo "$REPOSITORY" --argjson queue "$QUEUE" --argjson contexts "$contex
     else
       .managedRepositoryRuleset = null
     end
-' "$ROOT/policy/github/touchstone-main.json"
+  | if $pathSets == null then . else .pathSets = $pathSets end
+' "$ROOT/policy/github/touchstone-main.json")"
+
+# The refusal runs here, at derivation, and it is the SAME check the matcher
+# runs at evaluation -- one code path, so a set cannot be accepted by the tool
+# that writes the policy and refused by the tool that reads it. AUT-1242 states
+# the rule as refused "when it is applied, not when it is used"; that is only
+# safe if both ends agree, and they agree by being the same function.
+if [ "$path_sets_json" != null ]; then
+  derived_check="$(mktemp -t touchstone-derive-check.XXXXXX)"
+  trap 'rm -f "$derived_check"' EXIT
+  printf '%s\n' "$derived" >"$derived_check"
+  # Once, capturing: running it again to obtain the message for a failure it
+  # had already diagnosed would repeat the whole match and could in principle
+  # print a different one.
+  if ! check_output="$(bash "$ROOT/scripts/touchstone-paths.sh" check --policy "$derived_check" 2>&1)"; then
+    printf '%s\n' "$check_output" >&2
+    exit 2
+  fi
+fi
+printf '%s\n' "$derived"
