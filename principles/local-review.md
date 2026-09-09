@@ -238,12 +238,22 @@ environment refresh, and future reviews need no approval prompt. `touchstone
 steering install` offers this setup during interactive onboarding.
 
 The versioned non-secret policy is `config/review-normal.json`; the review
-instructions are `config/review-normal-prompt.md`. The current policy uses
-`openrouter/auto` with Auto Router's low-cost tier, provider price ceilings of
-$0.50 per million prompt tokens and $2.00 per million
-completion tokens, a 100,000-byte request ceiling, and 4,096 completion tokens.
-Changing those parameters or adding a backend is a reviewable policy/adapter
-change behind the same command.
+instructions are `config/review-normal-prompt.md`. The current policy pins the
+model `qwen/qwen3-coder`, with provider price ceilings of $0.50 per million
+prompt tokens and $2.00 per million completion tokens, a 400,000-byte request
+ceiling, 16,384 completion tokens, and a 300-second request timeout. Changing
+those parameters or adding a backend is a reviewable policy/adapter change
+behind the same command.
+
+The model is pinned rather than routed through `openrouter/auto`, and the
+reason is worth keeping: the router selects reasoning models, whose thinking is
+spent from the completion budget. Measured on 2026-09-09 that came to roughly
+74 completion tokens per line of diff — a ceiling near 150 lines, below which
+this pass could not run on an ordinary change at all. Disabling reasoning is
+not offered: the API answers `reasoning: {enabled: false}` with "Reasoning is
+mandatory for this endpoint and cannot be disabled". A pinned id can go stale
+where `openrouter/auto` could not, which is the cost being paid deliberately —
+`touchstone review check` fails loudly if the model stops being available.
 
 Check the complete local boundary without making a provider request, then run:
 
