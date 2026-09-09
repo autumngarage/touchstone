@@ -443,14 +443,23 @@ print_response() {
     die_response "OpenRouter answered HTTP 200 with a provider error and no completion: $provider_error; the request was not retried, so re-running the command is a fresh pass and not fallback"
   fi
 
+  # finish_reason is read BEFORE the malformed-field check, because exhausting
+  # the completion budget is what produces the malformed field. A reasoning
+  # model spends its thinking from the same budget as its answer, so it can
+  # return `content: null` with `finish_reason: length`; checked in the other
+  # order that arrives as "malformed response", and the same defect was being
+  # reported under two unrelated messages depending on whether the budget ran
+  # out before or during the answer.
+  finish_reason="$("$JQ_BIN" -r '.choices[0].finish_reason // empty' "$WORK_DIR/response.json" 2>/dev/null || true)"
+  if [ "$finish_reason" = length ]; then
+    die "OpenRouter stopped at the configured completion limit (limits.maxCompletionTokens in the managed review policy) before producing a review. A reasoning model spends its thinking from this same budget, so this is not evidence that the change is too large -- it has fired on a 24-line diff. It is also not a byte-ceiling refusal: the slice was accepted and the reviewer produced nothing, so re-slicing is not the remedy. Stop without retrying, as principles/local-review.md requires for every truncation failure; the durable fix is to raise limits.maxCompletionTokens."
+  fi
   unusable="$(response_unusable_fields)"
   if [ -n "$unusable" ]; then
     die_response "OpenRouter returned a malformed review response; unusable: $unusable"
   fi
-  finish_reason="$("$JQ_BIN" -r '.choices[0].finish_reason' "$WORK_DIR/response.json")"
   case "$finish_reason" in
     stop) ;;
-    length) die "OpenRouter truncated the review at the configured completion limit; split the change" ;;
     *) die "OpenRouter did not complete the review; no local-review evidence was produced" ;;
   esac
   "$JQ_BIN" -r '.choices[0].message.content' "$WORK_DIR/response.json" \

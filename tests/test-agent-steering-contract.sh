@@ -211,6 +211,14 @@ assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
   '"maxPromptPricePerMillion": 0.5'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
   '"maxCompletionPricePerMillion": 2'
+# 4096 was sized for a model that answers without thinking. The auto-router
+# selects reasoning models, whose reasoning tokens are spent from this same
+# budget: one measured response burned 4323 reasoning tokens against a 4096
+# cap and returned no content at all. A 196-line slice failed six consecutive
+# passes at 4096 and passed first time at 16384, using 6281 completion tokens.
+# The per-million price caps above, not this number, are what bound the cost.
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
+  '"maxCompletionTokens": 16384'
 assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
   'gpt-5.6-sol'
 assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
@@ -1180,7 +1188,7 @@ jq -e '
   .provider.require_parameters == true and
   .provider.max_price.prompt == 0.5 and
   .provider.max_price.completion == 2 and
-  .max_tokens == 4096 and
+  .max_tokens == 16384 and
   .usage.include == true and
   .response_format.type == "json_schema" and
   (.tools == null)
@@ -1662,8 +1670,22 @@ if (
     review_command run --codex-home "$REVIEW_HOME"
 ) >"$TEST_DIR/truncated-response.out" 2>&1; then
   fail "truncated OpenRouter response was accepted"
-elif ! grep -qF 'truncated the review' "$TEST_DIR/truncated-response.out"; then
-  fail "truncated OpenRouter response lost its diagnostic"
+elif ! grep -qF 'stopped at the configured completion limit' "$TEST_DIR/truncated-response.out"; then
+  fail "budget-exhausted OpenRouter response lost its diagnostic"
+# The remedy matters as much as the diagnosis. "split the change" sent an agent
+# to re-slice a diff that was never too big, and principles/local-review.md
+# forbids waiving a size refusal -- so the pair deadlocked a small change with
+# no legal move. The message must name the budget and refuse the waiver.
+elif ! grep -qF 'not evidence that the change is too large' "$TEST_DIR/truncated-response.out"; then
+  fail "budget diagnostic still blames the size of the change"
+# The one-request rule is the other half: principles/local-review.md makes
+# truncation failures terminal ("stop without retrying", "the pass runs at most
+# once"). A diagnostic that tells the agent to run the pass again instructs a
+# contract violation, however reasonable the retry looks in the moment.
+elif ! grep -qF 'Stop without retrying' "$TEST_DIR/truncated-response.out"; then
+  fail "budget diagnostic does not stop the pass"
+elif grep -qiE 'Re-run the pass|try again' "$TEST_DIR/truncated-response.out"; then
+  fail "budget diagnostic instructs a second pass, against the one-request rule"
 fi
 FILTERED_RESPONSE="$TEST_DIR/filtered-response.json"
 jq '.choices[0].finish_reason = "content_filter"' \
