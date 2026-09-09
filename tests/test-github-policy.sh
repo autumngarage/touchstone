@@ -695,6 +695,53 @@ bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --no-que
 bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --require-status one --require-merge-group-status two >/dev/null 2>&1 \
   && fail "derive mixed pull-request and merge-group status declarations" \
   || ok "derive refuses mixed status event contracts"
+echo "==> --path-set declares a policy-side path set, and refuses one that exempts review"
+# The declaration is policy-side precisely so a pull request cannot widen the
+# set that decides whether the pull request needs review. These pin the refusal
+# and the empty default; the matcher's own semantics are tests/test-touchstone-paths.sh.
+PS_DIR="$(mktemp -d -t touchstone-test-pathset.XXXXXX)"
+printf '# documents\n\ndocs/**\n*.md\n' >"$PS_DIR/docs.paths"
+printf '.github/**\n' >"$PS_DIR/evil.paths"
+printf '# only a comment\n\n' >"$PS_DIR/empty.paths"
+
+# No repository gains classification behaviour by accident: absent, not empty.
+[ "$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary | jq -r 'has("pathSets")')" = false ] \
+  && ok "derivation without --path-set declares no pathSets key at all" \
+  || fail "derivation emitted a pathSets key with no set declared"
+
+with_set="$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --path-set "documents=$PS_DIR/docs.paths")"
+without_set="$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary)"
+diff -u <(jq -S 'del(.pathSets)' <<<"$with_set") <(jq -S . <<<"$without_set") >/dev/null \
+  && ok "--path-set adds the declaration and changes nothing else" \
+  || fail "--path-set changed more than the declaration"
+[ "$(jq -c '.pathSets.documents' <<<"$with_set")" = '["docs/**","*.md"]' ] \
+  && ok "comments and blank lines are declaration syntax, not patterns" \
+  || fail "comment or blank line reached the policy: $(jq -c '.pathSets.documents' <<<"$with_set")"
+
+# The invariant: refused when it is applied, by the same checker that refuses
+# it when it is used, so the two ends cannot disagree.
+bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --path-set "documents=$PS_DIR/evil.paths" >/dev/null 2>&1 \
+  && fail "derive accepted a path set that exempts the workflows deciding review" \
+  || ok "derive refuses a path set that exempts what decides review"
+bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --path-set "documents=$PS_DIR/missing.paths" >/dev/null 2>&1 \
+  && fail "derive accepted --path-set naming no file" \
+  || ok "derive refuses --path-set naming no readable file"
+bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --path-set "d=$PS_DIR/docs.paths" --path-set "d=$PS_DIR/docs.paths" >/dev/null 2>&1 \
+  && fail "derive accepted the same set name twice" \
+  || ok "derive refuses a duplicated set name"
+bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --path-set "d=$PS_DIR/empty.paths" >/dev/null 2>&1 \
+  && fail "derive accepted a file declaring no patterns" \
+  || ok "derive refuses a file whose lines are all comments"
+# Exit 2 is the input error; exit 1 is a meaningful answer elsewhere in this
+# surface, and grep exiting 1 on an all-comment file used to leak out as 1.
+ps_rc=0
+bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --path-set "d=$PS_DIR/empty.paths" >/dev/null 2>&1 || ps_rc=$?
+[ "$ps_rc" = 2 ] && ok "a path-set input error exits 2, not 1" || fail "path-set input error exited $ps_rc, expected 2"
+bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --path-set "bad name=$PS_DIR/docs.paths" >/dev/null 2>&1 \
+  && fail "derive accepted a set name with a space" \
+  || ok "derive refuses a set name outside [A-Za-z0-9._-]"
+rm -rf "$PS_DIR"
+
 for consumer in "$ROOT"/policy/github/consumers/*.json; do
   [ -f "$consumer" ] || continue
   name="$(basename "$consumer" .json)"
@@ -712,8 +759,28 @@ for consumer in "$ROOT"/policy/github/consumers/*.json; do
   while IFS= read -r context; do
     [ -n "$context" ] && derive_flags+=("$status_flag" "$context")
   done < <(jq -r '[.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | .[]' "$consumer")
+  # A declared path set is reproduced from the checked-in file the same way,
+  # so the first consumer to carry one is checked rather than reported as an
+  # unexplained diff against a derivation that could not have produced it.
+  consumer_sets_dir=""
+  # The flags actually run point at scratch files reconstructed from the
+  # checked-in policy; the flags printed in a failure name what a person can
+  # retype. Printing the scratch paths would hand the reader a command whose
+  # files are gone by the time they read it.
+  derive_hint=()
+  while IFS= read -r set_name; do
+    [ -n "$set_name" ] || continue
+    [ -n "$consumer_sets_dir" ] || consumer_sets_dir="$(mktemp -d -t touchstone-consumer-pathset.XXXXXX)"
+    jq -r --arg n "$set_name" '.pathSets[$n][]' "$consumer" >"$consumer_sets_dir/$set_name"
+    derive_flags+=(--path-set "$set_name=$consumer_sets_dir/$set_name")
+    derive_hint+=(--path-set "$set_name=<file holding the $set_name patterns>")
+  done < <(jq -r 'if has("pathSets") then (.pathSets | keys[]) else empty end' "$consumer")
   diff -u <(bash "$ROOT/scripts/derive-consumer-policy.sh" "$name" ${derive_flags[@]+"${derive_flags[@]}"} | jq -S .) <(jq -S . "$consumer") >/dev/null \
-    || fail "policy/github/consumers/$name.json drifted from its derivation; regenerate it with scripts/derive-consumer-policy.sh $name ${derive_flags[*]+"${derive_flags[*]}"}"
+    || fail "policy/github/consumers/$name.json drifted from its derivation; regenerate it with scripts/derive-consumer-policy.sh $name ${derive_hint[*]+"${derive_hint[*]}"}"
+  # Removed here, not by a RETURN trap: that trap fires only inside a function
+  # or a sourced script, so outside one it never ran and this loop leaked one
+  # directory per consumer that declared a set.
+  [ -z "$consumer_sets_dir" ] || rm -rf "$consumer_sets_dir"
   run_policy diff "$consumer" >/dev/null 2>"$TMP_DIR/consumer-$name.err" \
     || grep -q "HTTP 404\|unhandled fake gh call" "$TMP_DIR/consumer-$name.err" \
     || fail "consumer policy $name was refused locally: $(tail -1 "$TMP_DIR/consumer-$name.err")"
