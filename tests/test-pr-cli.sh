@@ -588,6 +588,41 @@ case "$1 ${2:-}" in
           printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-1' \
             "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
         fi
+      elif [ "${GH_MODE:-ok}" = attest_request_present ]; then
+        # What `pr answer` leaves behind when an answer resolves the last
+        # thread: a real review request for this head, carrying the attest
+        # marker rather than the pr-open one.
+        printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-91' \
+          "@codex review\\n\\n<!-- touchstone:attest-request head=$GH_HEAD -->"
+        # Where reuse is refused and a request is posted instead, that request
+        # must be visible for this command's own post-write verification.
+        if [ -f "$GH_STATE/review-request" ]; then
+          printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-1' \
+            "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
+        fi
+      elif [ "${GH_MODE:-ok}" = attest_request_other_head ]; then
+        printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-92' \
+          "@codex review\\n\\n<!-- touchstone:attest-request head=0000000000000000000000000000000000000000 -->"
+        # The request this command posts must still be visible, or its own
+        # post-write verification cannot find what it just wrote.
+        if [ -f "$GH_STATE/review-request" ]; then
+          printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-1' \
+            "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
+        fi
+      elif [ "${GH_MODE:-ok}" = attest_request_moved_base ]; then
+        # Both requests for this head: this command's own under a base that has
+        # since moved, and an attest request carrying no base at all.
+        printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-94' \
+          "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=release base_sha=release-sha -->"
+        printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-91' \
+          "@codex review\\n\\n<!-- touchstone:attest-request head=$GH_HEAD -->"
+      elif [ "${GH_MODE:-ok}" = attest_request_spoofed ]; then
+        printf '%s\tmallory\t%s\n' 'https://example.test/pr/7#issuecomment-93' \
+          "@codex review\\n\\n<!-- touchstone:attest-request head=$GH_HEAD -->"
+        if [ -f "$GH_STATE/review-request" ]; then
+          printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-1' \
+            "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
+        fi
       elif [ "${GH_MODE:-ok}" = marker_only ]; then
         printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-marker' \
           "<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
@@ -939,6 +974,13 @@ case "$1 ${2:-}" in
       else
         printf '%s\n' "$runs"
       fi
+    elif has '/issues/comments/91' "$@"; then
+      # The attest request `pr answer` leaves for this head, served by id so
+      # the binding re-read can verify it the same way it verifies its own.
+      jq -cn --arg body "@codex review
+
+<!-- touchstone:attest-request head=$GH_HEAD -->" \
+        '{id: 91, user: {login: "alice"}, body: $body, author_association: "NONE"}'
     elif has '/issues/comments/1' "$@"; then
       if [ "${GH_MODE:-ok}" = live_comment_invalid ]; then
         jq -cn '{id: 1, user: {login: "mallory"}, body: "not a review request", author_association: "OWNER"}'
@@ -1402,6 +1444,22 @@ EOF
     || fail "open did not wait for an in-progress gate run before re-running it"
   [ "$(grep -c 'actions/runs?head_sha=' "$GH_CALLS")" -ge 2 ] \
     || fail "open did not poll the in-progress gate run"
+  # AUT-1482. `pr answer` posts its own request for this head when an answer
+  # resolves the last thread, carrying the attest marker rather than this
+  # command's. Scanning only for the pr-open marker bought a SECOND hosted
+  # review of the same commit -- observed live on touchstone#1174, attest at
+  # 13:35:03 and pr-open at 13:36:00, 57 seconds apart. Where the gate is
+  # required, binding is head-only and the gate owns retarget semantics, so
+  # the existing request is reused instead of paid for twice.
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/review-request"
+  GH_CALLS_BEFORE_ATTEST="$(grep -c '^pr comment' "$GH_CALLS" || true)"
+  GH_MODE=attest_request_present run_pr_v1 "$TMP/out" open --title 'Gate' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  [ "$(grep -c '^pr comment' "$GH_CALLS" || true)" -eq "$GH_CALLS_BEFORE_ATTEST" ] \
+    || fail "an existing attest request for this head still bought a second hosted review"
+  assert_has "$TMP/out" '"reviewRequest":"existing:https://example.test/pr/7#issuecomment-91"'
+  rm -f "$TMP/state/gate-reruns"
+
   rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-in-progress" "$TMP/state/behavior-version-legacy"
   # The rollout state this pin creates: GitHub enforces the waiting gate while
   # an installed release still declares v1. The older client keeps its own
@@ -1948,6 +2006,47 @@ Closes #42'
   GH_MODE=marker_only run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   [ "$(grep -c '^pr comment' "$GH_CALLS")" -eq 1 ] || fail "marker without trigger suppressed the real review request"
+  # AUT-1482. `pr answer` posts its own request for this head when an answer
+  # resolves the last thread; it carries the attest marker, not the pr-open
+  # one. Scanning only for the pr-open marker posted a SECOND "@codex review"
+  # for the same head -- two hosted reviews of one diff, billed twice.
+  # Observed live on touchstone#1174: attest at 13:35:03, pr-open at 13:36:00.
+  #
+  # Reuse is restricted to a base with a pinned gate. Without one, the binding
+  # re-read is the only thing verifying coordinates, and the attest marker
+  # carries no base for it to verify -- so here the request is posted, not
+  # reused. Nothing is lost: `pr answer` writes attest requests only under gate
+  # contract 3, which is exactly where a gate exists.
+  rm -f "$TMP/state/review-request"
+  GH_MODE=attest_request_present run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  [ "$(grep -c '^pr comment' "$GH_CALLS")" -eq 1 ] \
+    || fail "an attest request was reused on a base with no gate to verify it against"
+
+  # Head-scoped: an attest request for a DIFFERENT head is not this head's.
+  rm -f "$TMP/state/review-request"
+  GH_MODE=attest_request_other_head run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  [ "$(grep -c '^pr comment' "$GH_CALLS")" -eq 1 ] \
+    || fail "an attest request for another head suppressed this head's review request"
+
+  # An attest request carries no base, so reusing one must not slip past the
+  # refusal for a head whose base has moved -- that would report a request
+  # bound to the old base as successfully bound to the new one.
+  rm -f "$TMP/state/review-request"
+  GH_MODE=attest_request_moved_base run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'already has a review request for different base coordinates'
+  [ "$(grep -c '^pr comment' "$GH_CALLS" || true)" -eq 0 ] \
+    || fail "a moved base still posted a review request"
+
+  # Author-scoped, like every other marker read here: anyone can type one.
+  rm -f "$TMP/state/review-request"
+  GH_MODE=attest_request_spoofed run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  [ "$(grep -c '^pr comment' "$GH_CALLS")" -eq 1 ] \
+    || fail "a spoofed attest marker suppressed the real review request"
+
   GH_MODE=many_requests run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewRequest":"existing:https://example.test/pr/7#issuecomment-1"'
@@ -3406,4 +3505,84 @@ STATUS_STUB
     exit 1
   fi
   echo "==> PASS: respond-review parses GitHub responses from stdout alone"
+)
+
+# A merged repin is not a deployed one. `policy status` assesses GitHub against
+# the policy the TOOL ships, so between a repin merging and an administrator
+# applying it, the tool's copy and GitHub agree and it prints "applied" while
+# the branch declares a pin GitHub has not applied -- and nothing in the
+# repository can request review. `pr status` binds the repository's policy at
+# the PR base and reported the drift correctly, so the two readers disagreed
+# about one repository at one moment (2026-09-09, touchstone#1174).
+(
+  echo "==> policy status names a declaration it did not assess"
+  ERRORS=0
+  drift_fail() {
+    echo "FAIL: $*" >&2
+    ERRORS=$((ERRORS + 1))
+  }
+  DRIFT_TMP="$(mktemp -d)"
+  trap 'rm -rf "$DRIFT_TMP"' EXIT HUP INT TERM
+  mkdir -p "$DRIFT_TMP/tool/policy/github" "$DRIFT_TMP/proj/policy/github"
+  printf '{"pin":"OLD"}\n' >"$DRIFT_TMP/tool/policy/github/touchstone-main.json"
+  printf '{"pin":"NEW"}\n' >"$DRIFT_TMP/proj/policy/github/touchstone-main.json"
+  awk '/^policy_declaration_drift_note\(\) \{/,/^\}/' \
+    "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" >"$DRIFT_TMP/fn.sh"
+  [ -s "$DRIFT_TMP/fn.sh" ] \
+    || drift_fail "could not extract policy_declaration_drift_note from touchstone-pr.sh"
+  drift_note() (
+    # These four are the function's inputs, read by the fragment sourced
+    # below; shellcheck cannot see through the source to their use.
+    # shellcheck disable=SC2034
+    PROJECT_ROOT="$1"
+    # shellcheck disable=SC2034
+    ENFORCEMENT_POLICY_SOURCE="policy/github/touchstone-main.json"
+    # shellcheck disable=SC2034
+    ENFORCEMENT_POLICY_FILE="$DRIFT_TMP/tool/policy/github/touchstone-main.json"
+    # shellcheck disable=SC2034
+    ENFORCEMENT_POLICY_REVISION="v3.12.0"
+    # shellcheck source=/dev/null
+    . "$DRIFT_TMP/fn.sh"
+    policy_declaration_drift_note
+  )
+
+  OUT="$(drift_note "$DRIFT_TMP/proj")"
+  case "$OUT" in
+    *"declaration drift"*) ;;
+    *) drift_fail "a checked-out policy differing from the assessed copy is not reported: '$OUT'" ;;
+  esac
+  case "$OUT" in
+    *v3.12.0*) ;;
+    *) drift_fail "the drift note does not name the revision that was assessed: '$OUT'" ;;
+  esac
+
+  # Identical copies are not drift: this must not fire on every ordinary run.
+  cp "$DRIFT_TMP/tool/policy/github/touchstone-main.json" \
+    "$DRIFT_TMP/proj/policy/github/touchstone-main.json"
+  OUT="$(drift_note "$DRIFT_TMP/proj")"
+  [ -z "$OUT" ] || drift_fail "identical policy copies reported drift: '$OUT'"
+
+  # A consumer repository carries no policy of its own; silence, not an error.
+  OUT="$(drift_note "$DRIFT_TMP/absent")"
+  [ -z "$OUT" ] || drift_fail "a repository with no checked-out policy reported drift: '$OUT'"
+
+  # The failure that blocked touchstone#1174 must name how to clear it.
+  PIN_REMEDY="$(sed -n '/has no policy-compatible source revision/,/^    REQUIRED_WORKFLOW_REVISIONS=/p' \
+    "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh")"
+  case "$PIN_REMEDY" in
+    *"github-policy.sh apply"*) ;;
+    *) drift_fail "the pin-mismatch failure does not name the apply that clears it" ;;
+  esac
+  case "$PIN_REMEDY" in
+    *"pr status"*) ;;
+    *) drift_fail "the pin-mismatch failure does not point at the reader that names expected and observed" ;;
+  esac
+
+  rm -rf "$DRIFT_TMP"
+  trap - EXIT HUP INT TERM
+  if [ "$ERRORS" -ne 0 ]; then
+    echo "==> FAIL: $ERRORS declaration-drift assertion(s) failed" >&2
+    exit 1
+  fi
+  echo "==> PASS: policy status names a declaration it did not assess"
 )
