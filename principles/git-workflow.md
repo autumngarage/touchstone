@@ -752,14 +752,19 @@ never a rule. Closing, renaming, restacking, or reopening the same acceptance
 criterion does not reset its count. Past three fix rounds, the legitimate exits
 are:
 
-- **Merge if answered** — only when no known P0/P1 defect remains.
+- **`merge-answered`** — merge it, only when no known P0/P1 defect remains.
   Where behavior v2 is effective, all threads resolved satisfies that gate;
   under contract 3 the answer flow's attest request still supplies the final
   clean verdict first. Routing a P2, P3, or out-of-scope finding is not
   permission to ship a known serious regression;
-- **Split the PR** — only genuinely independent acceptance criteria receive
+- **`revert-simplify`** — drop the review-driven accretion and ship the
+  materially narrower acceptance boundary, or the replacement architecture,
+  that the repeated failure class points at. Correct when each fix held on its
+  own but the change is no longer worth the complexity they added;
+- **`split`** — only genuinely independent acceptance criteria receive
   independent budgets; a mechanical split is not budget laundering;
-- **Close it, preserving the corpus** on the tracking issue (the #706 pattern) — correct when successive fixes keep creating defects.
+- **`close-replan`** — close it, preserving the corpus on the tracking issue
+  (the #706 pattern) — correct when successive fixes keep creating defects.
 
 After a third fix round, **do not push a fourth on the same
 implementation shape**. Stop, audit the repeated failure class, and put the chosen exit plus
