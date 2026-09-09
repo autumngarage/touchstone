@@ -603,6 +603,13 @@ case "$1 ${2:-}" in
           printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-1' \
             "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
         fi
+      elif [ "${GH_MODE:-ok}" = attest_request_moved_base ]; then
+        # Both requests for this head: this command's own under a base that has
+        # since moved, and an attest request carrying no base at all.
+        printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-94' \
+          "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=release base_sha=release-sha -->"
+        printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-91' \
+          "@codex review\\n\\n<!-- touchstone:attest-request head=$GH_HEAD -->"
       elif [ "${GH_MODE:-ok}" = attest_request_spoofed ]; then
         printf '%s\tmallory\t%s\n' 'https://example.test/pr/7#issuecomment-93' \
           "@codex review\\n\\n<!-- touchstone:attest-request head=$GH_HEAD -->"
@@ -1995,6 +2002,16 @@ Closes #42'
   assert_rc "$RUN_RC" 0
   [ "$(grep -c '^pr comment' "$GH_CALLS")" -eq 1 ] \
     || fail "an attest request for another head suppressed this head's review request"
+
+  # An attest request carries no base, so reusing one must not slip past the
+  # refusal for a head whose base has moved -- that would report a request
+  # bound to the old base as successfully bound to the new one.
+  rm -f "$TMP/state/review-request"
+  GH_MODE=attest_request_moved_base run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'already has a review request for different base coordinates'
+  [ "$(grep -c '^pr comment' "$GH_CALLS" || true)" -eq 0 ] \
+    || fail "a moved base still posted a review request"
 
   # Author-scoped, like every other marker read here: anyone can type one.
   rm -f "$TMP/state/review-request"

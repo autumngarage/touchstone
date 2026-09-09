@@ -1928,6 +1928,16 @@ open_pr() {
   existing_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$request_marker" -v author="$request_author" \
     '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
   existing_request_marker="$request_marker"
+  # Computed before the attest fallback below, not after. A request for this
+  # head under DIFFERENT base coordinates must still be refused, and the attest
+  # marker carries no base -- so reusing one first would return success on a
+  # head whose base has moved, reporting a stale request as bound.
+  moved_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$request_head_marker" -v author="$request_author" \
+    '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
+  if [ -z "$existing_request" ] && [ -n "$moved_request" ]; then
+    fail_input "this head already has a review request for different base coordinates" \
+      "Wait for that request to finish, then integrate or use the documented raw recovery path."
+  fi
   if [ -z "$existing_request" ]; then
     # `pr answer` posts its own request for this head whenever an answer
     # resolves the last open thread -- contract 3 needs a fresh verdict, and
@@ -1939,9 +1949,9 @@ open_pr() {
     # 57 seconds apart on head 02fcd33c (AUT-1482).
     #
     # Reuse it. The gate binds on head, and a request is a request whichever
-    # path wrote it. The attest marker carries no base coordinates, so it can
-    # only be matched on head -- which is what the gate reads anyway, and the
-    # moved-base check below stays scoped to this command's own marker.
+    # path wrote it. The attest marker can only be matched on head, which is
+    # what the gate reads anyway -- and because it carries no base, the
+    # moved-base refusal above has to run first.
     existing_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$attest_marker" -v author="$request_author" \
       '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
     [ -z "$existing_request" ] || existing_request_marker="$attest_marker"
@@ -1953,11 +1963,6 @@ open_pr() {
     emit_open_result "$state" "$number" "$url" "$local_head" "existing:$request_url" "$branch"
     return 0
   fi
-  moved_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$request_head_marker" -v author="$request_author" \
-    '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
-  [ -z "$moved_request" ] \
-    || fail_input "this head already has a review request for different base coordinates" \
-      "Wait for that request to finish, then integrate or use the documented raw recovery path."
   request_body="@codex review
 
 $request_marker"
