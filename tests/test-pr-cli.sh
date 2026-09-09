@@ -3407,3 +3407,83 @@ STATUS_STUB
   fi
   echo "==> PASS: respond-review parses GitHub responses from stdout alone"
 )
+
+# A merged repin is not a deployed one. `policy status` assesses GitHub against
+# the policy the TOOL ships, so between a repin merging and an administrator
+# applying it, the tool's copy and GitHub agree and it prints "applied" while
+# the branch declares a pin GitHub has not applied -- and nothing in the
+# repository can request review. `pr status` binds the repository's policy at
+# the PR base and reported the drift correctly, so the two readers disagreed
+# about one repository at one moment (2026-09-09, touchstone#1174).
+(
+  echo "==> policy status names a declaration it did not assess"
+  ERRORS=0
+  drift_fail() {
+    echo "FAIL: $*" >&2
+    ERRORS=$((ERRORS + 1))
+  }
+  DRIFT_TMP="$(mktemp -d)"
+  trap 'rm -rf "$DRIFT_TMP"' EXIT HUP INT TERM
+  mkdir -p "$DRIFT_TMP/tool/policy/github" "$DRIFT_TMP/proj/policy/github"
+  printf '{"pin":"OLD"}\n' >"$DRIFT_TMP/tool/policy/github/touchstone-main.json"
+  printf '{"pin":"NEW"}\n' >"$DRIFT_TMP/proj/policy/github/touchstone-main.json"
+  awk '/^policy_declaration_drift_note\(\) \{/,/^\}/' \
+    "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" >"$DRIFT_TMP/fn.sh"
+  [ -s "$DRIFT_TMP/fn.sh" ] \
+    || drift_fail "could not extract policy_declaration_drift_note from touchstone-pr.sh"
+  drift_note() (
+    # These four are the function's inputs, read by the fragment sourced
+    # below; shellcheck cannot see through the source to their use.
+    # shellcheck disable=SC2034
+    PROJECT_ROOT="$1"
+    # shellcheck disable=SC2034
+    ENFORCEMENT_POLICY_SOURCE="policy/github/touchstone-main.json"
+    # shellcheck disable=SC2034
+    ENFORCEMENT_POLICY_FILE="$DRIFT_TMP/tool/policy/github/touchstone-main.json"
+    # shellcheck disable=SC2034
+    ENFORCEMENT_POLICY_REVISION="v3.12.0"
+    # shellcheck source=/dev/null
+    . "$DRIFT_TMP/fn.sh"
+    policy_declaration_drift_note
+  )
+
+  OUT="$(drift_note "$DRIFT_TMP/proj")"
+  case "$OUT" in
+    *"declaration drift"*) ;;
+    *) drift_fail "a checked-out policy differing from the assessed copy is not reported: '$OUT'" ;;
+  esac
+  case "$OUT" in
+    *v3.12.0*) ;;
+    *) drift_fail "the drift note does not name the revision that was assessed: '$OUT'" ;;
+  esac
+
+  # Identical copies are not drift: this must not fire on every ordinary run.
+  cp "$DRIFT_TMP/tool/policy/github/touchstone-main.json" \
+    "$DRIFT_TMP/proj/policy/github/touchstone-main.json"
+  OUT="$(drift_note "$DRIFT_TMP/proj")"
+  [ -z "$OUT" ] || drift_fail "identical policy copies reported drift: '$OUT'"
+
+  # A consumer repository carries no policy of its own; silence, not an error.
+  OUT="$(drift_note "$DRIFT_TMP/absent")"
+  [ -z "$OUT" ] || drift_fail "a repository with no checked-out policy reported drift: '$OUT'"
+
+  # The failure that blocked touchstone#1174 must name how to clear it.
+  PIN_REMEDY="$(sed -n '/has no policy-compatible source revision/,/^    REQUIRED_WORKFLOW_REVISIONS=/p' \
+    "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh")"
+  case "$PIN_REMEDY" in
+    *"github-policy.sh apply"*) ;;
+    *) drift_fail "the pin-mismatch failure does not name the apply that clears it" ;;
+  esac
+  case "$PIN_REMEDY" in
+    *"pr status"*) ;;
+    *) drift_fail "the pin-mismatch failure does not point at the reader that names expected and observed" ;;
+  esac
+
+  rm -rf "$DRIFT_TMP"
+  trap - EXIT HUP INT TERM
+  if [ "$ERRORS" -ne 0 ]; then
+    echo "==> FAIL: $ERRORS declaration-drift assertion(s) failed" >&2
+    exit 1
+  fi
+  echo "==> PASS: policy status names a declaration it did not assess"
+)

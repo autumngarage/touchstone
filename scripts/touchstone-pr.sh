@@ -572,7 +572,8 @@ required_workflow_declared() {
       "$(printf '%s' "$expected" | jq -r .sha)" \
       "$actual_shas" "" ""
     [ "$PIN_ENFORCEMENT_VERDICT" = verified ] \
-      || fail_operation "the required $workflow_path has no policy-compatible source revision${PIN_ENFORCEMENT_REASON:+: $PIN_ENFORCEMENT_REASON}" "Repair the effective workflow pin before requesting review."
+      || fail_operation "the required $workflow_path has no policy-compatible source revision${PIN_ENFORCEMENT_REASON:+: $PIN_ENFORCEMENT_REASON}" \
+        "Usually the repository declares a pin GitHub has not applied yet -- a merged repin is not a deployed one. Run touchstone pr status <pr> (or policy status), which names the expected and observed revisions. To deploy: from a clean Touchstone checkout on the default branch, an administrator runs scripts/github-policy.sh apply <the repository's policy file>, then re-runs this command."
     REQUIRED_WORKFLOW_REVISIONS="$PIN_ENFORCEMENT_REVISIONS"
     resolve_workflow_source_repository "$(printf '%s' "$expected" | jq -r .repository_id)" \
       || fail_operation "could not resolve the source repository for $workflow_path" "Retry after GitHub can resolve the policy-declared repository."
@@ -1363,7 +1364,34 @@ policy_status() {
     printf '  pinned review-gate: %s\n' "$(pinned_review_gate_text)"
     printf '  enforcement: %s\n' "$(enforcement_text)"
     [ -z "$ENFORCEMENT_MISSING" ] || printf '  remedy: %s\n' "$(enforcement_remedy)"
+    policy_declaration_drift_note
   fi
+}
+
+# `policy status` assesses GitHub against the policy THIS TOOL ships, because a
+# consumer repository carries no policy of its own to read. In a Touchstone
+# source checkout that is not the same document as the one on the branch: after
+# a repin merges and before it is applied, the tool's released copy still names
+# the old revision, GitHub still enforces the old revision, and they agree --
+# so this command prints "applied" while the repository is drifted and cannot
+# request review at all. `pr status` binds the repository's policy at the pull
+# request's base and reports the drift correctly, so the two readers disagreed
+# about the same repository at the same moment (2026-09-09).
+#
+# Report it rather than re-bind it: which document is authoritative is a real
+# decision, and silently changing it here would change what `applied` means.
+# Naming the disagreement costs nothing and is what was missing.
+policy_declaration_drift_note() {
+  local checked_out
+  [ -n "$ENFORCEMENT_POLICY_SOURCE" ] || return 0
+  checked_out="$PROJECT_ROOT/$ENFORCEMENT_POLICY_SOURCE"
+  [ -f "$checked_out" ] || return 0
+  [ "$checked_out" != "$ENFORCEMENT_POLICY_FILE" ] || return 0
+  cmp -s "$checked_out" "$ENFORCEMENT_POLICY_FILE" && return 0
+  printf '  declaration drift: this repository'\''s %s differs from the copy this tool assessed (%s).\n' \
+    "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION"
+  printf '    "enforcement" above is measured against the tool'\''s copy, so it can read healthy while the branch declares a pin GitHub has not applied.\n'
+  printf '    Apply the checked-out policy, or upgrade the tool to a release carrying it.\n'
 }
 
 # Every loop that polls GitHub for state re-checks, on each poll, that the
