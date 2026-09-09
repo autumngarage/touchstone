@@ -1,11 +1,9 @@
 {
-  "schema": "touchstone.review/v2",
+  "schema": "touchstone.review/v3",
   "backend": "openrouter-chat-completions",
   "endpoint": "https://openrouter.ai/api/v1/chat/completions",
-  "router": {
-    "model": "openrouter/auto",
-    "plugin": "auto-router",
-    "costTier": "low"
+  "model": {
+    "id": "qwen/qwen3-coder"
   },
   "limits": {
     "maxInputBytes": 400000,

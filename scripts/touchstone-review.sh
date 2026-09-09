@@ -128,15 +128,14 @@ validate_policy() {
 
   "$JQ_BIN" -e '
     type == "object" and
-    ((keys | sort) == (["schema", "backend", "endpoint", "router", "limits"] | sort)) and
-    .schema == "touchstone.review/v2" and
+    ((keys | sort) == (["schema", "backend", "endpoint", "model", "limits"] | sort)) and
+    .schema == "touchstone.review/v3" and
     .backend == "openrouter-chat-completions" and
     .endpoint == "https://openrouter.ai/api/v1/chat/completions" and
-    (.router | type == "object") and
-    ((.router | keys | sort) == (["model", "plugin", "costTier"] | sort)) and
-    (.router.model | type == "string" and test("^[A-Za-z0-9._/-]+$") and length > 0) and
-    (.router.plugin | type == "string" and test("^[A-Za-z0-9._-]+$") and length > 0) and
-    (.router.costTier == "low" or .router.costTier == "medium" or .router.costTier == "high") and
+    (.model | type == "object") and
+    ((.model | keys) == ["id"]) and
+    (.model.id | type == "string" and test("^[A-Za-z0-9._/-]+$") and length > 0
+     and (startswith("openrouter/") | not)) and
     (.limits | type == "object") and
     ((.limits | keys | sort) == ([
       "maxInputBytes",
@@ -158,9 +157,9 @@ validate_policy() {
 
   # One read for every value: the schema was validated above, so a single
   # @tsv extraction replaces eleven jq forks with identical results.
-  POLICY_ROW="$("$JQ_BIN" -r '[.backend, .endpoint, .router.model, .router.plugin, .router.costTier, (.limits.maxInputBytes | tostring), (.limits.maxCompletionTokens | tostring), (.limits.maxPromptPricePerMillion | tostring), (.limits.maxCompletionPricePerMillion | tostring), (.limits.connectTimeoutSeconds | tostring), (.limits.requestTimeoutSeconds | tostring)] | @tsv' "$POLICY_SOURCE")" \
+  POLICY_ROW="$("$JQ_BIN" -r '[.backend, .endpoint, .model.id, (.limits.maxInputBytes | tostring), (.limits.maxCompletionTokens | tostring), (.limits.maxPromptPricePerMillion | tostring), (.limits.maxCompletionPricePerMillion | tostring), (.limits.connectTimeoutSeconds | tostring), (.limits.requestTimeoutSeconds | tostring)] | @tsv' "$POLICY_SOURCE")" \
     || die "managed review policy is unreadable: $POLICY_SOURCE"
-  IFS="$(printf '\t')" read -r BACKEND ENDPOINT ROUTER_MODEL ROUTER_PLUGIN COST_TIER MAX_INPUT_BYTES MAX_COMPLETION_TOKENS MAX_PROMPT_PRICE MAX_COMPLETION_PRICE CONNECT_TIMEOUT REQUEST_TIMEOUT <<<"$POLICY_ROW"
+  IFS="$(printf '\t')" read -r BACKEND ENDPOINT MODEL_ID MAX_INPUT_BYTES MAX_COMPLETION_TOKENS MAX_PROMPT_PRICE MAX_COMPLETION_PRICE CONNECT_TIMEOUT REQUEST_TIMEOUT <<<"$POLICY_ROW"
 }
 
 review_git() {
@@ -283,9 +282,7 @@ prepare_request() {
     --rawfile system "$PROMPT_SOURCE" \
     --rawfile diff "$WORK_DIR/diff" \
     --arg scope "$SCOPE_INSTRUCTION" \
-    --arg model "$ROUTER_MODEL" \
-    --arg plugin "$ROUTER_PLUGIN" \
-    --arg costTier "$COST_TIER" \
+    --arg model "$MODEL_ID" \
     --argjson maxCompletionTokens "$MAX_COMPLETION_TOKENS" \
     --argjson maxPromptPrice "$MAX_PROMPT_PRICE" \
     --argjson maxCompletionPrice "$MAX_COMPLETION_PRICE" '
@@ -298,7 +295,6 @@ prepare_request() {
             content: ($scope + "\n\n" + $diff)
           }
         ],
-        plugins: [{id: $plugin, cost_tier: $costTier}],
         provider: {
           require_parameters: true,
           max_price: {

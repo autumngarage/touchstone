@@ -192,21 +192,52 @@ assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   '## The deep review pass'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'OpenRouter'
+# Every policy parameter this document states in prose is bound to the JSON
+# that actually carries it. It drifted once in both directions at once: the
+# sentence claimed 4,096 completion tokens after the config moved to 16,384,
+# and it had been claiming a 100,000-byte ceiling against a configured 400,000
+# for longer than anyone noticed, with every test green. A fact in two places
+# is bound by a test or it is a fact in one place and a rumour in another.
+for policy_fact in \
+  'qwen/qwen3-coder' \
+  '$0.50 per million' \
+  '$2.00 per million' \
+  '400,000-byte request' \
+  '16,384 completion tokens' \
+  '300-second request timeout'; do
+  assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" "$policy_fact"
+done
+assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" '4,096 completion tokens'
+assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" '100,000-byte'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'one direct request'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'No tools or agent loop'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"schema": "touchstone.review/v2"'
+  '"schema": "touchstone.review/v3"'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
   '"backend": "openrouter-chat-completions"'
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"model": "openrouter/auto"'
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"costTier": "low"'
+# The model is pinned rather than routed. `openrouter/auto` was chosen so no
+# model id could ever go stale, and that was the right instinct for the wrong
+# cost: the router selects reasoning models, whose thinking is spent from the
+# completion budget, and measured on 2026-09-09 that came to ~74 completion
+# tokens per line of diff -- a ceiling around 150 lines, below which the
+# required local pass simply cannot run on an ordinary change. Disabling
+# reasoning is not available: the API answers `reasoning: {enabled: false}`
+# with "Reasoning is mandatory for this endpoint and cannot be disabled".
+# So the id is pinned, and staleness becomes a thing to notice rather than a
+# thing that cannot happen.
 assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"model": "openai/'
+  'openrouter/auto'
 assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"model": "anthropic/'
+  'costTier'
+assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
+  '"id": "openai/'
+assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
+  '"id": "anthropic/'
+# The request must carry no router plugin: a pinned model and a plugin whose
+# job is to choose the model are incoherent together.
+assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
+  'plugins:'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
   '"maxPromptPricePerMillion": 0.5'
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
@@ -1192,8 +1223,8 @@ for expected in \
 done
 assert_not_contains "$TEST_DIR/review-run.out" 'sk-or-v1-dummy-token'
 jq -e '
-  .model == "openrouter/auto" and
-  .plugins == [{id: "auto-router", cost_tier: "low"}] and
+  .model == "qwen/qwen3-coder" and
+  (has("plugins") | not) and
   .provider.require_parameters == true and
   .provider.max_price.prompt == 0.5 and
   .provider.max_price.completion == 2 and
@@ -1202,7 +1233,7 @@ jq -e '
   .response_format.type == "json_schema" and
   (.tools == null)
 ' "$FAKE_CURL_CAPTURE" >/dev/null \
-  || fail "OpenRouter request lost its router, price, output, or no-tools boundary"
+  || fail "OpenRouter request lost its model, price, output, or no-tools boundary: $(jq -c '{model, max_tokens, plugins, provider}' "$FAKE_CURL_CAPTURE" 2>&1)"
 assert_contains "$FAKE_CURL_CAPTURE" 'reviewed value'
 assert_not_contains "$FAKE_CURL_CAPTURE" 'must not be reviewed'
 assert_not_contains "$FAKE_CURL_CAPTURE" 'also excluded'
@@ -1498,7 +1529,10 @@ after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
 
 # A broken policy must stop before the expensive reviewer, not after it.
 SERIOUS_BAD_POLICY="$TEST_DIR/review-serious-bad-policy.json"
-jq '.schema = "touchstone.review/v3"' \
+# A version far enough ahead that bumping the real schema cannot quietly turn
+# this fixture into a valid policy -- which is exactly what happened when the
+# sentinel was the next version number and the schema moved to it.
+jq '.schema = "touchstone.review/v99"' \
   "$TOUCHSTONE_ROOT/config/review-normal.json" >"$SERIOUS_BAD_POLICY"
 : >"$FAKE_CODEX_LOG"
 if (
@@ -1721,7 +1755,10 @@ fi
 after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
 [ "$before_calls" = "$after_calls" ] || fail "unsafe Keychain bytes reached curl"
 UNSUPPORTED_POLICY="$TEST_DIR/review-unsupported-policy.json"
-jq '.schema = "touchstone.review/v3"' \
+# A version far enough ahead that bumping the real schema cannot quietly turn
+# this fixture into a valid policy -- which is exactly what happened when the
+# sentinel was the next version number and the schema moved to it.
+jq '.schema = "touchstone.review/v99"' \
   "$TOUCHSTONE_ROOT/config/review-normal.json" >"$UNSUPPORTED_POLICY"
 if TOUCHSTONE_REVIEW_POLICY_FILE="$UNSUPPORTED_POLICY" \
   review_command check --codex-home "$EMPTY_REVIEW_HOME" \
