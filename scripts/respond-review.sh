@@ -14,7 +14,6 @@
 #   touchstone pr answer <pr-number> --finding <id> --body-file <file>
 #     (--fix-commit <sha> | --no-code-change)
 #   touchstone pr answer <pr-number> --all-resolved-check
-#   (any answering form may add --past-budget)
 #   (installed name; from a source checkout: bash scripts/respond-review.sh …)
 #
 # Modes:
@@ -38,16 +37,6 @@
 #   --no-code-change             Disposition "no-code-change": the answer
 #                                explains why no commit was needed. Touchstone
 #                                never judges whether the reason persuades.
-#   --past-budget                Post the next review request even though the
-#                                pull request has spent its fix-round budget.
-#                                Without it, an answer that would open round
-#                                four records the reply and the resolution and
-#                                then stops, naming the documented exits: more
-#                                rounds is not one of them. The count is
-#                                derived from the round markers this script
-#                                has written, not from the PR body, because a
-#                                self-reported count is the first thing an
-#                                agent in a loop stops maintaining (AUT-1241).
 #   --all-resolved-check         Exit 0 when no unresolved review threads
 #                                remain on the PR; otherwise list them and
 #                                exit 1. Use before re-running the merge gate.
@@ -110,24 +99,6 @@ BODY_FILE=""
 FIX_COMMIT=""
 NO_CODE_CHANGE=false
 ALL_RESOLVED_CHECK=false
-PAST_BUDGET=false
-# The contract's budget is three fix rounds per capability, and a fix round is
-# one PUSH of review-driven change -- an attest request is explicitly not one
-# (principles/local-review.md). So the bound below counts distinct heads that
-# have been answered, not requests. The budget lived only in prose and nothing
-# counted it: hesperus#311 spent 30 commits and 28 review requests against a
-# cap of three on a documents-only change, and stopped only when a person
-# intervened (AUT-1241).
-#
-# Counting from the round markers rather than from commits is deliberate. The
-# documented reason the count is self-reported is that amend, squash and rebase
-# rewrite commit boundaries and lose push grouping -- but the markers are
-# comments, an append-only record of which head was answered when, which no
-# rewrite touches. A derived count also survives the thing a self-reported one
-# cannot: an agent in a loop stops maintaining its own ledger, and #311 carried
-# no budget row at all while nothing objected.
-FIX_ROUND_BUDGET="${TOUCHSTONE_FIX_ROUND_BUDGET:-3}"
-
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --comment-id)
@@ -151,9 +122,6 @@ while [ "$#" -gt 0 ]; do
       ;;
     --all-resolved-check)
       ALL_RESOLVED_CHECK=true
-      ;;
-    --past-budget)
-      PAST_BUDGET=true
       ;;
     *)
       usage
@@ -523,61 +491,6 @@ if [ "$GATE_BEHAVIOR_VERSION" = 3 ]; then
     if printf '%s\n' "$EXISTING_ATTEST" | grep -qF "$ROUND_MARKER"; then
       echo "==> Every thread is resolved; the behavior-v3 review request for this answer already exists."
     else
-      # Every request this script posts opens another review round, and each
-      # round can produce findings of its own -- so the loop terminates only
-      # when the reviewer happens to return clean. On prose that may never
-      # happen: the artifact under review is the argument, so each fix rewrites
-      # what is being judged and creates fresh surface. hesperus#311 ran 28
-      # rounds over nine hours on a documents-only head, the reviewer naming
-      # its own mechanism round after round ("Fresh evidence after the ...
-      # fix"), and stopped only because a person intervened (AUT-1241).
-      #
-      # A fix round is one PUSH of review-driven change (principles/
-      # local-review.md), so the count is distinct heads that have been
-      # answered -- minus the first, which is the head the pull request opened
-      # with and is not itself a fix round. Attest-only rounds on one unchanged
-      # head are deliberately NOT counted and never withheld: answering and
-      # routing P2/P3 findings without pushing is the required action, each
-      # such round needs a fresh request to produce the clean exact-head
-      # verdict behavior v3 demands, and withholding it would leave the head
-      # unmergeable with no documented exit reaching it. An attest request
-      # carries no mutation; the budget bounds mutation.
-      #
-      # Rounds already spent on this capability's replaced pull requests are
-      # only knowable from the body: markers live on the pull request that
-      # carries them, so a replacement starts at zero. The derived count is
-      # what an agent in a loop cannot quietly stop maintaining; the declared
-      # prior count is what carries across a replacement. Reading both is what
-      # makes "closing or renaming never resets the budget" true rather than
-      # merely asserted (AUT-1241).
-      HEADS_ANSWERED="$(printf '%s\n' "$EXISTING_ATTEST" \
-        | sed -n 's/.*<!-- touchstone:attest-round head=\([0-9a-f]\{40\}\).*/\1/p' \
-        | sort -u | grep -c . || true)"
-      if printf '%s\n' "$EXISTING_ATTEST" | grep -qF "<!-- touchstone:attest-round head=$HEAD_SHA "; then
-        HEADS_TOTAL="${HEADS_ANSWERED:-0}"
-      else
-        HEADS_TOTAL="$((${HEADS_ANSWERED:-0} + 1))"
-      fi
-      # The opening head is not a fix round.
-      ROUNDS_SPENT=$((HEADS_TOTAL > 0 ? HEADS_TOTAL - 1 : 0))
-      PRIOR_ROUNDS="$(gh_read pr view "$PR_NUMBER" --json body --jq .body 2>/dev/null \
-        | sed -n 's/.*prior_fix_rounds=\([0-9][0-9]*\).*/\1/p' | head -1)"
-      ROUNDS_SPENT=$((ROUNDS_SPENT + ${PRIOR_ROUNDS:-0}))
-      if [ "$ROUNDS_SPENT" -gt "$FIX_ROUND_BUDGET" ] && [ "$PAST_BUDGET" = false ]; then
-        echo "==> Answered and resolved. Not requesting review for fix round $ROUNDS_SPENT." >&2
-        fail "PR #$PR_NUMBER would spend fix round $ROUNDS_SPENT of $FIX_ROUND_BUDGET; this answer would open another.
-       ${PRIOR_ROUNDS:+That total includes $PRIOR_ROUNDS declared by prior_fix_rounds, spent on replaced pull requests for this capability.
-       }The reply and the thread resolution are recorded -- only the automatic
-       re-review is withheld, because more rounds is not one of the exits.
-       Choose one (principles/git-workflow.md):
-         merge-answered   every remaining finding is answered and routed; merge
-         revert-simplify  undo the review-driven churn and ship the simpler change
-         split            carve out the part that is converging and ship it
-         close-replan     the scope is wrong; close and re-plan the capability
-       A documents-only head should not be here at all -- see AUT-1241.
-       To continue deliberately, re-run with --past-budget (or raise
-       TOUCHSTONE_FIX_ROUND_BUDGET)."
-      fi
       gh_read api "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments" -f body="@codex review
 
 $ATTEST_MARKER
