@@ -588,6 +588,28 @@ case "$1 ${2:-}" in
           printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-1' \
             "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
         fi
+      elif [ "${GH_MODE:-ok}" = attest_request_present ]; then
+        # What `pr answer` leaves behind when an answer resolves the last
+        # thread: a real review request for this head, carrying the attest
+        # marker rather than the pr-open one.
+        printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-91' \
+          "@codex review\\n\\n<!-- touchstone:attest-request head=$GH_HEAD -->"
+      elif [ "${GH_MODE:-ok}" = attest_request_other_head ]; then
+        printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-92' \
+          "@codex review\\n\\n<!-- touchstone:attest-request head=0000000000000000000000000000000000000000 -->"
+        # The request this command posts must still be visible, or its own
+        # post-write verification cannot find what it just wrote.
+        if [ -f "$GH_STATE/review-request" ]; then
+          printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-1' \
+            "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
+        fi
+      elif [ "${GH_MODE:-ok}" = attest_request_spoofed ]; then
+        printf '%s\tmallory\t%s\n' 'https://example.test/pr/7#issuecomment-93' \
+          "@codex review\\n\\n<!-- touchstone:attest-request head=$GH_HEAD -->"
+        if [ -f "$GH_STATE/review-request" ]; then
+          printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-1' \
+            "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
+        fi
       elif [ "${GH_MODE:-ok}" = marker_only ]; then
         printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-marker' \
           "<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
@@ -939,6 +961,13 @@ case "$1 ${2:-}" in
       else
         printf '%s\n' "$runs"
       fi
+    elif has '/issues/comments/91' "$@"; then
+      # The attest request `pr answer` leaves for this head, served by id so
+      # the binding re-read can verify it the same way it verifies its own.
+      jq -cn --arg body "@codex review
+
+<!-- touchstone:attest-request head=$GH_HEAD -->" \
+        '{id: 91, user: {login: "alice"}, body: $body, author_association: "NONE"}'
     elif has '/issues/comments/1' "$@"; then
       if [ "${GH_MODE:-ok}" = live_comment_invalid ]; then
         jq -cn '{id: 1, user: {login: "mallory"}, body: "not a review request", author_association: "OWNER"}'
@@ -1948,6 +1977,32 @@ Closes #42'
   GH_MODE=marker_only run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   [ "$(grep -c '^pr comment' "$GH_CALLS")" -eq 1 ] || fail "marker without trigger suppressed the real review request"
+  # AUT-1482. `pr answer` posts its own request for this head when an answer
+  # resolves the last thread; it carries the attest marker, not the pr-open
+  # one. Scanning only for the pr-open marker posted a SECOND "@codex review"
+  # for the same head -- two hosted reviews of one diff, billed twice.
+  # Observed live on touchstone#1174: attest at 13:35:03, pr-open at 13:36:00.
+  rm -f "$TMP/state/review-request"
+  GH_MODE=attest_request_present run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  [ "$(grep -c '^pr comment' "$GH_CALLS" || true)" -eq 0 ] \
+    || fail "an existing attest request for this head still bought a second review"
+  assert_has "$TMP/out" '"reviewRequest":"existing:https://example.test/pr/7#issuecomment-91"'
+
+  # Head-scoped: an attest request for a DIFFERENT head is not this head's.
+  rm -f "$TMP/state/review-request"
+  GH_MODE=attest_request_other_head run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  [ "$(grep -c '^pr comment' "$GH_CALLS")" -eq 1 ] \
+    || fail "an attest request for another head suppressed this head's review request"
+
+  # Author-scoped, like every other marker read here: anyone can type one.
+  rm -f "$TMP/state/review-request"
+  GH_MODE=attest_request_spoofed run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  [ "$(grep -c '^pr comment' "$GH_CALLS")" -eq 1 ] \
+    || fail "a spoofed attest marker suppressed the real review request"
+
   GH_MODE=many_requests run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewRequest":"existing:https://example.test/pr/7#issuecomment-1"'

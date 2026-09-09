@@ -1673,7 +1673,7 @@ verify_live_body() {
 }
 
 wait_for_request_binding() {
-  local number="$1" head="$2" base_ref="$3" base_sha="$4" request_url="$5" request_author="$6" request_already_existed="${7:-false}"
+  local number="$1" head="$2" base_ref="$3" base_sha="$4" request_url="$5" request_author="$6" request_already_existed="${7:-false}" expected_marker="${8:-}"
   local comment_id live_comment request_marker active_reuse_seconds
   if review_gate_required "$base_ref"; then
     refuse_conflicting_open_pr "$number" "$head" "$base_ref" "$base_sha"
@@ -1703,7 +1703,10 @@ wait_for_request_binding() {
   fi
   comment_id="${request_url##*issuecomment-}"
   case "$comment_id" in '' | *[!0-9]*) fail_operation "review request URL has no stable comment ID: $request_url" "Inspect the surviving request comment." ;; esac
-  request_marker="<!-- touchstone:pr-open head=$head base=$base_ref base_sha=$base_sha -->"
+  # Whichever marker the request being verified actually carries. A request
+  # reused from `pr answer` carries the attest marker, so assuming this
+  # command's own marker would reject a request that is perfectly valid.
+  request_marker="${expected_marker:-<!-- touchstone:pr-open head=$head base=$base_ref base_sha=$base_sha -->}"
   # No pinned review gate on this base: nothing server-side binds the request,
   # so the most this command can prove is that the request comment survived
   # as a valid driver request and that the coordinates it was posted for are
@@ -1788,7 +1791,7 @@ announce_review_fallback() {
 open_pr() {
   local branch local_head remote_line remote_head rows count number url pr_head pr_base pr_base_sha create_output create_status=0
   local evidence_min_attempt=0 evidence_min_attempt_run_id=""
-  local request_marker request_head_marker comment_rows existing_request moved_request request_body request_url request_rows state request_author
+  local request_marker request_head_marker attest_marker existing_request_marker comment_rows existing_request moved_request request_body request_url request_rows state request_author
   [ -n "$TITLE" ] || fail_input "open requires --title" "Pass the PR title explicitly."
   [ -f "$BODY_FILE" ] && [ -s "$BODY_FILE" ] \
     || fail_input "open requires a non-empty --body-file" "Put the reviewed PR description in that file."
@@ -1909,6 +1912,7 @@ open_pr() {
   fi
   request_marker="<!-- touchstone:pr-open head=$local_head base=$pr_base base_sha=$pr_base_sha -->"
   request_head_marker="<!-- touchstone:pr-open head=$local_head "
+  attest_marker="<!-- touchstone:attest-request head=$local_head -->"
   read_with_retry gh api user --hostname "$REPO_HOST" --jq '.login' \
     || fail_operation "could not resolve the authenticated user: $READ_OUTPUT" "Verify authentication for $REPO_HOST."
   request_author="$READ_OUTPUT"
@@ -1923,9 +1927,28 @@ open_pr() {
   comment_rows="$READ_OUTPUT"
   existing_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$request_marker" -v author="$request_author" \
     '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
+  existing_request_marker="$request_marker"
+  if [ -z "$existing_request" ]; then
+    # `pr answer` posts its own request for this head whenever an answer
+    # resolves the last open thread -- contract 3 needs a fresh verdict, and
+    # that is the only thing that can produce one. It carries the attest
+    # marker, not this one. Scanning only for the pr-open marker therefore
+    # posted a SECOND "@codex review" for the same head: two hosted reviews of
+    # one diff, billed twice, and the reviewer working the same commit twice
+    # over. Observed on touchstone#1174, 13:35:03 attest and 13:36:00 pr-open,
+    # 57 seconds apart on head 02fcd33c (AUT-1482).
+    #
+    # Reuse it. The gate binds on head, and a request is a request whichever
+    # path wrote it. The attest marker carries no base coordinates, so it can
+    # only be matched on head -- which is what the gate reads anyway, and the
+    # moved-base check below stays scoped to this command's own marker.
+    existing_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$attest_marker" -v author="$request_author" \
+      '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
+    [ -z "$existing_request" ] || existing_request_marker="$attest_marker"
+  fi
   if [ -n "$existing_request" ]; then
     request_url="$(printf '%s\n' "$existing_request" | sed -n '1p')"
-    wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url" "$request_author" true
+    wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url" "$request_author" true "$existing_request_marker"
     verify_live_body "$number" "$wanted_body"
     emit_open_result "$state" "$number" "$url" "$local_head" "existing:$request_url" "$branch"
     return 0
