@@ -716,7 +716,22 @@ ALL of them into ONE commit, answer every thread, push, and request one review
 for the new head.
 
 **The budget: three fix rounds per capability, never more than three on one
-PR.** A *fix round* is one push of review-driven change. The budget counts
+PR.** A *fix round* is one push of review-driven change.
+
+Measured across `hesperus` #300-#313 and `vesper` #1228-#1242 on 2026-09-09,
+the distribution is bimodal and the budget sits in the gap. Most pull requests
+take **one to four** review requests and draw zero or one finding. A minority
+run away: hesperus#311 took 27 requests (18 P1, 55 P2), vesper#1236 took 23.
+Nothing observed sat between five and eight. Size does not predict which
+happens — vesper#1232 changed 1208 lines across 11 files and converged in a
+single round — so a large change is not doomed and a small one is not safe.
+
+What that means operationally: **round four is the signal to stop, not to try
+again.** By then the evidence says this pull request is in the runaway mode,
+and the rounds that follow have historically numbered in the twenties. The
+runaways are also where the cost lands: a review round is a hosted review of
+the whole diff, so twenty-seven of them is twenty-seven full reviews of one
+change. The budget counts
 mutation, never review requests, for two reasons. Requests cannot be counted
 reliably: the reviewer's findings arrive as inline review comments or
 conversation comments and do not all appear in the `pulls/{n}/reviews` API, so
