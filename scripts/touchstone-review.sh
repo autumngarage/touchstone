@@ -74,6 +74,13 @@ GIT_BIN="${TOUCHSTONE_REVIEW_GIT_BIN:-$(command -v git 2>/dev/null || true)}"
 # Resolved, never required: the serious sequencer falls back when it is absent.
 CODEX_BIN="${TOUCHSTONE_REVIEW_CODEX_BIN:-$(command -v codex 2>/dev/null || true)}"
 
+# The backend contract version, stated once. It was previously written out at
+# each use, and bumping v2 -> v3 moved the validator and left the diagnostic
+# pointing operators at a contract that no longer existed -- while
+# docs/product-contract.md, the canonical boundary, still declared the old one.
+# A version repeated in five places and bound in none is how that happens.
+REVIEW_POLICY_SCHEMA="touchstone.review/v3"
+
 require_executable() {
   local name="$1" path="$2"
   [ -n "$path" ] && [ -x "$path" ] || die "$name is unavailable"
@@ -126,10 +133,10 @@ validate_policy() {
   [ -r "$POLICY_SOURCE" ] || die "managed review policy is missing: $POLICY_SOURCE"
   [ -r "$PROMPT_SOURCE" ] || die "managed review prompt is missing: $PROMPT_SOURCE"
 
-  "$JQ_BIN" -e '
+  "$JQ_BIN" -e --arg schema "$REVIEW_POLICY_SCHEMA" '
     type == "object" and
     ((keys | sort) == (["schema", "backend", "endpoint", "model", "limits"] | sort)) and
-    .schema == "touchstone.review/v3" and
+    .schema == $schema and
     .backend == "openrouter-chat-completions" and
     .endpoint == "https://openrouter.ai/api/v1/chat/completions" and
     (.model | type == "object") and
@@ -479,7 +486,7 @@ print_response() {
       (.body | clean)
     )
   ' "$WORK_DIR/review.json" >/dev/null \
-    || die "OpenRouter returned review content outside the touchstone.review/v2 contract"
+    || die "OpenRouter returned review content outside the $REVIEW_POLICY_SCHEMA contract"
 
   # One read for the scalar response fields; the findings loop and summary
   # stay separate because finding content may carry tabs or newlines.
