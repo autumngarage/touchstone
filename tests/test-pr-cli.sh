@@ -3208,6 +3208,7 @@ STATUS_STUB
     || fail "the second-round request does not name the round it closed: $(cat "$GH_STATE/fresh-request")"
   grep -qF 'posted a fresh review request' "$RR/out" \
     || fail "second-round answer did not announce its review request"
+
   # ...and retrying that answer posts nothing more.
   echo 30 >"$GH_STATE/gate-in-progress"
   touch "$GH_STATE/gate-fresh-active"
@@ -3234,6 +3235,76 @@ STATUS_STUB
     || fail "a thread resolved by hand changed the round key and posted a duplicate review request"
   rm -f "$GH_STATE/externally-resolved-53"
   rm -f "$GH_STATE/second-round" "$GH_STATE/resolved-52" "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request"
+
+  # AUT-1241: every request this script posts opens another round, and each
+  # round can produce findings, so nothing bounded the loop -- hesperus#311 ran
+  # 28 review requests over 30 commits against a documented cap of three. The
+  # count is derived from the round markers, which no rebase rewrites, rather
+  # than from a self-reported row an agent in a loop stops maintaining.
+  echo "==> an answer that would open a fix round past the budget stops and names the exits"
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
+  touch "$GH_STATE/resolved"
+  touch "$GH_STATE/second-round"
+  # Three DISTINCT heads already answered, none of them the live head, so this
+  # answer is a fourth fix round.
+  {
+    printf '%s\n' "@codex review"
+    printf '<!-- touchstone:attest-round head=%s answered=1 -->\n' "1111111111111111111111111111111111111111"
+    printf '<!-- touchstone:attest-round head=%s answered=2 -->\n' "2222222222222222222222222222222222222222"
+    printf '<!-- touchstone:attest-round head=%s answered=3 -->\n' "3333333333333333333333333333333333333333"
+  } >"$GH_STATE/fresh-request"
+  BEFORE_BUDGET="$(grep -cF '@codex review' "$GH_STATE/fresh-request")"
+  run_v3 7 --comment-id 52 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -ne 0 ] \
+    || fail "an answer past the fix-round budget still exited 0: $(tail -5 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq "$BEFORE_BUDGET" ] \
+    || fail "an answer past the fix-round budget posted another review request"
+  grep -qF 'would spend fix round 4 of 3' "$RR/out" \
+    || fail "the budget refusal does not say which round it refused: $(tail -5 "$RR/out")"
+  for exit_name in merge-answered revert-simplify split close-replan; do
+    grep -qF "$exit_name" "$RR/out" \
+      || fail "the budget refusal does not name the $exit_name exit: $(tail -5 "$RR/out")"
+  done
+  grep -qF 'thread resolution are recorded' "$RR/out" \
+    || fail "the budget refusal does not say the answer itself still stands"
+
+  # The brake is a stop, not a wall: a driver that has chosen to continue says so.
+  echo "==> --past-budget posts the request the budget withheld"
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
+  touch "$GH_STATE/resolved"
+  touch "$GH_STATE/second-round"
+  run_v3 7 --comment-id 52 --body-file "$RR/body" --no-code-change --past-budget
+  [ "$RUN_RC" -eq 0 ] \
+    || fail "--past-budget still refused: $(tail -5 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq $((BEFORE_BUDGET + 1)) ] \
+    || fail "--past-budget did not post the withheld review request"
+
+  # A fix round is a PUSH of review-driven change; repeated rounds on one
+  # unchanged head are not fix rounds (AUT-1170) and never trip the budget
+  # above -- so they get their own ceiling, or an unchanged head loops forever.
+  echo "==> repeated rounds on one unchanged head are stopped by their own ceiling"
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
+  touch "$GH_STATE/resolved"
+  touch "$GH_STATE/second-round"
+  {
+    printf '%s\n' "@codex review"
+    for answered in 41 42 43; do
+      printf '<!-- touchstone:attest-round head=%s answered=%s -->\n' \
+        "abcdef0123456789abcdef0123456789abcdef01" "$answered"
+    done
+  } >"$GH_STATE/fresh-request"
+  BEFORE_HEAD_CEILING="$(grep -cF '@codex review' "$GH_STATE/fresh-request")"
+  run_v3 7 --comment-id 52 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -ne 0 ] \
+    || fail "a fourth round on one unchanged head still exited 0: $(tail -5 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq "$BEFORE_HEAD_CEILING" ] \
+    || fail "a fourth round on one unchanged head posted another review request"
+  grep -qF 'has already been re-reviewed 3 times without a push' "$RR/out" \
+    || fail "the per-head refusal does not say what it counted: $(tail -5 "$RR/out")"
+  rm -f "$GH_STATE/second-round" "$GH_STATE/resolved" "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request"
 
   # Behavior v2 must never post one: answered findings satisfy that gate.
   echo 30 >"$GH_STATE/gate-in-progress"
