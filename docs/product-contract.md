@@ -74,11 +74,12 @@ bounded local pass when Codex is unavailable. A failed check or run permits the
 documented waiver; it never permits fallback to an unbounded model path.
 
 The stable interface is `touchstone review`; the versioned backend contract is
-`touchstone.review/v2`. Its canonical non-secret policy lives in
+`touchstone.review/v3`. Its canonical non-secret policy lives in
 `config/review-normal.json`, and the canonical prompt lives in
-`config/review-normal-prompt.md`. V2 asks OpenRouter Auto Router to select for
-the review prompt from its low-cost tier instead of naming a concrete model,
-imposes absolute provider price,
+`config/review-normal-prompt.md`. V3 names one concrete model rather than
+routing, because the router selected reasoning models whose thinking is spent
+from the completion budget and left the pass unable to review an ordinary
+change; it imposes absolute provider price,
 input, output, and timeout ceilings, requests strict structured output, and
 prints the actual model, token counts, and provider-reported cost. No tools or
 agent loop are sent. Permanent HTTP failures and timeouts are not retried.
@@ -129,7 +130,7 @@ explain that owner's decision; they may not recompute it.
 | Bind merge to the reviewed head | GitHub merge API | Expected head passed to the merge mutation | Moving the head before merge is rejected |
 | Claim work | Configured tracker adapter | Tracker-neutral claim contract | GitHub- and Linear-backed fixtures distinguish verified from unavailable transport |
 | Carry agent steering | The installed tool, machine-wide | One delimited block in each driver's user-level instruction file, the routed principles under `~/.touchstone/principles`, and the bundled Claude skills under `~/.claude/skills` — all installed, checked, and removed by `touchstone steering`; Touchstone installs and manages no repository copy | `touchstone steering check` compares the installed block against the tool's contract; deterministic size-cap, path-integrity, and steering-contract assertions run in the required suite |
-| Route normal local review through the lower-cost lane | The installed tool, machine-wide | Stable `touchstone review` command plus the versioned `touchstone.review/v2` policy and Keychain-backed OpenRouter adapter | Offline fixtures prove staged-only input, linked-worktree fidelity, router and absolute-price parameters, no tools, one-request failures, structured output, usage reporting, size limits, credential isolation, and fail-closed malformed states |
+| Route normal local review through the lower-cost lane | The installed tool, machine-wide | Stable `touchstone review` command plus the versioned `touchstone.review/v3` policy and Keychain-backed OpenRouter adapter | Offline fixtures prove staged-only input, linked-worktree fidelity, the pinned model and absolute-price parameters, no tools, one-request failures, structured output, usage reporting, size limits, credential isolation, and fail-closed malformed states |
 | Adopt and evolve a repository | Touchstone CLI adoption module | Versioned project declarations and reviewable plan/apply output | Fresh, current, repeat, old-compatible, and unsupported-schema fixtures |
 | Classify a change against a declared path set | `touchstone paths classify|match|check`, reading the policy-side declaration only | Named sets of gitignore-syntax patterns under `pathSets` in the applied policy, matched by git itself; `classify` answers `all`/`none`/`mixed` with the paths that decided it, the source, and which input produced it — a git range, or an explicit changed-path list for a caller that must not check out the head it is judging | The declaration is policy-side so a pull request cannot widen the set that decides its own review; a set matching the workflows, evaluator, policy, or project declaration is refused at derivation and again at use by the same check; every error exits non-zero and emits no classification, and an empty diff is `none`, never a vacuous `all` |
 | Make repository cleanup residue legible | `touchstone cleanup check` (read-only) | Versioned report (`touchstone.cleanup/v1`): checkout, worktrees, finished branches, untracked and dirty files | Each residue kind is reported once without claiming session ownership and nothing is mutated; a failed GitHub read is a finding, not silence |

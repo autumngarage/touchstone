@@ -252,8 +252,12 @@ spent from the completion budget. Measured on 2026-09-09 that came to roughly
 this pass could not run on an ordinary change at all. Disabling reasoning is
 not offered: the API answers `reasoning: {enabled: false}` with "Reasoning is
 mandatory for this endpoint and cannot be disabled". A pinned id can go stale
-where `openrouter/auto` could not, which is the cost being paid deliberately —
-`touchstone review check` fails loudly if the model stops being available.
+where `openrouter/auto` could not, which is the cost being paid deliberately.
+Staleness surfaces from `touchstone review run`, not from `check`: `check`
+validates the policy, the executables and the credential and deliberately makes
+no provider request, so a removed or renamed model is invisible to it. The
+failure is loud when it comes, but it comes at the moment someone needs a
+review rather than before.
 
 Check the complete local boundary without making a provider request, then run:
 

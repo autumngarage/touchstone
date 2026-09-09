@@ -209,6 +209,40 @@ for policy_fact in \
 done
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" '4,096 completion tokens'
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" '100,000-byte'
+# The contract version is the fact that drifted furthest: bumping v2 -> v3 moved
+# the config and the validator and left the script's own diagnostic and the
+# canonical product contract behind, each found one review round at a time.
+# Bind every surface that states it, and forbid the superseded string outright
+# so the next bump cannot leave a straggler.
+assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
+  'REVIEW_POLICY_SCHEMA="touchstone.review/v3"'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
+  '"schema": "touchstone.review/v3"'
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  '`touchstone.review/v3`'
+for schema_surface in \
+  "$TOUCHSTONE_ROOT/config/review-normal.json" \
+  "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
+  "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "$TOUCHSTONE_ROOT/principles/local-review.md"; do
+  assert_not_contains "$schema_surface" 'touchstone.review/v2'
+done
+# The diagnostic must read the constant, not repeat the literal -- repeating it
+# is exactly what left an operator pointed at a retired contract.
+assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
+  'outside the $REVIEW_POLICY_SCHEMA contract'
+# The canonical boundary states the pinned model too, and it is no longer routed.
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  'names one concrete model rather than'
+assert_not_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  'Auto Router'
+# The staleness claim: `check` makes no provider request, so it cannot detect a
+# retired pin. Saying otherwise justified the pin with a mitigation that does
+# not exist.
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  'Staleness surfaces from `touchstone review run`, not from `check`'
+assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  '`touchstone review check` fails loudly if the model'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'one direct request'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'No tools or agent loop'
