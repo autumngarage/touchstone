@@ -219,6 +219,15 @@ assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
 # The per-million price caps above, not this number, are what bound the cost.
 assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
   '"maxCompletionTokens": 16384'
+# The budget and the wall clock are one setting in two numbers. Raising
+# maxCompletionTokens to 16384 without this produced timeouts instead of
+# truncations: a reasoning model given four times the budget spends four times
+# as long producing it, and 120s stopped being enough. Measured 2026-09-09 --
+# three consecutive passes on one change, two of them timeouts at 120s.
+# AUT-1500 predicted exactly this ("raising the limit alone is not
+# sufficient"); #1178 raised the limit alone and this is the correction.
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
+  '"requestTimeoutSeconds": 300'
 assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
   'gpt-5.6-sol'
 assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \

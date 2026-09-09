@@ -13,6 +13,6 @@
     "maxPromptPricePerMillion": 0.5,
     "maxCompletionPricePerMillion": 2,
     "connectTimeoutSeconds": 10,
-    "requestTimeoutSeconds": 120
+    "requestTimeoutSeconds": 300
   }
 }
