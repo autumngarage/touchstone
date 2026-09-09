@@ -79,14 +79,25 @@ DOCS_NONE='{"set":"documents","source":"policy","classification":"none"}'
 # (quota spent, fallback unavailable), and a prose-only head still concludes.
 run_case "documents-only head with no verdict at all passes" \
   "del(.issueComments[1]) | del(.reviews[0]) | .pathClassification = $DOCS_ALL" \
-  documents-advisory "a reviewer verdict is not the bar for this head"
+  documents-advisory "so this head does not wait for one"
 
-run_case "documents-only head still passes when the verdict reports findings" \
+# Advisory removes the wait, not the findings. A trusted findings verdict still
+# blocks, even on a documents-only head: skipping outright would have shipped
+# the duplicated `Amended-by:` header the fallback caught on hesperus#190, and
+# a body-only or fallback finding opens no inline thread, so GitHub's own
+# conversation-resolution rule cannot block it either.
+run_case "a documents-only head with findings still blocks" \
   "del(.issueComments[1]) | .pathClassification = $DOCS_ALL" \
-  documents-advisory "review still ran"
+  findings "answer and resolve them on their threads"
 
-run_case "documents-only head passes with a clean verdict too" \
-  ".pathClassification = $DOCS_ALL" documents-advisory
+run_case "a documents-only head with a clean verdict is ordinary clean" \
+  ".pathClassification = $DOCS_ALL" clean
+
+# Evidence that exists but cannot be trusted is not a wait either, so advisory
+# does not rescue it.
+run_case "a documents-only head with an edited clean verdict still blocks" \
+  ".issueComments[1].updated_at = \"2026-08-20T11:00:00Z\" | .pathClassification = $DOCS_ALL" \
+  invalid
 
 # All-or-nothing: one path outside the set makes the head ordinary, however
 # many documents accompany it.
@@ -147,6 +158,9 @@ docs_verdict="$(jq "del(.issueComments[1]) | del(.reviews[0]) | .pathClassificat
 jq -e '.summary | contains("distinct from `clean`")' <<<"$docs_verdict" >/dev/null \
   && ok "the summary distinguishes this from a reviewed-clean head" \
   || fail "summary does not distinguish advisory from clean"
+jq -e '.summary | contains("Advisory removes the wait, not the findings")' <<<"$docs_verdict" >/dev/null \
+  && ok "the summary states what advisory does not exempt" \
+  || fail "summary does not say findings still block"
 clean_verdict="$(jq -f "$EVALUATOR" "$TMP_DIR/base.json")"
 [ "$(jq -r .pathClassification <<<"$clean_verdict")" = null ] \
   && ok "an ordinary head records no classification" || fail "ordinary head reported a classification"

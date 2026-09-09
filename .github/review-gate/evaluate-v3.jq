@@ -216,8 +216,16 @@ def classification_valid:
    and ($classification | classification_present)
    and ($classification | classification_valid)
    and $classification.classification == "all") as $documents_only
+# Advisory removes the *wait*, and nothing else. A findings verdict still
+# blocks a documents-only head: the issue's own counter-evidence is that on
+# hesperus#190 the fallback reviewer caught a duplicated `Amended-by:` header
+# the deterministic docs gate missed, and that skipping would have shipped it
+# while advisory would not. Letting findings through here would make advisory
+# behave exactly like skip for the one case that argued against skip -- and
+# GitHub's conversation resolution cannot catch it, because a body-only or
+# fallback finding opens no inline thread to leave unresolved.
 | (if ($invariant_failures | length) > 0 then "invalid"
-   elif $documents_only then "documents-advisory"
+   elif $documents_only and $latest == null then "documents-advisory"
    elif $latest == null then "waiting"
    elif $any_unresolved or $any_malformed or $tied then "invalid"
    elif $latest.kind == "clean" then "clean"
@@ -225,7 +233,7 @@ def classification_valid:
    else "invalid"
    end) as $verdict
 | (if $verdict == "documents-advisory" then
-     "every changed path is in the policy-declared `\($classification.set)` set, so a reviewer verdict is not the bar for this head; review still ran and its findings, if any, are reported below"
+     "no trusted verdict binds head `\($head)`, and every changed path is in the policy-declared `\($classification.set)` set, so this head does not wait for one; a findings verdict, had one arrived, would still block"
    elif $verdict == "invalid" then
      (if ($invariant_failures | length) > 0 then $invariant_failures[0]
       elif $any_unresolved then "a trusted result comment for head `\($head)` names an abbreviated commit the workflow did not resolve; evidence collection must resolve head-prefix candidates"
@@ -254,7 +262,7 @@ def classification_valid:
                  then "success" else "failure" end),
     reason: $reason,
     summary: (if $verdict == "documents-advisory"
-      then "Documents-only head, advisory review. Every changed path is in the policy-declared `\($classification.set)` set, so this head passed without requiring a reviewer verdict — distinct from `clean`, which means one was obtained. The reviewer still ran; the latest evidence state for head `\($head)` is `\(if $latest == null then "none" else $latest.kind end)`. Thread resolution and merge-queue validation are enforced independently by GitHub."
+      then "Documents-only head, advisory review. Every changed path is in the policy-declared `\($classification.set)` set and no trusted verdict binds head `\($head)`, so this head passed without waiting for one — distinct from `clean`, which means a verdict was obtained. Advisory removes the wait, not the findings: a trusted findings verdict for this head would still block until it was answered. Thread resolution and merge-queue validation are enforced independently by GitHub."
       elif $verdict == "clean"
       then "Trusted review evidence: the latest verdict for head `\($head)` is an explicit clean result. Thread resolution and merge-queue validation are enforced independently by GitHub."
       else "Review gate is not passing (\($verdict)):\n\n- \($reason)\n\nHead: `\($head)`"
