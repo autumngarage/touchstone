@@ -127,11 +127,6 @@ PAST_BUDGET=false
 # cannot: an agent in a loop stops maintaining its own ledger, and #311 carried
 # no budget row at all while nothing objected.
 FIX_ROUND_BUDGET="${TOUCHSTONE_FIX_ROUND_BUDGET:-3}"
-# A head can legitimately take more than one answering round: a later verdict on
-# an unchanged head opens new findings (AUT-1170). That is not a fix round, so
-# it must not consume the budget above -- but it is still a loop, and on an
-# unchanged head the budget above can never trip. This bounds it.
-ROUNDS_PER_HEAD_CEILING="${TOUCHSTONE_ROUNDS_PER_HEAD_CEILING:-3}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -537,39 +532,42 @@ if [ "$GATE_BEHAVIOR_VERSION" = 3 ]; then
       # its own mechanism round after round ("Fresh evidence after the ...
       # fix"), and stopped only because a person intervened (AUT-1241).
       #
-      # The budget is counted here, not read from the pull request body: a
-      # self-reported `Review budget` row is exactly the bookkeeping an agent
-      # in a loop stops maintaining, and #311 carried no row at all while
-      # nothing objected. One closed round posts one round marker, so the
-      # markers this script has already written are the count. The check sits
-      # after the idempotency test above, so retrying an answer whose round is
-      # already recorded never consumes budget.
-      # Distinct heads already answered, plus this one if it is new: the fix
-      # rounds the contract counts. Rounds on this same head are counted
-      # separately, because they are a loop the budget above cannot see.
+      # A fix round is one PUSH of review-driven change (principles/
+      # local-review.md), so the count is distinct heads that have been
+      # answered -- minus the first, which is the head the pull request opened
+      # with and is not itself a fix round. Attest-only rounds on one unchanged
+      # head are deliberately NOT counted and never withheld: answering and
+      # routing P2/P3 findings without pushing is the required action, each
+      # such round needs a fresh request to produce the clean exact-head
+      # verdict behavior v3 demands, and withholding it would leave the head
+      # unmergeable with no documented exit reaching it. An attest request
+      # carries no mutation; the budget bounds mutation.
+      #
+      # Rounds already spent on this capability's replaced pull requests are
+      # only knowable from the body: markers live on the pull request that
+      # carries them, so a replacement starts at zero. The derived count is
+      # what an agent in a loop cannot quietly stop maintaining; the declared
+      # prior count is what carries across a replacement. Reading both is what
+      # makes "closing or renaming never resets the budget" true rather than
+      # merely asserted (AUT-1241).
       HEADS_ANSWERED="$(printf '%s\n' "$EXISTING_ATTEST" \
         | sed -n 's/.*<!-- touchstone:attest-round head=\([0-9a-f]\{40\}\).*/\1/p' \
         | sort -u | grep -c . || true)"
-      THIS_HEAD_ROUNDS="$(printf '%s\n' "$EXISTING_ATTEST" \
-        | grep -cF "<!-- touchstone:attest-round head=$HEAD_SHA " || true)"
       if printf '%s\n' "$EXISTING_ATTEST" | grep -qF "<!-- touchstone:attest-round head=$HEAD_SHA "; then
-        ROUNDS_SPENT="${HEADS_ANSWERED:-0}"
+        HEADS_TOTAL="${HEADS_ANSWERED:-0}"
       else
-        ROUNDS_SPENT="$((${HEADS_ANSWERED:-0} + 1))"
+        HEADS_TOTAL="$((${HEADS_ANSWERED:-0} + 1))"
       fi
-      if [ "${THIS_HEAD_ROUNDS:-0}" -ge "$ROUNDS_PER_HEAD_CEILING" ] && [ "$PAST_BUDGET" = false ]; then
-        echo "==> Answered and resolved. Not requesting another review of this head." >&2
-        fail "PR #$PR_NUMBER head $HEAD_SHA has already been re-reviewed $THIS_HEAD_ROUNDS times without a push.
-       The reply and the thread resolution are recorded -- only the automatic
-       re-review is withheld. Answering the same head again is not converging:
-       the reviewer re-reads the whole diff each round and can always find more.
-       Push a fix, or take one of the exits below.
-       To continue deliberately, re-run with --past-budget."
-      fi
-      if [ "${ROUNDS_SPENT:-0}" -gt "$FIX_ROUND_BUDGET" ] && [ "$PAST_BUDGET" = false ]; then
+      # The opening head is not a fix round.
+      ROUNDS_SPENT=$((HEADS_TOTAL > 0 ? HEADS_TOTAL - 1 : 0))
+      PRIOR_ROUNDS="$(gh_read pr view "$PR_NUMBER" --json body --jq .body 2>/dev/null \
+        | sed -n 's/.*prior_fix_rounds=\([0-9][0-9]*\).*/\1/p' | head -1)"
+      ROUNDS_SPENT=$((ROUNDS_SPENT + ${PRIOR_ROUNDS:-0}))
+      if [ "$ROUNDS_SPENT" -gt "$FIX_ROUND_BUDGET" ] && [ "$PAST_BUDGET" = false ]; then
         echo "==> Answered and resolved. Not requesting review for fix round $ROUNDS_SPENT." >&2
         fail "PR #$PR_NUMBER would spend fix round $ROUNDS_SPENT of $FIX_ROUND_BUDGET; this answer would open another.
-       The reply and the thread resolution are recorded -- only the automatic
+       ${PRIOR_ROUNDS:+That total includes $PRIOR_ROUNDS declared by prior_fix_rounds, spent on replaced pull requests for this capability.
+       }The reply and the thread resolution are recorded -- only the automatic
        re-review is withheld, because more rounds is not one of the exits.
        Choose one (principles/git-workflow.md):
          merge-answered   every remaining finding is answered and routed; merge
@@ -578,8 +576,7 @@ if [ "$GATE_BEHAVIOR_VERSION" = 3 ]; then
          close-replan     the scope is wrong; close and re-plan the capability
        A documents-only head should not be here at all -- see AUT-1241.
        To continue deliberately, re-run with --past-budget (or raise
-       TOUCHSTONE_FIX_ROUND_BUDGET); the budget follows the capability across
-       replacement PRs, so neither resets it."
+       TOUCHSTONE_FIX_ROUND_BUDGET)."
       fi
       gh_read api "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments" -f body="@codex review
 

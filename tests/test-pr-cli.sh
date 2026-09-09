@@ -2781,6 +2781,15 @@ case "$1 $2" in
       printf '%s\t%s\t%s\n' "$rr_state" "$rr_head" "$rr_base"
     elif value_after --json "$@" | grep -q baseRefName; then
       printf 'abcdef0123456789abcdef0123456789abcdef01\tmain\n'
+    elif value_after --json "$@" | grep -qx body; then
+      # The pull request body, read for the prior_fix_rounds the round markers
+      # cannot carry: they live on the pull request that wrote them, so a
+      # replacement starts at zero without this.
+      if [ -f "$GH_STATE/pr-body" ]; then
+        cat "$GH_STATE/pr-body"
+      else
+        printf 'Change summary.\n'
+      fi
     elif [ -f "$GH_STATE/moved-head" ]; then
       printf 'feedfacefeedfacefeedfacefeedfacefeedface\n'
     else
@@ -3236,23 +3245,28 @@ STATUS_STUB
   rm -f "$GH_STATE/externally-resolved-53"
   rm -f "$GH_STATE/second-round" "$GH_STATE/resolved-52" "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request"
 
-  # AUT-1241: every request this script posts opens another round, and each
-  # round can produce findings, so nothing bounded the loop -- hesperus#311 ran
-  # 28 review requests over 30 commits against a documented cap of three. The
-  # count is derived from the round markers, which no rebase rewrites, rather
-  # than from a self-reported row an agent in a loop stops maintaining.
+  # AUT-1241. hesperus#311 ran 28 review requests over 30 commits against a
+  # documented cap of three. The count is derived from the round markers, which
+  # no rebase rewrites, rather than from a self-reported row an agent in a loop
+  # stops maintaining -- #311 carried no row at all.
+  #
+  # A fix round is one PUSH, so the count is distinct answered heads MINUS the
+  # opening head, which is not itself a fix round. Four distinct heads is
+  # therefore three rounds -- exactly the budget -- and a fifth would be a
+  # fourth round.
   echo "==> an answer that would open a fix round past the budget stops and names the exits"
   echo 30 >"$GH_STATE/gate-in-progress"
   touch "$GH_STATE/gate-fresh-active"
   touch "$GH_STATE/resolved"
   touch "$GH_STATE/second-round"
-  # Three DISTINCT heads already answered, none of them the live head, so this
-  # answer is a fourth fix round.
   {
     printf '%s\n' "@codex review"
-    printf '<!-- touchstone:attest-round head=%s answered=1 -->\n' "1111111111111111111111111111111111111111"
-    printf '<!-- touchstone:attest-round head=%s answered=2 -->\n' "2222222222222222222222222222222222222222"
-    printf '<!-- touchstone:attest-round head=%s answered=3 -->\n' "3333333333333333333333333333333333333333"
+    for h in 1111111111111111111111111111111111111111 \
+      2222222222222222222222222222222222222222 \
+      3333333333333333333333333333333333333333 \
+      4444444444444444444444444444444444444444; do
+      printf '<!-- touchstone:attest-round head=%s answered=1 -->\n' "$h"
+    done
   } >"$GH_STATE/fresh-request"
   BEFORE_BUDGET="$(grep -cF '@codex review' "$GH_STATE/fresh-request")"
   run_v3 7 --comment-id 52 --body-file "$RR/body" --no-code-change
@@ -3269,41 +3283,77 @@ STATUS_STUB
   grep -qF 'thread resolution are recorded' "$RR/out" \
     || fail "the budget refusal does not say the answer itself still stands"
 
-  # The brake is a stop, not a wall: a driver that has chosen to continue says so.
-  echo "==> --past-budget posts the request the budget withheld"
-  echo 30 >"$GH_STATE/gate-in-progress"
-  touch "$GH_STATE/gate-fresh-active"
-  touch "$GH_STATE/resolved"
-  touch "$GH_STATE/second-round"
-  run_v3 7 --comment-id 52 --body-file "$RR/body" --no-code-change --past-budget
-  [ "$RUN_RC" -eq 0 ] \
-    || fail "--past-budget still refused: $(tail -5 "$RR/out")"
-  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq $((BEFORE_BUDGET + 1)) ] \
-    || fail "--past-budget did not post the withheld review request"
-
-  # A fix round is a PUSH of review-driven change; repeated rounds on one
-  # unchanged head are not fix rounds (AUT-1170) and never trip the budget
-  # above -- so they get their own ceiling, or an unchanged head loops forever.
-  echo "==> repeated rounds on one unchanged head are stopped by their own ceiling"
+  # The opening head is not a fix round. Three distinct answered heads is two
+  # rounds spent, so a third fix push must still get its mandatory exact-head
+  # re-review rather than being refused as a fourth.
+  echo "==> the head a pull request opened with is not counted as a fix round"
   echo 30 >"$GH_STATE/gate-in-progress"
   touch "$GH_STATE/gate-fresh-active"
   touch "$GH_STATE/resolved"
   touch "$GH_STATE/second-round"
   {
     printf '%s\n' "@codex review"
-    for answered in 41 42 43; do
+    for h in 1111111111111111111111111111111111111111 \
+      2222222222222222222222222222222222222222 \
+      3333333333333333333333333333333333333333; do
+      printf '<!-- touchstone:attest-round head=%s answered=1 -->\n' "$h"
+    done
+  } >"$GH_STATE/fresh-request"
+  BEFORE_THIRD="$(grep -cF '@codex review' "$GH_STATE/fresh-request")"
+  run_v3 7 --comment-id 52 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] \
+    || fail "the third fix round was refused as a fourth: $(tail -5 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq $((BEFORE_THIRD + 1)) ] \
+    || fail "the third fix round did not get its exact-head re-review"
+
+  # Answering and routing P2/P3 findings without pushing is the REQUIRED
+  # action, and under behavior v3 each such round needs a fresh request to
+  # produce the clean exact-head verdict. Withholding it would leave the head
+  # unmergeable with no documented exit reaching it, so attest-only rounds on
+  # one unchanged head are never counted and never withheld.
+  echo "==> repeated answering rounds on one unchanged head are never withheld"
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
+  touch "$GH_STATE/resolved"
+  touch "$GH_STATE/second-round"
+  {
+    printf '%s\n' "@codex review"
+    for answered in 41 42 43 44 45; do
       printf '<!-- touchstone:attest-round head=%s answered=%s -->\n' \
         "abcdef0123456789abcdef0123456789abcdef01" "$answered"
     done
   } >"$GH_STATE/fresh-request"
-  BEFORE_HEAD_CEILING="$(grep -cF '@codex review' "$GH_STATE/fresh-request")"
+  BEFORE_UNCHANGED="$(grep -cF '@codex review' "$GH_STATE/fresh-request")"
+  run_v3 7 --comment-id 52 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] \
+    || fail "an attest-only round on an unchanged head was refused: $(tail -5 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq $((BEFORE_UNCHANGED + 1)) ] \
+    || fail "an attest-only round on an unchanged head was withheld, wedging the head"
+
+  # Markers live on the pull request that carries them, so a replacement starts
+  # at zero. prior_fix_rounds is what carries the spend across, and the refusal
+  # claims replacement never resets the budget -- so it has to be read.
+  echo "==> rounds declared by prior_fix_rounds count against a replacement PR"
+  echo 30 >"$GH_STATE/gate-in-progress"
+  touch "$GH_STATE/gate-fresh-active"
+  touch "$GH_STATE/resolved"
+  touch "$GH_STATE/second-round"
+  printf '%s\n' "@codex review" \
+    '<!-- touchstone:attest-round head=1111111111111111111111111111111111111111 answered=1 -->' \
+    '<!-- touchstone:attest-round head=2222222222222222222222222222222222222222 answered=1 -->' \
+    >"$GH_STATE/fresh-request"
+  printf 'Body.\n\n- Review budget: v2 capability=AUT-1 fix_rounds=2 prior_fix_rounds=2 exit=continue\n' \
+    >"$GH_STATE/pr-body"
+  BEFORE_PRIOR="$(grep -cF '@codex review' "$GH_STATE/fresh-request")"
   run_v3 7 --comment-id 52 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -ne 0 ] \
-    || fail "a fourth round on one unchanged head still exited 0: $(tail -5 "$RR/out")"
-  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq "$BEFORE_HEAD_CEILING" ] \
-    || fail "a fourth round on one unchanged head posted another review request"
-  grep -qF 'has already been re-reviewed 3 times without a push' "$RR/out" \
-    || fail "the per-head refusal does not say what it counted: $(tail -5 "$RR/out")"
+    || fail "prior_fix_rounds did not count against the replacement PR: $(tail -5 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" -eq "$BEFORE_PRIOR" ] \
+    || fail "a replacement PR past the budget still posted a review request"
+  grep -qF 'prior_fix_rounds' "$RR/out" \
+    || fail "the refusal does not say prior rounds are included: $(tail -5 "$RR/out")"
+  rm -f "$GH_STATE/pr-body"
+
   rm -f "$GH_STATE/second-round" "$GH_STATE/resolved" "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request"
 
   # Behavior v2 must never post one: answered findings satisfy that gate.
