@@ -1938,20 +1938,28 @@ open_pr() {
     fail_input "this head already has a review request for different base coordinates" \
       "Wait for that request to finish, then integrate or use the documented raw recovery path."
   fi
-  if [ -z "$existing_request" ]; then
-    # `pr answer` posts its own request for this head whenever an answer
-    # resolves the last open thread -- contract 3 needs a fresh verdict, and
-    # that is the only thing that can produce one. It carries the attest
-    # marker, not this one. Scanning only for the pr-open marker therefore
-    # posted a SECOND "@codex review" for the same head: two hosted reviews of
-    # one diff, billed twice, and the reviewer working the same commit twice
-    # over. Observed on touchstone#1174, 13:35:03 attest and 13:36:00 pr-open,
-    # 57 seconds apart on head 02fcd33c (AUT-1482).
-    #
-    # Reuse it. The gate binds on head, and a request is a request whichever
-    # path wrote it. The attest marker can only be matched on head, which is
-    # what the gate reads anyway -- and because it carries no base, the
-    # moved-base refusal above has to run first.
+  # `pr answer` posts its own request for this head whenever an answer resolves
+  # the last open thread -- contract 3 needs a fresh verdict, and that request
+  # is the only thing that can produce one. It carries the attest marker, not
+  # this one. Scanning only for the pr-open marker therefore posted a SECOND
+  # "@codex review" for the same head: two hosted reviews of one diff, billed
+  # twice. Observed on touchstone#1174, 13:35:03 attest and 13:36:00 pr-open,
+  # 57 seconds apart on head 02fcd33c (AUT-1482).
+  #
+  # Reused ONLY where the pinned gate is required. The attest marker carries no
+  # base, so it cannot itself prove which base it was posted under, and a
+  # pull request that has only ever had attest requests offers no pr-open
+  # marker for the moved-base refusal above to catch -- so on a base with no
+  # gate, where the binding re-read is the only thing verifying coordinates,
+  # reusing one could report a request from an earlier base as bound to the
+  # current one. Where the gate IS required, binding does not parse base
+  # coordinates at all: the gate re-runs, `verify_live_coordinates` proves the
+  # pull request still heads and targets what this command was given, and the
+  # gate owns retarget semantics through its own evidence.
+  #
+  # Nothing is lost by the restriction: `pr answer` posts an attest request
+  # only under gate behavior contract 3, which is exactly where a gate exists.
+  if [ -z "$existing_request" ] && review_gate_required "$pr_base"; then
     existing_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$attest_marker" -v author="$request_author" \
       '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
     [ -z "$existing_request" ] || existing_request_marker="$attest_marker"

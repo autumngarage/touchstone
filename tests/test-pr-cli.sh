@@ -594,6 +594,12 @@ case "$1 ${2:-}" in
         # marker rather than the pr-open one.
         printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-91' \
           "@codex review\\n\\n<!-- touchstone:attest-request head=$GH_HEAD -->"
+        # Where reuse is refused and a request is posted instead, that request
+        # must be visible for this command's own post-write verification.
+        if [ -f "$GH_STATE/review-request" ]; then
+          printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-1' \
+            "@codex review\\n\\n<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
+        fi
       elif [ "${GH_MODE:-ok}" = attest_request_other_head ]; then
         printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-92' \
           "@codex review\\n\\n<!-- touchstone:attest-request head=0000000000000000000000000000000000000000 -->"
@@ -1438,6 +1444,22 @@ EOF
     || fail "open did not wait for an in-progress gate run before re-running it"
   [ "$(grep -c 'actions/runs?head_sha=' "$GH_CALLS")" -ge 2 ] \
     || fail "open did not poll the in-progress gate run"
+  # AUT-1482. `pr answer` posts its own request for this head when an answer
+  # resolves the last thread, carrying the attest marker rather than this
+  # command's. Scanning only for the pr-open marker bought a SECOND hosted
+  # review of the same commit -- observed live on touchstone#1174, attest at
+  # 13:35:03 and pr-open at 13:36:00, 57 seconds apart. Where the gate is
+  # required, binding is head-only and the gate owns retarget semantics, so
+  # the existing request is reused instead of paid for twice.
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/review-request"
+  GH_CALLS_BEFORE_ATTEST="$(grep -c '^pr comment' "$GH_CALLS" || true)"
+  GH_MODE=attest_request_present run_pr_v1 "$TMP/out" open --title 'Gate' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  [ "$(grep -c '^pr comment' "$GH_CALLS" || true)" -eq "$GH_CALLS_BEFORE_ATTEST" ] \
+    || fail "an existing attest request for this head still bought a second hosted review"
+  assert_has "$TMP/out" '"reviewRequest":"existing:https://example.test/pr/7#issuecomment-91"'
+  rm -f "$TMP/state/gate-reruns"
+
   rm -f "$TMP/state/gate-reruns" "$TMP/state/gate-in-progress" "$TMP/state/behavior-version-legacy"
   # The rollout state this pin creates: GitHub enforces the waiting gate while
   # an installed release still declares v1. The older client keeps its own
@@ -1989,12 +2011,17 @@ Closes #42'
   # one. Scanning only for the pr-open marker posted a SECOND "@codex review"
   # for the same head -- two hosted reviews of one diff, billed twice.
   # Observed live on touchstone#1174: attest at 13:35:03, pr-open at 13:36:00.
+  #
+  # Reuse is restricted to a base with a pinned gate. Without one, the binding
+  # re-read is the only thing verifying coordinates, and the attest marker
+  # carries no base for it to verify -- so here the request is posted, not
+  # reused. Nothing is lost: `pr answer` writes attest requests only under gate
+  # contract 3, which is exactly where a gate exists.
   rm -f "$TMP/state/review-request"
   GH_MODE=attest_request_present run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
-  [ "$(grep -c '^pr comment' "$GH_CALLS" || true)" -eq 0 ] \
-    || fail "an existing attest request for this head still bought a second review"
-  assert_has "$TMP/out" '"reviewRequest":"existing:https://example.test/pr/7#issuecomment-91"'
+  [ "$(grep -c '^pr comment' "$GH_CALLS")" -eq 1 ] \
+    || fail "an attest request was reused on a base with no gate to verify it against"
 
   # Head-scoped: an attest request for a DIFFERENT head is not this head's.
   rm -f "$TMP/state/review-request"
