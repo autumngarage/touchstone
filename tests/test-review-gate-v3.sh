@@ -47,7 +47,12 @@ run_case() {
     return
   }
   local expected_conclusion="failure"
-  [ "$expected_verdict" = "clean" ] && expected_conclusion="success"
+  # `documents-advisory` concludes success without a verdict, which is the
+  # whole point of it; the helper has to know that or every case below fails
+  # on the conclusion rather than on what it is testing.
+  case "$expected_verdict" in
+    clean | documents-advisory) expected_conclusion="success" ;;
+  esac
   [ "$(jq -r .conclusion <<<"$verdict")" = "$expected_conclusion" ] || {
     fail "$label: expected conclusion $expected_conclusion, got $(jq -c '{verdict,conclusion}' <<<"$verdict")"
     return
@@ -58,6 +63,93 @@ run_case() {
   fi
   ok "$label"
 }
+
+# --- documents-only advisory (AUT-1241) ---
+#
+# The gate's value is that the reviewed repository cannot influence its
+# verdict, so the classification it acts on comes from the applied policy and
+# never from the head. These cases pin that, and pin that the exemption is
+# narrower than it looks: invariants still win, and only `all` qualifies.
+
+DOCS_ALL='{"set":"documents","source":"policy","classification":"all"}'
+DOCS_MIXED='{"set":"documents","source":"policy","classification":"mixed"}'
+DOCS_NONE='{"set":"documents","source":"policy","classification":"none"}'
+
+# The case the issue was filed for: no reviewer verdict is reachable at all
+# (quota spent, fallback unavailable), and a prose-only head still concludes.
+run_case "documents-only head with no verdict at all passes" \
+  "del(.issueComments[1]) | del(.reviews[0]) | .pathClassification = $DOCS_ALL" \
+  documents-advisory "a reviewer verdict is not the bar for this head"
+
+run_case "documents-only head still passes when the verdict reports findings" \
+  "del(.issueComments[1]) | .pathClassification = $DOCS_ALL" \
+  documents-advisory "review still ran"
+
+run_case "documents-only head passes with a clean verdict too" \
+  ".pathClassification = $DOCS_ALL" documents-advisory
+
+# All-or-nothing: one path outside the set makes the head ordinary, however
+# many documents accompany it.
+run_case "a mixed head with no verdict still blocks" \
+  "del(.issueComments[1]) | del(.reviews[0]) | .pathClassification = $DOCS_MIXED" \
+  waiting "no trusted completed verdict binds head"
+
+run_case "a none-classified head with no verdict still blocks" \
+  "del(.issueComments[1]) | del(.reviews[0]) | .pathClassification = $DOCS_NONE" \
+  waiting
+
+run_case "no classification at all is the ordinary gate" \
+  "del(.issueComments[1]) | del(.reviews[0])" waiting
+
+# A pull request cannot grant itself the exemption. The workflow only ever
+# supplies `source: policy`; anything else is refused rather than trusted,
+# so a repository-side declaration reaching the evaluator fails closed.
+run_case "a classification sourced from the repository is refused" \
+  '.pathClassification = {"set":"documents","source":"repository","classification":"all"}' \
+  invalid "path classification is present but malformed"
+
+for bad in \
+  '{"set":"documents","source":"policy","classification":"everything"}' \
+  '{"set":"documents","source":"policy"}' \
+  '{"set":"","source":"policy","classification":"all"}' \
+  '{"source":"policy","classification":"all"}' \
+  '"all"'; do
+  run_case "a malformed classification is an error, not a quiet downgrade: $bad" \
+    ".pathClassification = $bad" invalid "path classification is present but malformed"
+done
+
+# Invariants guard whether the gate can trust its inputs at all, so a
+# classification derived from them cannot outrank them.
+run_case "an incomplete collection is not rescued by documents-only" \
+  ".complete = false | .pathClassification = $DOCS_ALL" \
+  invalid "GitHub evidence collection was incomplete"
+
+run_case "a head shared with another open pull request is not rescued" \
+  ".pr.openHeadPulls = [42, 43] | .pathClassification = $DOCS_ALL" \
+  invalid "not uniquely scoped"
+
+run_case "a closed pull request is not rescued" \
+  '.pr.state = "closed" | .pathClassification = '"$DOCS_ALL" \
+  invalid "pull request is not open"
+
+# The conclusion must say *why* it passed: an audit has to tell a head that was
+# reviewed clean from one that never needed reviewing.
+docs_verdict="$(jq "del(.issueComments[1]) | del(.reviews[0]) | .pathClassification = $DOCS_ALL" "$TMP_DIR/base.json" | jq -f "$EVALUATOR")"
+[ "$(jq -r .verdict <<<"$docs_verdict")" = documents-advisory ] \
+  && ok "the verdict names the rule that produced it" \
+  || fail "documents-only verdict was $(jq -r .verdict <<<"$docs_verdict")"
+[ "$(jq -r .state <<<"$docs_verdict")" = success ] \
+  && ok "documents-advisory maps to success" || fail "documents-advisory did not map to success"
+[ "$(jq -r .pathClassification.set <<<"$docs_verdict")" = documents ] \
+  && ok "the answer records which set decided it" || fail "set not recorded in the verdict"
+[ "$(jq -r .pathClassification.source <<<"$docs_verdict")" = policy ] \
+  && ok "the answer records that the policy decided it" || fail "source not recorded in the verdict"
+jq -e '.summary | contains("distinct from `clean`")' <<<"$docs_verdict" >/dev/null \
+  && ok "the summary distinguishes this from a reviewed-clean head" \
+  || fail "summary does not distinguish advisory from clean"
+clean_verdict="$(jq -f "$EVALUATOR" "$TMP_DIR/base.json")"
+[ "$(jq -r .pathClassification <<<"$clean_verdict")" = null ] \
+  && ok "an ordinary head records no classification" || fail "ordinary head reported a classification"
 
 # --- Phase 1 scenario matrix ---
 

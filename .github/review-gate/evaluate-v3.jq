@@ -86,6 +86,22 @@ def reviewed_abbrev:
 def review_request:
   (.body // "") | test("^[[:space:]]*@codex[[:space:]]+review([[:space:]]|$)"; "i");
 
+# A path classification the gate may act on. It must come from the applied
+# policy -- the pull request's own head cannot be a source, because a set that
+# decides whether review is required must not be editable by the change being
+# reviewed. Absent is normal and means "no set declared, judge this head the
+# ordinary way"; present-but-malformed is an error, because it means the
+# workflow supplied something broken and silently downgrading that would hide
+# a broken gate behind a stricter verdict.
+def classification_present:
+  . != null;
+
+def classification_valid:
+  type == "object"
+  and (.source? == "policy")
+  and ((.classification? // "") | . == "all" or . == "none" or . == "mixed")
+  and ((.set? // "") | type == "string" and length > 0);
+
 . as $input
 | ($input.trustedAuthors // []) as $trusted
 | (($input.pr.headSha // "") | ascii_downcase) as $head
@@ -93,6 +109,7 @@ def review_request:
 | ($input.pr.baseRetargetedAt) as $base_retargeted_at
 | (if ($input.issueComments | type) == "array" then $input.issueComments else null end) as $issue_comments
 | (if ($input.reviews | type) == "array" then $input.reviews else null end) as $reviews
+| ($input.pathClassification) as $classification
 # Verdict events for the current head, in evidence-time order. A later
 # verdict supersedes an earlier one; nothing outside this list participates.
 | ([
@@ -180,16 +197,36 @@ def review_request:
         or ($base_retargeted_at != "" and (($base_retargeted_at | valid_at) | not)))
       then "base-retarget evidence is missing or malformed" else empty end,
     if (($input.pr.openHeadPulls // []) != [$number])
-      then "head commit is not uniquely scoped to this open pull request" else empty end
+      then "head commit is not uniquely scoped to this open pull request" else empty end,
+    if (($classification | classification_present)
+        and (($classification | classification_valid) | not))
+      then "path classification is present but malformed; it must name a set and carry source `policy` with classification `all`, `none` or `mixed`"
+      else empty end
   ] as $invariant_failures
+# A documents-only head, established from the applied policy rather than from
+# the head itself. The reviewer still runs and its findings are still reported;
+# what changes is that the conclusion no longer waits on a verdict arriving.
+#
+# It does NOT override an invariant failure. Those guard whether the gate can
+# trust its own inputs at all -- incomplete collection, a head open in more
+# than one pull request, missing retarget evidence -- and a classification
+# derived from untrustworthy inputs is untrustworthy too. Failure is never an
+# exemption, so the invariants are checked first and win.
+| (($invariant_failures | length) == 0
+   and ($classification | classification_present)
+   and ($classification | classification_valid)
+   and $classification.classification == "all") as $documents_only
 | (if ($invariant_failures | length) > 0 then "invalid"
+   elif $documents_only then "documents-advisory"
    elif $latest == null then "waiting"
    elif $any_unresolved or $any_malformed or $tied then "invalid"
    elif $latest.kind == "clean" then "clean"
    elif $latest.kind == "findings" then "findings"
    else "invalid"
    end) as $verdict
-| (if $verdict == "invalid" then
+| (if $verdict == "documents-advisory" then
+     "every changed path is in the policy-declared `\($classification.set)` set, so a reviewer verdict is not the bar for this head; review still ran and its findings, if any, are reported below"
+   elif $verdict == "invalid" then
      (if ($invariant_failures | length) > 0 then $invariant_failures[0]
       elif $any_unresolved then "a trusted result comment for head `\($head)` names an abbreviated commit the workflow did not resolve; evidence collection must resolve head-prefix candidates"
       elif $any_malformed then "a trusted verdict for head `\($head)` carries missing or malformed timestamps; its order and edit state cannot be proven"
@@ -207,18 +244,24 @@ def review_request:
     # Workflow mapping: only `clean` concludes success. `waiting` and
     # `findings` remain open states the polling workflow may retry until its
     # deadline; `invalid` is terminal.
-    state: (if $verdict == "clean" then "success"
+    state: (if $verdict == "clean" or $verdict == "documents-advisory" then "success"
             elif $verdict == "invalid" then "failure"
             elif $verdict == "findings" then "waiting-review"
             elif any(($issue_comments // [])[]; review_request) then "waiting-review"
             else "waiting-request"
             end),
-    conclusion: (if $verdict == "clean" then "success" else "failure" end),
+    conclusion: (if $verdict == "clean" or $verdict == "documents-advisory"
+                 then "success" else "failure" end),
     reason: $reason,
-    summary: (if $verdict == "clean"
+    summary: (if $verdict == "documents-advisory"
+      then "Documents-only head, advisory review. Every changed path is in the policy-declared `\($classification.set)` set, so this head passed without requiring a reviewer verdict — distinct from `clean`, which means one was obtained. The reviewer still ran; the latest evidence state for head `\($head)` is `\(if $latest == null then "none" else $latest.kind end)`. Thread resolution and merge-queue validation are enforced independently by GitHub."
+      elif $verdict == "clean"
       then "Trusted review evidence: the latest verdict for head `\($head)` is an explicit clean result. Thread resolution and merge-queue validation are enforced independently by GitHub."
       else "Review gate is not passing (\($verdict)):\n\n- \($reason)\n\nHead: `\($head)`"
       end),
+    pathClassification: (if ($classification | classification_present) and ($classification | classification_valid)
+      then {set: $classification.set, source: $classification.source, classification: $classification.classification}
+      else null end),
     counts: {
       verdictEvents: ($events | length),
       cleanVerdicts: $clean_count,
