@@ -420,15 +420,26 @@ if [ -n "$BUDGET_ROW" ]; then
   budget_spent="$(printf '%s\n' "$BUDGET_ROW" | sed -n 's/.*[^_a-z]fix_rounds=\([0-9][0-9]*\).*/\1/p' | head -1)"
   budget_prior="$(printf '%s\n' "$BUDGET_ROW" | sed -n 's/.*prior_fix_rounds=\([0-9][0-9]*\).*/\1/p' | head -1)"
   budget_exit="$(printf '%s\n' "$BUDGET_ROW" | sed -n 's/.*exit=\([a-z-][a-z-]*\).*/\1/p' | head -1)"
+  # Both counts are read as a whole key=value, so `prior_fix_rounds=three` and
+  # a negative value are absent rather than zero -- and a ledger that is
+  # present must name both. Defaulting a malformed prior count to zero let a
+  # replacement PR declare `fix_rounds=1 prior_fix_rounds=three exit=continue`
+  # and pass, resetting across replacement the budget this row exists to carry.
+  budget_prior_key="$(printf '%s\n' "$BUDGET_ROW" | grep -c 'prior_fix_rounds=' || true)"
   if [ -z "$budget_spent" ]; then
-    report_unreadable "the Validation row '- Review budget:' is present but names no fix_rounds count: it must carry 'fix_rounds=<n>' (principles/local-review.md)"
+    report_unreadable "the Validation row '- Review budget:' is present but names no readable fix_rounds count: it must carry 'fix_rounds=<n>' with a whole number (principles/local-review.md)"
+  elif [ "${budget_prior_key:-0}" -eq 0 ] || [ -z "$budget_prior" ]; then
+    # Absent and unreadable are one refusal here, deliberately: a v2 ledger
+    # declares what a capability has already spent, and a row that omits it
+    # claims nothing rather than claiming zero.
+    report_unreadable "the Validation row '- Review budget:' is present but names no readable prior_fix_rounds count: a v2 ledger must carry 'prior_fix_rounds=<n>' with a whole number, because the budget follows the capability across replacement PRs and an omitted or malformed count would silently reset it (principles/git-workflow.md)"
   else
     # The budget follows the capability, so rounds already spent on a replaced
     # PR count against this one; closing or renaming never resets it.
-    budget_total=$((budget_spent + ${budget_prior:-0}))
+    budget_total=$((budget_spent + budget_prior))
     if [ "$budget_total" -gt "${TOUCHSTONE_FIX_ROUND_BUDGET:-3}" ] \
       && { [ -z "$budget_exit" ] || [ "$budget_exit" = continue ]; }; then
-      report "a declared exit for a capability past its fix-round budget: this body records $budget_total fix rounds (fix_rounds=$budget_spent plus prior_fix_rounds=${budget_prior:-0}) against a budget of ${TOUCHSTONE_FIX_ROUND_BUDGET:-3}, and 'exit=${budget_exit:-none}' is not one of them -- more rounds is not an exit. Declare exit=merge-answered, revert-simplify, split, or close-replan (principles/git-workflow.md)"
+      report "a declared exit for a capability past its fix-round budget: this body records $budget_total fix rounds (fix_rounds=$budget_spent plus prior_fix_rounds=$budget_prior) against a budget of ${TOUCHSTONE_FIX_ROUND_BUDGET:-3}, and 'exit=${budget_exit:-none}' is not one of them -- more rounds is not an exit. Declare exit=merge-answered, revert-simplify, split, or close-replan (principles/git-workflow.md)"
     fi
   fi
 fi

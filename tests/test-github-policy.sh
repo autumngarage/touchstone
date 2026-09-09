@@ -1377,6 +1377,22 @@ else
   fail "the gate refused a body that declared a terminal exit"
 fi
 
+# A malformed or omitted prior count is what would reset the budget across a
+# replacement PR, so it is refused rather than defaulted to zero.
+budget_body "v2 capability=AUT-1 local_rounds=1 fix_rounds=1 prior_fix_rounds=three exit=continue"
+if accepts; then
+  fail "a malformed prior_fix_rounds was silently treated as zero, resetting the budget"
+else
+  ok "a malformed prior_fix_rounds is unreadable, not zero"
+fi
+
+budget_body "v2 capability=AUT-1 local_rounds=1 fix_rounds=1 exit=continue"
+if accepts; then
+  fail "a present ledger omitting prior_fix_rounds passed, claiming zero it never declared"
+else
+  ok "a present ledger must name prior_fix_rounds"
+fi
+
 budget_body "v2 capability=AUT-1 local_rounds=1 reviewed_head=none cascade=false exit=continue"
 if accepts; then
   fail "the gate accepted a Review budget row that names no fix_rounds count"
