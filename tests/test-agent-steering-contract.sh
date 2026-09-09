@@ -79,6 +79,16 @@ for file in \
   assert_contains "$file" "file count alone never decides"
   assert_contains "$file" "A review-fix defect stops patching"
   assert_contains "$file" "A second ends same-shape work"
+  # The abstract form of this rule did not land: hesperus#311 spent 27 review
+  # requests against a documented cap of three, vesper#1236 spent 23. "A second
+  # ends same-shape work" never says count and names no exit, so an agent at
+  # round three has no trigger and no move. Pin the countable form and every
+  # exit it lists — the next byte-cap squeeze must fail here rather than
+  # quietly drop the trigger back to prose.
+  assert_contains "$file" "Count fix rounds; at three, take an exit"
+  assert_contains "$file" "one push of review-driven change is one round"
+  assert_contains "$file" "merge-answered, revert-simplify, split, close-replan"
+  assert_contains "$file" "more rounds is not one"
   assert_contains "$file" "Answering is not implementing"
   assert_contains "$file" "answer and route whatever you are not fixing"
   # The bounded-review rule: severity decides what gets implemented, and the
@@ -449,6 +459,20 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "capability"
 assert_contains "$GIT_WORKFLOW_GUIDE" "per capability"
 assert_contains "$GIT_WORKFLOW_GUIDE" "does not reset its count"
 assert_contains "$GIT_WORKFLOW_GUIDE" "mechanical split is not budget laundering"
+# The steering lists the exits by label only; this is the file its routing table
+# sends the agent to for what each one means, so all four labels must be defined
+# here. A label named in the block and absent here is four bare words at the
+# moment the budget runs out.
+assert_contains "$GIT_WORKFLOW_GUIDE" "**\`merge-answered\`**"
+assert_contains "$GIT_WORKFLOW_GUIDE" "**\`revert-simplify\`**"
+assert_contains "$GIT_WORKFLOW_GUIDE" "**\`split\`**"
+assert_contains "$GIT_WORKFLOW_GUIDE" "**\`close-replan\`**"
+# Three surfaces state this exit set: the steering block lists it, the guide
+# defines each one, and the PR body's ledger row accepts it as an enum. They
+# drifted apart once already — the guide listed three exits under prose names
+# while the row and the block carried four slugs — so bind the row too.
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
+  "exit=<continue|merge-answered|revert-simplify|split|close-replan>"
 assert_contains "$GIT_WORKFLOW_GUIDE" "gets one validation round"
 assert_contains "$GIT_WORKFLOW_GUIDE" "Exact-head review makes moving stacks multiply work"
 assert_contains "$GIT_WORKFLOW_GUIDE" "Do not open dependent"

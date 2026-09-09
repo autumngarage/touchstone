@@ -95,8 +95,16 @@ assert_under() {
 # highest-blast-radius tier with no local pass at all. Naming the command that
 # falls back costs ~70 bytes more than naming the waiver did, and the file was
 # already at the old cap exactly. AGENTS.md lands near 20.6 KiB of its 24 KiB.
-echo "==> TOUCHSTONE.md size cap (12 KiB — lean router)"
-assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 12288
+# Raised to 12.5 KiB on 2026-09-09 (AUT-1508). The budget rule was stated as
+# "a review-fix defect stops patching, a second ends same-shape work" — true,
+# abstract, and not landing: hesperus#311 ran 27 review requests against a cap
+# of three and vesper#1236 ran 23. Saying "count fix rounds; at three, take an
+# exit" and naming the four exits costs ~165 bytes, and the cascade rules it
+# sits beside are load-bearing in their own right, so it is an addition rather
+# than a rewrite. ~40 tokens per agent turn against review rounds that cost a
+# full hosted review of the whole diff each.
+echo "==> TOUCHSTONE.md size cap (12.5 KiB — lean router)"
+assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 12800
 
 echo "==> AGENTS.md size cap (24 KiB — leaves headroom under Codex's 32 KiB default)"
 assert_under "AGENTS.md" "$TOUCHSTONE_ROOT/AGENTS.md" 24576
