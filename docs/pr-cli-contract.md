@@ -41,6 +41,12 @@ refreshed a completed attempt; `already-active` means a behavior-v2 run is the
 authoritative evaluator and the client returned while that run waits. A
 successful guarded `merge` reports `verified-success`: it observed an existing
 policy-bound successful gate and did not request another evaluation.
+Under gate behavior contract 4, `open` additionally reports `reviewGate.status`
+and `reviewGate.conclusion` for the one run it woke (`conclusion` is `null`
+while that run is still going), and a `reviewWait` object: `wokeBy` says what
+ended the local wait (`primary-review`, `primary-comment`, `deadline`, or
+`wait-bound`) and `evidenceDeadlineSeconds` is the pinned gate's deadline it
+waited against. Both are absent under contracts 1–3.
 
 ### v1 to v2 migration
 
@@ -263,6 +269,33 @@ taking this document's word for it.
   carrying `<!-- touchstone:review-fallback head=<sha> -->`) and reports
   `reviewFallback` as `fallback`, `primary`, or `pending`. It never skips the
   request: the primary's own reply is the evidence the move rests on.
+
+- Under gate behavior contract 4 the pinned gate evaluates once per run and
+  no longer polls, so `open` waits on the driver's machine instead of an
+  Actions runner. Once the head's request exists (posted or reused), it waits
+  until the primary reviewer replies after the head's latest Touchstone-marked
+  request, a formal review or any issue comment other than its status
+  dashboard (`<!-- codex-pull-request-review-summary -->`), quota and decline
+  notices included; or until that request is older than the gate's evidence
+  deadline plus 30 seconds; or until `TOUCHSTONE_REVIEW_WAIT_MAX_SECONDS`
+  (default: the same deadline plus margin, counted from the start of the
+  wait) runs out. The deadline is `REVIEW_EVIDENCE_WAIT_SECONDS` read from
+  the pinned `review-gate.yml` at every enforced revision, the longest
+  winning; a pinned gate that declares none fails closed. The request's age
+  is counted from the newest `updated_at` among the requests naming the head,
+  never earlier than the gate's own `requestedAt`. Then `open` re-runs the
+  gate once, first waiting for a still-running run to complete rather than
+  reusing it, follows that attempt to its end, and reports its conclusion
+  without interpreting it: exit 0 with `reviewGate.conclusion` `failure`
+  means the gate decided, not that `open` failed. It never posts a second
+  request. A driving session that dies first leaves the head red until the
+  gate is re-run; nothing merges unreviewed. `answer` runs the same
+  wait-and-wake after the round's attest request exists, through
+  `touchstone-pr.sh await-review PR --head SHA`, an internal step shared with
+  `open` rather than a public operation. Raw equivalent: poll
+  `gh api repos/O/R/issues/N/comments` and `gh api repos/O/R/pulls/N/reviews`
+  for the reviewer's reply, then, once the head's latest `review-gate` run
+  has completed, `gh api -X POST repos/O/R/actions/runs/ID/rerun`.
 
 - `merge` requires the caller's exact reviewed head, passes it through
   `--match-head-commit`, and re-reads state and head after the mutation. It
