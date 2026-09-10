@@ -277,6 +277,58 @@ jobs:
 EOF
 expect 1 "a selector reached through a YAML alias is resolved" "$dir" "ci.yml:5:"
 
+echo "==> every setting reference is judged on its own"
+# vesper#1255's and hesperus#354's selectors: the LINUX_RUNNER branch is
+# wrapped, the MACOS_RUNNER branch beside it is not. One wrapped branch must
+# never excuse a bare one.
+dir="$(project)"
+workflow "$dir" <<'EOF'
+jobs:
+  test:
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON(format('["self-hosted","{0}"]', vars.LINUX_RUNNER)) || vars.MACOS_RUNNER }}
+EOF
+expect 1 "a wrapped branch does not excuse a bare setting beside it" "$dir" "ci.yml:3:" "not wrapped"
+
+dir="$(project)"
+workflow "$dir" <<'EOF'
+jobs:
+  swift:
+    runs-on: ${{ (vars.MACOS_RUNNER == '' || needs.scope.outputs.swift == 'false') && (vars.LINUX_RUNNER && fromJSON(format('["self-hosted","{0}"]', vars.LINUX_RUNNER)) || 'ubuntu-latest') || vars.MACOS_RUNNER }}
+EOF
+expect 1 "hesperus#354's selector is refused for its bare macOS branch" "$dir" "ci.yml:3:"
+
+dir="$(project)"
+workflow "$dir" <<'EOF'
+jobs:
+  test:
+    runs-on: ${{ vars.MACOS_RUNNER || 'self-hosted' }}
+EOF
+expect 1 "naming self-hosted as a fallback does not wrap the setting" "$dir" "ci.yml:3:"
+
+dir="$(project)"
+workflow "$dir" <<'EOF'
+jobs:
+  test:
+    runs-on: ${{ fromJSON(format('["{0}"]', vars.MACOS_RUNNER)) }}
+EOF
+expect 1 "a format that leaves out self-hosted does not wrap the setting" "$dir" "ci.yml:3:"
+
+dir="$(project)"
+workflow "$dir" <<'EOF'
+jobs:
+  test:
+    runs-on: ${{ startsWith(vars.MACOS_RUNNER, 'ci-') && !contains('none,off', vars.MACOS_RUNNER) && fromJSON(format('["self-hosted","{0}"]', vars.MACOS_RUNNER)) || 'ubuntu-latest' }}
+EOF
+expect 0 "settings used only as conditions, then wrapped, pass" "$dir"
+
+dir="$(project)"
+workflow "$dir" <<'EOF'
+jobs:
+  test:
+    runs-on: ${{ !vars.MACOS_RUNNER && 'ubuntu-latest' || fromJSON(format('["SELF-HOSTED","{0}"]', vars['MACOS_RUNNER'])) }}
+EOF
+expect 0 "a negated guard and a wrapped index reference pass" "$dir"
+
 echo "==> every file is read, and each finding names its own file"
 dir="$(project)"
 workflow "$dir" a.yml <<'EOF'

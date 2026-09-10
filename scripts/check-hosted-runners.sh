@@ -15,14 +15,18 @@
 #      windows-latest-8-cores). Read as text on purpose, so a matrix entry,
 #      an expression's fallback, or an env value that later reaches runs-on
 #      is caught wherever it is written.
-#   2. A job whose runs-on takes a label from a setting (vars.NAME or
-#      vars['NAME']) without also requiring the self-hosted label. Read from
-#      the parsed workflow, so every form GitHub accepts -- a quoted key, an
-#      indentationless sequence, a flow list, a group-and-labels mapping, a
-#      YAML alias -- is the same to the check, and labels compare
-#      case-insensitively, as GitHub compares them (AUT-1588). It checks that
-#      the requirement is present, not that an expression cannot route around
-#      it; review owns that.
+#   2. A job whose runs-on can take its label from a setting (vars.NAME or
+#      vars['NAME']) without also requiring the self-hosted label (AUT-1588).
+#      Read from the parsed workflow, so every form GitHub accepts -- a quoted
+#      key, an indentationless sequence, a flow list, a group-and-labels
+#      mapping, a YAML alias -- is the same to the check. A list with a
+#      self-hosted item requires every label together and passes. Otherwise
+#      every setting reference is judged on its own, because a selector can
+#      wrap one branch and leave another bare: a reference is safe only as
+#      the value of format('[..."self-hosted"...]', vars.NAME), or as a
+#      condition -- compared, negated, followed by &&, or passed to contains,
+#      startsWith, or endsWith. Labels compare case-insensitively, as GitHub
+#      compares them.
 #
 # Why: one macOS minute consumes about ten included Actions minutes, and the
 # September 2026 overage came from exactly this. The shared validate workflow
@@ -81,8 +85,38 @@ if files.empty?
 end
 
 HOSTED = /(?:\A|[^a-z0-9_.-])((?:macos|windows)-(?:latest|[0-9])[a-z0-9._-]*)/i
-SETTING = /\bvars\s*(?:\.|\[)/
-SELF_HOSTED = /self-hosted/i
+SETTING_REF = /\bvars\s*(?:\.\s*[A-Za-z_][A-Za-z0-9_-]*|\[\s*'[^']*'\s*\])/
+
+# Can a setting reference in TEXT become a runner label? Each reference is
+# judged on its own: one wrapped branch never excuses a bare one beside it.
+def exposes_setting?(text)
+  text.to_enum(:scan, SETTING_REF).any? do
+    match = Regexp.last_match
+    before = text[0...match.begin(0)]
+    after = text[match.end(0)..-1]
+    wrapped = before =~ /format\(\s*'[^']*self-hosted[^']*'\s*,\s*\z/i
+    condition = after =~ /\A\s*(?:==|!=|<=|>=|<|>|&&)/ ||
+                before =~ /(?:==|!=|<=|>=|<|>)\s*\z/ ||
+                before =~ /!\s*\z/ ||
+                before =~ /\b(?:contains|startsWith|endsWith)\(\s*(?:'[^']*'\s*,\s*)?\z/i
+    !(wrapped || condition)
+  end
+end
+
+# A runs-on list, or a mapping's labels list, with a self-hosted item requires
+# every label together, so no setting in it can select a hosted runner.
+def lists_self_hosted?(node, anchors)
+  node = resolve(node, anchors)
+  if node.is_a?(Psych::Nodes::Mapping)
+    labels = entry(node, "labels")
+    return labels ? lists_self_hosted?(labels[1], anchors) : false
+  end
+  return false unless node.is_a?(Psych::Nodes::Sequence)
+  node.children.any? do |child|
+    child = resolve(child, anchors)
+    child.is_a?(Psych::Nodes::Scalar) && child.value.strip.casecmp?("self-hosted")
+  end
+end
 
 # The key and value nodes for KEY in a mapping node, or nil.
 def entry(mapping, key)
@@ -148,10 +182,9 @@ files.each do |path|
     next unless job.is_a?(Psych::Nodes::Mapping)
     runs_on = entry(job, "runs-on")
     next unless runs_on
-    labels = scalars(runs_on[1], anchors)
-    next unless labels.any? { |label| label =~ SETTING }
-    next if labels.any? { |label| label =~ SELF_HOSTED }
-    findings << "#{path}:#{runs_on[0].start_line + 1}: runs-on takes its label from a setting (vars) without also requiring the self-hosted label, so the setting could name a GitHub-hosted image; use fromJSON(format('[\"self-hosted\",\"{0}\"]', vars.NAME))"
+    next if lists_self_hosted?(runs_on[1], anchors)
+    next unless scalars(runs_on[1], anchors).any? { |label| exposes_setting?(label) }
+    findings << "#{path}:#{runs_on[0].start_line + 1}: runs-on can take its label from a setting (vars) that is not wrapped with the self-hosted label, so the setting could name a GitHub-hosted image; wrap every such reference as fromJSON(format('[\"self-hosted\",\"{0}\"]', vars.NAME))"
   end
 end
 
