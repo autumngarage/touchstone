@@ -31,6 +31,27 @@ ACTIONS_BILLING_PATTERN='spending limit|account payments have failed'
 # gate decides on its own and a later re-run of open records the decline.
 REVIEW_RESPONSE_WAIT_SECONDS="${TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS:-180}"
 REVIEW_FALLBACK_STATE=""
+# Gate behavior contract 4: the gate evaluates once per run and never polls,
+# so this client does the waiting, on the driver's machine instead of an
+# Actions runner. It waits for the primary reviewer to answer the head's latest
+# review request, or for that request to reach the pinned gate's evidence
+# deadline, then wakes the gate once. The deadline is the pinned
+# review-gate.yml's REVIEW_EVIDENCE_WAIT_SECONDS, read from the exact enforced
+# revision and never copied here. The margin covers clock skew between this
+# machine and GitHub; a re-run's own start-up only adds to it.
+REVIEW_DEADLINE_MARGIN_SECONDS=30
+# The primary reviewer's status dashboard: one issue comment per pull request
+# that it edits in place, never a reply to a request
+# (audits/2026-09-01-exact-head-verdict.md).
+PRIMARY_DASHBOARD_MARKER='<!-- codex-pull-request-review-summary -->'
+# An optional ceiling on the contract-4 wait, counted from when it starts.
+# Unset, it is the evidence deadline plus the margin, so a request this machine
+# reads as future-dated (clock skew) cannot hold the wait open past one window.
+REVIEW_WAIT_MAX_SECONDS="${TOUCHSTONE_REVIEW_WAIT_MAX_SECONDS:-}"
+REVIEW_WAIT_WOKE_BY=""
+REVIEW_EVIDENCE_DEADLINE_SECONDS=""
+REVIEW_GATE_STATUS=""
+REVIEW_GATE_CONCLUSION=""
 # Behavior v2 guarantees these minimum observation windows from workflow
 # start. Reusing a run only inside the relevant lower bound is conservative:
 # setup and state transitions can move the actual deadline later, never sooner.
@@ -76,6 +97,11 @@ case "$RETRY_DELAY" in '' | *[!0-9]*)
 esac
 case "$REQUEST_ATTEMPTS" in '' | *[!0-9]* | 0)
   echo "ERROR: TOUCHSTONE_REQUEST_ATTEMPTS must be a positive integer" >&2
+  exit 2
+  ;;
+esac
+case "$REVIEW_WAIT_MAX_SECONDS" in *[!0-9]* | 0)
+  echo "ERROR: TOUCHSTONE_REVIEW_WAIT_MAX_SECONDS must be a positive integer" >&2
   exit 2
   ;;
 esac
@@ -321,7 +347,7 @@ require_option_value() {
 }
 
 case "$OPERATION" in
-  status | merge)
+  status | merge | await-review)
     [ "$#" -ge 2 ] || usage
     PR_NUMBER="$2"
     case "$PR_NUMBER" in "" | *[!0-9]*) usage ;; esac
@@ -388,6 +414,10 @@ case "$OPERATION" in
   merge)
     [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_BRANCH" ] \
       || fail_input "merge received an option for another operation" "Use only --head and --unguarded."
+    ;;
+  await-review)
+    [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_BRANCH" ] && [ -n "$EXPECTED_HEAD" ] \
+      || fail_input "await-review takes only --head SHA" "Pass the exact head whose review request was posted."
     ;;
   policy-status)
     [ -z "$TITLE$BODY_FILE$EXPECTED_HEAD$EXPECTED_BRANCH" ] && [ "$UNGUARDED" = false ] \
@@ -489,8 +519,10 @@ emit_open_result() {
       json_string "$REVIEW_GATE_RUN_ID"
       printf ',"action":'
       json_string "$REVIEW_GATE_ACTION"
+      review_gate_verdict_json_fields
       printf '}'
     fi
+    review_wait_json_fields
     if [ -n "$BODY_APPLIED" ]; then
       printf ',"body":'
       json_string "$BODY_APPLIED"
@@ -507,8 +539,43 @@ emit_open_result() {
       primary) printf '  review: primary reviewer replied; the review-gate decides.\n' ;;
       pending) printf '  review: no reply from the primary reviewer yet; the review-gate decides.\n' ;;
     esac
+    review_wait_text "$number"
     [ -z "$BODY_APPLIED" ] || printf '  body: %s\n' "$BODY_APPLIED"
   fi
+}
+
+# Contract 4 only: what ended the local wait, and where the one woken gate run
+# stands. Every field is absent under contracts 1-3, whose output is unchanged.
+review_gate_verdict_json_fields() {
+  [ -n "$REVIEW_GATE_STATUS" ] || return 0
+  printf ',"status":'
+  json_string "$REVIEW_GATE_STATUS"
+  printf ',"conclusion":'
+  if [ -n "$REVIEW_GATE_CONCLUSION" ]; then json_string "$REVIEW_GATE_CONCLUSION"; else printf 'null'; fi
+}
+
+review_wait_json_fields() {
+  [ -n "$REVIEW_WAIT_WOKE_BY" ] || return 0
+  printf ',"reviewWait":{"wokeBy":'
+  json_string "$REVIEW_WAIT_WOKE_BY"
+  printf ',"evidenceDeadlineSeconds":%s}' "$REVIEW_EVIDENCE_DEADLINE_SECONDS"
+}
+
+review_wait_text() {
+  local number="$1"
+  [ -n "$REVIEW_WAIT_WOKE_BY" ] || return 0
+  printf '  review wait: ended by %s (gate evidence deadline %ss)\n' "$REVIEW_WAIT_WOKE_BY" "$REVIEW_EVIDENCE_DEADLINE_SECONDS"
+  case "$REVIEW_GATE_STATUS" in
+    "") ;;
+    completed)
+      printf '  review gate: run %s concluded %s; touchstone pr status %s shows its reason.\n' \
+        "$REVIEW_GATE_RUN_ID" "${REVIEW_GATE_CONCLUSION:-with no conclusion}" "$number"
+      ;;
+    *)
+      printf '  review gate: run %s is still %s; it decides on its own, and touchstone pr status %s follows it.\n' \
+        "$REVIEW_GATE_RUN_ID" "$REVIEW_GATE_STATUS" "$number"
+      ;;
+  esac
 }
 
 # Where the repository requires the pinned review-gate workflow, a new
@@ -1099,7 +1166,7 @@ read_enforcement() {
             and startswith("/") == false
             and (split("/") | index("..") == null))
           and (.workflowSource.sourceContract.gateBehaviorContractVersion
-            | type == "number" and floor == . and (. == 1 or . == 2 or . == 3))
+            | type == "number" and floor == . and (. == 1 or . == 2 or . == 3 or . == 4))
         ' >/dev/null; then
           fail_operation "$policy_file has an invalid workflow source contract declaration" "Reinstall touchstone; the policy file is corrupt or incomplete."
         fi
@@ -1703,10 +1770,18 @@ rerun_required_workflow() {
 effective_review_gate_accepts_active() {
   # Behavior v2 and v3 both leave one authoritative polling run active per
   # head; v3 changes what the run accepts (an exact-head clean verdict), not
-  # how a client waits on it.
+  # how a client waits on it. A contract-4 run evaluates once and exits, so it
+  # is never left running as the evaluator: an active one is waited on to
+  # completion and then re-run, as under behavior v1.
   [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ] \
     && { [ "$ENFORCEMENT_GATE_BEHAVIOR_VERSION" = 2 ] \
       || [ "$ENFORCEMENT_GATE_BEHAVIOR_VERSION" = 3 ]; }
+}
+
+# Contract 4 moves the evidence wait from the gate to this client: the gate
+# evaluates once, so something must wake it after the reviewer has answered.
+effective_review_gate_waits_locally() {
+  [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ] && [ "$ENFORCEMENT_GATE_BEHAVIOR_VERSION" = 4 ]
 }
 
 rerun_declared_review_gate() {
@@ -1787,6 +1862,15 @@ wait_for_request_binding() {
     # prove the run actually implements behavior v2. A rollout mismatch keeps
     # the behavior-v1 wait-and-refresh path instead of trusting local bytes.
     read_enforcement "$base_ref" "$base_sha"
+    # A contract-4 gate evaluated now would only find the request unanswered
+    # and fail fast, so it is not refreshed here: the one re-run comes after
+    # the reviewer answers or the request's evidence window runs out.
+    if effective_review_gate_waits_locally; then
+      verify_live_coordinates "$number" "$head" "$base_ref" "$base_sha"
+      await_review_then_wake_gate "$number" "$head" "$base_ref" "$base_sha"
+      verify_live_coordinates "$number" "$head" "$base_ref" "$base_sha"
+      return 0
+    fi
     active_reuse_seconds=0
     if effective_review_gate_accepts_active; then
       if [ "$request_already_existed" = true ]; then
@@ -1853,27 +1937,55 @@ wait_for_request_binding() {
 # remedy only in the comment left the alarm reaching the driver without it, and
 # a driver that reads "declined (out of quota)" with no next step concludes
 # delivery is blocked on a provider it cannot influence.
+#
+# Under contract 4 the same loop is the local wait (EVIDENCE_SECONDS given):
+# it waits on the head's latest request rather than the one just posted, also
+# reads the primary's formal reviews, skips its status dashboard, and runs
+# until the reply arrives or the request reaches the gate's evidence deadline.
 announce_review_fallback() {
-  local number="$1" head="$2" request_url="$3" request_id rows primary_reply marker step waited=0
+  local number="$1" head="$2" request_url="$3" evidence_seconds="${4:-}"
+  local request_id rows primary_reply marker step waited=0 replied fallback_recorded now deadline wait_bound=0
   REVIEW_FALLBACK_STATE=""
-  request_id="${request_url##*issuecomment-}"
-  case "$request_id" in '' | *[!0-9]*) return 0 ;; esac
-  case "$REVIEW_RESPONSE_WAIT_SECONDS" in '' | *[!0-9]* | 0) return 0 ;; esac
+  REVIEW_WAIT_WOKE_BY=""
+  if [ -z "$evidence_seconds" ]; then
+    request_id="${request_url##*issuecomment-}"
+    case "$request_id" in '' | *[!0-9]*) return 0 ;; esac
+    case "$REVIEW_RESPONSE_WAIT_SECONDS" in '' | *[!0-9]* | 0) return 0 ;; esac
+  else
+    wait_bound=$(($(date -u +%s) + ${REVIEW_WAIT_MAX_SECONDS:-$((evidence_seconds + REVIEW_DEADLINE_MARGIN_SECONDS))}))
+  fi
   marker="<!-- touchstone:review-fallback head=$head -->"
   step="$GATE_RETRY_DELAY"
   [ "$step" -gt 0 ] 2>/dev/null || step=1
   while :; do
     assert_wait_liveness "$number" "$head"
-    read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$number/comments?per_page=100" \
-      --jq '.[] | [.id, (.user.login // ""), (.body // "")] | @tsv' \
-      || fail_operation "could not read the primary reviewer's reply on PR #$number: $READ_OUTPUT" "Retry after GitHub recovers."
-    rows="$READ_OUTPUT"
-    primary_reply="$(printf '%s\n' "$rows" | awk -F '\t' -v p="$PRIMARY_REVIEWER_LOGIN" -v after="$request_id" \
-      '$2 == p && ($1 + 0) > (after + 0) { print $3; exit }')"
-    if [ -n "$primary_reply" ]; then
+    if [ -z "$evidence_seconds" ]; then
+      read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$number/comments?per_page=100" \
+        --jq '.[] | [.id, (.user.login // ""), (.body // "")] | @tsv' \
+        || fail_operation "could not read the primary reviewer's reply on PR #$number: $READ_OUTPUT" "Retry after GitHub recovers."
+      rows="$READ_OUTPUT"
+      primary_reply="$(printf '%s\n' "$rows" | awk -F '\t' -v p="$PRIMARY_REVIEWER_LOGIN" -v after="$request_id" \
+        '$2 == p && ($1 + 0) > (after + 0) { print $3; exit }')"
+      replied=false
+      [ -z "$primary_reply" ] || replied=true
+    else
+      read_primary_reply_to_head_request "$number" "$head" "$marker"
+      primary_reply="$PRIMARY_REPLY_BODY"
+      replied=false
+      [ -z "$PRIMARY_REPLY_KIND" ] || replied=true
+    fi
+    if [ "$replied" = true ]; then
+      [ -z "$evidence_seconds" ] || REVIEW_WAIT_WOKE_BY="primary-$PRIMARY_REPLY_KIND"
       if printf '%s' "$primary_reply" | grep -qiE "$PRIMARY_DECLINED_PATTERN"; then
         REVIEW_FALLBACK_STATE=fallback
-        if ! printf '%s\n' "$rows" | grep -qF "$marker"; then
+        if [ -n "$evidence_seconds" ]; then
+          fallback_recorded="$REVIEW_FALLBACK_RECORDED"
+        elif printf '%s\n' "$rows" | grep -qF "$marker"; then
+          fallback_recorded=true
+        else
+          fallback_recorded=false
+        fi
+        if [ "$fallback_recorded" = false ]; then
           capture_command gh pr comment "$number" --repo "$REPO_SPEC" --body "$marker
 **The pinned \`review-gate\` reviews \`$head\` itself.** The primary reviewer replied that it is at capacity, so the gate authored the verdict for this exact head — complete review evidence, not a degraded mode. This is not a blocker and not a wait: watch the \`review-gate\` check rather than waiting for the primary. Its findings are in the run log (\`gh run view <run-id> --log\`), each with an id; answer one with \`touchstone pr answer $number --finding <id> --body-file <reply> --no-code-change\` (refute) or \`--fix-commit <sha>\` (fixed), then run \`touchstone pr merge $number --head $head\`." \
             || fail_operation "could not record the review fallback on PR #$number: $CAPTURE_ERROR" "Inspect comments before retrying."
@@ -1886,6 +1998,25 @@ announce_review_fallback() {
       fi
       return 0
     fi
+    if [ -n "$evidence_seconds" ]; then
+      now="$(date -u +%s)"
+      deadline=$((REVIEW_REQUEST_CLOCK_EPOCH + evidence_seconds + REVIEW_DEADLINE_MARGIN_SECONDS))
+      if [ "$now" -ge "$deadline" ] || [ "$now" -ge "$wait_bound" ]; then
+        REVIEW_FALLBACK_STATE=pending
+        if [ "$now" -ge "$deadline" ]; then
+          REVIEW_WAIT_WOKE_BY=deadline
+          printf 'No reply from the primary reviewer, and the latest request for %s is past the gate'\''s %ss evidence deadline; waking the review-gate, which asks its fallback reviewer.\n' \
+            "$head" "$evidence_seconds" >&2
+        else
+          REVIEW_WAIT_WOKE_BY=wait-bound
+          printf 'No reply from the primary reviewer before this command'\''s wait bound ran out; waking the review-gate for %s anyway. If the request is still inside its evidence window the gate reports it waiting; re-run this command to wait again.\n' \
+            "$head" >&2
+        fi
+        return 0
+      fi
+      sleep "$REVIEW_WAIT_POLL_SECONDS"
+      continue
+    fi
     waited=$((waited + step))
     if [ "$waited" -ge "$REVIEW_RESPONSE_WAIT_SECONDS" ]; then
       REVIEW_FALLBACK_STATE=pending
@@ -1895,6 +2026,218 @@ announce_review_fallback() {
     fi
     sleep "$GATE_RETRY_DELAY"
   done
+}
+
+# One observation for the contract-4 wait. The anchor is the latest review
+# request naming this head in a Touchstone marker: the requests the pinned
+# evaluator's `requestedAt` counts (touchstone#1192), from every author, so
+# this clock can only start at or after the gate's. It starts at the newest
+# `updated_at` among them -- a request edited later is clocked from the edit,
+# the conservative reading of a case the gate may decide either way. The
+# primary's reply is its next issue comment after the anchor, other than its
+# status dashboard, or else a review it submitted after the anchor.
+PRIMARY_REPLY_BODY=""
+PRIMARY_REPLY_KIND=""
+REVIEW_FALLBACK_RECORDED=false
+REVIEW_REQUEST_CLOCK_EPOCH=0
+read_primary_reply_to_head_request() {
+  local number="$1" head="$2" marker="$3" observation anchor_at
+  PRIMARY_REPLY_BODY=""
+  PRIMARY_REPLY_KIND=""
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$number/comments?per_page=100" \
+    || fail_operation "could not read the review request and the primary reviewer's reply on PR #$number: $READ_OUTPUT" "Retry after GitHub recovers."
+  observation="$(printf '%s\n' "$READ_OUTPUT" | jq -sce \
+    --arg head "$(printf '%s' "$head" | tr 'A-F' 'a-f')" --arg primary "$PRIMARY_REVIEWER_LOGIN" \
+    --arg dashboard "$PRIMARY_DASHBOARD_MARKER" --arg marker "$marker" '
+      def head_request:
+        ((.body // "") | test("^[[:space:]]*@codex[[:space:]]+review([[:space:]]|$)"; "i"))
+        and ((.body // "") | ascii_downcase
+          | test("<!--[[:space:]]*touchstone:[a-z-]+[[:space:]]+head=" + $head + "([[:space:]]|-->)"));
+      if length == 0 or any(.[]; type != "array") then error("expected issue-comment arrays") else [.[][]] end
+      | if any(.[]; (.id | type) != "number" or (.created_at | type) != "string") then
+          error("an issue comment has no id or creation time")
+        else . end
+      | . as $comments
+      | [$comments[] | select(head_request)] as $requests
+      | if ($requests | length) == 0 then {anchorAt: null}
+        else ($requests | max_by(.id)) as $anchor
+          | {
+              anchorAt: $anchor.created_at,
+              clock: ([$requests[] | (.updated_at // .created_at) | fromdateiso8601] | max),
+              fallbackRecorded: any($comments[]; (.body // "") | contains($marker)),
+              reply: ([$comments[] | select((.user.login // "") == $primary and .id > $anchor.id
+                  and ((.body // "") | contains($dashboard) | not))]
+                | min_by(.id) | if . == null then null else {body: (.body // "")} end)
+            }
+        end')" \
+    || fail_operation "GitHub returned malformed issue comments for PR #$number" "Retry after GitHub returns complete comment pages."
+  anchor_at="$(printf '%s' "$observation" | jq -r '.anchorAt // ""')"
+  [ -n "$anchor_at" ] \
+    || fail_operation "no review request naming $head is visible on PR #$number, so the gate has no request whose evidence window it can clock" \
+      "Run touchstone pr open for this head: it posts or reuses the exact-head request."
+  REVIEW_REQUEST_CLOCK_EPOCH="$(printf '%s' "$observation" | jq -r '.clock | floor')"
+  REVIEW_FALLBACK_RECORDED="$(printf '%s' "$observation" | jq -r '.fallbackRecorded')"
+  if [ "$(printf '%s' "$observation" | jq -r '.reply != null')" = true ]; then
+    PRIMARY_REPLY_KIND=comment
+    PRIMARY_REPLY_BODY="$(printf '%s' "$observation" | jq -r '.reply.body')"
+    return 0
+  fi
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/pulls/$number/reviews?per_page=100" \
+    || fail_operation "could not read the primary reviewer's reviews on PR #$number: $READ_OUTPUT" "Retry after GitHub recovers."
+  observation="$(printf '%s\n' "$READ_OUTPUT" | jq -sce --arg primary "$PRIMARY_REVIEWER_LOGIN" --arg after "$anchor_at" '
+      if length == 0 or any(.[]; type != "array") then error("expected review arrays") else [.[][]] end
+      | [.[] | select((.user.login // "") == $primary and ((.submitted_at // "") > $after))]
+      | min_by(.submitted_at)
+      | {review: (if . == null then null else {body: (.body // "")} end)}')" \
+    || fail_operation "GitHub returned malformed reviews for PR #$number" "Retry after GitHub returns complete review pages."
+  if [ "$(printf '%s' "$observation" | jq -r '.review != null')" = true ]; then
+    PRIMARY_REPLY_KIND=review
+    PRIMARY_REPLY_BODY="$(printf '%s' "$observation" | jq -r '.review.body')"
+  fi
+}
+
+# The gate's evidence deadline, read from the pinned review-gate.yml at every
+# revision GitHub enforces on this base -- the revisions the run binding
+# accepts. Overlapping pins take the longest, so no enforced gate is woken
+# before its own deadline. A pinned gate that declares none fails closed: a
+# deadline invented here could wake the gate before it may ask its fallback,
+# which a driver reads as a review that never arrives.
+read_review_evidence_deadline() {
+  local sha values value deadline=""
+  REVIEW_EVIDENCE_DEADLINE_SECONDS=""
+  for sha in $(printf '%s' "$ENFORCEMENT_REVIEW_GATE_REVISIONS" | jq -r '.[]'); do
+    read_with_retry gh api --hostname "$REPO_HOST" -H "Accept: application/vnd.github.raw+json" \
+      "repos/$ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY/contents/.github/workflows/review-gate.yml?ref=$sha" \
+      || fail_operation "could not read the pinned review-gate at $ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY@$sha to learn its evidence deadline: $READ_OUTPUT" \
+        "Retry after GitHub recovers. The review request stands; re-running this command waits for it again."
+    values="$(printf '%s\n' "$READ_OUTPUT" | sed -n -E 's/^[[:space:]]*REVIEW_EVIDENCE_WAIT_SECONDS:[[:space:]]*"?([0-9]+)"?[[:space:]]*(#.*)?$/\1/p')"
+    [ -n "$values" ] \
+      || fail_operation "the pinned review-gate at $ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY@$sha declares no REVIEW_EVIDENCE_WAIT_SECONDS, so its evidence deadline cannot be derived" \
+        "The review request stands. Re-run the review-gate for this head once the reviewer has answered, or repin to a gate that declares its deadline."
+    for value in $values; do
+      if [ -z "$deadline" ] || [ "$value" -gt "$deadline" ]; then deadline="$value"; fi
+    done
+  done
+  [ -n "$deadline" ] \
+    || fail_operation "no enforced review-gate revision is recorded for this base" "Re-assess the live base policy before retrying."
+  REVIEW_EVIDENCE_DEADLINE_SECONDS="$deadline"
+}
+
+# Ask GitHub to re-run the gate once, then follow that one attempt: a
+# contract-4 run is short. Its conclusion is reported as the gate reached it;
+# this client never reads findings or decides what they mean.
+wake_review_gate_once() {
+  local number="$1" head="$2" base_ref="$3" base_sha="$4" attempt=1 status run_attempt conclusion
+  rerun_declared_review_gate "$number" "$head" 0 "$base_ref" "$base_sha"
+  if [ "$REVIEW_GATE_ACTION" = actions-refused ]; then
+    record_actions_refusal review-gate "$REVIEW_GATE_RUN_ID"
+    return 0
+  fi
+  while :; do
+    assert_wait_liveness "$number" "$head" "$base_ref" "$base_sha"
+    read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$REVIEW_GATE_RUN_ID" \
+      --jq '[.status, (.run_attempt | tostring), (.conclusion // "-")] | @tsv' \
+      || fail_operation "could not read review-gate run $REVIEW_GATE_RUN_ID: $READ_OUTPUT" "Retry after GitHub recovers; touchstone pr status $number reports the gate."
+    IFS="$(printf '\t')" read -r status run_attempt conclusion <<<"$READ_OUTPUT"
+    case "$run_attempt" in '' | *[!0-9]*) fail_operation "review-gate run $REVIEW_GATE_RUN_ID reported a non-numeric attempt '$run_attempt'" "Inspect the run in the Actions tab." ;; esac
+    if [ "$status" = completed ] && [ "$run_attempt" -ge "$REQUIRED_WORKFLOW_MIN_ATTEMPT" ]; then
+      [ "$conclusion" != - ] || conclusion=""
+      REVIEW_GATE_STATUS=completed
+      REVIEW_GATE_CONCLUSION="$conclusion"
+      # A failure Actions produced without starting the job is a refusal to
+      # report, not a review verdict (AUT-1594).
+      if [ "$conclusion" = failure ]; then
+        read_actions_refusal "$REVIEW_GATE_RUN_ID" "$run_attempt" review-gate
+        [ "$ACTIONS_REFUSAL_JSON" = null ] || record_actions_refusal review-gate "$REVIEW_GATE_RUN_ID"
+      fi
+      printf 'Review gate run %s concluded %s for %s.\n' "$REVIEW_GATE_RUN_ID" "${conclusion:-with no conclusion}" "$head" >&2
+      return 0
+    fi
+    if [ "$attempt" -ge "$GATE_ATTEMPTS" ]; then
+      REVIEW_GATE_STATUS="$status"
+      printf 'Review gate run %s is still %s after %ss; it decides on its own.\n' \
+        "$REVIEW_GATE_RUN_ID" "$status" "$((GATE_ATTEMPTS * GATE_RETRY_DELAY))" >&2
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep "$GATE_RETRY_DELAY"
+  done
+}
+
+# Contract 4's wait-and-wake, shared by `open` and, through `await-review`, by
+# `answer`: wait on this machine for the reviewer to answer the head's latest
+# request, or for that request to age past the gate's evidence deadline, then
+# ask GitHub to re-run the gate once and report where that run ended. The
+# client only wakes the gate; the verdict is the gate's.
+REVIEW_WAIT_POLL_SECONDS=0
+await_review_then_wake_gate() {
+  local number="$1" head="$2" base_ref="$3" base_sha="$4"
+  REVIEW_GATE_STATUS=""
+  REVIEW_GATE_CONCLUSION=""
+  # Actions already refused a required job for this head: no gate run can be
+  # woken, and waiting out an evidence window first would only delay the
+  # refusal the command reports.
+  if [ -n "$OPEN_ACTIONS_REFUSALS" ]; then
+    printf 'Not waiting for review: Actions refuses jobs for %s, so no review-gate run can be woken.\n' "$head" >&2
+    return 0
+  fi
+  case "$GATE_RETRY_DELAY" in '' | *[!0-9]*)
+    fail_input "TOUCHSTONE_GATE_RETRY_DELAY must be a non-negative integer" "Unset it, or pass whole seconds."
+    ;;
+  esac
+  # The review surface changes on the reviewer's minutes-long scale, so it is
+  # read a third as often as a workflow run's state.
+  REVIEW_WAIT_POLL_SECONDS=$((GATE_RETRY_DELAY * 3))
+  read_review_evidence_deadline
+  printf 'Gate behavior contract 4: waiting here until the primary reviewer answers the latest request for %s, or that request passes the pinned gate'\''s %ss evidence deadline; then the gate is re-run once.\n' \
+    "$head" "$REVIEW_EVIDENCE_DEADLINE_SECONDS" >&2
+  announce_review_fallback "$number" "$head" "" "$REVIEW_EVIDENCE_DEADLINE_SECONDS"
+  wake_review_gate_once "$number" "$head" "$base_ref" "$base_sha"
+}
+
+# The contract-4 wait for a request another step posted: `answer`'s attest
+# request. It is `open`'s own wait-and-wake, reached from respond-review.sh
+# the way `status` is, so the two flows share one code path rather than two
+# polling loops. It posts nothing: never a request, never a second re-run.
+await_review() {
+  local number state url head head_repo base base_sha merge_state draft
+  read_pr_row
+  IFS="$(printf '\t')" read -r number state url head head_repo base base_sha merge_state draft <<<"$PR_ROW"
+  [ "$state" = OPEN ] \
+    || fail_input "PR #$PR_NUMBER is $state; no review-gate run applies" "Nothing waits for a pull request that is not open."
+  [ "$head" = "$EXPECTED_HEAD" ] \
+    || fail_input "expected head $EXPECTED_HEAD but PR #$PR_NUMBER is at $head" "Request one review for the live head."
+  # Selects and binds the base policy, which the declaration read below
+  # consults; `open` has already done both by the time it gets here.
+  read_enforcement "$base" "$base_sha"
+  review_gate_required "$base" \
+    || fail_input "no pinned review-gate is required on $base, so nothing waits for review" "Exact-head review remains driver procedure here."
+  effective_review_gate_waits_locally \
+    || fail_input "the effective review-gate on $base does not implement gate behavior contract 4, so it is not woken by a local wait" \
+      "Only a contract-4 gate evaluates once and needs waking."
+  verify_live_coordinates "$number" "$head" "$base" "$base_sha"
+  await_review_then_wake_gate "$number" "$head" "$base" "$base_sha"
+  verify_live_coordinates "$number" "$head" "$base" "$base_sha"
+  [ -z "$OPEN_ACTIONS_REFUSALS" ] \
+    || fail_operation "Actions refused the review-gate for PR #$number at $head, so no required check can pass. $OPEN_ACTIONS_REFUSALS" \
+      "$(actions_refusal_remedy)"
+  if [ "$JSON_MODE" = true ]; then
+    printf '{"schema":"%s","operation":"await-review","status":"woken","pullRequest":%s,"head":' "$OUTPUT_SCHEMA" "$number"
+    json_string "$head"
+    printf ',"reviewFallback":'
+    json_string "$REVIEW_FALLBACK_STATE"
+    printf ',"reviewGate":{"runId":'
+    json_string "$REVIEW_GATE_RUN_ID"
+    printf ',"action":'
+    json_string "$REVIEW_GATE_ACTION"
+    review_gate_verdict_json_fields
+    printf '}'
+    review_wait_json_fields
+    printf '}\n'
+  else
+    printf 'PR #%s: review gate woken\n  head: %s\n' "$number" "$head"
+    review_wait_text "$number"
+  fi
 }
 
 open_pr() {
@@ -3032,5 +3375,6 @@ case "$OPERATION" in
   open) open_pr ;;
   status) status_pr ;;
   merge) merge_pr ;;
+  await-review) await_review ;;
   policy-status) policy_status ;;
 esac

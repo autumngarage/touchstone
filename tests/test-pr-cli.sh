@@ -171,6 +171,29 @@ value_after() {
   return 1
 }
 
+# When the head's review request was posted: old unless a case says
+# otherwise, so the contract-4 evidence deadline has passed by default.
+fake_request_at() {
+  if [ -f "$GH_STATE/request-at" ]; then cat "$GH_STATE/request-at"; else printf '2026-08-27T17:00:00Z\n'; fi
+}
+
+# A fixture item that stays hidden for the number of reads its counter file
+# holds, then appears: a reply that lands while the client is waiting.
+fake_after_reads() {
+  local counter="$GH_STATE/$1" left
+  [ -f "$counter" ] || return 0
+  left="$(cat "$counter")"
+  [ "$left" -gt 0 ] || return 0
+  echo $((left - 1)) >"$counter"
+  return 1
+}
+
+fake_comments='[]'
+fake_add_comment() {
+  fake_comments="$(printf '%s' "$fake_comments" | jq -c --argjson id "$1" --arg login "$2" --arg at "$3" --arg body "$4" \
+    '. + [{id:$id, user:{login:$login}, created_at:$at, updated_at:$at, body:$body}]')"
+}
+
 
 case "$1 ${2:-}" in
   "auth status")
@@ -584,6 +607,40 @@ case "$1 ${2:-}" in
       if [ -f "$GH_STATE/unguarded-recorded" ]; then printf '0\n1\n'; else printf '0\n0\n'; fi
     elif has '.[] | @base64' "$@"; then
       :
+    elif has '/issues/7/comments' "$@" && ! has --jq "$@"; then
+      # The raw comment pages the contract-4 wait reads: every review request
+      # for this head, the primary reviewer's replies and its status
+      # dashboard, and this tool's fallback notice.
+      request_at="$(fake_request_at)"
+      primary='chatgpt-codex-connector[bot]'
+      if [ -f "$GH_STATE/review-request" ]; then
+        read -r saved_head saved_base saved_base_sha <"$GH_STATE/review-request"
+        fake_add_comment 1 alice "$request_at" "@codex review
+
+<!-- touchstone:pr-open head=$saved_head base=$saved_base base_sha=$saved_base_sha -->"
+      fi
+      if [ "${GH_MODE:-ok}" = attest_request_present ]; then
+        fake_add_comment 91 alice "$request_at" "@codex review
+
+<!-- touchstone:attest-request head=$GH_HEAD -->"
+      fi
+      # The dashboard is created after the request and edited in place; it is
+      # the primary's comment, but never a reply to anything.
+      if [ -f "$GH_STATE/primary-dashboard" ]; then
+        fake_add_comment 100 "$primary" "$request_at" "<!-- codex-pull-request-review-summary -->
+
+## Codex Review Summary"
+      fi
+      if [ "${GH_MODE:-ok}" = primary_quota ]; then
+        fake_add_comment 101 "$primary" "$request_at" 'You have reached your Codex usage limits for code reviews.'
+      fi
+      if [ -f "$GH_STATE/primary-comment" ] && fake_after_reads primary-comment-delay; then
+        fake_add_comment 102 "$primary" "$request_at" "$(cat "$GH_STATE/primary-comment")"
+      fi
+      if [ -f "$GH_STATE/fallback-announced" ]; then
+        fake_add_comment 103 alice "$request_at" "<!-- touchstone:review-fallback head=$GH_HEAD -->"
+      fi
+      printf '%s\n' "$fake_comments"
     elif has '/issues/7/comments' "$@"; then
       if has '[.id, (.user.login // ""), (.body // "")]' "$@"; then
         case "${GH_MODE:-ok}" in
@@ -652,6 +709,17 @@ case "$1 ${2:-}" in
         printf '%s\talice\t%s\n' 'https://example.test/pr/7#issuecomment-1' \
           "@codex review\\n\\n<!-- touchstone:pr-open head=$saved_head base=$saved_base base_sha=$saved_base_sha -->"
       fi
+    elif has '/reviews?per_page=100' "$@" && ! has --jq "$@"; then
+      # The raw review pages: a primary review from before the request, which
+      # must never wake the wait, and one submitted after it when a case asks.
+      request_at="$(fake_request_at)"
+      reviews='[{"id":60,"user":{"login":"chatgpt-codex-connector[bot]"},"state":"COMMENTED","submitted_at":"2026-08-01T00:00:00Z","body":"An earlier head."}]'
+      if [ -f "$GH_STATE/primary-review" ] && fake_after_reads primary-review-delay; then
+        submitted_at="$(jq -nr --arg at "$request_at" '($at | fromdateiso8601) + 60 | todate')"
+        reviews="$(printf '%s' "$reviews" | jq -c --arg at "$submitted_at" \
+          '. + [{id:61, user:{login:"chatgpt-codex-connector[bot]"}, state:"COMMENTED", submitted_at:$at, body:""}]')"
+      fi
+      printf '%s\n' "$reviews"
     elif has '/reviews?per_page=100' "$@"; then
       if has 'submitted_at' "$@"; then
         if [ "${GH_MODE:-ok}" = status_gate_stale_review ] && has 'updated_at // .submitted_at' "$@"; then
@@ -702,8 +770,9 @@ case "$1 ${2:-}" in
       # overlapping pin whose other enforced revision is the compatible one.
       behavior_version=3
       [ ! -f "$GH_STATE/behavior-version-legacy" ] || behavior_version=1
-      [ ! -f "$GH_STATE/behavior-version-unsupported" ] || behavior_version=4
+      [ ! -f "$GH_STATE/behavior-version-unsupported" ] || behavior_version=5
       [ ! -f "$GH_STATE/behavior-version-next" ] || behavior_version=3
+      [ ! -f "$GH_STATE/behavior-version-v4" ] || behavior_version=4
       if [ -f "$GH_STATE/overlapping-pins" ] && has "?ref=$GH_MID_SHA" "$@"; then behavior_version=1; fi
       if [ -f "$GH_STATE/behavior-version-missing" ]; then
         printf '%s\n' '{"contractVersion":1}'
@@ -711,6 +780,12 @@ case "$1 ${2:-}" in
         jq -cn --argjson version "$behavior_version" \
           '{contractVersion:1,gateBehaviorContractVersion:$version}'
       fi
+    elif has 'touchstone-workflows/contents/.github/workflows/review-gate.yml?ref=' "$@"; then
+      # The pinned gate's own text. The contract-4 wait derives its deadline
+      # from the env line alone: a commented mention is not a declaration.
+      printf 'jobs:\n  review-gate:\n    env:\n      REVIEW_REQUEST_WAIT_SECONDS: 120\n      # REVIEW_EVIDENCE_WAIT_SECONDS: 5 only in a comment\n'
+      [ -f "$GH_STATE/review-gate-no-deadline" ] \
+        || printf '      REVIEW_EVIDENCE_WAIT_SECONDS: %s\n' "${GH_EVIDENCE_WAIT_SECONDS:-600}"
     elif has '/contents/' "$@" && has '?ref=' "$@"; then
       cat "$GH_CANDIDATE_POLICY"
     elif has 'actions/permissions --jq .enabled' "$@"; then
@@ -812,16 +887,20 @@ case "$1 ${2:-}" in
           printf '1\n'
         fi
       elif [ -f "$GH_STATE/gate-after-rerun" ]; then
+        # status, attempt, conclusion: the superseded attempt can still show
+        # right after a re-run, then the new one in progress.
         left="$(cat "$GH_STATE/gate-after-rerun")"
         if [ "$left" -ge 2 ]; then
           echo 1 >"$GH_STATE/gate-after-rerun"
-          printf 'completed success 1\n'
+          printf 'completed\t1\tsuccess\n'
         else
           rm -f "$GH_STATE/gate-after-rerun"
-          printf 'in_progress  2\n'
+          printf 'in_progress\t2\t-\n'
         fi
+      elif [ -f "$GH_STATE/gate-rerun-running" ] && ! fake_after_reads gate-rerun-running; then
+        printf 'in_progress\t2\t-\n'
       else
-        printf 'completed %s 2\n' "${GH_GATE_CONCLUSION:-success}"
+        printf 'completed\t2\t%s\n' "${GH_GATE_CONCLUSION:-success}"
       fi
     elif has 'actions/runs/80' "$@"; then
       if has '.run_attempt' "$@"; then
@@ -1635,7 +1714,8 @@ EOF
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
     || fail "behavior v2 open reused a run whose request-evidence window had expired"
   rm -f "$TMP/state/gate-in-progress"
-  jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 4' \
+  # Contract 4 is supported now; the next unknown one still fails closed.
+  jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 5' \
     "$TMP/tool-v1/policy/github/touchstone-main.json" >"$TMP/tool-v1/policy/github/touchstone-main.next"
   mv "$TMP/tool-v1/policy/github/touchstone-main.next" "$TMP/tool-v1/policy/github/touchstone-main.json"
   touch "$TMP/state/behavior-version-unsupported"
@@ -1715,6 +1795,174 @@ EOF
   assert_has "$TMP/out" '"reviewFallback":"pending"'
   assert_not_has "$GH_CALLS" 'touchstone:review-fallback'
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns" "$TMP/state/review-request" "$TMP/state/fallback-announced"
+
+  echo "==> gate behavior contract 4: open waits here for the review, then wakes the gate once (AUT-793)"
+  # A contract-4 gate evaluates once and never polls. open waits on this
+  # machine until the primary reviewer answers the head's latest request, or
+  # that request passes the pinned gate's evidence deadline, then re-runs the
+  # gate exactly once and reports its conclusion without judging it.
+  mkdir -p "$TMP/tool-v4/bin" "$TMP/tool-v4/scripts" "$TMP/tool-v4/policy/github"
+  cp "$ROOT/bin/touchstone" "$TMP/tool-v4/bin/touchstone"
+  cp "$ROOT/scripts/touchstone-pr.sh" "$TMP/tool-v4/scripts/touchstone-pr.sh"
+  cp -R "$ROOT/policy/github/." "$TMP/tool-v4/policy/github/"
+  cat "$ROOT/VERSION" >"$TMP/tool-v4/VERSION"
+  jq --argjson version 4 '.workflowSource.sourceContract.gateBehaviorContractVersion = $version' \
+    "$ROOT/policy/github/touchstone-main.json" >"$TMP/tool-v4/policy/github/touchstone-main.json"
+  run_pr_v4() {
+    local output="$1"
+    shift
+    : >"$GH_CALLS"
+    set +e
+    bash "$TMP/tool-v4/bin/touchstone" pr "$@" --project "$TMP/project" >"$output" 2>&1
+    RUN_RC=$?
+    set -e
+  }
+  v4_reset() {
+    rm -f "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/pr-title" "$TMP/state/review-request" \
+      "$TMP/state/gate-reruns" "$TMP/state/fallback-announced" "$TMP/state/request-at" \
+      "$TMP/state/primary-comment" "$TMP/state/primary-comment-delay" "$TMP/state/primary-review" \
+      "$TMP/state/primary-review-delay" "$TMP/state/primary-dashboard" "$TMP/state/gate-in-progress" \
+      "$TMP/state/gate-fresh-active" "$TMP/state/gate-after-rerun" "$TMP/state/gate-rerun-running" \
+      "$TMP/state/review-gate-no-deadline" "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun"
+  }
+  # Exactly one re-run per wake and exactly one request per head, counted.
+  v4_reruns() { if [ -f "$TMP/state/gate-reruns" ]; then grep -c 'rerun 77' "$TMP/state/gate-reruns" || true; else echo 0; fi; }
+  v4_requests() { grep -c '^pr comment.*@codex review' "$GH_CALLS" || true; }
+  touch "$TMP/state/review-gate" "$TMP/state/behavior-version-v4"
+  v4_reset
+  touch "$TMP/state/pr-exists"
+  run_pr_v4 "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewGateBehaviorContractVersion":4'
+
+  # The primary's review lands two polls into the wait: the wait is still
+  # reading the review surface when it arrives, and it wakes the gate once.
+  v4_reset
+  date -u +%Y-%m-%dT%H:%M:%SZ >"$TMP/state/request-at"
+  touch "$TMP/state/primary-review"
+  echo 2 >"$TMP/state/primary-review-delay"
+  run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewWait":{"wokeBy":"primary-review","evidenceDeadlineSeconds":600}'
+  assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"rerun-requested","status":"completed","conclusion":"success"}'
+  assert_has "$TMP/out" '"reviewFallback":"primary"'
+  [ "$(v4_reruns)" -eq 1 ] || fail "contract 4 re-ran the gate $(v4_reruns) times for one wake; expected exactly one"
+  [ "$(v4_requests)" -eq 1 ] || fail "contract 4 posted $(v4_requests) review requests for one head; expected exactly one"
+  [ "$(grep -c 'pulls/7/reviews' "$GH_CALLS" || true)" -ge 3 ] \
+    || fail "contract 4 stopped reading the review surface before the review arrived"
+  grep -q 'workflows/review-gate.yml?ref=' "$GH_CALLS" \
+    || fail "contract 4 did not derive its deadline from the pinned review-gate"
+
+  # No reply at all: the request is past its evidence deadline, so the gate
+  # is woken once to ask its fallback. The failure it reports is the gate's
+  # verdict, reported as it stands, not a failure of open.
+  v4_reset
+  GH_GATE_CONCLUSION=failure run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewWait":{"wokeBy":"deadline","evidenceDeadlineSeconds":600}'
+  assert_has "$TMP/out" '"reviewFallback":"pending"'
+  assert_has "$TMP/out" '"status":"completed","conclusion":"failure"'
+  [ "$(v4_reruns)" -eq 1 ] || fail "contract 4 re-ran the gate $(v4_reruns) times at the deadline; expected exactly one"
+  [ "$(v4_requests)" -eq 1 ] || fail "contract 4 posted $(v4_requests) review requests at the deadline; expected exactly one"
+
+  # The status dashboard is the primary's comment but never a reply: alone,
+  # it must not wake the wait. With the request still fresh, only the wait's
+  # own bound ends it.
+  v4_reset
+  touch "$TMP/state/primary-dashboard"
+  run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"wokeBy":"deadline"'
+  assert_not_has "$TMP/out" '"wokeBy":"primary-comment"'
+  v4_reset
+  touch "$TMP/state/primary-dashboard"
+  date -u +%Y-%m-%dT%H:%M:%SZ >"$TMP/state/request-at"
+  TOUCHSTONE_REVIEW_WAIT_MAX_SECONDS=1 run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"wokeBy":"wait-bound"'
+  [ "$(v4_reruns)" -eq 1 ] || fail "contract 4 re-ran the gate $(v4_reruns) times at its wait bound; expected exactly one"
+
+  # A quota notice is a reply: it wakes the gate at once, and the move to
+  # the gate's fallback is recorded once.
+  v4_reset
+  GH_MODE=primary_quota run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"wokeBy":"primary-comment"'
+  assert_has "$TMP/out" '"reviewFallback":"fallback"'
+  [ "$(grep -c '^pr comment.*touchstone:review-fallback' "$GH_CALLS" || true)" -eq 1 ] \
+    || fail "contract 4 did not record the move to the fallback exactly once"
+  [ "$(v4_reruns)" -eq 1 ] || fail "contract 4 re-ran the gate $(v4_reruns) times after a quota notice; expected exactly one"
+
+  # A contract-4 run is short and never the evaluator of record: a run still
+  # in progress is waited on to completion and then re-run, not reused.
+  v4_reset
+  touch "$TMP/state/gate-fresh-active"
+  echo 3 >"$TMP/state/gate-in-progress"
+  run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"action":"rerun-requested"'
+  assert_not_has "$TMP/out" '"action":"already-active"'
+  [ "$(v4_reruns)" -eq 1 ] || fail "contract 4 re-ran an in-progress gate $(v4_reruns) times; expected once, after it completed"
+
+  # The request `pr answer` left is reused, never doubled, and the wait
+  # anchors on it.
+  v4_reset
+  touch "$TMP/state/pr-exists"
+  GH_MODE=attest_request_present run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewRequest":"existing:https://example.test/pr/7#issuecomment-91"'
+  assert_has "$TMP/out" '"wokeBy":"deadline"'
+  [ "$(v4_requests)" -eq 0 ] || fail "contract 4 posted a second review request beside the attest request"
+  [ "$(v4_reruns)" -eq 1 ] || fail "contract 4 re-ran the gate $(v4_reruns) times for a reused request; expected exactly one"
+
+  # The deadline is the pinned gate's; a gate that declares none fails closed
+  # rather than waking on a deadline invented here.
+  v4_reset
+  touch "$TMP/state/review-gate-no-deadline"
+  run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'declares no REVIEW_EVIDENCE_WAIT_SECONDS'
+  [ "$(v4_reruns)" -eq 0 ] || fail "contract 4 woke the gate without a derivable evidence deadline"
+
+  # A woken run that outlasts the follow is reported still running; the gate
+  # decides on its own.
+  v4_reset
+  echo 99 >"$TMP/state/gate-rerun-running"
+  TOUCHSTONE_GATE_ATTEMPTS=3 run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"in_progress","conclusion":null'
+  [ "$(v4_reruns)" -eq 1 ] || fail "contract 4 re-ran the gate $(v4_reruns) times while following it; expected exactly one"
+
+  # `answer` reaches the same wait through await-review: it posts nothing and
+  # wakes the gate once.
+  v4_reset
+  touch "$TMP/state/pr-exists"
+  GH_MODE=attest_request_present run_pr_v4 "$TMP/out" await-review 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"operation":"await-review","status":"woken"'
+  assert_has "$TMP/out" '"wokeBy":"deadline"'
+  [ "$(grep -c '^pr comment' "$GH_CALLS" || true)" -eq 0 ] || fail "await-review posted a comment"
+  [ "$(v4_reruns)" -eq 1 ] || fail "await-review re-ran the gate $(v4_reruns) times; expected exactly one"
+
+  # Contract 3 is unchanged: no local wait, no review read, no deadline read,
+  # and the same result document as before.
+  rm -f "$TMP/state/behavior-version-v4"
+  v4_reset
+  touch "$TMP/state/pr-exists"
+  GH_MODE=attest_request_present run_pr "$TMP/out" await-review 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'does not implement gate behavior contract 4'
+  [ "$(v4_reruns)" -eq 0 ] || fail "await-review woke a contract-3 gate"
+  v4_reset
+  TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 GH_MODE=primary_replied run_pr "$TMP/out" open --title 'Gate v3' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewFallback":"primary"'
+  assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"rerun-requested"}'
+  assert_not_has "$TMP/out" '"reviewWait"'
+  assert_not_has "$GH_CALLS" 'pulls/7/reviews'
+  assert_not_has "$GH_CALLS" 'workflows/review-gate.yml?ref='
+  v4_reset
+  rm -f "$TMP/state/review-gate"
 
   echo "==> open refreshes required delivery evidence after body convergence (AUT-481)"
   # Put both the policy declaration and matching organization run on page two.
@@ -3052,10 +3300,19 @@ STUB
   cat >"$RR/tool-v1/scripts/touchstone-pr.sh" <<'STATUS_STUB'
 #!/usr/bin/env bash
 set -euo pipefail
+# The shared contract-4 wait is exercised against the real sequencer in its
+# own cases; here only the call respond-review.sh makes is recorded.
+if [ "${1:-}" = await-review ]; then
+  printf '%s\n' "$*" >>"$GH_STATE/await-calls"
+  [ ! -f "$GH_STATE/await-fails" ] || { echo "ERROR: the stubbed wait failed" >&2; exit 1; }
+  echo "PR #7: review gate woken"
+  exit 0
+fi
 version=null
 [ ! -f "$GH_STATE/status-fails" ] || exit 1
 [ ! -f "$GH_STATE/effective-behavior-v2" ] || version=2
 [ ! -f "$GH_STATE/effective-behavior-v3" ] || version=3
+[ ! -f "$GH_STATE/effective-behavior-v4" ] || version=4
 gate_check='{"present":true,"workflowRunId":77}'
 [ ! -f "$GH_STATE/status-run-unbound" ] || gate_check='{"present":false,"unbound":true,"workflowRunId":77}'
 printf '{"schema":"touchstone.pr/v1","operation":"status","reviewGateBehaviorContractVersion":%s,"reviewGateCheck":%s}\n' "$version" "$gate_check"
@@ -3086,6 +3343,15 @@ STATUS_STUB
     RUN_RC=$?
     set -e
     rm -f "$GH_STATE/effective-behavior-v3"
+  }
+  run_v4() {
+    rm -f "$GH_STATE/effective-behavior-v2" "$GH_STATE/effective-behavior-v3"
+    touch "$GH_STATE/effective-behavior-v4"
+    set +e
+    bash "$RR/tool-v2/scripts/respond-review.sh" "$@" >"$RR/out" 2>&1
+    RUN_RC=$?
+    set -e
+    rm -f "$GH_STATE/effective-behavior-v4"
   }
 
   echo "==> --fix-commit is verified against the captured PR head before mutation"
@@ -3443,6 +3709,44 @@ STATUS_STUB
     || fail "behavior v2 answer posted a review request it must not post"
   rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/gate-fresh-active"
   rm -f "$GH_STATE/effective-behavior-v2"
+
+  echo "==> a contract-4 answer requests the verdict once and waits through the shared sequencer (AUT-793)"
+  # A contract-4 gate evaluates once, so the request the last answer posts
+  # needs a wake. The wait-and-wake is open's own, run through
+  # touchstone-pr.sh await-review: one code path, never a second loop here.
+  [ ! -f "$GH_STATE/await-calls" ] \
+    || fail "a contract-1, -2, or -3 answer ran the contract-4 wait: $(cat "$GH_STATE/await-calls")"
+  rm -f "$GH_STATE/fresh-request" "$GH_STATE/gate-reruns" "$GH_STATE/gate-in-progress" "$GH_STATE/resolved"
+  run_v4 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "contract-4 answer exited $RUN_RC: $(tail -3 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request" 2>/dev/null || true)" = 1 ] \
+    || fail "contract-4 answer did not post exactly one review request"
+  [ "$(wc -l <"$GH_STATE/await-calls" 2>/dev/null | tr -d ' ')" = 1 ] \
+    && grep -qxF 'await-review 7 --head abcdef0123456789abcdef0123456789abcdef01' "$GH_STATE/await-calls" \
+    || fail "contract-4 answer did not wait through await-review exactly once for the captured head"
+  [ ! -f "$GH_STATE/gate-reruns" ] || fail "contract-4 answer re-ran the gate itself instead of through the shared wait"
+  grep -qF 'Behavior contract 4: waiting here' "$RR/out" || fail "contract-4 answer did not say it waits: $(tail -3 "$RR/out")"
+  # A retry posts nothing new and waits once more.
+  run_v4 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "contract-4 retry exited $RUN_RC: $(tail -3 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" = 1 ] || fail "contract-4 retry posted a second review request"
+  [ "$(wc -l <"$GH_STATE/await-calls" | tr -d ' ')" = 2 ] || fail "contract-4 retry did not wait exactly once more"
+  # A failed wait is reported, and says the answer and request stand.
+  touch "$GH_STATE/await-fails"
+  run_v4 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 1 ] || fail "a failed contract-4 wait exited $RUN_RC, expected 1"
+  grep -qF 'the answers and the review request are recorded' "$RR/out" \
+    || fail "a failed contract-4 wait did not say what stands: $(tail -2 "$RR/out")"
+  [ "$(grep -cF '@codex review' "$GH_STATE/fresh-request")" = 1 ] || fail "a failed contract-4 wait posted another request"
+  rm -f "$GH_STATE/await-fails" "$GH_STATE/await-calls" "$GH_STATE/fresh-request"
+  # An earlier answer of a round requests nothing, so it waits for nothing.
+  touch "$GH_STATE/second-round"
+  run_v4 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "contract-4 answer with threads remaining exited $RUN_RC: $(tail -3 "$RR/out")"
+  [ ! -f "$GH_STATE/fresh-request" ] || fail "contract-4 answer requested review while threads remained open"
+  [ ! -f "$GH_STATE/await-calls" ] || fail "contract-4 answer waited while no review was requested"
+  grep -qF 'threads remain open' "$RR/out" || fail "contract-4 answer did not say why nothing waits"
+  rm -f "$GH_STATE/second-round" "$GH_STATE/resolved-52" "$GH_STATE/fresh-request" "$GH_STATE/await-calls" "$GH_STATE/gate-reruns"
   rm -f "$GH_STATE/review-gate"
 
   echo "==> --all-resolved-check reads the thread list from stdout alone"

@@ -465,9 +465,11 @@ if PR_STATUS="$(bash "$TOOL_ROOT/scripts/touchstone-pr.sh" status "$PR_NUMBER" -
 else
   echo "WARNING: could not verify behavior v2; conservatively refreshing the gate through the behavior-v1 path." >&2
 fi
-if [ "$GATE_BEHAVIOR_VERSION" = 3 ]; then
+ROUND_REQUEST_PRESENT=false
+if [ "$GATE_BEHAVIOR_VERSION" = 3 ] || [ "$GATE_BEHAVIOR_VERSION" = 4 ]; then
   # Behavior v3 accepts only a later trusted clean verdict for this exact
-  # head; answers and thread resolution alone can never pass. When this
+  # head, and contract 4 keeps that rule while moving the wait for it off the
+  # gate; answers and thread resolution alone can never pass. When this
   # answer resolved the last open thread, post the one fresh review request
   # that lets the reviewer publish that verdict — whether or not a bound
   # gate run exists yet: whichever run evaluates this head needs the
@@ -482,25 +484,27 @@ if [ "$GATE_BEHAVIOR_VERSION" = 3 ]; then
   # (AUT-1170). A retry of any answer in a closed round reproduces the same
   # set and posts nothing, so one round yields exactly one request. The gate
   # reads "@codex review", not the markers; they are this script's own record.
-  REMAINING_UNRESOLVED="$(list_unresolved_threads)" || fail "answers are recorded, but the unresolved-thread read failed; when every thread is resolved, post '@codex review' on PR #$PR_NUMBER for the behavior-v3 clean verdict."
+  GATE_LABEL="behavior-v$GATE_BEHAVIOR_VERSION"
+  REMAINING_UNRESOLVED="$(list_unresolved_threads)" || fail "answers are recorded, but the unresolved-thread read failed; when every thread is resolved, post '@codex review' on PR #$PR_NUMBER for the $GATE_LABEL clean verdict."
   if [ -z "$REMAINING_UNRESOLVED" ]; then
     ATTEST_MARKER="<!-- touchstone:attest-request head=$HEAD_SHA -->"
-    ROUND_IDS="$(list_resolved_thread_ids)" || fail "answers are recorded, but the resolved-thread read failed; when every thread is resolved, post '@codex review' on PR #$PR_NUMBER for the behavior-v3 clean verdict."
+    ROUND_IDS="$(list_resolved_thread_ids)" || fail "answers are recorded, but the resolved-thread read failed; when every thread is resolved, post '@codex review' on PR #$PR_NUMBER for the $GATE_LABEL clean verdict."
     ROUND_MARKER="<!-- touchstone:attest-round head=$HEAD_SHA answered=${ROUND_IDS:-none} -->"
     EXISTING_ATTEST="$(gh_read api --paginate "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments?per_page=100" --jq '.[].body')" || fail "answers are recorded, but the attest-request idempotency read failed; verify PR #$PR_NUMBER carries one '@codex review' for this head."
     if printf '%s\n' "$EXISTING_ATTEST" | grep -qF "$ROUND_MARKER"; then
-      echo "==> Every thread is resolved; the behavior-v3 review request for this answer already exists."
+      echo "==> Every thread is resolved; the $GATE_LABEL review request for this answer already exists."
     else
       gh_read api "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments" -f body="@codex review
 
 $ATTEST_MARKER
-$ROUND_MARKER" --jq .id >/dev/null || fail "answers are recorded, but the fresh behavior-v3 review request failed; post '@codex review' on PR #$PR_NUMBER yourself."
+$ROUND_MARKER" --jq .id >/dev/null || fail "answers are recorded, but the fresh $GATE_LABEL review request failed; post '@codex review' on PR #$PR_NUMBER yourself."
       # The pre-answer head check bounds the window, not the race: prove the
       # coordinates survived the post, or say the request is stale-bound.
-      POST_HEAD="$(gh_read pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" || fail "posted the behavior-v3 review request, but the head re-read failed; verify PR #$PR_NUMBER still heads $HEAD_SHA."
-      [ "$POST_HEAD" = "$HEAD_SHA" ] || fail "PR head moved from $HEAD_SHA to $POST_HEAD while requesting the behavior-v3 verdict; the answers stand, but request review for the new head before merging."
-      echo "==> Every thread is resolved; posted a fresh review request for the behavior-v3 clean exact-head verdict."
+      POST_HEAD="$(gh_read pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" || fail "posted the $GATE_LABEL review request, but the head re-read failed; verify PR #$PR_NUMBER still heads $HEAD_SHA."
+      [ "$POST_HEAD" = "$HEAD_SHA" ] || fail "PR head moved from $HEAD_SHA to $POST_HEAD while requesting the $GATE_LABEL verdict; the answers stand, but request review for the new head before merging."
+      echo "==> Every thread is resolved; posted a fresh review request for the $GATE_LABEL clean exact-head verdict."
     fi
+    ROUND_REQUEST_PRESENT=true
   fi
 fi
 # Percent-encode one path segment with the base tool surface only: a branch
@@ -561,6 +565,20 @@ if [ "$GATE_BEHAVIOR_VERSION" = 3 ]; then
   # ones. One check, not a poll -- there is nothing here to wait for.
   require_open_pr_head
   echo "==> Behavior contract 3: the exact-head verdict is requested by the answer flow above; no behavior-v1 gate refresh applies."
+elif [ "$GATE_BEHAVIOR_VERSION" = 4 ]; then
+  # A contract-4 gate evaluates once and never waits, so the request above
+  # would sit unread without a wake. The wait-and-wake is `open`'s own, run
+  # through the shared PR sequencer rather than a second loop here; it posts
+  # no request and re-runs the gate once. Earlier answers in a round request
+  # nothing, so they have nothing to wait for.
+  require_open_pr_head
+  if [ "$ROUND_REQUEST_PRESENT" = true ]; then
+    echo "==> Behavior contract 4: waiting here for the review of $HEAD_SHA, then re-running the review gate once."
+    bash "$TOOL_ROOT/scripts/touchstone-pr.sh" await-review "$PR_NUMBER" --head "$HEAD_SHA" \
+      || fail "the answers and the review request are recorded, but waiting for the review or re-running the review gate failed (above); re-run this command to wait again -- it posts no second request."
+  else
+    echo "==> Behavior contract 4: threads remain open, so no review is requested yet and nothing waits; the answer that resolves the last one requests the verdict and waits for it."
+  fi
 elif [ "$GATE_REQUIRED" = true ]; then
   # The pinned gate runs under a workflow id the repository does not list; a
   # local workflow sharing the name is listed and is not the gate.

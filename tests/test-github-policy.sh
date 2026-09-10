@@ -654,6 +654,21 @@ run_policy dry-run "$TMP_DIR/consumer-policy-no-behavior-contract.json" >/dev/nu
   && fail "consumer policy without a gate behavior contract was accepted"
 GH_FAKE_GATE_BEHAVIOR_VERSION=2 run_policy dry-run "$POLICY" >/dev/null 2>&1 \
   && fail "consumer policy accepted a pinned source revision with an unsupported gate behavior contract"
+# Gate behavior contract 4 (AUT-793). The policy declares the one contract it
+# expects and the pinned manifest must declare exactly that one: a policy
+# declaring 4 applies over a contract-4 gate, and still refuses a pin that
+# declares 5 -- or that falls back to 3 -- while a contract-3 policy refuses
+# a contract-4 pin until its repin declares 4.
+jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 4' \
+  "$POLICY" >"$TMP_DIR/consumer-policy-behavior-4.json"
+GH_FAKE_GATE_BEHAVIOR_VERSION=4 run_policy dry-run "$TMP_DIR/consumer-policy-behavior-4.json" >/dev/null \
+  || fail "consumer policy declaring gate behavior contract 4 was refused over a contract-4 pinned revision"
+GH_FAKE_GATE_BEHAVIOR_VERSION=5 run_policy dry-run "$TMP_DIR/consumer-policy-behavior-4.json" >/dev/null 2>&1 \
+  && fail "consumer policy declaring contract 4 accepted a pinned revision declaring contract 5"
+GH_FAKE_GATE_BEHAVIOR_VERSION=3 run_policy dry-run "$TMP_DIR/consumer-policy-behavior-4.json" >/dev/null 2>&1 \
+  && fail "consumer policy declaring contract 4 accepted a pinned revision declaring contract 3"
+GH_FAKE_GATE_BEHAVIOR_VERSION=4 run_policy dry-run "$POLICY" >/dev/null 2>&1 \
+  && fail "a contract-3 consumer policy accepted a pinned revision declaring contract 4"
 ok "workflow source uses its manifest status while consumers still require external workflows"
 
 echo "==> Checked-in consumer policies equal their derivation"
