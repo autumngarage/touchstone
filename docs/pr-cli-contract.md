@@ -177,11 +177,14 @@ taking this document's word for it.
   stable enum: `reviewing`, `fix-required`, `ready-to-queue`, `queued`,
   `evicted`, `armed-waiting-checks`, `armed-blocked`, `armed-not-queued`,
   `merged`, `closed`, or `action-required`.
-  Its one-to-one `nextAction` values are `wait`, `address-review`, `queue`,
+  Its `nextAction` values are `wait`, `address-review`, `queue`,
   `done`, and `inspect`; both `reviewing` and `queued` intentionally use
-  `wait`. Human output prints the exact-head `touchstone pr merge PR --head
-  SHA` command only for `ready-to-queue`, where that mutation is safe to
-  attempt. No other phase invents a recovery command. The enum grows only by
+  `wait`. Every phase has one `nextAction` except `armed-not-queued`, which is
+  `queue` where GitHub reports the PR `CLEAN` and `inspect` otherwise. Human
+  output prints the exact-head `touchstone pr merge PR --head SHA` command
+  wherever `nextAction` is `queue` (`ready-to-queue`, and a `CLEAN`
+  `armed-not-queued`), where that mutation is safe to attempt. No other phase
+  invents a recovery command. The enum grows only by
   addition: a consumer that switches on phase treats an unknown value as
   `inspect`, and no existing value changes meaning.
 
@@ -209,7 +212,9 @@ taking this document's word for it.
   failed check run or an unresolved review thread is `armed-blocked`
   (`inspect`; `blockers` names them); neither is `armed-not-queued`: GitHub
   has not admitted the head and nothing will land it without another
-  mutation. Since `merge` arms auto-merge while the gate is still evaluating,
+  mutation. Where GitHub reports that PR `CLEAN`, `nextAction` is `queue` and
+  that mutation is `touchstone pr merge PR --head SHA`, which enqueues it;
+  otherwise it is `inspect`. Since `merge` arms auto-merge while the gate is still evaluating,
   the waiting state is the ordinary state of a fresh head. Only where the
   policy carries no queue is an armed auto-merge request `queued`, because
   there GitHub can land it without another local mutation. Conflicts,
@@ -318,7 +323,28 @@ taking this document's word for it.
   new commit). A disarm GitHub refuses is an operational failure (exit 1)
   naming the raw command. The recovery is a new head: fix the failing check,
   push, then `merge --head <new head>`; a push, force-push, or retarget after
-  the removal makes the eviction history (AUT-1290). Review is requested by `open` and refreshed by `answer`; `merge`
+  the removal makes the eviction history (AUT-1290).
+
+  Armed is not admitted. Under a policy that enforces a merge queue, a head
+  with auto-merge armed and no queue entry — armed by this run or an earlier
+  one — is read the way `status` reads it; where that is `armed-not-queued`
+  with `queue` next (no check run for the head still running or failed, no
+  unresolved thread, GitHub reporting `CLEAN`), `merge` enqueues it with
+  GraphQL `enqueuePullRequest` whose `expectedHeadOid` is the reviewed head,
+  re-reads, and reports `queued`. GitHub's auto-merge can fail to admit such
+  a head on its own: hesperus#354 sat armed, `CLEAN`, and unqueued for 21
+  minutes after a failed required check's re-run passed, and re-arming it
+  with `gh pr merge --match-head-commit` changed nothing (AUT-1224). A head
+  still waiting on checks stays `auto-merge-enabled`; `merge` never polls,
+  and re-running it is the recovery, idempotent because a queued head gets
+  no further mutation. A head that moved is refused with exit 2 and nothing
+  is enqueued. An enqueue GitHub rejects is exit 1 carrying GitHub's error,
+  and is never retried. No new status value or field. Raw recovery:
+  `gh pr view PR --json id --jq .id`, then
+  `gh api graphql -f query='mutation($id:ID!,$head:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$id,expectedHeadOid:$head}){mergeQueueEntry{state}}}' -f id=NODE_ID -f head=SHA`,
+  then re-read `mergeQueueEntry` and `headRefOid`.
+
+  Review is requested by `open` and refreshed by `answer`; `merge`
   never starts or waits for review. It also does not rebuild a second review
   verdict from mutable comment timestamps. A review-gated policy without a
   merge queue is reported as partial and requires the explicit audited
