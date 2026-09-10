@@ -84,10 +84,12 @@ check() {
 # replay: run the daily check as of 00:00 UTC on each day of August and
 # print "day<TAB>exit" for each.
 replay() {
-  local d
-  for d in $(seq -w 1 31); do
-    check --as-of "2026-08-$d" --sample-runs 0
-    printf '2026-08-%s\t%s\n' "$d" "$RC"
+  local d=1 day
+  while [ "$d" -le 31 ]; do
+    day="$(printf '2026-08-%02d' "$d")"
+    check --as-of "$day" --sample-runs 0
+    printf '%s\t%s\n' "$day" "$RC"
+    d=$((d + 1))
   done
 }
 first_warning() { awk -F'\t' '$2 == 1 { print $1; exit }' "$1"; }
