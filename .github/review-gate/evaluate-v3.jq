@@ -151,6 +151,23 @@ def review_request:
 | ($events | map(select(.kind == "clean")) | length) as $clean_count
 | ($events | map(select(.kind == "findings")) | length) as $findings_count
 | ($events | last) as $latest
+# The earliest review request posted after the latest verdict event for this
+# head: a question the reviewer still owes an answer. It never creates or
+# blocks success, and the verdict below ignores it. The workflow needs it for
+# the one decision a verdict cannot make: whether its fallback reviewer may
+# stand in. A findings verdict with no request after it is a completed review
+# of this head, which nothing may override; a request after it is owed an
+# answer, and only once that request's own window passes may another reviewer
+# answer instead. vesper#1251 merged because the fallback answered a request
+# the primary was still reviewing, and then overrode the findings it returned
+# (AUT-1581). The earliest such request anchors the window, so a later comment
+# cannot extend it. With no verdict for the head, every request is open.
+| ([($issue_comments // [])[]
+    | select(review_request)
+    | (.created_at // "")
+    | select(valid_at)
+    | select($latest == null or . > $latest.at)]
+   | sort | first) as $open_request_at
 # An event whose timestamps are missing or malformed, or whose abbreviated
 # SHA the workflow failed to resolve, cannot be ordered or trusted at all —
 # it poisons the whole evaluation rather than silently losing to sort order.
@@ -214,6 +231,9 @@ def review_request:
             else "waiting-request"
             end),
     conclusion: (if $verdict == "clean" then "success" else "failure" end),
+    # Null, or the whole-second UTC instant of the earliest request after the
+    # latest verdict event. Input to the workflow's fallback rule only.
+    openRequestAt: $open_request_at,
     reason: $reason,
     summary: (if $verdict == "clean"
       then "Trusted review evidence: the latest verdict for head `\($head)` is an explicit clean result. Thread resolution and merge-queue validation are enforced independently by GitHub."
