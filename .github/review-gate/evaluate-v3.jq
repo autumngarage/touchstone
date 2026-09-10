@@ -86,6 +86,14 @@ def reviewed_abbrev:
 def review_request:
   (.body // "") | test("^[[:space:]]*@codex[[:space:]]+review([[:space:]]|$)"; "i");
 
+# A review request that names this head in a Touchstone marker
+# (`<!-- touchstone:pr-open head=<sha> ...`, `<!-- touchstone:attest-request
+# head=<sha> -->`). Only these start the request-age clock reported as
+# `requestedAt`; like any request, they never create success.
+def head_request($head):
+  review_request
+  and ((.body // "") | ascii_downcase | test("<!--[[:space:]]*touchstone:[a-z-]+[[:space:]]+head=" + $head + "([[:space:]]|-->)"));
+
 . as $input
 | ($input.trustedAuthors // []) as $trusted
 | (($input.pr.headSha // "") | ascii_downcase) as $head
@@ -151,6 +159,19 @@ def review_request:
 | ($events | map(select(.kind == "clean")) | length) as $clean_count
 | ($events | map(select(.kind == "findings")) | length) as $findings_count
 | ($events | last) as $latest
+# When the current head was last asked for a review (AUT-793). A workflow that
+# evaluates once asks its fallback reviewer only after a request for THIS head
+# has gone unanswered for its evidence window. A bare request, or one made for
+# an earlier head, therefore never starts the clock: it could otherwise make
+# the fallback review a freshly pushed head before the primary could answer.
+# A request made before a base retarget asked about a diff that no longer
+# exists, so it does not count either. A hint only: it changes no verdict.
+| ([($issue_comments // [])[]
+    | select(head_request($head))
+    | (.created_at // "")
+    | select(valid_at)
+    | select(($base_retargeted_at | type) != "string" or $base_retargeted_at == "" or . > $base_retargeted_at)]
+   | max) as $requested_at
 # An event whose timestamps are missing or malformed, or whose abbreviated
 # SHA the workflow failed to resolve, cannot be ordered or trusted at all —
 # it poisons the whole evaluation rather than silently losing to sort order.
@@ -215,6 +236,8 @@ def review_request:
             end),
     conclusion: (if $verdict == "clean" then "success" else "failure" end),
     reason: $reason,
+    # The latest request naming the current head, or null (see head_request).
+    requestedAt: $requested_at,
     summary: (if $verdict == "clean"
       then "Trusted review evidence: the latest verdict for head `\($head)` is an explicit clean result. Thread resolution and merge-queue validation are enforced independently by GitHub."
       else "Review gate is not passing (\($verdict)):\n\n- \($reason)\n\nHead: `\($head)`"

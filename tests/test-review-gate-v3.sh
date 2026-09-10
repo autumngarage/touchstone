@@ -233,6 +233,40 @@ check_state "no evidence with a request maps to waiting-review" 'del(.issueComme
 check_state "no evidence and no request maps to waiting-request" 'del(.issueComments[1]) | del(.reviews[0]) | .issueComments[0].body = "opening note"' waiting-request
 check_state "invalid maps to failure" '.issueComments[1].updated_at = "2026-08-20T10:45:00Z"' failure
 
+# --- Request age: when the current head was last asked for a review ---
+# A workflow that evaluates once (AUT-793) asks its fallback reviewer only
+# after a request for this head goes unanswered; a request for any other head
+# must never start that clock.
+
+check_requested_at() {
+  local label="$1" filter="$2" expected="$3" got
+  got="$(jq "$filter" "$TMP_DIR/base.json" | jq -f "$EVALUATOR" | jq -r '.requestedAt // "null"')"
+  [ "$got" = "$expected" ] || {
+    fail "$label: expected requestedAt $expected, got $got"
+    return
+  }
+  ok "$label"
+}
+check_requested_at "the head's marked request starts the clock" '.' "2026-08-20T10:05:00Z"
+check_requested_at "the latest marked request for the head wins" \
+  ".issueComments += [{\"id\":105,\"created_at\":\"2026-08-20T10:50:00Z\",\"updated_at\":\"2026-08-20T10:50:00Z\",\"user\":{\"login\":\"henry\"},\"body\":\"@codex review\\n\\n<!-- touchstone:attest-request head=$HEAD_SHA -->\"}]" \
+  "2026-08-20T10:50:00Z"
+check_requested_at "a bare request never starts the clock" \
+  '.issueComments[0].body = "@codex review"' null
+check_requested_at "a request marked for an earlier head never starts the clock" \
+  ".issueComments[0].body = \"@codex review\\n\\n<!-- touchstone:pr-open head=$OLD_SHA base=main base_sha=$BASE_SHA -->\"" null
+check_requested_at "a marker outside a review request is not a request" \
+  ".issueComments[0].body = \"opening note <!-- touchstone:pr-open head=$HEAD_SHA -->\"" null
+check_requested_at "a request made before a base retarget does not count" \
+  '.pr.baseRetargetedAt = "2026-08-20T10:10:00Z"' null
+check_requested_at "a request made after a base retarget counts" \
+  '.pr.baseRetargetedAt = "2026-08-20T10:01:00Z"' "2026-08-20T10:05:00Z"
+check_requested_at "a request with an impossible timestamp does not count" \
+  '.issueComments[0].created_at = "2026-99-99T99:99:99Z"' null
+# The clock is a hint to the workflow, never evidence.
+run_case "a marked request alone creates no success" \
+  'del(.issueComments[1]) | del(.reviews[0])' waiting
+
 if [ "$ERRORS" -gt 0 ]; then
   echo "test-review-gate-v3: $ERRORS failure(s)" >&2
   exit 1
