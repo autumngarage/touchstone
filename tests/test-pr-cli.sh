@@ -481,8 +481,20 @@ case "$1 ${2:-}" in
           printf '%s\n' '{"jobs":[{"id":86,"name":"review-gate","run_attempt":2,"status":"in_progress","conclusion":null}]}' ;;
         status_gate_stale)
           printf '%s\n' '{"jobs":[{"id":85,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"success"}]}' ;;
+        status_gate_refused | actions_refused)
+          # The review-gate job GitHub refused on hesperus#354 (run
+          # 34491554934): failed, never started, so no steps at all.
+          printf '%s\n' '{"total_count":1,"jobs":[{"id":102919303302,"run_id":77,"workflow_name":"review-gate","name":"review-gate","run_attempt":2,"status":"completed","conclusion":"failure","steps":[],"check_run_url":"https://api.github.com/repos/autumngarage/current/check-runs/102919303302","labels":["ubuntu-latest"],"runner_id":0,"runner_name":""}]}' ;;
         *) printf '%s\n' '{"jobs":[{"id":84,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"success"}]}' ;;
       esac
+    elif has '/actions/runs/80/attempts/2/jobs?per_page=100' "$@"; then
+      # A real evidence verdict ran its steps before failing; the job GitHub
+      # refused on hesperus#354 (run 34491554998) ran none (AUT-1594).
+      if [ "${GH_MODE:-ok}" = actions_refused ]; then
+        printf '%s\n' '{"total_count":1,"jobs":[{"id":102919303957,"run_id":80,"workflow_name":"delivery-evidence","name":"delivery-evidence","run_attempt":2,"status":"completed","conclusion":"failure","steps":[],"check_run_url":"https://api.github.com/repos/autumngarage/current/check-runs/102919303957","labels":["ubuntu-latest"],"runner_id":0,"runner_name":""}]}'
+      else
+        printf '%s\n' '{"total_count":1,"jobs":[{"id":102919300001,"run_id":80,"name":"delivery-evidence","run_attempt":2,"status":"completed","conclusion":"failure","steps":[{"name":"Set up job","status":"completed","conclusion":"success","number":1},{"name":"Check delivery evidence","status":"completed","conclusion":"failure","number":2}]}]}'
+      fi
     elif has 'check-runs?check_name=review-gate&filter=all&per_page=100' "$@"; then
       case "${GH_MODE:-ok}" in
         status_gate_pending)
@@ -543,6 +555,11 @@ case "$1 ${2:-}" in
           ;;
         status_gate_stale)
           jq -cn --arg head "$GH_HEAD" '{check_runs:[{id:85,name:"review-gate",head_sha:"stale-head",check_suite:{id:900},status:"completed",conclusion:"success",details_url:"https://example.test/runs/85",output:{title:"Stale success",summary:"Wrong head."}}]}'
+          ;;
+        status_gate_refused)
+          # A refused job's CheckRun as GitHub serves it: no title, no
+          # summary, one annotation carrying the cause.
+          jq -cn --arg head "$GH_HEAD" '{check_runs:[{id:102919303302,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"failure",completed_at:"2026-09-10T14:49:08Z",details_url:"https://example.test/runs/102919303302",output:{title:null,summary:null,text:null,annotations_count:1}}]}'
           ;;
         status_gate_malformed) : ;;
         *)
@@ -658,6 +675,17 @@ case "$1 ${2:-}" in
     printf '%s\n' 71
     ;;
   api*)
+    if has '/check-runs/' "$@" && has '/annotations' "$@"; then
+      if [ -f "$GH_STATE/annotations-unreadable" ]; then
+        printf 'gh: Not Found (HTTP 404)\n' >&2
+        exit 1
+      fi
+      # The annotation GitHub attached to every refused job on hesperus#354
+      # and vesper#1255, verbatim.
+      jq -cn --arg message "The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings" \
+        '[{path:".github",start_line:1,start_column:null,end_line:1,end_column:null,annotation_level:"failure",title:"",message:$message,raw_details:""}]'
+      exit 0
+    fi
     if has "commits/$GH_HEAD/check-runs?per_page=100" "$@"; then
       case "${GH_MODE:-ok}" in
         status_auto_merge_blocked) printf '%s\n' '{"check_runs":[{"name":"review-gate","status":"completed","conclusion":"success"},{"name":"validate","status":"completed","conclusion":"failure"}]}' ;;
@@ -842,7 +870,7 @@ case "$1 ${2:-}" in
           status_gate_run_recency)
             gate_attempt=3
             ;;
-          status_gate_failure | status_gate_collision)
+          status_gate_failure | status_gate_collision | status_gate_refused | actions_refused)
             gate_status=completed
             gate_conclusion_json='"failure"'
             ;;
@@ -873,7 +901,7 @@ case "$1 ${2:-}" in
           gate_started_at="$(jq -nr --argjson started "$(( $(date -u +%s) - 300 ))" '$started | todateiso8601')"
         fi
         evidence_conclusion="${GH_EVIDENCE_CONCLUSION:-success}"
-        [ "${GH_MODE:-ok}" != delivery_evidence_failure ] || evidence_conclusion=failure
+        case "${GH_MODE:-ok}" in delivery_evidence_failure | actions_refused) evidence_conclusion=failure ;; esac
         [ ! -f "$GH_STATE/evidence-reruns" ] || evidence_conclusion=success
         runs="{\"workflow_runs\":[
           {\"id\":77,\"node_id\":\"RUN_77\",\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":900,\"run_attempt\":$gate_attempt,\"event\":\"pull_request\",\"status\":\"$gate_status\",\"conclusion\":$gate_conclusion_json,\"workflow_id\":999,\"run_started_at\":\"$gate_started_at\",\"updated_at\":\"2026-08-27T17:30:00Z\",\"pull_requests\":[{\"number\":7}]},
@@ -1131,6 +1159,35 @@ EOF
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"phase":"fix-required","nextAction":"address-review"'
   assert_has "$TMP/out" '"title":"No request binds this head","summary":"Run touchstone pr open for the live head."'
+
+  echo "==> status reports a gate job Actions refused to start as refused, not as findings (AUT-1594)"
+  GH_MODE=status_gate_refused run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'
+  assert_not_has "$TMP/out" '"phase":"fix-required"'
+  assert_has "$TMP/out" '"actionsRefused":{"jobId":102919303302,"billing":true,"annotation":"The job was not started because recent account payments have failed or your spending limit needs to be increased.'
+  GH_MODE=status_gate_refused run_pr "$TMP/out" status 7
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'review gate: completed/failure (check run 102919303302): Actions refused this job (billing), not an evidence verdict: GitHub says "The job was not started because'
+  assert_has "$TMP/out" 'next step: The PR body needs no change: nothing evaluated it.'
+  assert_has "$TMP/out" 'No merge can complete while Actions refuses jobs'
+  assert_has "$TMP/out" 'the queue rule admits no audited bypass, so none exists to use'
+  assert_has "$TMP/out" 'Restoring Actions capacity (budget or allowance) is the human'\''s decision'
+  # No bypass exists under the queue rule (405 on hesperus#354), so none is
+  # ever offered, and the agent is never pointed at an admin merge.
+  assert_not_has "$TMP/out" '--admin'
+  assert_not_has "$TMP/out" 'organization admin'
+  # Zero steps alone classifies it: an unreadable annotation is named, not
+  # dropped, and never turns the refusal back into findings.
+  touch "$TMP/state/annotations-unreadable"
+  GH_MODE=status_gate_refused run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"actionsRefused":{"jobId":102919303302,"billing":false,"annotation":null,"annotationError":"gh: Not Found (HTTP 404)"}'
+  assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'
+  rm -f "$TMP/state/annotations-unreadable"
+  # A gate that ran its steps and failed is still a review verdict.
+  GH_MODE=status_gate_failure run_pr "$TMP/out" status 7 --json
+  assert_not_has "$TMP/out" 'actionsRefused'
   GH_MODE=status_gate_success run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"phase":"ready-to-queue","nextAction":"queue"'
@@ -1427,7 +1484,50 @@ EOF
   [ ! -f "$TMP/state/review-request" ] \
     && ok "a rejected body consumes no hosted review or redundant evidence rerun" \
     || fail "a rejected body still posted a hosted review request"
+  assert_not_has "$TMP/out" 'Actions refused'
   rm -f "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request"
+
+  echo "==> a required job Actions refused to start is not an evidence verdict (AUT-1594)"
+  # hesperus#354 and vesper#1255: with the Actions budget at zero, GitHub
+  # failed every required job with no steps and one billing annotation, and
+  # open sent the driver to correct a body the gate never read.
+  touch "$TMP/state/review-gate"
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/evidence-reruns"
+  GH_MODE=actions_refused run_pr "$TMP/out" open --title 'Refused' --body-file "$TMP/body"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'delivery-evidence run 80: Actions refused this job (billing), not an evidence verdict: GitHub says "The job was not started because recent account payments have failed or your spending limit needs to be increased.'
+  assert_has "$TMP/out" 'review-gate run 77: Actions refused this job (billing), not an evidence verdict'
+  assert_has "$TMP/out" 'hosted review was still requested (posted:https://example.test/pr/7#issuecomment-1) because the reviewer runs outside Actions'
+  assert_has "$TMP/out" 'The PR body needs no change: nothing evaluated it.'
+  assert_has "$TMP/out" 'the queue rule admits no audited bypass, so none exists to use'
+  assert_has "$TMP/out" 'Restoring Actions capacity (budget or allowance) is the human'\''s decision'
+  assert_not_has "$TMP/out" 'organization admin'
+  assert_has "$TMP/out" 'PR #7 exists at https://example.test/pr/7'
+  assert_not_has "$TMP/out" 'correct the recorded evidence'
+  assert_not_has "$TMP/out" 'Delivery evidence accepted'
+  assert_not_has "$TMP/out" '--admin'
+  [ -f "$TMP/state/review-request" ] \
+    && ok "a refused job still requests the hosted review, which runs outside Actions" \
+    || fail "a refused job withheld the hosted review request"
+  assert_not_has "$GH_CALLS" 'actions/runs/77/rerun'
+  assert_not_has "$GH_CALLS" 'actions/runs/80/rerun'
+  # A reused PR asks for a fresh evidence attempt first; a refused one is not
+  # re-run either, and the existing request is reused rather than re-posted.
+  GH_MODE=actions_refused run_pr "$TMP/out" open --title 'Refused' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 1
+  [ "$(grep '^{' "$TMP/out" | jq -r '.status')" = failed ] \
+    || fail "a refused open reported something other than failed: $(cat "$TMP/out")"
+  assert_has "$TMP/out" 'hosted review was still requested (existing:https://example.test/pr/7#issuecomment-1)'
+  assert_not_has "$GH_CALLS" 'actions/runs/80/rerun'
+  assert_not_has "$GH_CALLS" 'actions/runs/77/rerun'
+  assert_not_has "$GH_CALLS" 'pr comment'
+  # Zero steps alone still classifies it when the annotation cannot be read.
+  touch "$TMP/state/annotations-unreadable"
+  GH_MODE=actions_refused run_pr "$TMP/out" open --title 'Refused' --body-file "$TMP/body"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'delivery-evidence run 80: Actions refused this job (no step ran), not an evidence verdict: its annotation was unreadable (gh: Not Found (HTTP 404))'
+  assert_not_has "$TMP/out" 'correct the recorded evidence'
+  rm -f "$TMP/state/annotations-unreadable" "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request"
 
   echo "==> open re-runs the pinned review gate where the repository has one"
   touch "$TMP/state/review-gate" "$TMP/state/behavior-version-legacy"
