@@ -82,10 +82,12 @@ taking this document's word for it.
   (or says it was unreadable), and neither waits on the run nor re-runs it,
   because GitHub refuses a re-run the same way. The hosted review request still
   posts, since the reviewer runs outside Actions. The command then exits 1,
-  naming each refused run and the next step. That step is either the Emergency
-  path in `principles/git-workflow.md` (an organization admin's audited
-  PR-only bypass, which a human must explicitly authorize) or re-running the
-  refused runs once billing is restored (AUT-1594).
+  naming each refused run and the next step. The body needs no change. No
+  merge can complete while Actions refuses jobs, because the merge queue's own
+  checks are refused the same way and the queue rule admits no audited bypass
+  (the Emergency path in `principles/git-workflow.md` reports that none
+  exists). Restoring Actions capacity is the human's decision, and the refused
+  runs are re-run once jobs run again (AUT-1594).
   GitHub exposes only a
   PR-wide update timestamp, so the sequencer does not guess whether activity was
   a body edit: it requests a fresh attempt, then re-verifies the body, head, and

@@ -1169,9 +1169,14 @@ EOF
   GH_MODE=status_gate_refused run_pr "$TMP/out" status 7
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" 'review gate: completed/failure (check run 102919303302): Actions refused this job (billing), not an evidence verdict: GitHub says "The job was not started because'
-  assert_has "$TMP/out" 'next step: Do not edit the PR body for this'
-  assert_has "$TMP/out" 'principles/git-workflow.md: an organization admin'\''s audited PR-only bypass, which a human must explicitly authorize'
+  assert_has "$TMP/out" 'next step: The PR body needs no change: nothing evaluated it.'
+  assert_has "$TMP/out" 'No merge can complete while Actions refuses jobs'
+  assert_has "$TMP/out" 'the queue rule admits no audited bypass, so none exists to use'
+  assert_has "$TMP/out" 'Restoring Actions capacity (budget or allowance) is the human'\''s decision'
+  # No bypass exists under the queue rule (405 on hesperus#354), so none is
+  # ever offered, and the agent is never pointed at an admin merge.
   assert_not_has "$TMP/out" '--admin'
+  assert_not_has "$TMP/out" 'organization admin'
   # Zero steps alone classifies it: an unreadable annotation is named, not
   # dropped, and never turns the refusal back into findings.
   touch "$TMP/state/annotations-unreadable"
@@ -1493,7 +1498,10 @@ EOF
   assert_has "$TMP/out" 'delivery-evidence run 80: Actions refused this job (billing), not an evidence verdict: GitHub says "The job was not started because recent account payments have failed or your spending limit needs to be increased.'
   assert_has "$TMP/out" 'review-gate run 77: Actions refused this job (billing), not an evidence verdict'
   assert_has "$TMP/out" 'hosted review was still requested (posted:https://example.test/pr/7#issuecomment-1) because the reviewer runs outside Actions'
-  assert_has "$TMP/out" 'principles/git-workflow.md: an organization admin'\''s audited PR-only bypass, which a human must explicitly authorize for this incident'
+  assert_has "$TMP/out" 'The PR body needs no change: nothing evaluated it.'
+  assert_has "$TMP/out" 'the queue rule admits no audited bypass, so none exists to use'
+  assert_has "$TMP/out" 'Restoring Actions capacity (budget or allowance) is the human'\''s decision'
+  assert_not_has "$TMP/out" 'organization admin'
   assert_has "$TMP/out" 'PR #7 exists at https://example.test/pr/7'
   assert_not_has "$TMP/out" 'correct the recorded evidence'
   assert_not_has "$TMP/out" 'Delivery evidence accepted'

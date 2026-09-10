@@ -1521,10 +1521,13 @@ actions_refusal_text() {
   printf '%s' "$1" | jq -r "$ACTIONS_REFUSAL_JQ"' refusal_text'
 }
 
-# The next step for a refused job is a human decision. Editing the body or
-# waiting cannot help, and the audited bypass is never the agent's call.
+# The next step for a refused job is a human decision, and there is no merge
+# to route around it: with the merge-queue rule on, an admin merge and the
+# REST merge both return 405, and the queue's own merge_group checks are
+# refused by the same limit, so enqueuing only evicts (hesperus#354).
+# Editing the body cannot help either.
 actions_refusal_remedy() {
-  printf '%s' "Do not edit the PR body for this: nothing evaluated it. While Actions refuses jobs no required check can pass, and the documented way to merge is the Emergency path in $TOOL_ROOT/principles/git-workflow.md: an organization admin's audited PR-only bypass, which a human must explicitly authorize for this incident. Ask the human; never bypass on your own. Once the account's Actions billing is restored, re-run the refused runs from the Actions tab and re-run touchstone pr open instead."
+  printf '%s' "The PR body needs no change: nothing evaluated it. No merge can complete while Actions refuses jobs: required checks cannot pass, the merge queue's own checks are refused the same way, and the queue rule admits no audited bypass, so none exists to use (the Emergency path in $TOOL_ROOT/principles/git-workflow.md reports exactly that). Restoring Actions capacity (budget or allowance) is the human's decision; tell them. Once jobs run again, re-run the refused runs named above, then re-run touchstone pr open."
 }
 
 # open still requests hosted review when Actions refuses a required job, since
