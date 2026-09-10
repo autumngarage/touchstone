@@ -209,10 +209,11 @@ the `PRRT_` thread ID to root comment-ID mapping needed to answer and resolve
 each finding. Replies are deliberately omitted because the raw reply endpoint
 accepts the root finding ID. A zero exit proves no unresolved thread remains.
 
-A `review-gate` run that started before the exact-head review completed may
-fail only because the evidence did not exist yet. Re-run the project's PR-open
-command; it is idempotent and re-runs the pinned gate. Compare timestamps
-before treating that red check as a review verdict.
+A `review-gate` run evaluates once, so a run that evaluated before the
+exact-head review arrived is red only because the evidence did not exist yet:
+that is waiting, not a verdict. Re-run the project's PR-open command; it is
+idempotent, waits for the review, and re-runs the pinned gate. Compare
+timestamps before treating that red check as a review verdict.
 
 **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.** GitHub's review API can support approval for authorized integrations, but that is not this adapter's observed contract. Do not expect an approval here or treat its absence as a stalled review.
 
@@ -223,7 +224,7 @@ from that. A green `review-gate` therefore means this head was reviewed, even
 with no review comment on the pull request from the reviewer you expected.
 Absence of that comment is not a missing review, and it is not a reason to
 wait, to re-request, or to record a waiver. The primary is always asked
-first: `touchstone pr open` posts the request, waits briefly for the reply,
+first: `touchstone pr open` posts the request, waits here for the reply,
 and when the reply is a quota notice it records the move on the pull request
 ("Review fallback in effect for `<head>`") and prints `review: fallback`.
 That notice, not the quota comment, is what to read.
@@ -260,21 +261,33 @@ touchstone pr answer <n> --finding <id> --body-file <reply> --fix-commit <sha> #
 The answer is recorded in the pull request body, which the gate reads on its
 next run; a refuted finding stops blocking without a code change. A reviewer
 can be wrong — refute a wrong finding, never implement it to make the gate go
-green. Then run `touchstone pr merge <n> --head <sha>` at once: it arms
-auto-merge while the gate is still evaluating, and GitHub admits the head when
-the gate passes.
+green. The answer re-runs a completed gate for the head. Then run
+`touchstone pr merge <n> --head <sha>` at once: it arms auto-merge while that
+run is still evaluating, so GitHub admits the head when the gate passes, and
+it refuses a gate that has already failed.
 
 **Where the repository's effective policy requires `review-gate`, it enforces
-the review contract.** Under gate behavior contract 3 it passes only on a
-trusted, unedited clean verdict bound to the exact current head; where
-behavior v2 remains effective it instead requires trusted evidence for the
-exact head after the bound request plus a qualifying later answer for every
-finding. Until that check is installed and verified as required,
+the review contract.** Under gate behavior contract 4 it passes only on a
+trusted, unedited clean verdict bound to the exact current head, and each
+pull-request run evaluates once and never waits: a head still waiting for its
+review is red, not pending. The waiting happens on the driver's machine.
+`touchstone pr open` — and `touchstone pr answer`, once it has posted the
+round's attest request — waits for the primary reviewer's reply to the head's
+latest request, or for that request to pass the pinned gate's evidence
+deadline (`REVIEW_EVIDENCE_WAIT_SECONDS` in the pinned `review-gate.yml`,
+600 s, plus a 30-second margin), then re-runs the gate once. The fallback
+reviewer stands in only when waiting longer cannot help: the head's latest
+request is at least that deadline old, the primary has said it cannot answer
+(a usage or quota notice, or an explicit error reply after the request), or a
+bot opened the pull request. A driver that dies before its re-run leaves the
+head red, never merged unreviewed; the recovery is to re-run the gate once
+the deadline has passed (re-running `touchstone pr open` does it). Until that
+check is installed and verified as required,
 exact-head review remains mandatory driver procedure. GitHub conversation
 resolution separately requires every inline thread closed.
 `touchstone pr merge` observes that policy-owned exact-head verdict; it does
 not reconstruct a second verdict from mutable review timestamps. The merge
-queue is the atomic boundary. Its merge-group run re-evaluates the complete
+queue is the atomic boundary, and contract 4 leaves it unchanged. Its merge-group run re-evaluates the complete
 surface once, at admission, including any feedback that arrived after the PR
 gate. It neither waits nor runs again, so a verdict landing after that
 evaluation goes unseen. That is why the fallback never overrides a findings
@@ -471,7 +484,7 @@ partial, or unrelated.
 
 ## Agentic PR Review Loop
 
-The PR is the only semantic review surface. Request one ordinary review per exact head-and-base binding: head SHA, base ref, and base SHA. The driving CLI watches the PR, fixes actionable findings, pushes a new head, and repeats until the current head carries a trusted clean verdict (under behavior v2, findings with every thread resolved also completed the round).
+The PR is the only semantic review surface. Request one ordinary review per exact head-and-base binding: head SHA, base ref, and base SHA. The driving CLI watches the PR, fixes actionable findings, pushes a new head, and repeats until the current head carries a trusted clean verdict.
 
 ### Review-request states and bounded recovery
 
@@ -575,12 +588,12 @@ review-provider friction.
 3. **Body-only finding** — a non-clean verdict with no inline thread has
    nothing resolvable to answer, so one fresh request on the unchanged binding
    is the only path forward.
-4. **Behavior-v3 attest** — where the effective gate implements gate behavior
-   contract 3, answered findings never satisfy it: only a later trusted clean
-   verdict for the exact head does. Resolving the last thread-backed finding
-   therefore earns exactly one fresh request on the unchanged binding —
-   `touchstone pr answer` posts it automatically with a head-scoped
-   idempotency marker, so neither the driver nor a retry posts a second one.
+4. **Attest** — answered findings never satisfy the gate: only a later
+   trusted clean verdict for the exact head does. Resolving the last
+   thread-backed finding therefore earns exactly one fresh request on the
+   unchanged binding — `touchstone pr answer` posts it automatically with a
+   head-scoped idempotency marker, so neither the driver nor a retry posts a
+   second one — then waits for that review and re-runs the gate once.
 
 ### Babysitting a PR: the round discipline
 
@@ -724,12 +737,11 @@ of whether the thing you just added is shaped wrongly.
 **The loop.** If the cascade rule has fired, take its exit instead of continuing
 this loop. Otherwise, if every finding resolves **without moving the head**
 (dispositions 3–4), answer every thread and prove none remain with the complete
-paginated thread check above. Where the effective gate implements behavior
-contract 3, resolving the last thread makes `touchstone pr answer` post the one
-idempotent attest request (exception 4 above); merge once the gate reports the
-clean exact-head verdict. Where only behavior v2 is effective, answered
-findings satisfy that gate directly (issue #751) — merge without requesting
-another review. If any allowed fix lands as a commit (dispositions 1–2), batch
+paginated thread check above. Resolving the last thread makes
+`touchstone pr answer` post the one idempotent attest request (exception 4
+above), wait for its review, and re-run the gate once; merge once the gate
+reports the clean exact-head verdict. If any allowed fix lands as a commit
+(dispositions 1–2), batch
 ALL of them into ONE commit, answer every thread, push, and request one review
 for the new head.
 
@@ -761,7 +773,7 @@ amend, squash, and rebase rewrite commit boundaries and lose push grouping, so
 a rewrite can hide earlier mutation and one push of several commits can be
 overcounted. The row is the ledger; history is not.
 Counting mutation also removes the
-conflict with the contract-3 attest, which follows no change and therefore
+conflict with the attest request, which follows no change and therefore
 consumes no budget — the answer flow and this budget never contend.
 
 This is a discipline, not an enforced limit — the wrapper that refused a fourth
@@ -771,9 +783,8 @@ criterion does not reset its count. Past three fix rounds, the legitimate exits
 are:
 
 - **`merge-answered`** — merge it, only when no known P0/P1 defect remains.
-  Where behavior v2 is effective, all threads resolved satisfies that gate;
-  under contract 3 the answer flow's attest request still supplies the final
-  clean verdict first. Routing a P2, P3, or out-of-scope finding is not
+  The answer flow's attest request still supplies the final clean verdict
+  first. Routing a P2, P3, or out-of-scope finding is not
   permission to ship a known serious regression;
 - **`revert-simplify`** — drop the review-driven accretion and ship the
   materially narrower acceptance boundary, or the replacement architecture,

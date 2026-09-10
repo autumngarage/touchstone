@@ -91,10 +91,12 @@ required workflows pinned to an immutable revision of
   third-party dependency.
 - **delivery-evidence** verifies the PR body records its review tier and
   validation evidence — shape and presence, never content quality.
-- **review-gate** (gate behavior contract 3) derives one normalized
+- **review-gate** (gate behavior contract 4) derives one normalized
   reviewer verdict for the exact current PR head — `waiting`, `findings`,
   `clean`, or `invalid` — and succeeds only on a trusted, unedited,
-  explicit **clean** result bound to that head. It never adjudicates
+  explicit **clean** result bound to that head. Each run evaluates once and
+  never waits, so a head still waiting for review is red; the driver waits
+  for the reviewer on its own machine, then re-runs the gate. It never adjudicates
   whether historical findings were answered: threads belong to GitHub's
   native conversation-resolution rule, and the merged result to the merge
   queue. Evidence collection is O(pages of current surfaces), independent
@@ -204,9 +206,9 @@ touchstone pr answer <n> --comment-id <id> --body-file <file> --no-code-change
 touchstone pr answer <n> --all-resolved-check
 ```
 
-Under gate behavior contract 3, answering the last open thread also posts the
-one fresh review request the clean exact-head verdict requires — idempotently,
-so retries never post a second one.
+Answering the last open thread also posts the one fresh review request the
+clean exact-head verdict requires — idempotently, so retries never post a
+second one — then waits for that review and re-runs the gate once.
 
 The exact raw recovery path (CLI unavailable) remains:
 
@@ -214,8 +216,9 @@ The exact raw recovery path (CLI unavailable) remains:
 cp .github/pull_request_template.md /tmp/pr-body
 # Fill every required section and Validation row; keep `Fixes AUT-123` in the body.
 gh pr create --title "fix: what changed" --body-file /tmp/pr-body
-# ... post `@codex review`; if the required review-gate run evaluated before
-# that comment existed, re-run it (Actions tab, or the run's rerun API) ...
+# ... post `@codex review`; the required review-gate run evaluates once, so
+# re-run it (Actions tab, or the run's rerun API) after the review arrives or
+# the request passes the gate's evidence deadline ...
 # ... answer findings, resolve threads ...
 reviewed="$(gh pr view <n> --json headRefOid --jq .headRefOid)"  # capture when the clean verdict arrives
 # confirm the verdict names $reviewed, then bind the merge to that saved value —

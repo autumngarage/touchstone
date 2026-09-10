@@ -109,7 +109,7 @@ case "$method $endpoint" in
     ;;
   "GET repos/autumngarage/touchstone/contents/.touchstone-source-contract.json?ref=main")
     jq -n --arg context "${GH_FAKE_SOURCE_STATUS_CONTEXT:-source contract}" \
-      --argjson behaviorVersion "${GH_FAKE_GATE_BEHAVIOR_VERSION:-3}" '{
+      --argjson behaviorVersion "${GH_FAKE_GATE_BEHAVIOR_VERSION:-4}" '{
       contractVersion: 1,
       gateBehaviorContractVersion: $behaviorVersion,
       requiredStatusCheck: $context,
@@ -127,7 +127,7 @@ case "$method $endpoint" in
   "GET repos/autumngarage/touchstone-workflows/contents/.touchstone-source-contract.json?ref=$WORKFLOWS_PIN")
     jq -n --arg context "${GH_FAKE_SOURCE_STATUS_CONTEXT:-source contract}" \
       --arg nested "${GH_FAKE_SOURCE_NESTED_WORKFLOW:-}" \
-      --argjson behaviorVersion "${GH_FAKE_GATE_BEHAVIOR_VERSION:-3}" '{
+      --argjson behaviorVersion "${GH_FAKE_GATE_BEHAVIOR_VERSION:-4}" '{
       contractVersion: 1,
       gateBehaviorContractVersion: $behaviorVersion,
       requiredStatusCheck: $context,
@@ -466,7 +466,7 @@ jq -e '
   and .workflowSource.repository == "touchstone-workflows"
   and .workflowSource.sourceContract == {
     manifestPath: ".touchstone-source-contract.json",
-    gateBehaviorContractVersion: 3
+    gateBehaviorContractVersion: 4
   }
   and .workflowSource.repository != .repository
   and .rollbackPrerequisites.repositoryFiles == [
@@ -582,7 +582,7 @@ jq -e '
   and (has("workflowSource") | not)
   and .sourceContract == {
     manifestPath: ".touchstone-source-contract.json",
-    gateBehaviorContractVersion: 3
+    gateBehaviorContractVersion: 4
   }
   and .rollbackPrerequisites.repositoryFiles == []
   and any(.managedRuleset.rules[]; .type == "deletion")
@@ -655,19 +655,21 @@ run_policy dry-run "$TMP_DIR/consumer-policy-no-behavior-contract.json" >/dev/nu
 GH_FAKE_GATE_BEHAVIOR_VERSION=2 run_policy dry-run "$POLICY" >/dev/null 2>&1 \
   && fail "consumer policy accepted a pinned source revision with an unsupported gate behavior contract"
 # Gate behavior contract 4 (AUT-793). The policy declares the one contract it
-# expects and the pinned manifest must declare exactly that one: a policy
-# declaring 4 applies over a contract-4 gate, and still refuses a pin that
-# declares 5 -- or that falls back to 3 -- while a contract-3 policy refuses
-# a contract-4 pin until its repin declares 4.
-jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 4' \
-  "$POLICY" >"$TMP_DIR/consumer-policy-behavior-4.json"
-GH_FAKE_GATE_BEHAVIOR_VERSION=4 run_policy dry-run "$TMP_DIR/consumer-policy-behavior-4.json" >/dev/null \
-  || fail "consumer policy declaring gate behavior contract 4 was refused over a contract-4 pinned revision"
-GH_FAKE_GATE_BEHAVIOR_VERSION=5 run_policy dry-run "$TMP_DIR/consumer-policy-behavior-4.json" >/dev/null 2>&1 \
-  && fail "consumer policy declaring contract 4 accepted a pinned revision declaring contract 5"
-GH_FAKE_GATE_BEHAVIOR_VERSION=3 run_policy dry-run "$TMP_DIR/consumer-policy-behavior-4.json" >/dev/null 2>&1 \
-  && fail "consumer policy declaring contract 4 accepted a pinned revision declaring contract 3"
-GH_FAKE_GATE_BEHAVIOR_VERSION=4 run_policy dry-run "$POLICY" >/dev/null 2>&1 \
+# expects and the pinned manifest must declare exactly that one: the checked-in
+# policy, at 4, applies over a contract-4 gate and refuses a pin that declares
+# 5 or falls back to 3, while a policy still declaring 3 refuses a contract-4
+# pin -- a repository moves to contract 4 only through the repin declaring it.
+GH_FAKE_GATE_BEHAVIOR_VERSION=4 run_policy dry-run "$POLICY" >/dev/null \
+  || fail "the contract-4 consumer policy was refused over a contract-4 pinned revision"
+GH_FAKE_GATE_BEHAVIOR_VERSION=5 run_policy dry-run "$POLICY" >/dev/null 2>&1 \
+  && fail "the contract-4 consumer policy accepted a pinned revision declaring contract 5"
+GH_FAKE_GATE_BEHAVIOR_VERSION=3 run_policy dry-run "$POLICY" >/dev/null 2>&1 \
+  && fail "the contract-4 consumer policy accepted a pinned revision declaring contract 3"
+jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 3' \
+  "$POLICY" >"$TMP_DIR/consumer-policy-behavior-3.json"
+GH_FAKE_GATE_BEHAVIOR_VERSION=3 run_policy dry-run "$TMP_DIR/consumer-policy-behavior-3.json" >/dev/null \
+  || fail "a contract-3 consumer policy was refused over a contract-3 pinned revision"
+GH_FAKE_GATE_BEHAVIOR_VERSION=4 run_policy dry-run "$TMP_DIR/consumer-policy-behavior-3.json" >/dev/null 2>&1 \
   && fail "a contract-3 consumer policy accepted a pinned revision declaring contract 4"
 ok "workflow source uses its manifest status while consumers still require external workflows"
 
@@ -2725,7 +2727,7 @@ echo "==> Every policy file pins the required workflows at one touchstone-workfl
 # same revision for all three workflows, and that revision is the one the
 # suite's own fixtures are written against -- so a revert or a partial bump
 # is a visible, reviewed change here, never a silent divergence.
-PINNED_WORKFLOWS_REVISION="b45b7276b4ab0ed36bfc0626f57a3230cd895a6f"
+PINNED_WORKFLOWS_REVISION="7a93f2e776d91cf77bdbca9ef792a28aadcf88af"
 for policy_file in "$ROOT"/policy/github/touchstone-main.json "$ROOT"/policy/github/consumers/*.json; do
   pins="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | .sha] | unique | join(" ")' "$policy_file")"
   [ "$pins" = "$PINNED_WORKFLOWS_REVISION" ] \
