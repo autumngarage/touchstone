@@ -263,6 +263,29 @@ check_requested_at "a request made after a base retarget counts" \
   '.pr.baseRetargetedAt = "2026-08-20T10:01:00Z"' "2026-08-20T10:05:00Z"
 check_requested_at "a request with an impossible timestamp does not count" \
   '.issueComments[0].created_at = "2026-99-99T99:99:99Z"' null
+# A comment written before a push and edited afterwards to add the request and
+# this head's marker became a request at the edit, not at its creation; its
+# creation time would make the one-shot gate treat the window as spent.
+check_requested_at "an edited request is clocked from its edit" \
+  '.issueComments[0].created_at = "2026-08-20T09:00:00Z" | .issueComments[0].updated_at = "2026-08-20T10:30:00Z"' \
+  "2026-08-20T10:30:00Z"
+check_requested_at "an unedited request is clocked from its creation" \
+  '.issueComments[0].updated_at = .issueComments[0].created_at' "2026-08-20T10:05:00Z"
+check_requested_at "an edited request for an earlier head never starts the clock" \
+  ".issueComments[0].body = \"@codex review\\n\\n<!-- touchstone:pr-open head=$OLD_SHA base=main base_sha=$BASE_SHA -->\"
+   | .issueComments[0].updated_at = \"2026-08-20T10:30:00Z\"" null
+# The retarget cutoff compares the same instant: a request edited into being
+# after the retarget asked about the new diff.
+check_requested_at "a request edited into being after a base retarget counts" \
+  '.pr.baseRetargetedAt = "2026-08-20T10:10:00Z" | .issueComments[0].updated_at = "2026-08-20T10:30:00Z"' \
+  "2026-08-20T10:30:00Z"
+check_requested_at "a request whose update precedes its creation does not count" \
+  '.issueComments[0].updated_at = "2026-08-20T10:00:00Z"' null
+# Clocking from the edit is a hint only: it changes no verdict or state.
+run_case "an edited request alone creates no success" \
+  'del(.issueComments[1]) | del(.reviews[0]) | .issueComments[0].updated_at = "2026-08-20T10:30:00Z"' waiting
+check_state "an edited request still maps to waiting-review" \
+  'del(.issueComments[1]) | del(.reviews[0]) | .issueComments[0].updated_at = "2026-08-20T10:30:00Z"' waiting-review
 # The clock is a hint to the workflow, never evidence.
 run_case "a marked request alone creates no success" \
   'del(.issueComments[1]) | del(.reviews[0])' waiting
