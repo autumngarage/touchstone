@@ -162,8 +162,17 @@ def review_request:
 # the primary was still reviewing, and then overrode the findings it returned
 # (AUT-1581). The earliest such request anchors the window, so a later comment
 # cannot extend it. With no verdict for the head, every request is open.
+#
+# Unlike the wait hint above, an open request needs an author. Once its
+# window passes it lets the fallback answer, and the fallback can create
+# success, so a comment anyone can post must not be able to open one. Only a
+# request from someone GitHub associates with the repository counts. That is
+# the comment's own author_association, already in the collected payload, so
+# it costs no request; a missing association opens nothing, the strict
+# direction.
 | ([($issue_comments // [])[]
     | select(review_request)
+    | select((.author_association // "") | IN("OWNER", "MEMBER", "COLLABORATOR"))
     | (.created_at // "")
     | select(valid_at)
     | select($latest == null or . > $latest.at)]

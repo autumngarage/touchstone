@@ -240,7 +240,7 @@ check_state "invalid maps to failure" '.issueComments[1].updated_at = "2026-08-2
 # workflow can refuse that only if the evaluator says whether a request is
 # still owed an answer, and since when.
 
-REQUEST_AFTER_FINDINGS='.issueComments += [{"id":102,"created_at":"2026-08-20T10:25:00Z","updated_at":"2026-08-20T10:25:00Z","user":{"login":"henry"},"body":"@codex review\n\n<!-- touchstone:attest-request head=1111111111111111111111111111111111111111 -->"}]'
+REQUEST_AFTER_FINDINGS='.issueComments += [{"id":102,"created_at":"2026-08-20T10:25:00Z","updated_at":"2026-08-20T10:25:00Z","user":{"login":"henry"},"author_association":"MEMBER","body":"@codex review\n\n<!-- touchstone:attest-request head=1111111111111111111111111111111111111111 -->"}]'
 
 check_open_request() {
   local label="$1" filter="$2" expected="$3" got
@@ -257,14 +257,21 @@ check_open_request "an attest request after findings is open from its own instan
   "del(.issueComments[1]) | $REQUEST_AFTER_FINDINGS" "2026-08-20T10:25:00Z"
 check_open_request "the earliest open request anchors the window; a later one cannot extend it" \
   "del(.issueComments[1]) | $REQUEST_AFTER_FINDINGS
-   | .issueComments += [{\"id\":103,\"created_at\":\"2026-08-20T10:30:00Z\",\"updated_at\":\"2026-08-20T10:30:00Z\",\"user\":{\"login\":\"someone\"},\"body\":\"@codex review\"}]" \
+   | .issueComments += [{\"id\":103,\"created_at\":\"2026-08-20T10:30:00Z\",\"updated_at\":\"2026-08-20T10:30:00Z\",\"user\":{\"login\":\"someone\"},\"author_association\":\"COLLABORATOR\",\"body\":\"@codex review\"}]" \
   "2026-08-20T10:25:00Z"
 check_open_request "a verdict answering the request closes it" \
   "$REQUEST_AFTER_FINDINGS | .issueComments[1].created_at = \"2026-08-20T10:40:00Z\"" null
 check_open_request "a request in the same second as the verdict is not after it" \
-  'del(.issueComments[1]) | .issueComments[0].created_at = "2026-08-20T10:20:00Z" | .issueComments[0].updated_at = "2026-08-20T10:20:00Z"' null
+  'del(.issueComments[1]) | .issueComments[0].author_association = "MEMBER" | .issueComments[0].created_at = "2026-08-20T10:20:00Z" | .issueComments[0].updated_at = "2026-08-20T10:20:00Z"' null
 check_open_request "with no verdict for the head, every request is open" \
-  'del(.issueComments[1]) | del(.reviews[0])' "2026-08-20T10:05:00Z"
+  'del(.issueComments[1]) | del(.reviews[0]) | .issueComments[0].author_association = "MEMBER"' "2026-08-20T10:05:00Z"
+# A request can let the fallback answer, so it needs an author: anyone can
+# post a comment, and only someone GitHub associates with the repository can
+# open a window. A missing association is the strict direction.
+check_open_request "a request from outside the repository opens nothing" \
+  "del(.issueComments[1]) | $REQUEST_AFTER_FINDINGS | .issueComments[1].author_association = \"NONE\"" null
+check_open_request "a request with no author association opens nothing" \
+  "del(.issueComments[1]) | $REQUEST_AFTER_FINDINGS | del(.issueComments[1].author_association)" null
 # Fail-closed direction: an unorderable request cannot open a window, so the
 # workflow treats the findings as unanswered and never lets the fallback in.
 check_open_request "a request with an impossible timestamp opens nothing" \
