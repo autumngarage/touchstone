@@ -75,6 +75,17 @@ taking this document's word for it.
   the run that was explicitly rerun; a newer run starts at attempt one. A new
   PR waits for the initial attempt created by GitHub rather than redundantly
   rerunning it.
+  A required job that Actions failed without starting it is not an evidence
+  or review verdict. The jobs API reports such a job as `failure` with no
+  steps, which is how an exhausted Actions budget or a failed payment shows up.
+  `open` reports it as `Actions refused this job`, quotes the job's annotation
+  (or says it was unreadable), and neither waits on the run nor re-runs it,
+  because GitHub refuses a re-run the same way. The hosted review request still
+  posts, since the reviewer runs outside Actions. The command then exits 1,
+  naming each refused run and the next step. That step is either the Emergency
+  path in `principles/git-workflow.md` (an organization admin's audited
+  PR-only bypass, which a human must explicitly authorize) or re-running the
+  refused runs once billing is restored (AUT-1594).
   GitHub exposes only a
   PR-wide update timestamp, so the sequencer does not guess whether activity was
   a body edit: it requests a fresh attempt, then re-verifies the body, head, and
@@ -139,7 +150,14 @@ taking this document's word for it.
   rules do not declare the central gate, status reports it as unconfigured and
   does not attribute historical same-named runs to policy. If GitHub reports
   no such CheckRun, `reviewGateCheck.present` is false; when a bound workflow run
-  already exists, its current status remains visible. The adjacent
+  already exists, its current status remains visible. When every failed job in
+  the current attempt has no steps, Actions refused to start it, and the
+  additive `reviewGateCheck.actionsRefused` object carries `jobId`, `billing`
+  (the annotation names GitHub's spending-limit or payment refusal),
+  `annotation` (the job's annotation text, or `null`), and `annotationError`
+  (why it could not be read, or `null`). The phase is then `action-required`
+  rather than `fix-required`, because no review exists to address. The field is
+  absent otherwise. The adjacent
   `reviewGateBehaviorContractVersion` is the version verified at the effective
   exact pinned revision, or `null` when that live binding is not verified; PR
   clients use this field instead of inferring behavior from local policy bytes.
