@@ -243,6 +243,27 @@ unprotected interval. Consumers reference hooks by name
 (`touchstone hook branch-guard`), so settings never encode where the tool
 lives.
 
+## Actions usage
+
+GitHub's own notices arrive at 90% and 100% of the included Actions minutes,
+after the allowance is gone. `touchstone usage check` shows the pace instead:
+it reads the enterprise billing usage report with the current `gh` login and
+prints month-to-date usage in included-minute equivalents, the projection to
+month end, and the top consumers by repository, workflow, and job. It exits 1
+when the projection passes the threshold.
+
+```bash
+touchstone usage check --enterprise <slug>
+touchstone usage install --enterprise <slug>     # macOS: a daily launchd agent that notifies on a warning
+touchstone usage uninstall --enterprise <slug>
+```
+
+A SKU's weight is its per-minute price over the included-minute (Linux)
+price, both read from GitHub's rows, because the allowance is applied as a
+dollar discount at that price. Public repositories are free and are not
+counted. The agent runs the installed `touchstone`, so it spends no Actions
+minutes. `touchstone usage --help` owns the flags, defaults, and exit codes.
+
 ## Architecture
 
 ```text

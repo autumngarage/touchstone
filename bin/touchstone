@@ -29,6 +29,7 @@ Usage:
   touchstone policy apply --base BRANCH --project DIR --authorize-admin [--json]
   touchstone cleanup check [--project DIR] [--json]
   touchstone review setup|check|run|rotate|uninstall [--codex-home DIR] [--dry-run]
+  touchstone usage check|install|uninstall --enterprise SLUG [arguments]
   touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change)
   touchstone pr answer PR --finding ID --body-file FILE (--fix-commit SHA | --no-code-change)
   touchstone pr answer PR --all-resolved-check
@@ -141,6 +142,11 @@ case "$COMMAND" in
     ;;
   review)
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" "$@"
+    ;;
+  usage)
+    # GitHub Actions usage pace for an enterprise -- read-only against
+    # GitHub; `install` schedules it daily through launchd on this Mac.
+    exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-usage.sh" "$@"
     ;;
   version)
     # The formula's test block and consumers reporting which tool they run
