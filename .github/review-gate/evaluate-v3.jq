@@ -94,6 +94,18 @@ def head_request($head):
   review_request
   and ((.body // "") | ascii_downcase | test("<!--[[:space:]]*touchstone:[a-z-]+[[:space:]]+head=" + $head + "([[:space:]]|-->)"));
 
+# When a request was made: its latest edit. A comment written before a push
+# and edited afterwards to add `@codex review` and this head's marker became
+# a request only at that edit; clocked from its creation it would look as if
+# its evidence window had already run out. An unedited comment's update equals
+# its creation. A pair whose update precedes its creation proves nothing, so
+# it yields nothing.
+def request_at:
+  (.created_at // "") as $created
+  | (.updated_at // $created) as $updated
+  | select(($created | valid_at) and ($updated | valid_at) and $updated >= $created)
+  | $updated;
+
 . as $input
 | ($input.trustedAuthors // []) as $trusted
 | (($input.pr.headSha // "") | ascii_downcase) as $head
@@ -164,12 +176,14 @@ def head_request($head):
 # has gone unanswered for its evidence window. A bare request, or one made for
 # an earlier head, therefore never starts the clock: it could otherwise make
 # the fallback review a freshly pushed head before the primary could answer.
-# A request made before a base retarget asked about a diff that no longer
-# exists, so it does not count either. A hint only: it changes no verdict.
+# Each request is clocked from when it was made (request_at), so an edit that
+# turned an older comment into this head's request starts the clock at the
+# edit. A request made before a base retarget asked about a diff that no
+# longer exists, so it does not count either. A hint only: it changes no
+# verdict.
 | ([($issue_comments // [])[]
     | select(head_request($head))
-    | (.created_at // "")
-    | select(valid_at)
+    | request_at
     | select(($base_retargeted_at | type) != "string" or $base_retargeted_at == "" or . > $base_retargeted_at)]
    | max) as $requested_at
 # An event whose timestamps are missing or malformed, or whose abbreviated
