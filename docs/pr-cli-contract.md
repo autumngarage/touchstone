@@ -193,7 +193,8 @@ taking this document's word for it.
   success is `ready-to-queue` only when GitHub reports the PR `CLEAN`. A
   blocked merge state or operational conclusion is `action-required`. Status
   does not reconstruct freshness from mutable review timestamps: the protected
-  merge group's prospective gate owns feedback that arrives after the PR gate.
+  merge group's prospective gate owns feedback that arrives after the PR gate
+  and before that gate evaluates, which it does once, at admission.
   An absent gate with no active bound workflow is `action-required`, never
   guessed to be pending or passing.
 

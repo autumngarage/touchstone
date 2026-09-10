@@ -228,6 +228,19 @@ and when the reply is a quota notice it records the move on the pull request
 ("Review fallback in effect for `<head>`") and prints `review: fallback`.
 That notice, not the quota comment, is what to read.
 
+**The fallback stands in for a review that did not happen, never for one that
+did.** A head the primary never reviewed, because its request was dropped or
+the primary is out of quota, is a review that did not happen. A trusted
+findings verdict for the head is a completed review, and only the primary's
+next verdict supersedes it. The fallback never overrides it, in the
+pull-request run or in the merge group, unless the primary has since said it
+cannot answer. So once findings are answered, the primary must answer the
+attest request. If it drops that request, take the bounded recovery below
+rather than waiting for the fallback. vesper#1251 merged before this rule
+existed: the fallback answered at the gate's deadline while Codex was still
+reviewing the attest request, and Codex's P1s landed seven seconds after the
+queue's gate had decided (AUT-1581).
+
 Where the fallback's findings live differs, because the gate runs read-only and
 cannot post to the pull request: they are in the gate run's log and job
 summary, not in review threads. `gh run view <run-id> --log` reaches them, and
@@ -261,9 +274,13 @@ exact-head review remains mandatory driver procedure. GitHub conversation
 resolution separately requires every inline thread closed.
 `touchstone pr merge` observes that policy-owned exact-head verdict; it does
 not reconstruct a second verdict from mutable review timestamps. The merge
-queue is the atomic boundary: its merge-group run re-evaluates the complete
-surface, including feedback that arrived after the PR gate. A review-gated
-policy without that run is an enforcement gap, not a guarded auto-merge path.
+queue is the atomic boundary. Its merge-group run re-evaluates the complete
+surface once, at admission, including any feedback that arrived after the PR
+gate. It neither waits nor runs again, so a verdict landing after that
+evaluation goes unseen. That is why the fallback never overrides a findings
+verdict: if it did, the gate would admit the head before the primary's next
+verdict arrived. A review-gated policy without that run is an enforcement gap,
+not a guarded auto-merge path.
 
 ## Answering findings
 
@@ -377,8 +394,9 @@ queued, or auto-merge-enabled count only while `headRefOid` still equals the
 reviewed head, and only `state == MERGED` proves the merge.
 
 The protected merge group's prospective gate re-evaluates the complete review
-surface after admission. It owns feedback that arrives after the PR gate;
-client-side timestamp comparisons do not make that boundary atomic.
+surface once, at admission. It owns feedback that arrived between the PR gate
+and that evaluation, but nothing that lands after it. Client-side timestamp
+comparisons do not make that boundary atomic either.
 
 **`--match-head-commit` is the head binding.** It refuses the merge if the PR head moved since you checked the gate — which is exactly the race that lets an unreviewed commit slip in behind a passing review.
 
