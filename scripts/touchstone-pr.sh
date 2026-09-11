@@ -1613,15 +1613,17 @@ REQUIRED_WORKFLOW_ALREADY_ACTIVE=false
 REQUIRED_WORKFLOW_REFUSED=false
 REQUIRED_WORKFLOW_MIN_ATTEMPT=0
 REQUIRED_WORKFLOW_MIN_ATTEMPT_RUN_ID=""
+REQUIRED_WORKFLOW_FRESH_RUN=false
 rerun_required_workflow() {
   local number="$1" head="$2" workflow_name="$3" local_workflow_ids="$4" active_reuse_seconds="${5:-0}"
   local refresh_completed="${6:-true}" minimum_attempt="${7:-0}" minimum_attempt_run_id="${8:-}"
-  local base_ref="${9:-}" base_sha="${10:-}"
+  local base_ref="${9:-}" base_sha="${10:-}" fresh_since="${11:-}"
   local attempt=1 run_id run_node status conclusion selected_attempt run_started_at run_started_epoch now prior_attempt run_pages run_row workflow_ids workflow_id_count
   local run_identity active_run_bound
   REQUIRED_WORKFLOW_RUN_ID=""
   REQUIRED_WORKFLOW_ALREADY_ACTIVE=false
   REQUIRED_WORKFLOW_REFUSED=false
+  REQUIRED_WORKFLOW_FRESH_RUN=false
   if [ "$refresh_completed" = true ]; then
     REQUIRED_WORKFLOW_MIN_ATTEMPT=0
     REQUIRED_WORKFLOW_MIN_ATTEMPT_RUN_ID=""
@@ -1679,6 +1681,30 @@ rerun_required_workflow() {
         status=""
         conclusion=""
       fi
+    fi
+    # A refresh is needed only when no run for this head started after
+    # `fresh_since`, the moment what the workflow reads last changed. A run
+    # that started later read it, so it is the one to wait on, whether it is
+    # still running or done (AUT-1632). Both are whole-second timestamps, so a
+    # run that started in the same second as the change cannot be ordered
+    # against it and is refreshed. An unknown time never skips a refresh.
+    if [ -n "$run_id" ] && [ "$refresh_completed" = true ] && [ -n "$fresh_since" ]; then
+      run_started_epoch="$(jq -ner --arg started "$run_started_at" '$started | fromdateiso8601' 2>/dev/null)" || run_started_epoch=""
+      case "$run_started_epoch" in
+        '' | *[!0-9]*) ;;
+        *)
+          case "$fresh_since" in
+            '' | *[!0-9]*) ;;
+            *)
+              if [ "$run_started_epoch" -gt "$fresh_since" ]; then
+                REQUIRED_WORKFLOW_RUN_ID="$run_id"
+                REQUIRED_WORKFLOW_FRESH_RUN=true
+                return 0
+              fi
+              ;;
+          esac
+          ;;
+      esac
     fi
     if [ -n "$run_id" ] && [ "$active_reuse_seconds" -gt 0 ]; then
       active_run_bound=false
@@ -1765,6 +1791,29 @@ rerun_required_workflow() {
     attempt=$((attempt + 1))
     sleep "$GATE_RETRY_DELAY"
   done
+}
+
+# When the pull request's body last changed, as epoch seconds: its last edit,
+# or its creation if never edited. delivery-evidence reads the body and no
+# other field. Prints nothing when the time cannot be read, and the caller
+# then refreshes the evidence run rather than trust an older one.
+pr_body_last_changed_epoch() {
+  local number="$1"
+  if ! read_with_retry gh api graphql --hostname "$REPO_HOST" \
+    -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F number="$number" \
+    -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){createdAt lastEditedAt}}}' \
+    --jq '.data.repository.pullRequest | {createdAt, lastEditedAt}'; then
+    [ "$JSON_MODE" = true ] || printf 'Could not read when PR #%s body last changed; refreshing delivery evidence.\n' "$number" >&2
+    return 0
+  fi
+  printf '%s' "$READ_OUTPUT" | jq -er '
+    if (.createdAt | type) != "string" then error("missing createdAt")
+    elif .lastEditedAt != null and (.lastEditedAt | type) != "string" then error("invalid lastEditedAt")
+    else [.createdAt, .lastEditedAt] | map(select(. != null) | fromdateiso8601) | max
+    end' 2>/dev/null || {
+    [ "$JSON_MODE" = true ] || printf 'PR #%s reported no usable body timestamp; refreshing delivery evidence.\n' "$number" >&2
+    return 0
+  }
 }
 
 effective_review_gate_accepts_active() {
@@ -2342,18 +2391,26 @@ open_pr() {
     fi
   fi
   # GitHub's required workflow is the sole authority for the body contract.
-  # A new PR waits for its initial verdict; a reused PR first requests a fresh
-  # attempt because GitHub does not reliably dispatch the central workflow for
-  # every body edit. In either case a hosted review is requested only after the
-  # authoritative exact-head/body attempt succeeds, so invalid evidence cannot
-  # consume a model review and then force a second review cycle.
+  # A new PR waits for its initial verdict. A ruleset-required workflow never
+  # runs for a body edit (it ignores `types:`), so a reused PR refreshes the
+  # evidence run unless a run for this head started in a later second than
+  # the body's last change: a body this command just edited is always
+  # refreshed, and so is one whose change time cannot be read (AUT-1632). In
+  # every case a hosted review is requested only after the authoritative
+  # exact-head/body attempt succeeds, so invalid evidence cannot consume a
+  # model review and then force a second review cycle.
   if delivery_evidence_required "$pr_base"; then
     refuse_conflicting_open_pr "$number" "$local_head" "$pr_base" "$pr_base_sha"
     REQUIRED_WORKFLOW_REFUSED=false
     if [ "$state" = existing ]; then
-      rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS" 0 true 0 "" "$pr_base" "$pr_base_sha"
+      evidence_fresh_since=""
+      [ "$BODY_APPLIED" = updated ] || evidence_fresh_since="$(pr_body_last_changed_epoch "$number")"
+      rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS" 0 true 0 "" "$pr_base" "$pr_base_sha" "$evidence_fresh_since"
       evidence_min_attempt="$REQUIRED_WORKFLOW_MIN_ATTEMPT"
       evidence_min_attempt_run_id="$REQUIRED_WORKFLOW_MIN_ATTEMPT_RUN_ID"
+      if [ "$REQUIRED_WORKFLOW_FRESH_RUN" = true ] && [ "$JSON_MODE" = false ]; then
+        printf 'Delivery-evidence run %s already read this body at this head; waiting on it instead of re-running.\n' "$REQUIRED_WORKFLOW_RUN_ID" >&2
+      fi
     fi
     # A refused run has no verdict to wait for.
     if [ "$REQUIRED_WORKFLOW_REFUSED" = false ]; then
