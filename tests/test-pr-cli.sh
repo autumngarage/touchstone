@@ -2891,6 +2891,32 @@ Closes #42'
   assert_has "$TMP/out" '"phase":"armed-not-queued","nextAction":"queue"'
   run_pr "$TMP/out" status 7
   assert_has "$TMP/out" "command: touchstone pr merge 7 --head $HEAD_SHA"
+  # Armed is held to the ready read's gate-binding guards (AUT-1639): the same
+  # armed, CLEAN, unqueued head whose gate run is from an unbound source is
+  # action-required, and status names no merge command -- merge refuses that
+  # head on the same guard and enqueues nothing.
+  GH_MODE=status_gate_historical run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"unbound":true'
+  assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'
+  assert_not_has "$TMP/out" '"nextAction":"queue"'
+  GH_MODE=status_gate_historical run_pr "$TMP/out" status 7
+  assert_not_has "$TMP/out" 'command: touchstone pr merge'
+  GH_MODE=status_gate_historical run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'is not successful: unbound workflow run'
+  assert_not_has "$GH_CALLS" 'enqueuePullRequest'
+  # A workflow-source policy carries no review gate to bind, so its armed,
+  # CLEAN, unqueued head is still sent to the enqueue, and merge enqueues it.
+  GH_FAKE_REPO=autumngarage/touchstone-workflows run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"configured":false'
+  assert_has "$TMP/out" '"phase":"armed-not-queued","nextAction":"queue"'
+  GH_FAKE_REPO=autumngarage/touchstone-workflows run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"queued"'
+  assert_has "$GH_CALLS" 'enqueuePullRequest'
+  rm -f "$TMP/state/queued"
   run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"queued"'

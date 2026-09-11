@@ -2945,6 +2945,19 @@ review_gate_failure_recovery() {
   printf '%s' "The gate run says which: if it is waiting for review, re-run touchstone pr open, which waits here for the reviewer and then re-runs the gate once; if it reports findings, answer each with touchstone pr answer --finding. Never push a fix commit for a gate that is only waiting."
 }
 
+# The gate-binding guards, shared by the armed and ready phases. A gate
+# observation that is ambiguous, from an unbound workflow source, not
+# configured by the effective policy, or a job Actions refused to start holds
+# no exact-head verdict to act on, so the phase stays action-required.
+review_gate_observation_bound() {
+  [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.ambiguous // false')" = false ] || return 1
+  [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.unbound // false')" = false ] || return 1
+  [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r 'if has("configured") then .configured else true end')" = true ] || return 1
+  # A gate job Actions refused to start carries no review verdict: there is
+  # nothing to address, only a human decision to make (AUT-1594).
+  [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.actionsRefused == null')" = true ] || return 1
+}
+
 classify_pr_phase() {
   local state="$1" merge_state="$2" draft="$3" number="$4" head="$5"
   local gate_present gate_status gate_conclusion workflow_status workflow_conclusion
@@ -3003,6 +3016,14 @@ classify_pr_phase() {
   fi
 
   if [ "$AUTO_MERGE_ARMED" = true ]; then
+    # Armed changes who admits the head, not whether its gate observation can
+    # be acted on: an armed head whose gate is unbound was advertised to a
+    # `pr merge` that refuses it on this same guard (AUT-1639). Only where the
+    # policy has a review gate -- a workflow-source policy has none, so its
+    # armed head is read by what GitHub is waiting on, as before.
+    if [ "$ENFORCEMENT_EXPECTS_REVIEW_GATE" = true ] && ! review_gate_observation_bound; then
+      return 0
+    fi
     if [ "$ENFORCEMENT_QUEUE_APPLIED" = true ]; then
       # Under a merge queue, an armed auto-merge request with no queue entry
       # is not "queued": GitHub has not admitted the head and nothing here
@@ -3039,12 +3060,7 @@ classify_pr_phase() {
     return 0
   fi
   [ "$merge_state" != DIRTY ] || return 0
-  [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.ambiguous // false')" = false ] || return 0
-  [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.unbound // false')" = false ] || return 0
-  [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r 'if has("configured") then .configured else true end')" = true ] || return 0
-  # A gate job Actions refused to start carries no review verdict: there is
-  # nothing to address, only a human decision to make (AUT-1594).
-  [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.actionsRefused == null')" = true ] || return 0
+  review_gate_observation_bound || return 0
 
   gate_present="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.present // false')"
   if [ "$gate_present" = true ]; then
