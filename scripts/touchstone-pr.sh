@@ -1682,10 +1682,12 @@ rerun_required_workflow() {
         conclusion=""
       fi
     fi
-    # A refresh is needed only when no run for this head started at or after
+    # A refresh is needed only when no run for this head started after
     # `fresh_since`, the moment what the workflow reads last changed. A run
     # that started later read it, so it is the one to wait on, whether it is
-    # still running or done (AUT-1632). An unknown time never skips a refresh.
+    # still running or done (AUT-1632). Both are whole-second timestamps, so a
+    # run that started in the same second as the change cannot be ordered
+    # against it and is refreshed. An unknown time never skips a refresh.
     if [ -n "$run_id" ] && [ "$refresh_completed" = true ] && [ -n "$fresh_since" ]; then
       run_started_epoch="$(jq -ner --arg started "$run_started_at" '$started | fromdateiso8601' 2>/dev/null)" || run_started_epoch=""
       case "$run_started_epoch" in
@@ -1694,7 +1696,7 @@ rerun_required_workflow() {
           case "$fresh_since" in
             '' | *[!0-9]*) ;;
             *)
-              if [ "$run_started_epoch" -ge "$fresh_since" ]; then
+              if [ "$run_started_epoch" -gt "$fresh_since" ]; then
                 REQUIRED_WORKFLOW_RUN_ID="$run_id"
                 REQUIRED_WORKFLOW_FRESH_RUN=true
                 return 0
@@ -2391,12 +2393,12 @@ open_pr() {
   # GitHub's required workflow is the sole authority for the body contract.
   # A new PR waits for its initial verdict. A ruleset-required workflow never
   # runs for a body edit (it ignores `types:`), so a reused PR refreshes the
-  # evidence run unless a run for this head started at or after the body's
-  # last change: a body this command just edited is always refreshed, and so
-  # is one whose change time cannot be read (AUT-1632). In every case a hosted
-  # review is requested only after the authoritative exact-head/body attempt
-  # succeeds, so invalid evidence cannot consume a model review and then force
-  # a second review cycle.
+  # evidence run unless a run for this head started in a later second than
+  # the body's last change: a body this command just edited is always
+  # refreshed, and so is one whose change time cannot be read (AUT-1632). In
+  # every case a hosted review is requested only after the authoritative
+  # exact-head/body attempt succeeds, so invalid evidence cannot consume a
+  # model review and then force a second review cycle.
   if delivery_evidence_required "$pr_base"; then
     refuse_conflicting_open_pr "$number" "$local_head" "$pr_base" "$pr_base_sha"
     REQUIRED_WORKFLOW_REFUSED=false

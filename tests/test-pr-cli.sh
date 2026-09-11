@@ -2106,6 +2106,17 @@ EOF
     && ok "a run that started before the body's last edit is re-run" \
     || fail "a run that started before the body's last edit was taken as the verdict"
 
+  # Edited in the same second run 80 started: whole-second timestamps cannot
+  # order the edit against the run's read of the body, so run 80 is re-run.
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/review-request"
+  cp "$TMP/body2" "$TMP/state/pr-body"
+  GH_EVIDENCE_STARTED_AT='2026-08-26T22:20:00Z' GH_PR_LAST_EDITED_AT_JSON='"2026-08-26T22:20:00Z"' \
+    run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 0
+  grep -q 'rerun 80' "$TMP/state/evidence-reruns" 2>/dev/null \
+    && ok "a run that started in the same second as the body's last edit is re-run" \
+    || fail "a run that started in the same second as the body's last edit was taken as the verdict"
+
   # When the body's change time cannot be read, open re-runs rather than trust
   # an older run: an unknown time fails toward an extra run.
   rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/review-request"

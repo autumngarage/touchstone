@@ -76,8 +76,10 @@ taking this document's word for it.
   gate fail with no signal from the one command the driver uses (AUT-437).
   After convergence, a reused PR asks the policy-declared organization-required
   `delivery-evidence` run to evaluate the surviving body only when no
-  policy-bound run for the same head started at or after the body's last change
-  (its `lastEditedAt`, or `createdAt` if it was never edited). A
+  policy-bound run for the same head started after the body's last change (its
+  `lastEditedAt`, or `createdAt` if it was never edited). Both are whole-second
+  timestamps, so a run that started in the same second as the change is re-run
+  too: the two cannot be ordered. A
   ruleset-required workflow never runs for a body edit, so a body `open` has
   just edited is always re-run, and so is one whose change time cannot be read;
   otherwise `open` waits on the run that already read the current body and
