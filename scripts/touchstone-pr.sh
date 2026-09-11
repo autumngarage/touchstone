@@ -2749,8 +2749,17 @@ classify_pr_phase() {
         PR_PHASE=armed-waiting-checks
         PR_NEXT_ACTION="wait"
       else
+        # Armed, green, and still not admitted: GitHub's auto-merge did not
+        # enqueue the head and did not go on to do so (hesperus#354 for 21
+        # minutes, #37 for over 30; AUT-1224). Where GitHub also reports the
+        # PR CLEAN -- the condition ready-to-queue carries -- `pr merge` at
+        # this head enqueues it; anything else is GitHub's to explain.
         PR_PHASE=armed-not-queued
         PR_NEXT_ACTION=inspect
+        if [ "$merge_state" = CLEAN ]; then
+          PR_NEXT_ACTION=queue
+          PR_NEXT_COMMAND="touchstone pr merge $number --head $head"
+        fi
       fi
     else
       PR_PHASE=queued
@@ -3193,9 +3202,99 @@ refuse_evicted_head() {
     "Fix the failing check on a new head, push it, then run touchstone pr merge $number --head <new head>. touchstone pr status $number shows the eviction."
 }
 
+# The one reconciliation after a delivery mutation. Neither `gh pr merge`'s
+# exit status nor the enqueue's is the outcome; what GitHub reports for the
+# reviewed head afterwards is. Sets RECONCILED_DELIVERY_STATE to merged,
+# queued, or auto-merge-enabled, or fails naming the mutation.
+RECONCILED_DELIVERY_STATE=""
+reconcile_delivery() {
+  local mutation="$1" mutation_status="$2" diagnostic="$3" rejected="$4" remedy="$5"
+  local state final_head auto_merge queue_state
+  RECONCILED_DELIVERY_STATE=""
+  read_with_retry gh api graphql --hostname "$REPO_HOST" \
+    -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F pr="$PR_NUMBER" \
+    -f query='query($owner: String!, $name: String!, $pr: Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$pr) { state url headRefOid autoMergeRequest { enabledAt } mergeQueueEntry { state } } } }' \
+    --jq '[.data.repository.pullRequest.state,.data.repository.pullRequest.url,.data.repository.pullRequest.headRefOid,(.data.repository.pullRequest.autoMergeRequest != null),(.data.repository.pullRequest.mergeQueueEntry.state // "")] | @tsv' \
+    || fail_operation "$mutation returned $mutation_status (${diagnostic:-no diagnostic}) and final state could not be read: $READ_OUTPUT" "Inspect GitHub."
+  IFS="$(printf '\t')" read -r state _ final_head auto_merge queue_state <<<"$READ_OUTPUT"
+  [ "$final_head" = "$EXPECTED_HEAD" ] \
+    || fail_operation "PR #$PR_NUMBER moved to $final_head during $mutation reconciliation" "Inspect and review the live head."
+  classify_delivery_state "$queue_state" "$auto_merge"
+  if [ "$state" = MERGED ]; then
+    RECONCILED_DELIVERY_STATE=merged
+  elif [ "$state" = OPEN ] && { [ "$DELIVERY_STATE_CLASS" = queued ] || [ "$DELIVERY_STATE_CLASS" = auto-merge-enabled ]; }; then
+    RECONCILED_DELIVERY_STATE="$DELIVERY_STATE_CLASS"
+  elif [ "$state" = OPEN ] && [ "$DELIVERY_STATE_CLASS" = unmergeable ]; then
+    fail_operation "GitHub returned an unmergeable queue state for PR #$PR_NUMBER after the $mutation request" \
+      "Inspect the authoritative merge-group run; do not retry the $mutation mutation blindly."
+  elif [ "$state" = OPEN ] && [ "$DELIVERY_STATE_CLASS" = unknown ]; then
+    fail_operation "GitHub returned unknown merge-queue state $queue_state for PR #$PR_NUMBER after the $mutation request" \
+      "Inspect GitHub; do not retry the $mutation mutation blindly."
+  else
+    fail_operation "$rejected" "$remedy"
+  fi
+}
+
+# GitHub's auto-merge is meant to enqueue an armed head once its required
+# checks pass, and sometimes never does. hesperus#354 (2026-09-10) was armed
+# while a required check ran; the check failed, its re-run passed, and the PR
+# then read CLEAN, armed, and unqueued for 21 minutes. Re-arming it with
+# `gh pr merge --match-head-commit` changed nothing; a direct
+# enqueuePullRequest admitted it at once. #37 sat the same way for over 30
+# minutes. So armed is not a result on its own: where `status` reads the head
+# as armed-not-queued with `queue` next -- armed, no queue entry, no check run
+# still running or failed, no unresolved thread, GitHub reporting CLEAN --
+# merge enqueues it, bound to the reviewed head so GitHub refuses one that
+# moved. Anything else stays GitHub's: a head still waiting on checks stays
+# auto-merge-enabled, and re-running merge is the recovery. One mutation,
+# never retried, never waited on (AUT-1224).
+ENQUEUED_DELIVERY_STATE=""
+enqueue_armed_head() {
+  local number="$1" head="$2" live_state live_head merge_state draft pr_id enqueue_status=0 enqueue_diagnostic="" remedy
+  ENQUEUED_DELIVERY_STATE=""
+  read_pr_row
+  IFS="$(printf '\t')" read -r _ live_state _ live_head _ _ _ merge_state draft <<<"$PR_ROW"
+  [ "$live_head" = "$head" ] \
+    || fail_input "expected head $head but PR #$number is at $live_head; nothing was enqueued" "Re-review the live head."
+  read_auto_merge_state "$number" "$head"
+  classify_pr_phase "$live_state" "$merge_state" "$draft" "$number" "$head"
+  [ "$PR_PHASE" = armed-not-queued ] && [ "$PR_NEXT_ACTION" = queue ] || return 0
+  read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json id --jq .id \
+    || fail_operation "could not read the node id of PR #$number to enqueue it: $READ_OUTPUT" "Retry after GitHub recovers."
+  pr_id="$READ_OUTPUT"
+  [ -n "$pr_id" ] || fail_operation "GitHub returned no node id for PR #$number" "Retry after GitHub recovers."
+  [ "$JSON_MODE" = true ] \
+    || printf 'GitHub reports PR #%s CLEAN with auto-merge armed and no queue entry; enqueueing it at %s.\n' "$number" "$head" >&2
+  capture_command gh api graphql --hostname "$REPO_HOST" -f pullRequestId="$pr_id" -f expectedHeadOid="$head" \
+    -f query='mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid}){mergeQueueEntry{state}}}' \
+    || {
+      enqueue_status=$?
+      enqueue_diagnostic="$CAPTURE_ERROR"
+    }
+  remedy="Nothing was retried. touchstone pr status $number shows what GitHub is waiting on; once it names touchstone pr merge $number --head $head, run that. Raw: gh api graphql --hostname $REPO_HOST -f query='mutation{enqueuePullRequest(input:{pullRequestId:\"$pr_id\",expectedHeadOid:\"$head\"}){mergeQueueEntry{state}}}'"
+  reconcile_delivery enqueue "$enqueue_status" "$enqueue_diagnostic" \
+    "GitHub did not enqueue PR #$number at $head: ${enqueue_diagnostic:-no diagnostic}" "$remedy"
+  case "$RECONCILED_DELIVERY_STATE" in
+    merged | queued)
+      # A concurrent admission by GitHub itself makes the mutation fail and
+      # the head queued; the verified state is the outcome, and the error is
+      # still shown.
+      [ "$enqueue_status" -eq 0 ] || [ "$JSON_MODE" = true ] \
+        || printf 'The enqueue returned an error (%s), but GitHub now reports this head %s.\n' "${enqueue_diagnostic:-no diagnostic}" "$RECONCILED_DELIVERY_STATE" >&2
+      ENQUEUED_DELIVERY_STATE="$RECONCILED_DELIVERY_STATE"
+      ;;
+    *)
+      [ "$enqueue_status" -eq 0 ] \
+        || fail_operation "GitHub refused to enqueue PR #$number at $head: ${enqueue_diagnostic:-no diagnostic}; auto-merge is still armed and the head has no queue entry" "$remedy"
+      fail_operation "GitHub accepted the enqueue of PR #$number at $head but reports no queue entry for it" \
+        "Nothing was retried; inspect touchstone pr status $number before running merge again."
+      ;;
+  esac
+}
+
 merge_pr() {
   local number state url head head_repo base base_sha merge_state draft merge_output merge_status=0
-  local merge_diagnostic final_state="" final_row final_head auto_merge queue_state unguarded_marker prior_records record_author merge_auto
+  local merge_diagnostic final_state="" unguarded_marker prior_records record_author merge_auto
   [ -n "$EXPECTED_HEAD" ] \
     || fail_input "merge requires --head SHA" "Pass the exact reviewed head from GitHub."
   read_pr_row
@@ -3326,29 +3425,17 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
       merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash ${merge_auto[@]+"${merge_auto[@]}"} \
         --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
       merge_diagnostic="$(clean_diagnostic "$merge_output")"
-      read_with_retry gh api graphql --hostname "$REPO_HOST" \
-        -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F pr="$PR_NUMBER" \
-        -f query='query($owner: String!, $name: String!, $pr: Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$pr) { state url headRefOid autoMergeRequest { enabledAt } mergeQueueEntry { state } } } }' \
-        --jq '[.data.repository.pullRequest.state,.data.repository.pullRequest.url,.data.repository.pullRequest.headRefOid,(.data.repository.pullRequest.autoMergeRequest != null),(.data.repository.pullRequest.mergeQueueEntry.state // "")] | @tsv' \
-        || fail_operation "merge returned $merge_status (${merge_diagnostic:-no diagnostic}) and final state could not be read: $READ_OUTPUT" "Inspect GitHub."
-      final_row="$READ_OUTPUT"
-      IFS="$(printf '\t')" read -r state _ final_head auto_merge queue_state <<<"$final_row"
-      [ "$final_head" = "$EXPECTED_HEAD" ] \
-        || fail_operation "PR #$PR_NUMBER moved to $final_head during merge reconciliation" "Inspect and review the live head."
-      classify_delivery_state "$queue_state" "$auto_merge"
-      if [ "$state" = MERGED ]; then
-        final_state=merged
-      elif [ "$state" = OPEN ] && { [ "$DELIVERY_STATE_CLASS" = queued ] || [ "$DELIVERY_STATE_CLASS" = auto-merge-enabled ]; }; then
-        final_state="$DELIVERY_STATE_CLASS"
-      elif [ "$state" = OPEN ] && [ "$DELIVERY_STATE_CLASS" = unmergeable ]; then
-        fail_operation "GitHub returned an unmergeable queue state for PR #$PR_NUMBER after the merge request" \
-          "Inspect the authoritative merge-group run; do not retry the merge mutation blindly."
-      elif [ "$state" = OPEN ] && [ "$DELIVERY_STATE_CLASS" = unknown ]; then
-        fail_operation "GitHub returned unknown merge-queue state $queue_state for PR #$PR_NUMBER after the merge request" \
-          "Inspect GitHub; do not retry the merge mutation blindly."
-      else
-        fail_operation "GitHub did not accept merge for PR #$PR_NUMBER: $merge_diagnostic" "The repository ruleset remains authoritative."
-      fi
+      reconcile_delivery merge "$merge_status" "$merge_diagnostic" \
+        "GitHub did not accept merge for PR #$PR_NUMBER: $merge_diagnostic" "The repository ruleset remains authoritative."
+      final_state="$RECONCILED_DELIVERY_STATE"
+    fi
+    # Armed is not admitted under a merge queue: whether this run armed it or
+    # an earlier one did, a head status reads as armed-not-queued with `queue`
+    # next is enqueued here rather than left for an admission GitHub may
+    # never make (AUT-1224). Without a queue, auto-merge itself lands it.
+    if [ "$final_state" = auto-merge-enabled ] && [ "$ENFORCEMENT_QUEUE_APPLIED" = true ]; then
+      enqueue_armed_head "$PR_NUMBER" "$head"
+      [ -z "$ENQUEUED_DELIVERY_STATE" ] || final_state="$ENQUEUED_DELIVERY_STATE"
     fi
   fi
   if [ "$JSON_MODE" = true ]; then

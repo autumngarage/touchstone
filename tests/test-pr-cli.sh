@@ -329,6 +329,9 @@ case "$1 ${2:-}" in
       printf '%s\t%s\t%s\t%s\n' "$live_state" "$live_head" "$live_base" "$live_base_sha"
     elif has '--json state,url' "$@"; then
       if [ -f "$GH_STATE/merged" ]; then printf 'MERGED\thttps://example.test/pr/7\n'; else printf 'OPEN\thttps://example.test/pr/7\n'; fi
+    elif has '--json id --jq' "$@"; then
+      # The node id the enqueue mutation addresses.
+      printf 'PR_kwDOfixture7\n'
     elif [ -f "$GH_STATE/merged" ]; then
       head_repo="${GH_FAKE_HEAD_REPO:-${GH_FAKE_REPO:-${GH_REPO:-autumngarage/current}}}"
       [ ! -f "$GH_STATE/head-repo-missing" ] || head_repo=-
@@ -347,8 +350,12 @@ case "$1 ${2:-}" in
       esac
       [ ! -f "$GH_STATE/status-draft" ] || draft=true
       [ ! -f "$GH_STATE/status-conflicts" ] || merge_state=DIRTY
+      # A head that moves after the number of full reads its counter holds:
+      # a push landing between merge's first read and its enqueue decision.
+      row_head="$GH_HEAD"
+      if [ -f "$GH_STATE/head-moves-after-reads" ] && fake_after_reads head-moves-after-reads; then row_head=moved-head; fi
       printf '7\t%s\thttps://example.test/pr/7\t%s\t%s\tmain\t%s\t%s\t%s\n' \
-        "$pr_state" "$GH_HEAD" "$head_repo" "${GH_BASE_SHA:-base-sha}" "$merge_state" "$draft"
+        "$pr_state" "$row_head" "$head_repo" "${GH_BASE_SHA:-base-sha}" "$merge_state" "$draft"
     fi
     ;;
   "pr merge")
@@ -357,6 +364,12 @@ case "$1 ${2:-}" in
     if has '--disable-auto' "$@"; then
       if [ -f "$GH_STATE/disarm-fails" ]; then printf 'auto-merge could not be disabled\n' >&2; exit 1; fi
       rm -f "$GH_STATE/auto-merge-armed"
+      exit 0
+    fi
+    # Under a merge queue `gh pr merge` arms auto-merge and returns; GitHub
+    # admits the head later, or -- AUT-1224 -- never does.
+    if [ -f "$GH_STATE/arm-on-merge" ]; then
+      touch "$GH_STATE/auto-merge-armed"
       exit 0
     fi
     if [ "${GH_MODE:-ok}" = merge_failed ]; then exit 1; fi
@@ -373,6 +386,16 @@ case "$1 ${2:-}" in
     ;;
   "api user") printf '%s\n' alice ;;
   "api graphql")
+    # The enqueue mutation: admitted unless a case says GitHub refuses it.
+    if has 'enqueuePullRequest' "$@"; then
+      if [ -f "$GH_STATE/enqueue-fails" ]; then
+        printf 'GraphQL: Pull request is in unstable status (enqueuePullRequest)\n' >&2
+        exit 1
+      fi
+      touch "$GH_STATE/queued"
+      printf '%s\n' '{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"state":"QUEUED"}}}}'
+      exit 0
+    fi
     if has 'reviewThreads(first:100){nodes{isResolved}}' "$@"; then
       if [ "${GH_MODE:-ok}" = status_auto_merge_threads ]; then printf '2\n'; else printf '0\n'; fi
       exit 0
@@ -396,6 +419,8 @@ case "$1 ${2:-}" in
         merge_queue_existing) queue_state='"AWAITING_CHECKS"' ;;
         merge_queue_unknown_existing) queue_state='"FUTURE_STATE"' ;;
       esac
+      # Admitted by this command's own enqueue mutation.
+      [ ! -f "$GH_STATE/queued" ] || queue_state='"QUEUED"'
       queue_position=null
       [ "$queue_state" = null ] || queue_position=1
       queue_events='[]'
@@ -426,6 +451,10 @@ case "$1 ${2:-}" in
         printf 'OPEN\thttps://example.test/pr/7\t%s\tfalse\tUNMERGEABLE\n' "$GH_HEAD"
       elif [ -f "$GH_STATE/merged" ]; then
         printf 'MERGED\thttps://example.test/pr/7\t%s\tfalse\t\n' "$GH_HEAD"
+      elif [ -f "$GH_STATE/queued" ]; then
+        printf 'OPEN\thttps://example.test/pr/7\t%s\ttrue\tQUEUED\n' "$GH_HEAD"
+      elif [ -f "$GH_STATE/auto-merge-armed" ]; then
+        printf 'OPEN\thttps://example.test/pr/7\t%s\ttrue\t\n' "$GH_HEAD"
       elif [ "${GH_MODE:-ok}" = merge_queue ]; then
         printf 'OPEN\thttps://example.test/pr/7\t%s\tfalse\tQUEUED\n' "$GH_HEAD"
       elif [ "${GH_MODE:-ok}" = auto_merge ]; then
@@ -2523,6 +2552,89 @@ Closes #42'
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/queue-evicted-then-pushed" "$TMP/state/merged" "$TMP/state/review-gate"
+
+  echo "==> merge enqueues an armed, green, CLEAN head GitHub never queued (AUT-1224)"
+  # hesperus#354, 2026-09-10: armed while a required check ran; the check
+  # failed, its re-run passed, and the PR then read CLEAN, armed, and unqueued
+  # for 21 minutes. Re-running merge reported auto-merge-enabled and changed
+  # nothing; a direct enqueuePullRequest queued it at once.
+  touch "$TMP/state/review-gate" "$TMP/state/pr-exists" "$TMP/state/auto-merge-armed"
+  rm -f "$TMP/state/merged" "$TMP/state/queued"
+  # Status, the one reader, names the command that recovers it.
+  run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"phase":"armed-not-queued","nextAction":"queue"'
+  run_pr "$TMP/out" status 7
+  assert_has "$TMP/out" "command: touchstone pr merge 7 --head $HEAD_SHA"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"queued"'
+  assert_has "$GH_CALLS" 'enqueuePullRequest'
+  assert_has "$GH_CALLS" "expectedHeadOid=$HEAD_SHA"
+  assert_has "$GH_CALLS" 'pullRequestId=PR_kwDOfixture7'
+  # Already armed: nothing arms it again, so the enqueue is the one mutation.
+  assert_not_has "$GH_CALLS" 'pr merge'
+  # Re-running on the queued head is idempotent: queued, no second enqueue.
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"queued"'
+  assert_not_has "$GH_CALLS" 'enqueuePullRequest'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  # The moment right after arming: GitHub already reads the head green and
+  # unqueued, so the same run enqueues it, and the human output says so.
+  rm -f "$TMP/state/queued" "$TMP/state/auto-merge-armed"
+  touch "$TMP/state/arm-on-merge"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA"
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "enqueueing it at $HEAD_SHA"
+  assert_has "$TMP/out" "PR #7: queued at $HEAD_SHA"
+  grep -q '^pr merge 7 ' "$GH_CALLS" || fail "merge did not arm the head before enqueueing it: $(cat "$GH_CALLS")"
+  assert_has "$GH_CALLS" "expectedHeadOid=$HEAD_SHA"
+  rm -f "$TMP/state/arm-on-merge" "$TMP/state/queued"
+  touch "$TMP/state/auto-merge-armed"
+  # An armed head GitHub already queued is reported queued with no enqueue.
+  GH_MODE=merge_queue_existing run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"queued"'
+  assert_not_has "$GH_CALLS" 'enqueuePullRequest'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  # A head still waiting on a check stays auto-merge-enabled: GitHub admits it
+  # when the check passes, nothing here polls, and nothing is enqueued.
+  GH_MODE=status_auto_merge run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"auto-merge-enabled"'
+  assert_not_has "$GH_CALLS" 'enqueuePullRequest'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  # GitHub not reporting CLEAN is GitHub's verdict: status says inspect and
+  # names no command, and merge enqueues nothing.
+  GH_MODE=status_gate_blocked_success run_pr "$TMP/out" status 7 --json
+  assert_has "$TMP/out" '"phase":"armed-not-queued","nextAction":"inspect"'
+  GH_MODE=status_gate_blocked_success run_pr "$TMP/out" status 7
+  assert_not_has "$TMP/out" 'command: touchstone pr merge'
+  GH_MODE=status_gate_blocked_success run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"auto-merge-enabled"'
+  assert_not_has "$GH_CALLS" 'enqueuePullRequest'
+  # A head that moves before the enqueue decision is refused; nothing is
+  # enqueued at any head.
+  printf '1\n' >"$TMP/state/head-moves-after-reads"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'is at moved-head; nothing was enqueued'
+  assert_not_has "$GH_CALLS" 'enqueuePullRequest'
+  rm -f "$TMP/state/head-moves-after-reads"
+  # GitHub's refusal is surfaced in its own words, once, never retried, and
+  # never reported as queued.
+  touch "$TMP/state/enqueue-fails"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" "GitHub refused to enqueue PR #7 at $HEAD_SHA"
+  assert_has "$TMP/out" 'Pull request is in unstable status (enqueuePullRequest)'
+  assert_has "$TMP/out" 'enqueuePullRequest(input:{pullRequestId:'
+  assert_not_has "$TMP/out" '"status":"queued"'
+  [ "$(grep -c 'enqueuePullRequest' "$GH_CALLS" || true)" -eq 1 ] \
+    || fail "a refused enqueue was not attempted exactly once: $(grep -c 'enqueuePullRequest' "$GH_CALLS" || true)"
+  rm -f "$TMP/state/enqueue-fails" "$TMP/state/auto-merge-armed" "$TMP/state/queued" "$TMP/state/review-gate"
 
   echo "==> behavior v2 merge arms auto-merge on an active evaluation without re-running it"
   touch "$TMP/state/review-gate"
