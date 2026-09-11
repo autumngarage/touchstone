@@ -998,7 +998,7 @@ assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
 assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
   "A consumer PR cannot"
 assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
-  "resolution alone still cannot satisfy"
+  "each run evaluates once and never waits"
 assert_not_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
   "A small workflow calls"
 

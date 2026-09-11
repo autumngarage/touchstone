@@ -209,9 +209,9 @@ the `PRRT_` thread ID to root comment-ID mapping needed to answer and resolve
 each finding. Replies are deliberately omitted because the raw reply endpoint
 accepts the root finding ID. A zero exit proves no unresolved thread remains.
 
-A `review-gate` run evaluates once, so a run that evaluated before the
-exact-head review arrived is red only because the evidence did not exist yet:
-that is waiting, not a verdict. Re-run the project's PR-open command; it is
+A `review-gate` run evaluates once, so a run that
+started before the exact-head review completed is red only because the
+evidence did not exist yet: that is waiting, not a verdict. Re-run the project's PR-open command; it is
 idempotent, waits for the review, and re-runs the pinned gate. Compare
 timestamps before treating that red check as a review verdict.
 
