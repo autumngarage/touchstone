@@ -531,7 +531,7 @@ case "$1 ${2:-}" in
           printf '%s\n' '{"jobs":[{"id":82,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"failure"}]}' ;;
         status_gate_cancelled)
           printf '%s\n' '{"jobs":[{"id":82,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"cancelled"}]}' ;;
-        status_gate_workflow_cancelled)
+        status_gate_workflow_cancelled | status_gate_workflow_failure)
           printf '%s\n' '{"jobs":[]}' ;;
         status_gate_success | status_gate_historical)
           printf '%s\n' '{"jobs":[{"id":84,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"success"}]}' ;;
@@ -568,7 +568,7 @@ case "$1 ${2:-}" in
         status_gate_cancelled)
           jq -cn --arg head "$GH_HEAD" '{check_runs:[{id:82,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"cancelled",details_url:"https://example.test/runs/82",output:{title:"Review evaluation cancelled",summary:"Inspect the workflow run."}}]}'
           ;;
-        status_gate_workflow_cancelled)
+        status_gate_workflow_cancelled | status_gate_workflow_failure)
           jq -cn '{check_runs:[]}'
           ;;
         status_gate_success | status_gate_historical)
@@ -988,7 +988,7 @@ case "$1 ${2:-}" in
           status_gate_run_recency)
             gate_attempt=3
             ;;
-          status_gate_failure | status_gate_collision | status_gate_refused | actions_refused)
+          status_gate_failure | status_gate_collision | status_gate_refused | actions_refused | status_gate_workflow_failure)
             gate_status=completed
             gate_conclusion_json='"failure"'
             ;;
@@ -1297,6 +1297,48 @@ EOF
   assert_has "$TMP/out" '"phase":"fix-required","nextAction":"address-review"'
   assert_has "$TMP/out" '"title":"No request binds this head","summary":"Run touchstone pr open for the live head."'
 
+  echo "==> under gate contract 4, a failed gate may be a head waiting for review, and status says so (AUT-1635)"
+  # A contract-4 gate evaluates once and fails fast when review evidence is
+  # missing, so this failure may be a head only waiting for review. Which one
+  # lives in the gate's log, which status does not read: the phase keeps its
+  # compatible values, and the guidance stops sending the driver to fix code.
+  assert_has "$TMP/out" '"reviewGateBehaviorContractVersion":4'
+  assert_has "$TMP/out" '"summary":"Run touchstone pr open for the live head.","failureMayBeWaiting":true,"recovery":"The gate run says which: if it is waiting for review, re-run touchstone pr open, which waits here for the reviewer and then re-runs the gate once; if it reports findings, answer each with touchstone pr answer --finding. Never push a fix commit for a gate that is only waiting."}'
+  GH_MODE=status_gate_failure run_pr "$TMP/out" status 7
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'phase: fix-required'
+  assert_not_has "$TMP/out" 'address-review'
+  assert_has "$TMP/out" 'next action: read the gate run: it may be waiting for review rather than reporting findings (see next step)'
+  assert_has "$TMP/out" 'next step: this gate failure may be a head still waiting for review, not findings; read the gate run at https://example.test/runs/82. The gate run says which: if it is waiting for review, re-run touchstone pr open'
+  assert_has "$TMP/out" 'answer each with touchstone pr answer --finding. Never push a fix commit for a gate that is only waiting.'
+  # The same failure concluded on the workflow run, with no CheckRun to link.
+  GH_MODE=status_gate_workflow_failure run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"phase":"fix-required","nextAction":"address-review"'
+  assert_has "$TMP/out" '"workflowStatus":"completed","workflowConclusion":"failure","failureMayBeWaiting":true,"recovery":"The gate run says which:'
+  GH_MODE=status_gate_workflow_failure run_pr "$TMP/out" status 7
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'next step: this gate failure may be a head still waiting for review, not findings; read the log of review-gate workflow run 77. The gate run says which:'
+  # A contract-3 gate waited for evidence before it failed, so its failure is
+  # findings: that output is unchanged, and carries neither field.
+  touch "$TMP/state/behavior-version-next"
+  GH_MODE=status_gate_failure run_pr_v3 "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"phase":"fix-required","nextAction":"address-review"'
+  assert_has "$TMP/out" '"summary":"Run touchstone pr open for the live head."},"reviewGateBehaviorContractVersion":3,'
+  assert_not_has "$TMP/out" 'failureMayBeWaiting'
+  assert_not_has "$TMP/out" '"recovery"'
+  GH_MODE=status_gate_failure run_pr_v3 "$TMP/out" status 7
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'next action: address-review'
+  assert_not_has "$TMP/out" 'next step:'
+  assert_not_has "$TMP/out" 'waiting for review'
+  GH_MODE=status_gate_workflow_failure run_pr_v3 "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"phase":"fix-required","nextAction":"address-review"'
+  assert_not_has "$TMP/out" 'failureMayBeWaiting'
+  rm -f "$TMP/state/behavior-version-next"
+
   echo "==> status reports a gate job Actions refused to start as refused, not as findings (AUT-1594)"
   GH_MODE=status_gate_refused run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
@@ -1330,11 +1372,16 @@ EOF
   assert_has "$TMP/out" '"phase":"ready-to-queue","nextAction":"queue"'
   assert_has "$TMP/out" '"checkRunId":84,"status":"completed","conclusion":"success"'
   assert_not_has "$TMP/out" 'Superseded attempt'
+  # A contract-4 success is unchanged: the waiting hint belongs to failure only.
+  assert_has "$TMP/out" '"reviewGateBehaviorContractVersion":4'
+  assert_not_has "$TMP/out" 'failureMayBeWaiting'
+  assert_not_has "$TMP/out" '"recovery"'
   GH_MODE=status_gate_success run_pr "$TMP/out" status 7
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" 'phase: ready-to-queue'
   assert_has "$TMP/out" 'next action: queue'
   assert_has "$TMP/out" "command: touchstone pr merge 7 --head $HEAD_SHA"
+  assert_not_has "$TMP/out" 'next step:'
 
   echo "==> a head the queue already evicted is evicted, not ready to queue (touchstone#1092)"
   # Same green head, same successful gate, same CLEAN merge state -- the only

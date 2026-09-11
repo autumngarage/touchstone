@@ -238,6 +238,21 @@ taking this document's word for it.
   An absent gate with no active bound workflow is `action-required`, never
   guessed to be pending or passing.
 
+  Under gate behavior contract 4 the gate evaluates once and fails fast when
+  review evidence is missing, so a concluded `failure` may be a head only
+  waiting for review rather than findings. The gate records which only in its
+  run log, and status does not read it. There `fix-required` keeps
+  `nextAction` `address-review` for compatibility, and `reviewGateCheck`
+  additionally carries `failureMayBeWaiting` (`true`) and `recovery`, the
+  recovery that fits both readings: for a gate waiting on review, re-run
+  `touchstone pr open`, which waits for the reviewer and re-runs the gate
+  once; for reported findings, answer each with `touchstone pr answer
+  --finding`; for a gate that is only waiting, never push a fix commit. A
+  consumer that sees `failureMayBeWaiting` must not read the phase as code to
+  fix. Human output prints that recovery as the next step, naming the gate
+  run, in place of `address-review`. Both fields are absent under contracts
+  1–3 and in every other phase.
+
   Status does not parse gate output or reviewer prose, recognize a reviewer,
   reconstruct auto-merge from local wait conditions, decide whether review is
   complete, request review, enqueue, retry, or wait for delivery.
