@@ -2732,12 +2732,37 @@ merge_queue_eviction_text() {
 PR_PHASE=""
 PR_NEXT_ACTION=""
 PR_NEXT_COMMAND=""
+# Contract 4 only: the gate evaluates once and fails fast when review evidence
+# is missing, so a concluded failure may be a head that is only waiting for
+# review. The gate records which only in its run log, and status does not read
+# it: that would decide the gate's verdict a second time, at a layer that
+# cannot enforce it. The phase stays fix-required for compatibility, and this
+# says the failure may be a wait (AUT-1635).
+PR_GATE_FAILURE_MAY_BE_WAITING=false
+
+# A concluded review-gate failure. Under contracts 1-3 the gate waited for
+# evidence before it failed, so its failure is findings to address.
+classify_review_gate_failure() {
+  PR_PHASE=fix-required
+  PR_NEXT_ACTION=address-review
+  if effective_review_gate_waits_locally; then
+    PR_GATE_FAILURE_MAY_BE_WAITING=true
+  fi
+}
+
+# The one recovery that fits both readings of a contract-4 gate failure,
+# shared by the human next step and the JSON reviewGateCheck.recovery.
+review_gate_failure_recovery() {
+  printf '%s' "The gate run says which: if it is waiting for review, re-run touchstone pr open, which waits here for the reviewer and then re-runs the gate once; if it reports findings, answer each with touchstone pr answer --finding. Never push a fix commit for a gate that is only waiting."
+}
+
 classify_pr_phase() {
   local state="$1" merge_state="$2" draft="$3" number="$4" head="$5"
   local gate_present gate_status gate_conclusion workflow_status workflow_conclusion
   PR_PHASE=action-required
   PR_NEXT_ACTION=inspect
   PR_NEXT_COMMAND=""
+  PR_GATE_FAILURE_MAY_BE_WAITING=false
 
   if [ "$state" = MERGED ]; then
     PR_PHASE=merged
@@ -2844,8 +2869,7 @@ classify_pr_phase() {
           PR_NEXT_COMMAND="touchstone pr merge $number --head $head"
         fi
       elif [ "$gate_conclusion" = failure ]; then
-        PR_PHASE=fix-required
-        PR_NEXT_ACTION=address-review
+        classify_review_gate_failure
       fi
       return 0
     fi
@@ -2867,8 +2891,7 @@ classify_pr_phase() {
       ;;
     completed)
       if [ "$workflow_conclusion" = failure ]; then
-        PR_PHASE=fix-required
-        PR_NEXT_ACTION=address-review
+        classify_review_gate_failure
       fi
       ;;
   esac
@@ -3176,6 +3199,13 @@ status_pr() {
     REVIEW_GATE_CHECK_JSON="$(jq -cn --arg head "$head" '{present:false, head:$head, configured:false}')"
   fi
   classify_pr_phase "$state" "$merge_state" "$draft" "$number" "$head"
+  local gate_check_json="$REVIEW_GATE_CHECK_JSON" next_action_text="$PR_NEXT_ACTION"
+  if [ "$PR_GATE_FAILURE_MAY_BE_WAITING" = true ]; then
+    gate_check_json="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -c --arg recovery "$(review_gate_failure_recovery)" \
+      '. + {failureMayBeWaiting:true, recovery:$recovery}')" \
+      || fail_operation "could not add the contract-4 recovery to the review-gate observation for $head" "Retry status."
+    next_action_text="read the gate run: it may be waiting for review rather than reporting findings (see next step)"
+  fi
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"status","status":"observed","pullRequest":%s,"state":' "$OUTPUT_SCHEMA" "$number"
     json_string "$state"
@@ -3205,7 +3235,7 @@ status_pr() {
         head_blockers_json
         ;;
     esac
-    printf ',"reviewGateCheck":%s' "$REVIEW_GATE_CHECK_JSON"
+    printf ',"reviewGateCheck":%s' "$gate_check_json"
     printf ',"reviewGateBehaviorContractVersion":'
     if [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ] && [ -n "$ENFORCEMENT_GATE_BEHAVIOR_VERSION" ]; then
       printf '%s' "$ENFORCEMENT_GATE_BEHAVIOR_VERSION"
@@ -3218,10 +3248,14 @@ status_pr() {
     printf '}\n'
   else
     printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  phase: %s\n  next action: %s\n  merge state: %s\n  draft: %s\n  auto-merge: %s\n  merge queue: %s\n  review gate: %s\n' \
-      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$PR_PHASE" "$PR_NEXT_ACTION" "$merge_state" "$draft" "$(auto_merge_text)" "$(merge_queue_text)" "$(review_gate_check_text)"
+      "$number" "$state" "$url" "$head" "$base" "$base_sha" "$PR_PHASE" "$next_action_text" "$merge_state" "$draft" "$(auto_merge_text)" "$(merge_queue_text)" "$(review_gate_check_text)"
     [ "$MERGE_QUEUE_EVICTED" != true ] || printf '  merge queue history: %s\n' "$(merge_queue_eviction_text)"
     [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.actionsRefused == null')" = true ] \
       || printf '  next step: %s\n' "$(actions_refusal_remedy)"
+    [ "$PR_GATE_FAILURE_MAY_BE_WAITING" != true ] \
+      || printf '  next step: this gate failure may be a head still waiting for review, not findings; read %s. %s\n' \
+        "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r 'if .detailsUrl != null then "the gate run at \(.detailsUrl)" else "the log of review-gate workflow run \(.workflowRunId)" end')" \
+        "$(review_gate_failure_recovery)"
     case "$PR_PHASE" in
       armed-blocked)
         [ -z "$HEAD_FAILED_CHECKS" ] || printf '  blocked by: %s\n' "$HEAD_FAILED_CHECKS"
