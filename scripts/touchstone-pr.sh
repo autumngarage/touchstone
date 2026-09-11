@@ -55,6 +55,9 @@ ACTIONS_BILLING_PATTERN='spending limit|account payments have failed'
 # gate decides on its own and a later re-run of open records the decline.
 REVIEW_RESPONSE_WAIT_SECONDS="${TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS:-180}"
 REVIEW_FALLBACK_STATE=""
+# Why the gate's own reviewer takes the head, when REVIEW_FALLBACK_STATE is
+# fallback: `quota` (a usage-limit notice) or `error` (an explicit error reply).
+REVIEW_FALLBACK_CAUSE=""
 # Gate behavior contract 4: the gate evaluates once per run and never polls,
 # so this client does the waiting, on the driver's machine instead of an
 # Actions runner. It waits for the primary reviewer to answer the head's latest
@@ -2081,6 +2084,7 @@ wait_for_request_binding() {
     [ "$REVIEW_GATE_ACTION" != actions-refused ] || record_actions_refusal review-gate "$REVIEW_GATE_RUN_ID"
     verify_live_coordinates "$number" "$head" "$base_ref" "$base_sha"
     announce_review_fallback "$number" "$head" "$request_url"
+    record_review_fallback "$number" "$head"
     if [ "$JSON_MODE" = false ]; then
       if [ "$REVIEW_GATE_ACTION" = actions-refused ]; then
         printf 'Review gate run %s was not re-run: Actions would refuse the re-run the same way.\n' "$REVIEW_GATE_RUN_ID" >&2
@@ -2142,9 +2146,10 @@ wait_for_request_binding() {
 # until the reply arrives or the request reaches the gate's evidence deadline.
 announce_review_fallback() {
   local number="$1" head="$2" request_url="$3" evidence_seconds="${4:-}"
-  local request_id rows primary_reply marker step waited=0 replied fallback_recorded now deadline wait_bound=0
+  local request_id rows primary_reply marker step waited=0 replied now deadline wait_bound=0
   local attempt=1 previous=0 response_attempts=0 observed_counts=""
   REVIEW_FALLBACK_STATE=""
+  REVIEW_FALLBACK_CAUSE=""
   REVIEW_WAIT_WOKE_BY=""
   if [ -z "$evidence_seconds" ]; then
     request_id="${request_url##*issuecomment-}"
@@ -2191,31 +2196,22 @@ announce_review_fallback() {
     fi
     if [ "$replied" = true ]; then
       [ -z "$evidence_seconds" ] || REVIEW_WAIT_WOKE_BY="primary-$PRIMARY_REPLY_KIND"
-      # The gate hands an explicit error reply to its fallback reviewer, so
-      # the driver hears that here, with the remedy. The pull-request notice
-      # below names a quota decline, so it stays the decline's.
+      # The gate hands a quota notice, and under contract 4 an explicit error
+      # reply, to its own reviewer. This only records which; the notice and
+      # the driver's remedy wait for the gate step (record_review_fallback).
       if [ -n "$evidence_seconds" ] && [ "$PRIMARY_REPLY_KIND" = error ]; then
         REVIEW_FALLBACK_STATE=fallback
-        printf 'The primary reviewer answered the latest request for %s with an error, so the pinned review-gate reviews it itself: complete review evidence, not a degraded mode. Watch the review-gate check.\n' "$head" >&2
-        printf 'Its findings are in the review-gate run log, each with an id. Answer one with: touchstone pr answer %s --finding <id> --body-file <reply> --no-code-change (refute) or --fix-commit <sha> (fixed).\n' "$number" >&2
-        return 0
-      fi
-      if printf '%s' "$primary_reply" | grep -qiE "$PRIMARY_DECLINED_PATTERN"; then
+        REVIEW_FALLBACK_CAUSE=error
+        printf 'The primary reviewer answered the latest request for %s with an error; waking the review-gate, which reviews the head with its own reviewer.\n' "$head" >&2
+      elif printf '%s' "$primary_reply" | grep -qiE "$PRIMARY_DECLINED_PATTERN"; then
         REVIEW_FALLBACK_STATE=fallback
-        if [ -n "$evidence_seconds" ]; then
-          fallback_recorded="$REVIEW_FALLBACK_RECORDED"
-        elif printf '%s\n' "$rows" | grep -qF "$marker"; then
-          fallback_recorded=true
+        REVIEW_FALLBACK_CAUSE=quota
+        if [ -z "$evidence_seconds" ]; then
+          REVIEW_FALLBACK_RECORDED=false
+          ! printf '%s\n' "$rows" | grep -qF "$marker" || REVIEW_FALLBACK_RECORDED=true
         else
-          fallback_recorded=false
+          printf 'The primary reviewer replied to the latest request for %s that it has reached its usage limit; waking the review-gate, which reviews the head with its own reviewer.\n' "$head" >&2
         fi
-        if [ "$fallback_recorded" = false ]; then
-          capture_command gh pr comment "$number" --repo "$REPO_SPEC" --body "$marker
-**The pinned \`review-gate\` reviews \`$head\` itself.** The primary reviewer replied that it is at capacity, so the gate authored the verdict for this exact head — complete review evidence, not a degraded mode. This is not a blocker and not a wait: watch the \`review-gate\` check rather than waiting for the primary. Its findings are in the run log (\`gh run view <run-id> --log\`), each with an id; answer one with \`touchstone pr answer $number --finding <id> --body-file <reply> --no-code-change\` (refute) or \`--fix-commit <sha>\` (fixed), then run \`touchstone pr merge $number --head $head\`." \
-            || fail_operation "could not record the review fallback on PR #$number: $CAPTURE_ERROR" "Inspect comments before retrying."
-        fi
-        printf 'The pinned review-gate reviews %s itself: complete review evidence, not a degraded mode (the primary reviewer is at capacity). Watch the review-gate check.\n' "$head" >&2
-        printf 'Its findings are in the review-gate run log, each with an id. Answer one with: touchstone pr answer %s --finding <id> --body-file <reply> --no-code-change (refute) or --fix-commit <sha> (fixed).\n' "$number" >&2
       else
         REVIEW_FALLBACK_STATE=primary
         printf 'Primary reviewer replied to the request for %s; the review-gate decides from its evidence.\n' "$head" >&2
@@ -2257,6 +2253,40 @@ announce_review_fallback() {
     previous="$FOLLOW_WAIT"
     [ "$FOLLOW_WAIT" -eq 0 ] || sleep "$FOLLOW_WAIT"
   done
+}
+
+# The pull-request notice and the driver's remedy for a head the gate's own
+# reviewer takes, made once per head and only after the gate step for it: the
+# re-run under contracts 2 and 3, the woken run under contract 4. The notice
+# states the gate's rule -- it reviews this head itself when its run
+# evaluates -- and never that a verdict exists: it used to say the gate
+# "authored the verdict" before any gate run had evaluated the head
+# (AUT-1636). A run Actions refused reviews nothing, so while this command has
+# recorded a refusal no notice is posted, and the driver is told why; the
+# command's own failure names the refused runs (AUT-1610).
+record_review_fallback() {
+  local number="$1" head="$2" marker="<!-- touchstone:review-fallback head=$2 -->" reply
+  [ "$REVIEW_FALLBACK_STATE" = fallback ] || return 0
+  if [ -n "$OPEN_ACTIONS_REFUSALS" ]; then
+    printf 'The primary reviewer cannot review %s, and Actions refused required jobs for it, so no review-gate run reviews this head until the refused runs are re-run; no fallback notice was posted.\n' "$head" >&2
+    return 0
+  fi
+  if [ "$REVIEW_FALLBACK_RECORDED" = false ]; then
+    if [ "$REVIEW_FALLBACK_CAUSE" = error ]; then
+      reply="answered the latest review request with an error"
+    else
+      reply="replied that it is at capacity"
+    fi
+    capture_command gh pr comment "$number" --repo "$REPO_SPEC" --body "$marker
+**The pinned \`review-gate\` reviews \`$head\` itself.** The primary reviewer $reply, so when the gate's run evaluates this exact head it reviews it with its own reviewer — complete review evidence, not a degraded mode. This is not a blocker and not a wait for the primary: watch the \`review-gate\` check. Once that run has evaluated, its findings are in the run log (\`gh run view <run-id> --log\`), each with an id; answer one with \`touchstone pr answer $number --finding <id> --body-file <reply> --no-code-change\` (refute) or \`--fix-commit <sha>\` (fixed), then run \`touchstone pr merge $number --head $head\`." \
+      || fail_operation "could not record the review fallback on PR #$number: $CAPTURE_ERROR" "Inspect comments before retrying."
+  fi
+  if [ "$REVIEW_FALLBACK_CAUSE" = error ]; then
+    printf 'The primary reviewer answered the latest request for %s with an error, so the pinned review-gate reviews it itself: complete review evidence, not a degraded mode. Watch the review-gate check.\n' "$head" >&2
+  else
+    printf 'The pinned review-gate reviews %s itself: complete review evidence, not a degraded mode (the primary reviewer is at capacity). Watch the review-gate check.\n' "$head" >&2
+  fi
+  printf 'Its findings are in the review-gate run log, each with an id. Answer one with: touchstone pr answer %s --finding <id> --body-file <reply> --no-code-change (refute) or --fix-commit <sha> (fixed).\n' "$number" >&2
 }
 
 # One observation for the contract-4 wait. It decides only when to wake the
@@ -2503,6 +2533,7 @@ await_review_then_wake_gate() {
     "$head" "$REVIEW_EVIDENCE_DEADLINE_SECONDS" >&2
   announce_review_fallback "$number" "$head" "" "$REVIEW_EVIDENCE_DEADLINE_SECONDS"
   wake_review_gate_once "$number" "$head" "$base_ref" "$base_sha"
+  record_review_fallback "$number" "$head"
 }
 
 # The contract-4 wait for a request another step posted: `answer`'s attest

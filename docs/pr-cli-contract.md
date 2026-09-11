@@ -306,7 +306,15 @@ taking this document's word for it.
   fallback; `open` records that once per head on the pull request (a comment
   carrying `<!-- touchstone:review-fallback head=<sha> -->`) and reports
   `reviewFallback` as `fallback`, `primary`, or `pending`. It never skips the
-  request: the primary's own reply is the evidence the move rests on.
+  request: the primary's own reply is the evidence the move rests on. The
+  notice is posted only after the gate step for the head: once the re-run is
+  requested under contracts 2 and 3, and once the woken run has been followed
+  under contract 4. It states the gate's rule, that the gate's run reviews the
+  head with its own reviewer when it evaluates, and never that a verdict
+  exists (AUT-1636). Under contract 4 an explicit error reply records the same
+  notice, naming the error instead of a quota. While Actions refuses a
+  required job for the head, no notice is posted, because no gate run can
+  review it; the command's failure names the refused runs (AUT-1610).
 
 - Under gate behavior contract 4 the pinned gate evaluates once per run and
   no longer polls, so `open` waits on the driver's machine instead of an
