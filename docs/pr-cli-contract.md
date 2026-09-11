@@ -46,9 +46,12 @@ policy-bound successful gate and did not request another evaluation.
 Under gate behavior contract 4, `open` additionally reports `reviewGate.status`
 and `reviewGate.conclusion` for the one run it woke (`conclusion` is `null`
 while that run is still going), and a `reviewWait` object: `wokeBy` says what
-ended the local wait (`primary-review`, `primary-comment`, `deadline`, or
-`wait-bound`) and `evidenceDeadlineSeconds` is the pinned gate's deadline it
-waited against. Both are absent under contracts 1–3.
+ended the local wait (`primary-review`, `primary-comment`, `primary-error`,
+`deadline`, or `wait-bound`) and `evidenceDeadlineSeconds` is the pinned gate's
+deadline it waited against. Both are absent under contracts 1–3.
+`primary-error` is an explicit error reply from the primary reviewer, which
+the pinned gate answers with its fallback reviewer, so `reviewFallback` is then
+`fallback`.
 
 ### v1 to v2 migration
 
@@ -309,16 +312,24 @@ taking this document's word for it.
   no longer polls, so `open` waits on the driver's machine instead of an
   Actions runner. Once the head's request exists (posted or reused), it waits
   until the primary reviewer replies after the head's latest Touchstone-marked
-  request, a formal review or any issue comment other than its status
-  dashboard (`<!-- codex-pull-request-review-summary -->`), quota and decline
-  notices included; or until that request is older than the gate's evidence
+  request with something the gate's re-run can act on: a formal review GitHub
+  bound to the head (`commit_id`), a comment whose `Reviewed commit:` is the
+  head (the full SHA, or an abbreviation GitHub resolves to it, as the gate
+  resolves it), a quota or decline notice, or an explicit error reply
+  (`Codex Review: Something went wrong`) when it is the reviewer's latest
+  utterance, the rule the pinned gate uses to hand the head to its fallback.
+  A late reply to an earlier head never ends the wait, and neither does the
+  status dashboard (`<!-- codex-pull-request-review-summary -->`). Or it waits
+  until that request is older than the gate's evidence
   deadline plus 30 seconds; or until `TOUCHSTONE_REVIEW_WAIT_MAX_SECONDS`
   (default: the same deadline plus margin, counted from the start of the
   wait) runs out. The deadline is `REVIEW_EVIDENCE_WAIT_SECONDS` read from
   the pinned `review-gate.yml` at every enforced revision, the longest
-  winning; a pinned gate that declares none fails closed. The request's age
-  is counted from the newest `updated_at` among the requests naming the head,
-  never earlier than the gate's own `requestedAt`. Then `open` re-runs the
+  winning; a pinned gate that declares none fails closed. The request's time
+  is one instant, as the gate's own `requestedAt` counts it: the latest time
+  a request naming the head was made, its edit when it was edited after it
+  was created. That instant starts the evidence clock, and every reply must
+  follow it. Then `open` re-runs the
   gate once, first waiting for a still-running run to complete rather than
   reusing it, follows that attempt to its end, and reports its conclusion
   without interpreting it: exit 0 with `reviewGate.conclusion` `failure`
@@ -327,7 +338,14 @@ taking this document's word for it.
   gate is re-run; nothing merges unreviewed. `answer` runs the same
   wait-and-wake after the round's attest request exists, through
   `touchstone-pr.sh await-review PR --head SHA`, an internal step shared with
-  `open` rather than a public operation. Raw equivalent: poll
+  `open` rather than a public operation. An answer to a finding the gate
+  reported (`--finding`) requests nothing, so no reply is waited for; when the
+  head's review-gate run is still evaluating, `answer` follows it to
+  completion and re-runs it once through
+  `touchstone-pr.sh wake-review-gate PR --head SHA`, the same wake without the
+  wait, because a run that evaluates once may have read the body before the
+  answer. Its JSON is `await-review`'s without `reviewFallback` and
+  `reviewWait`. Raw equivalent: poll
   `gh api repos/O/R/issues/N/comments` and `gh api repos/O/R/pulls/N/reviews`
   for the reviewer's reply, then, once the head's latest `review-gate` run
   has completed, `gh api -X POST repos/O/R/actions/runs/ID/rerun`.
@@ -467,9 +485,13 @@ exists to prevent (vesper `ship-pr.sh`, 2026-08-21).
 - `answer` replies to a review finding by its root comment ID, resolves its
   thread, and asks the pinned gate to evaluate the answer; a completed attempt
   is re-run, while an active behavior-v2 run observes the answer on its next
-  poll and the client immediately returns control. If full policy status needs
-  unavailable administration reads, `answer` reports that limitation and
-  conservatively refreshes through the behavior-v1 path. Its
+  poll and the client immediately returns control. If `status` cannot read
+  which gate behavior GitHub enforces (a token without repository
+  administration read, or GitHub unavailable), `answer` exits 1 after what it
+  recorded, says so, and neither re-runs the gate nor requests review: each
+  contract refreshes the gate differently, and the behavior-v1 guess this
+  replaced spent a contract-4 gate's one wake before its verdict was requested
+  (AUT-1636). Its
   `--all-resolved-check` form proves no thread remains. Exactly one
   disposition is required and is refused before any read or mutation:
   `--fix-commit SHA` appends "Fixed in SHA." only after GitHub resolves the

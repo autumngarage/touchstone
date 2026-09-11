@@ -203,10 +203,18 @@ fake_tick() {
 fake_visible() { [ ! -f "$GH_STATE/$1" ] || [ "$(cat "$GH_STATE/$1")" -le 0 ]; }
 
 fake_comments='[]'
+# id, login, created_at, body, and optionally an updated_at after creation.
 fake_add_comment() {
-  fake_comments="$(printf '%s' "$fake_comments" | jq -c --argjson id "$1" --arg login "$2" --arg at "$3" --arg body "$4" \
-    '. + [{id:$id, user:{login:$login}, created_at:$at, updated_at:$at, body:$body}]')"
+  fake_comments="$(printf '%s' "$fake_comments" | jq -c --argjson id "$1" --arg login "$2" --arg at "$3" --arg body "$4" --arg updated "${5:-$3}" \
+    '. + [{id:$id, user:{login:$login}, created_at:$at, updated_at:$updated, body:$body}]')"
 }
+# A request edited after it was posted keeps its creation time and moves its
+# update time (AUT-1636).
+fake_request_edited_at() {
+  if [ -f "$GH_STATE/request-edited-at" ]; then cat "$GH_STATE/request-edited-at"; else fake_request_at; fi
+}
+# A reply the given number of seconds after the request was posted.
+fake_after_request() { jq -nr --arg at "$(fake_request_at)" --argjson seconds "$1" '($at | fromdateiso8601) + $seconds | todate'; }
 
 
 # GitHub refusing a request for the token's rate limit, as gh relays it
@@ -696,17 +704,19 @@ case "$1 ${2:-}" in
       # for this head, the primary reviewer's replies and its status
       # dashboard, and this tool's fallback notice.
       request_at="$(fake_request_at)"
+      # The primary replies a minute after the request, as it does.
+      reply_at="$(fake_after_request 60)"
       primary='chatgpt-codex-connector[bot]'
       if [ -f "$GH_STATE/review-request" ]; then
         read -r saved_head saved_base saved_base_sha <"$GH_STATE/review-request"
         fake_add_comment 1 alice "$request_at" "@codex review
 
-<!-- touchstone:pr-open head=$saved_head base=$saved_base base_sha=$saved_base_sha -->"
+<!-- touchstone:pr-open head=$saved_head base=$saved_base base_sha=$saved_base_sha -->" "$(fake_request_edited_at)"
       fi
       if [ "${GH_MODE:-ok}" = attest_request_present ]; then
         fake_add_comment 91 alice "$request_at" "@codex review
 
-<!-- touchstone:attest-request head=$GH_HEAD -->"
+<!-- touchstone:attest-request head=$GH_HEAD -->" "$(fake_request_edited_at)"
       fi
       # The dashboard is created after the request and edited in place; it is
       # the primary's comment, but never a reply to anything.
@@ -716,10 +726,10 @@ case "$1 ${2:-}" in
 ## Codex Review Summary"
       fi
       if [ "${GH_MODE:-ok}" = primary_quota ]; then
-        fake_add_comment 101 "$primary" "$request_at" 'You have reached your Codex usage limits for code reviews.'
+        fake_add_comment 101 "$primary" "$reply_at" 'You have reached your Codex usage limits for code reviews.'
       fi
       if [ -f "$GH_STATE/primary-comment" ] && fake_visible primary-comment-delay; then
-        fake_add_comment 102 "$primary" "$request_at" "$(cat "$GH_STATE/primary-comment")"
+        fake_add_comment 102 "$primary" "$reply_at" "$(cat "$GH_STATE/primary-comment")"
       fi
       if [ -f "$GH_STATE/fallback-announced" ]; then
         fake_add_comment 103 alice "$request_at" "<!-- touchstone:review-fallback head=$GH_HEAD -->"
@@ -795,13 +805,19 @@ case "$1 ${2:-}" in
       fi
     elif has '/reviews?per_page=100' "$@" && ! has --jq "$@"; then
       # The raw review pages: a primary review from before the request, which
-      # must never wake the wait, and one submitted after it when a case asks.
-      request_at="$(fake_request_at)"
-      reviews='[{"id":60,"user":{"login":"chatgpt-codex-connector[bot]"},"state":"COMMENTED","submitted_at":"2026-08-01T00:00:00Z","body":"An earlier head."}]'
+      # must never wake the wait, and one of this head submitted after it when
+      # a case asks -- a minute after, unless primary-review-offset says. A
+      # stale review is the previous head's, landing late (AUT-1636).
+      reviews='[{"id":60,"user":{"login":"chatgpt-codex-connector[bot]"},"state":"COMMENTED","commit_id":"2222222222222222222222222222222222222222","submitted_at":"2026-08-01T00:00:00Z","body":"An earlier head."}]'
+      if [ -f "$GH_STATE/primary-review-stale" ]; then
+        reviews="$(printf '%s' "$reviews" | jq -c --arg at "$(fake_after_request 60)" \
+          '. + [{id:62, user:{login:"chatgpt-codex-connector[bot]"}, state:"COMMENTED", commit_id:"1111111111111111111111111111111111111111", submitted_at:$at, body:"The previous head."}]')"
+      fi
       if [ -f "$GH_STATE/primary-review" ] && fake_visible primary-review-delay; then
-        submitted_at="$(jq -nr --arg at "$request_at" '($at | fromdateiso8601) + 60 | todate')"
-        reviews="$(printf '%s' "$reviews" | jq -c --arg at "$submitted_at" \
-          '. + [{id:61, user:{login:"chatgpt-codex-connector[bot]"}, state:"COMMENTED", submitted_at:$at, body:""}]')"
+        review_offset=60
+        [ ! -f "$GH_STATE/primary-review-offset" ] || review_offset="$(cat "$GH_STATE/primary-review-offset")"
+        reviews="$(printf '%s' "$reviews" | jq -c --arg at "$(fake_after_request "$review_offset")" --arg head "$GH_HEAD" \
+          '. + [{id:61, user:{login:"chatgpt-codex-connector[bot]"}, state:"COMMENTED", commit_id:$head, submitted_at:$at, body:""}]')"
       fi
       printf '%s\n' "$reviews"
     elif has '/reviews?per_page=100' "$@"; then
@@ -911,6 +927,22 @@ case "$1 ${2:-}" in
     elif has 'touchstone-workflows/commits/main' "$@"; then
       [ ! -f "$GH_STATE/source-head-unreadable" ] || { printf 'Not Found\n' >&2; exit 1; }
       printf '%s' "{\"sha\":\"$GH_SOURCE_HEAD\"}" | jq -r "$(value_after --jq "$@")"
+    elif has "repos/${GH_FAKE_REPO:-${GH_REPO:-autumngarage/current}}/commits/" "$@"; then
+      # A reviewed-commit abbreviation, resolved as GitHub resolves it: a
+      # prefix of the head is the head, unless a case makes it another commit
+      # that shares the prefix; anything else is no commit at all.
+      commit_ref="$(printf '%s\n' "$@" | grep -F '/commits/' | head -1)"
+      commit_ref="${commit_ref##*/commits/}"
+      if [ -f "$GH_STATE/abbrev-resolves-elsewhere" ]; then
+        resolved="${commit_ref}0000000000000000000000000000000000000000"
+        resolved="${resolved:0:40}"
+      elif [ "${GH_HEAD#"$commit_ref"}" != "$GH_HEAD" ]; then
+        resolved="$GH_HEAD"
+      else
+        printf 'gh: No commit found for SHA: %s (HTTP 422)\n' "$commit_ref" >&2
+        exit 1
+      fi
+      printf '%s' "{\"sha\":\"$resolved\"}" | jq -r "$(value_after --jq "$@")"
     elif has 'touchstone-workflows/compare/' "$@"; then
       # A real ancestry graph, answered the way GitHub answers it. The fixture
       # commits, oldest first: BEHIND -> POLICY -> AHEAD (= the branch head),
@@ -1985,7 +2017,9 @@ EOF
       "$TMP/state/primary-comment" "$TMP/state/primary-comment-delay" "$TMP/state/primary-review" \
       "$TMP/state/primary-review-delay" "$TMP/state/primary-dashboard" "$TMP/state/gate-in-progress" \
       "$TMP/state/gate-fresh-active" "$TMP/state/gate-after-rerun" "$TMP/state/gate-rerun-running" \
-      "$TMP/state/review-gate-no-deadline" "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun"
+      "$TMP/state/review-gate-no-deadline" "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" \
+      "$TMP/state/request-edited-at" "$TMP/state/primary-review-stale" "$TMP/state/primary-review-offset" \
+      "$TMP/state/abbrev-resolves-elsewhere"
   }
   # Exactly one re-run per wake and exactly one request per head, counted.
   v4_reruns() { if [ -f "$TMP/state/gate-reruns" ]; then grep -c 'rerun 77' "$TMP/state/gate-reruns" || true; else echo 0; fi; }
@@ -2105,6 +2139,136 @@ EOF
   assert_has "$TMP/out" '"wokeBy":"deadline"'
   [ "$(grep -c '^pr comment' "$GH_CALLS" || true)" -eq 0 ] || fail "await-review posted a comment"
   [ "$(v4_reruns)" -eq 1 ] || fail "await-review re-ran the gate $(v4_reruns) times; expected exactly one"
+
+  echo "==> the contract-4 wait wakes only on a reply bound to this head (AUT-1636)"
+  # A late reply to the previous head -- a formal review GitHub bound to the
+  # old commit, or a comment naming it as the reviewed commit -- ended the
+  # wait and spent its one re-run before this head's review arrived. Each
+  # request here is past its deadline, so a wait that does not wake on the
+  # stale reply ends on the deadline at once.
+  head_abbrev="$(printf '%s' "$HEAD_SHA" | cut -c1-10)"
+  stale_abbrev="$(printf '%s' "$head_abbrev" | tr '0123456789abcdef' '123456789abcdef0')"
+  verdict_comment() { printf 'Codex Review: Didn'\''t find any major issues.\n\n**Reviewed commit:** `%s`\n' "$1" >"$TMP/state/primary-comment"; }
+  v4_reset
+  touch "$TMP/state/primary-review-stale"
+  run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"wokeBy":"deadline"'
+  assert_not_has "$TMP/out" '"wokeBy":"primary-review"'
+  [ "$(v4_reruns)" -eq 1 ] || fail "contract 4 re-ran the gate $(v4_reruns) times past a stale review; expected exactly one"
+  v4_reset
+  verdict_comment "$stale_abbrev"
+  run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"wokeBy":"deadline"'
+  assert_not_has "$TMP/out" '"wokeBy":"primary-comment"'
+  # The same verdict naming this head wakes it, once GitHub resolves the
+  # abbreviation to the head -- the resolution the gate itself makes.
+  v4_reset
+  verdict_comment "$head_abbrev"
+  run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"wokeBy":"primary-comment"'
+  assert_has "$TMP/out" '"reviewFallback":"primary"'
+  assert_has "$GH_CALLS" "/commits/$head_abbrev"
+  # A prefix of the head that GitHub resolves to another commit is that
+  # commit's verdict, not this head's.
+  v4_reset
+  verdict_comment "$head_abbrev"
+  touch "$TMP/state/abbrev-resolves-elsewhere"
+  run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"wokeBy":"deadline"'
+  # A stale reply first does not hide this head's review behind it.
+  v4_reset
+  verdict_comment "$stale_abbrev"
+  touch "$TMP/state/primary-review"
+  run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"wokeBy":"primary-review"'
+  # A security-review quota notice still ends the wait, as before.
+  v4_reset
+  printf 'Security review usage limit reached\n' >"$TMP/state/primary-comment"
+  run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"wokeBy":"primary-comment"'
+
+  echo "==> an edited request anchors its replies at the edit, the instant it is clocked from (AUT-1636)"
+  # Created at 17:00 and edited at 17:05 into this head's request: a review of
+  # this head submitted at 17:01 answered something asked before the request
+  # existed. Both are long past, so a wait that does not count it ends on the
+  # deadline; one submitted after the edit still wakes it.
+  v4_reset
+  echo '2026-08-27T17:05:00Z' >"$TMP/state/request-edited-at"
+  touch "$TMP/state/primary-review"
+  run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"wokeBy":"deadline"'
+  assert_not_has "$TMP/out" '"wokeBy":"primary-review"'
+  v4_reset
+  echo '2026-08-27T17:05:00Z' >"$TMP/state/request-edited-at"
+  touch "$TMP/state/primary-review"
+  echo 600 >"$TMP/state/primary-review-offset"
+  run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"wokeBy":"primary-review"'
+
+  echo "==> an explicit error reply wakes the wait labelled as the fallback's, not the primary's (AUT-1636)"
+  # The pinned gate reads the primary's latest utterance, when it follows the
+  # head's request and matches its provider-error signature, as "cannot
+  # answer", and its fallback reviews the head (touchstone#1190).
+  error_comment() {
+    printf 'Codex Review: Something went wrong. Try again later by commenting “@codex review”.\n\n```\nProvided git ref %s does not exist\n```\n' "$HEAD_SHA" >"$TMP/state/primary-comment"
+  }
+  v4_reset
+  error_comment
+  run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewWait":{"wokeBy":"primary-error","evidenceDeadlineSeconds":600}'
+  assert_has "$TMP/out" '"reviewFallback":"fallback"'
+  assert_has "$TMP/out" 'with an error, so the pinned review-gate reviews it itself'
+  assert_has "$TMP/out" "touchstone pr answer 7 --finding <id>"
+  [ "$(v4_reruns)" -eq 1 ] || fail "contract 4 re-ran the gate $(v4_reruns) times after an error reply; expected exactly one"
+  v4_reset
+  error_comment
+  run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body"
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'not a degraded mode (the primary reviewer answered with an error)'
+  # The rule is recency: this head's review after the error is the latest
+  # utterance, so the primary answered after all.
+  v4_reset
+  error_comment
+  touch "$TMP/state/primary-review"
+  echo 120 >"$TMP/state/primary-review-offset"
+  run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"wokeBy":"primary-review"'
+  assert_has "$TMP/out" '"reviewFallback":"primary"'
+
+  echo "==> wake-review-gate follows a still-running contract-4 run to completion, then re-runs it once (AUT-1636)"
+  # `answer --finding` requests no review, so it needs the wake without the
+  # wait: the run in progress may have read the body before the answer.
+  v4_reset
+  touch "$TMP/state/pr-exists"
+  echo 3 >"$TMP/state/gate-in-progress"
+  run_pr_v4 "$TMP/out" wake-review-gate 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"operation":"wake-review-gate","status":"woken"'
+  assert_has "$TMP/out" '"action":"rerun-requested","status":"completed","conclusion":"success"'
+  assert_not_has "$TMP/out" '"reviewWait"'
+  assert_not_has "$TMP/out" '"reviewFallback"'
+  [ ! -f "$TMP/state/gate-in-progress" ] || fail "wake-review-gate re-ran the gate before the running attempt completed"
+  [ "$(v4_reruns)" -eq 1 ] || fail "wake-review-gate re-ran the gate $(v4_reruns) times; expected exactly one"
+  assert_not_has "$GH_CALLS" 'comments{totalCount}'
+  [ "$(grep -c '^pr comment' "$GH_CALLS" || true)" -eq 0 ] || fail "wake-review-gate posted a comment"
+  touch "$TMP/state/behavior-version-next"
+  v4_reset
+  touch "$TMP/state/pr-exists"
+  run_pr_v3 "$TMP/out" wake-review-gate 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'does not implement gate behavior contract 4'
+  [ "$(v4_reruns)" -eq 0 ] || fail "wake-review-gate woke a contract-3 gate"
+  rm -f "$TMP/state/behavior-version-next"
 
   # Polling spends the REST quota every agent on the machine shares
   # (AUT-1638). `sleep` is stubbed to record what the command asks for, so a
@@ -3713,7 +3877,7 @@ case "$1 $2" in
     ;;
   "api repos/autumngarage/current/actions/runs?head_sha=abcdef0123456789abcdef0123456789abcdef01&per_page=30")
     # The finding path asks for the latest review-gate run as "id<TAB>status".
-    printf '77\tcompleted\n'
+    if [ -f "$GH_STATE/finding-gate-active" ]; then printf '77\tin_progress\n'; else printf '77\tcompleted\n'; fi
     ;;
   "api repos/autumngarage/current/actions/runs?head_sha=abcdef0123456789abcdef0123456789abcdef01&per_page=100")
     if [ -f "$GH_STATE/review-gate" ]; then
@@ -3771,8 +3935,20 @@ if [ "${1:-}" = await-review ]; then
   echo "PR #7: review gate woken"
   exit 0
 fi
+if [ "${1:-}" = wake-review-gate ]; then
+  printf '%s\n' "$*" >>"$GH_STATE/wake-calls"
+  [ ! -f "$GH_STATE/wake-fails" ] || { echo "ERROR: the stubbed wake failed" >&2; exit 1; }
+  echo "PR #7: review gate woken"
+  exit 0
+fi
 version=null
-[ ! -f "$GH_STATE/status-fails" ] || exit 1
+# A failed status reports itself as a JSON document on stdout, as the real
+# one does: here, the token-scope failure a collaborator without
+# administration read meets.
+if [ -f "$GH_STATE/status-fails" ]; then
+  printf '%s\n' '{"schema":"touchstone.pr/v2","operation":"status","status":"failed","reason":"could not read whether Actions are enabled for autumngarage/current (needs repository administration read on the token)","remedy":"Use a credential that can read repos/autumngarage/current/actions/permissions, or retry after GitHub recovers."}'
+  exit 1
+fi
 [ ! -f "$GH_STATE/effective-behavior-v2" ] || version=2
 [ ! -f "$GH_STATE/effective-behavior-v3" ] || version=3
 [ ! -f "$GH_STATE/effective-behavior-v4" ] || version=4
@@ -4024,15 +4200,25 @@ STATUS_STUB
   grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null \
     || fail "behavior v2 answer reused a run whose review-evidence window had expired"
   rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns"
+  echo "==> an answer whose gate behavior cannot be read fails with the reason, never guessing behavior v1 (AUT-1636)"
+  # The guess re-ran whatever gate was there at once. Under contract 4 that
+  # spent the one wake before the reviewer was asked for its verdict, and
+  # the answer still reported success.
   touch "$GH_STATE/status-fails"
   run_v2 7 --comment-id 51 --body-file "$RR/body" --no-code-change
-  [ "$RUN_RC" -eq 0 ] || fail "answer failed instead of falling back when full status needed unavailable admin access (rc=$RUN_RC)"
-  grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null \
-    || fail "answer did not conservatively refresh after behavior verification failed"
-  grep -q 'conservatively refreshing the gate' "$RR/out" \
-    || fail "answer silently hid its behavior-v1 fallback"
+  [ "$RUN_RC" -eq 1 ] || fail "an answer whose behavior read failed exited $RUN_RC, expected 1: $(tail -3 "$RR/out")"
+  [ ! -f "$GH_STATE/gate-reruns" ] || fail "an answer whose behavior read failed still re-ran the gate through the behavior-v1 guess"
+  grep -qF 'the reply and resolution are recorded, but which review-gate behavior GitHub enforces could not be read' "$RR/out" \
+    || fail "a failed behavior read did not say what stands: $(tail -3 "$RR/out")"
+  grep -qF 'needs repository administration read' "$RR/out" \
+    || fail "a failed behavior read dropped the status read's own reason: $(tail -3 "$RR/out")"
+  rm -f "$GH_STATE/effective-behavior-v2" "$GH_STATE/fresh-request"
+  run_v4 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 1 ] || fail "a contract-4 answer whose behavior read failed exited $RUN_RC, expected 1"
+  [ ! -f "$GH_STATE/gate-reruns" ] || fail "a contract-4 answer whose behavior read failed re-ran the gate before the verdict was requested"
+  [ ! -f "$GH_STATE/await-calls" ] || fail "a contract-4 answer whose behavior read failed still waited"
+  [ ! -f "$GH_STATE/fresh-request" ] || fail "a contract-4 answer whose behavior read failed requested review under a guessed contract"
   rm -f "$GH_STATE/status-fails" "$GH_STATE/gate-reruns"
-  rm -f "$GH_STATE/effective-behavior-v2"
 
   echo "==> a contract-3 answer does not run the behavior-v1 gate refresh (AUT-1225)"
   # The contract-3 gate long-polls, so an answer that races the run binding
@@ -4210,6 +4396,50 @@ STATUS_STUB
   [ ! -f "$GH_STATE/await-calls" ] || fail "contract-4 answer waited while no review was requested"
   grep -qF 'threads remain open' "$RR/out" || fail "contract-4 answer did not say why nothing waits"
   rm -f "$GH_STATE/second-round" "$GH_STATE/resolved-52" "$GH_STATE/fresh-request" "$GH_STATE/await-calls" "$GH_STATE/gate-reruns"
+
+  echo "==> a contract-4 finding answer waits for a gate run still evaluating, through the shared wake (AUT-1636)"
+  # A contract-4 run evaluates once, so one still running may have read the
+  # body before this answer landed and would decide without it. The answer
+  # follows it to completion and re-runs it once through touchstone-pr.sh
+  # wake-review-gate, the wake open and the attest request use: no loop here.
+  rm -f "$GH_STATE/pr-body" "$GH_STATE/gate-reruns" "$GH_STATE/wake-calls"
+  touch "$GH_STATE/finding-gate-active"
+  run_v4 7 --finding 0123456789abcdef --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "a contract-4 finding answer exited $RUN_RC: $(tail -3 "$RR/out")"
+  [ "$(wc -l <"$GH_STATE/wake-calls" 2>/dev/null | tr -d ' ')" = 1 ] \
+    && grep -qxF 'wake-review-gate 7 --head abcdef0123456789abcdef0123456789abcdef01' "$GH_STATE/wake-calls" \
+    || fail "a contract-4 finding answer did not wake through wake-review-gate exactly once for the captured head"
+  [ ! -f "$GH_STATE/gate-reruns" ] || fail "a contract-4 finding answer re-ran the gate itself instead of through the shared wake"
+  grep -qF 'Behavior contract 4: review-gate run 77 is still evaluating' "$RR/out" \
+    || fail "a contract-4 finding answer did not say it waits: $(tail -3 "$RR/out")"
+  grep -qF 'touchstone:review-dismiss id=0123456789abcdef' "$GH_STATE/pr-body" \
+    || fail "a contract-4 finding answer did not record the answer before waking the gate"
+  # A failed wake is reported, and says the answer stands.
+  touch "$GH_STATE/wake-fails"
+  run_v4 7 --finding 0123456789abcdef --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 1 ] && grep -qF 'the answer is recorded, but following review-gate run 77' "$RR/out" \
+    || fail "a failed contract-4 finding wake was not reported with what stands (rc=$RUN_RC): $(tail -2 "$RR/out")"
+  rm -f "$GH_STATE/wake-fails" "$GH_STATE/wake-calls"
+  # The behavior read that decides it fails the answer rather than guessing.
+  touch "$GH_STATE/status-fails"
+  run_v4 7 --finding 0123456789abcdef --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 1 ] && grep -qF 'the answer is recorded, but which review-gate behavior GitHub enforces could not be read' "$RR/out" \
+    || fail "a finding answer whose behavior read failed did not fail with context (rc=$RUN_RC): $(tail -2 "$RR/out")"
+  [ ! -f "$GH_STATE/wake-calls" ] || fail "a finding answer whose behavior read failed still woke the gate"
+  rm -f "$GH_STATE/status-fails"
+  # Contract 3 keeps its long-polling run and its message, and wakes nothing.
+  run_v3 7 --finding 0123456789abcdef --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] && grep -qF 'still evaluating this head; it reads the answer when it decides' "$RR/out" \
+    || fail "a contract-3 finding answer changed behavior (rc=$RUN_RC): $(tail -2 "$RR/out")"
+  [ ! -f "$GH_STATE/wake-calls" ] || fail "a contract-3 finding answer ran the contract-4 wake"
+  # A completed run is re-run as before under contract 4 too: no behavior read.
+  rm -f "$GH_STATE/finding-gate-active"
+  touch "$GH_STATE/status-fails"
+  run_v4 7 --finding 0123456789abcdef --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] && grep -q 'rerun 77' "$GH_STATE/gate-reruns" 2>/dev/null \
+    || fail "a contract-4 finding answer on a completed run did not re-run it as before (rc=$RUN_RC): $(tail -2 "$RR/out")"
+  [ ! -f "$GH_STATE/wake-calls" ] || fail "a finding answer on a completed run ran the wake"
+  rm -f "$GH_STATE/status-fails" "$GH_STATE/gate-reruns" "$GH_STATE/pr-body"
   rm -f "$GH_STATE/review-gate"
 
   echo "==> --all-resolved-check reads the thread list from stdout alone"
