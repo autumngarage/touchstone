@@ -793,15 +793,15 @@ case "$1 ${2:-}" in
     fi
     if has 'touchstone-workflows/contents/.touchstone-source-contract.json?ref=' "$@"; then
       [ ! -f "$GH_STATE/behavior-manifest-unreadable" ] || { printf 'Not Found\n' >&2; exit 1; }
-      # The source tree's own policies declare gate behavior 3, so a GitHub
+      # The source tree's own policies declare gate behavior 4, so a GitHub
       # that agrees with them is the default; each flag below is one drifted
-      # world -- the pre-rollout gates, an unsupported future one, or an
+      # world -- the pre-rollout gates, an unsupported future one, the
+      # contract-3 gate a repository runs until its repin is applied, or an
       # overlapping pin whose other enforced revision is the compatible one.
-      behavior_version=3
+      behavior_version=4
       [ ! -f "$GH_STATE/behavior-version-legacy" ] || behavior_version=1
       [ ! -f "$GH_STATE/behavior-version-unsupported" ] || behavior_version=5
       [ ! -f "$GH_STATE/behavior-version-next" ] || behavior_version=3
-      [ ! -f "$GH_STATE/behavior-version-v4" ] || behavior_version=4
       if [ -f "$GH_STATE/overlapping-pins" ] && has "?ref=$GH_MID_SHA" "$@"; then behavior_version=1; fi
       if [ -f "$GH_STATE/behavior-version-missing" ]; then
         printf '%s\n' '{"contractVersion":1}'
@@ -1197,6 +1197,25 @@ EOF
     : >"$GH_CALLS"
     set +e
     bash "$TMP/tool-v1/bin/touchstone" pr "$@" --project "$TMP/project" >"$output" 2>&1
+    RUN_RC=$?
+    set -e
+  }
+  # The CLI still carries its gate behavior contract 2 and 3 paths, but the
+  # source tree's policies now declare 4. This client carries a contract-3
+  # policy; with behavior-version-next, GitHub agrees with it.
+  mkdir -p "$TMP/tool-v3/bin" "$TMP/tool-v3/scripts" "$TMP/tool-v3/policy/github"
+  cp "$ROOT/bin/touchstone" "$TMP/tool-v3/bin/touchstone"
+  cp "$ROOT/scripts/touchstone-pr.sh" "$TMP/tool-v3/scripts/touchstone-pr.sh"
+  cp -R "$ROOT/policy/github/." "$TMP/tool-v3/policy/github/"
+  cat "$ROOT/VERSION" >"$TMP/tool-v3/VERSION"
+  jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 3' \
+    "$ROOT/policy/github/touchstone-main.json" >"$TMP/tool-v3/policy/github/touchstone-main.json"
+  run_pr_v3() {
+    local output="$1"
+    shift
+    : >"$GH_CALLS"
+    set +e
+    bash "$TMP/tool-v3/bin/touchstone" pr "$@" --project "$TMP/project" >"$output" 2>&1
     RUN_RC=$?
     set -e
   }
@@ -1598,10 +1617,13 @@ EOF
   echo "==> a required job Actions refused to start is not an evidence verdict (AUT-1594)"
   # hesperus#354 and vesper#1255: with the Actions budget at zero, GitHub
   # failed every required job with no steps and one billing annotation, and
-  # open sent the driver to correct a body the gate never read.
-  touch "$TMP/state/review-gate"
+  # open sent the driver to correct a body the gate never read. This is the
+  # contract 3 client's report: it reads the refused gate run too. A contract 4
+  # client reports the refusal without reading or waking the gate, so this runs
+  # where GitHub and the client both declare contract 3.
+  touch "$TMP/state/review-gate" "$TMP/state/behavior-version-next"
   rm -f "$TMP/state/gate-reruns" "$TMP/state/evidence-reruns"
-  GH_MODE=actions_refused run_pr "$TMP/out" open --title 'Refused' --body-file "$TMP/body"
+  GH_MODE=actions_refused run_pr_v3 "$TMP/out" open --title 'Refused' --body-file "$TMP/body"
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" 'delivery-evidence run 80: Actions refused this job (billing), not an evidence verdict: GitHub says "The job was not started because recent account payments have failed or your spending limit needs to be increased.'
   assert_has "$TMP/out" 'review-gate run 77: Actions refused this job (billing), not an evidence verdict'
@@ -1621,7 +1643,7 @@ EOF
   assert_not_has "$GH_CALLS" 'actions/runs/80/rerun'
   # A reused PR asks for a fresh evidence attempt first; a refused one is not
   # re-run either, and the existing request is reused rather than re-posted.
-  GH_MODE=actions_refused run_pr "$TMP/out" open --title 'Refused' --body-file "$TMP/body" --json
+  GH_MODE=actions_refused run_pr_v3 "$TMP/out" open --title 'Refused' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 1
   [ "$(grep '^{' "$TMP/out" | jq -r '.status')" = failed ] \
     || fail "a refused open reported something other than failed: $(cat "$TMP/out")"
@@ -1631,11 +1653,12 @@ EOF
   assert_not_has "$GH_CALLS" 'pr comment'
   # Zero steps alone still classifies it when the annotation cannot be read.
   touch "$TMP/state/annotations-unreadable"
-  GH_MODE=actions_refused run_pr "$TMP/out" open --title 'Refused' --body-file "$TMP/body"
+  GH_MODE=actions_refused run_pr_v3 "$TMP/out" open --title 'Refused' --body-file "$TMP/body"
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" 'delivery-evidence run 80: Actions refused this job (no step ran), not an evidence verdict: its annotation was unreadable (gh: Not Found (HTTP 404))'
   assert_not_has "$TMP/out" 'correct the recorded evidence'
-  rm -f "$TMP/state/annotations-unreadable" "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request"
+  rm -f "$TMP/state/annotations-unreadable" "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request" \
+    "$TMP/state/behavior-version-next"
 
   echo "==> open re-runs the pinned review gate where the repository has one"
   touch "$TMP/state/review-gate" "$TMP/state/behavior-version-legacy"
@@ -1691,12 +1714,15 @@ EOF
   assert_has "$TMP/out" 'does not declare supported gate behavior contract 1'
   assert_not_has "$GH_CALLS" 'pr merge'
   rm -f "$TMP/state/gate-reruns"
-  run_pr "$TMP/out" status 7 --json
+  # The reuse rules below belong to the contract 2 and 3 client paths, so they
+  # run where GitHub and the client both declare contract 3.
+  touch "$TMP/state/behavior-version-next"
+  run_pr_v3 "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGateBehaviorContractVersion":3'
   touch "$TMP/state/gate-fresh-active"
   echo 30 >"$TMP/state/gate-in-progress"
-  run_pr "$TMP/out" open --title 'Gate v2' --body-file "$TMP/body" --json
+  run_pr_v3 "$TMP/out" open --title 'Gate v2' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"already-active"}'
   assert_not_has "$TMP/out" '"reviewBudget"'
@@ -1707,7 +1733,7 @@ EOF
   rm -f "$TMP/state/gate-in-progress" "$TMP/state/gate-reruns" "$TMP/state/gate-fresh-active"
   touch "$TMP/state/gate-fresh-active" "$TMP/state/gate-run-unbound"
   echo 3 >"$TMP/state/gate-in-progress"
-  run_pr "$TMP/out" open --title 'Gate v2 rollout' --body-file "$TMP/body" --json
+  run_pr_v3 "$TMP/out" open --title 'Gate v2 rollout' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"rerun-requested"}'
   assert_not_has "$TMP/out" '"action":"already-active"'
@@ -1716,33 +1742,35 @@ EOF
   rm -f "$TMP/state/gate-in-progress" "$TMP/state/gate-reruns" "$TMP/state/gate-fresh-active" "$TMP/state/gate-run-unbound"
   touch "$TMP/state/gate-review-window-active"
   echo 30 >"$TMP/state/gate-in-progress"
-  run_pr "$TMP/out" open --title 'Gate v2 existing request' --body-file "$TMP/body" --json
+  run_pr_v3 "$TMP/out" open --title 'Gate v2 existing request' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"already-active"}'
   [ ! -f "$TMP/state/gate-reruns" ] \
     || fail "behavior v2 open did not reuse an existing request's active review window"
   rm -f "$TMP/state/gate-in-progress" "$TMP/state/gate-review-window-active"
-  run_pr "$TMP/out" open --title 'Gate v2' --body-file "$TMP/body" --json
+  run_pr_v3 "$TMP/out" open --title 'Gate v2' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"rerun-requested"}'
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
     || fail "behavior v2 open did not refresh a completed evaluation"
-  rm -f "$TMP/state/gate-reruns"
+  # behavior-version-next would override the legacy manifest this case needs.
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/behavior-version-next"
   touch "$TMP/state/behavior-version-legacy"
   echo 3 >"$TMP/state/gate-in-progress"
-  run_pr "$TMP/out" open --title 'Gate rollout mismatch' --body-file "$TMP/body" --json
+  run_pr_v3 "$TMP/out" open --title 'Gate rollout mismatch' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"rerun-requested"}'
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
     || fail "open trusted local behavior v2 intent while GitHub still enforced v1"
   rm -f "$TMP/state/gate-reruns" "$TMP/state/behavior-version-legacy"
+  touch "$TMP/state/behavior-version-next"
   echo 3 >"$TMP/state/gate-in-progress"
-  run_pr "$TMP/out" open --title 'Expired gate v2' --body-file "$TMP/body" --json
+  run_pr_v3 "$TMP/out" open --title 'Expired gate v2' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"rerun-requested"}'
   grep -q 'rerun 77' "$TMP/state/gate-reruns" 2>/dev/null \
     || fail "behavior v2 open reused a run whose request-evidence window had expired"
-  rm -f "$TMP/state/gate-in-progress"
+  rm -f "$TMP/state/gate-in-progress" "$TMP/state/behavior-version-next"
   # Contract 4 is supported now; the next unknown one still fails closed.
   jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 5' \
     "$TMP/tool-v1/policy/github/touchstone-main.json" >"$TMP/tool-v1/policy/github/touchstone-main.next"
@@ -1759,22 +1787,6 @@ EOF
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns"
 
   echo "==> a gate behavior contract 3 policy is accepted and reuses the active run"
-  mkdir -p "$TMP/tool-v3/bin" "$TMP/tool-v3/scripts" "$TMP/tool-v3/policy/github"
-  cp "$ROOT/bin/touchstone" "$TMP/tool-v3/bin/touchstone"
-  cp "$ROOT/scripts/touchstone-pr.sh" "$TMP/tool-v3/scripts/touchstone-pr.sh"
-  cp -R "$ROOT/policy/github/." "$TMP/tool-v3/policy/github/"
-  cat "$ROOT/VERSION" >"$TMP/tool-v3/VERSION"
-  jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 3' \
-    "$ROOT/policy/github/touchstone-main.json" >"$TMP/tool-v3/policy/github/touchstone-main.json"
-  run_pr_v3() {
-    local output="$1"
-    shift
-    : >"$GH_CALLS"
-    set +e
-    bash "$TMP/tool-v3/bin/touchstone" pr "$@" --project "$TMP/project" >"$output" 2>&1
-    RUN_RC=$?
-    set -e
-  }
   touch "$TMP/state/behavior-version-next" "$TMP/state/review-gate" "$TMP/state/pr-exists"
   run_pr_v3 "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
@@ -1790,10 +1802,13 @@ EOF
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns"
 
   echo "==> open asks the primary reviewer first and records the move to the fallback when it declines"
-  touch "$TMP/state/review-gate"
+  # The bounded first-reply wait is the contract 2 and 3 client's; a contract 4
+  # client waits for the review instead (its own section below). So this runs
+  # where GitHub and the client both declare contract 3.
+  touch "$TMP/state/review-gate" "$TMP/state/behavior-version-next"
   rm -f "$TMP/state/gate-reruns" "$TMP/state/review-request" "$TMP/state/fallback-announced"
   : >"$GH_CALLS"
-  TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 GH_MODE=primary_quota run_pr "$TMP/out" open --title 'Declined' --body-file "$TMP/body" --json
+  TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 GH_MODE=primary_quota run_pr_v3 "$TMP/out" open --title 'Declined' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   grep -q '^pr comment' "$GH_CALLS" && grep -q 'touchstone:review-fallback' "$GH_CALLS" \
     || fail "open did not record the fallback on the pull request after the primary declined"
@@ -1801,7 +1816,7 @@ EOF
   grep -q '^pr comment.*@codex review' "$GH_CALLS" || fail "open did not ask the primary reviewer before recording the fallback"
   # Idempotent per head: a re-run sees its own notice and posts nothing.
   : >"$GH_CALLS"
-  TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 GH_MODE=primary_quota run_pr "$TMP/out" open --title 'Declined' --body-file "$TMP/body"
+  TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 GH_MODE=primary_quota run_pr_v3 "$TMP/out" open --title 'Declined' --body-file "$TMP/body"
   assert_rc "$RUN_RC" 0
   # The summary names the state and its remedy, never "fallback" as prose.
   assert_has "$TMP/out" 'the pinned review-gate reviews this head itself'
@@ -1812,18 +1827,19 @@ EOF
   # A primary that answers is left to the gate; nothing is posted.
   rm -f "$TMP/state/review-request" "$TMP/state/fallback-announced"
   : >"$GH_CALLS"
-  TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 GH_MODE=primary_replied run_pr "$TMP/out" open --title 'Replied' --body-file "$TMP/body" --json
+  TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 GH_MODE=primary_replied run_pr_v3 "$TMP/out" open --title 'Replied' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewFallback":"primary"'
   assert_not_has "$GH_CALLS" 'touchstone:review-fallback'
   # No reply within the bound: the gate decides, nothing is posted.
   rm -f "$TMP/state/review-request"
   : >"$GH_CALLS"
-  TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 run_pr "$TMP/out" open --title 'Silent' --body-file "$TMP/body" --json
+  TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 run_pr_v3 "$TMP/out" open --title 'Silent' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewFallback":"pending"'
   assert_not_has "$GH_CALLS" 'touchstone:review-fallback'
-  rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns" "$TMP/state/review-request" "$TMP/state/fallback-announced"
+  rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns" "$TMP/state/review-request" "$TMP/state/fallback-announced" \
+    "$TMP/state/behavior-version-next"
 
   echo "==> gate behavior contract 4: open waits here for the review, then wakes the gate once (AUT-793)"
   # A contract-4 gate evaluates once and never polls. open waits on this
@@ -1857,7 +1873,7 @@ EOF
   # Exactly one re-run per wake and exactly one request per head, counted.
   v4_reruns() { if [ -f "$TMP/state/gate-reruns" ]; then grep -c 'rerun 77' "$TMP/state/gate-reruns" || true; else echo 0; fi; }
   v4_requests() { grep -c '^pr comment.*@codex review' "$GH_CALLS" || true; }
-  touch "$TMP/state/review-gate" "$TMP/state/behavior-version-v4"
+  touch "$TMP/state/review-gate"
   v4_reset
   touch "$TMP/state/pr-exists"
   run_pr_v4 "$TMP/out" status 7 --json
@@ -1974,16 +1990,17 @@ EOF
   [ "$(v4_reruns)" -eq 1 ] || fail "await-review re-ran the gate $(v4_reruns) times; expected exactly one"
 
   # Contract 3 is unchanged: no local wait, no review read, no deadline read,
-  # and the same result document as before.
-  rm -f "$TMP/state/behavior-version-v4"
+  # and the same result document as before. A repository's gate stays
+  # contract 3 until its repin is applied, and so does its policy.
+  touch "$TMP/state/behavior-version-next"
   v4_reset
   touch "$TMP/state/pr-exists"
-  GH_MODE=attest_request_present run_pr "$TMP/out" await-review 7 --head "$HEAD_SHA" --json
+  GH_MODE=attest_request_present run_pr_v3 "$TMP/out" await-review 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'does not implement gate behavior contract 4'
   [ "$(v4_reruns)" -eq 0 ] || fail "await-review woke a contract-3 gate"
   v4_reset
-  TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 GH_MODE=primary_replied run_pr "$TMP/out" open --title 'Gate v3' --body-file "$TMP/body" --json
+  TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 GH_MODE=primary_replied run_pr_v3 "$TMP/out" open --title 'Gate v3' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewFallback":"primary"'
   assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"rerun-requested"}'
@@ -1991,7 +2008,7 @@ EOF
   assert_not_has "$GH_CALLS" 'pulls/7/reviews'
   assert_not_has "$GH_CALLS" 'workflows/review-gate.yml?ref='
   v4_reset
-  rm -f "$TMP/state/review-gate"
+  rm -f "$TMP/state/review-gate" "$TMP/state/behavior-version-next"
 
   echo "==> open refreshes required delivery evidence after body convergence (AUT-481)"
   # Put both the policy declaration and matching organization run on page two.
@@ -2393,7 +2410,7 @@ Closes #42'
   # re-read is the only thing verifying coordinates, and the attest marker
   # carries no base for it to verify -- so here the request is posted, not
   # reused. Nothing is lost: `pr answer` writes attest requests only under gate
-  # contract 3, which is exactly where a gate exists.
+  # contracts 3 and 4, which is exactly where a gate exists.
   rm -f "$TMP/state/review-request"
   GH_MODE=attest_request_present run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
@@ -2868,14 +2885,14 @@ Closes #42'
   run_pr "$TMP/out" policy-status --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"partial"'
-  assert_has "$TMP/out" "does not declare supported gate behavior contract 3"
+  assert_has "$TMP/out" "does not declare supported gate behavior contract 4"
   assert_has "$TMP/out" "observed $GH_AHEAD_SHA"
   assert_has "$GH_CALLS" "touchstone-workflows/contents/.touchstone-source-contract.json?ref=$GH_AHEAD_SHA"
   rm -f "$TMP/state/ahead-pin" "$TMP/state/behavior-version-legacy"
   touch "$TMP/state/behavior-version-missing"
   run_pr "$TMP/out" policy-status --json
   assert_has "$TMP/out" '"status":"partial"'
-  assert_has "$TMP/out" "does not declare supported gate behavior contract 3"
+  assert_has "$TMP/out" "does not declare supported gate behavior contract 4"
   rm -f "$TMP/state/behavior-version-missing"
   touch "$TMP/state/behavior-manifest-unreadable"
   run_pr "$TMP/out" policy-status --json

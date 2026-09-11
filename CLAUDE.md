@@ -40,8 +40,9 @@ The installed CLI is the sequencer everywhere; raw `git` and `gh` are the
 documented recovery path. In this source checkout,
 `bash bin/touchstone pr open|status|merge|answer`
 exercises the four bounded operations (`answer` replies to a finding, records
-its disposition, resolves its thread, and — under gate behavior contract 3 —
-posts the one idempotent attest request when the last thread resolves);
+its disposition, resolves its thread, and — when the last thread resolves —
+posts the one idempotent attest request, waits for its review, and re-runs
+the gate once);
 `docs/pr-cli-contract.md` records their stable schema and exact raw
 equivalents. Pass `--expect-branch <branch>` to `open` with the branch name written out:
 it acts on whatever branch the invoking directory has checked out, which
