@@ -15,6 +15,16 @@ PR_HEAD_ATTEMPTS=11
 # return control instead of polling the poller.
 GATE_ATTEMPTS="${TOUCHSTONE_GATE_ATTEMPTS:-60}"
 GATE_RETRY_DELAY="${TOUCHSTONE_GATE_RETRY_DELAY:-5}"
+# Every agent on a machine shares one gh token, so one GitHub REST quota of
+# 5,000 requests an hour; on 2026-09-10 polling agents spent it to zero and
+# every `touchstone pr` command failed for 45 minutes (AUT-1638). A follow of
+# GitHub state therefore keeps its deadline, GATE_ATTEMPTS x GATE_RETRY_DELAY
+# seconds of waiting, and spaces the reads inside it: the first wait is the
+# base delay, each later one doubles up to this cap, and the last is cut short
+# to land on the deadline. A contract-4 gate run takes 5-30 s, so a fast
+# follow still reads at the base delay; one that runs its full five minutes
+# reads nine times instead of sixty.
+FOLLOW_BACKOFF_CAP_SECONDS=60
 # The primary reviewer's observed contract: it replies under this login, and
 # when it cannot review it says so in one of these sentences -- the same ones
 # the pinned gate reads to move to its fallback. The request is always made
@@ -105,6 +115,17 @@ case "$REVIEW_WAIT_MAX_SECONDS" in *[!0-9]* | 0)
   exit 2
   ;;
 esac
+# Every follow derives its deadline and its backoff from these two.
+case "$GATE_ATTEMPTS" in '' | *[!0-9]* | 0)
+  echo "ERROR: TOUCHSTONE_GATE_ATTEMPTS must be a positive integer" >&2
+  exit 2
+  ;;
+esac
+case "$GATE_RETRY_DELAY" in '' | *[!0-9]*)
+  echo "ERROR: TOUCHSTONE_GATE_RETRY_DELAY must be a non-negative integer" >&2
+  exit 2
+  ;;
+esac
 
 usage() {
   cat >&2 <<'EOF'
@@ -159,6 +180,9 @@ json_string() {
 FAILURE_PR_NUMBER=""
 FAILURE_PR_URL=""
 FAILURE_PR_HEAD=""
+# Set only when GitHub refused a request for the token's rate limit: the
+# additive `rateLimit` error field (stop_on_rate_limit).
+RATE_LIMIT_JSON=""
 emit_error() {
   local reason="$1" remedy="$2"
   if [ "$JSON_MODE" = true ]; then
@@ -174,6 +198,7 @@ emit_error() {
       printf ',"head":'
       json_string "$FAILURE_PR_HEAD"
     fi
+    [ -z "$RATE_LIMIT_JSON" ] || printf ',"rateLimit":%s' "$RATE_LIMIT_JSON"
     printf '}\n'
   else
     printf 'ERROR: %s\n' "$reason" >&2
@@ -205,6 +230,65 @@ clean_diagnostic() {
   printf '%.2000s' "$cleaned"
 }
 
+# GitHub's words for a request refused for the token's rate limit, as gh
+# relays them: REST errors arrive as "gh: <message> (HTTP 403)" with the JSON
+# body on stdout, GraphQL ones as "GraphQL: <message>". The primary limit says
+# "API rate limit exceeded" (or "already exceeded"); the secondary limit says
+# "exceeded a secondary rate limit", formerly "abuse detection mechanism";
+# HTTP 429 is Too Many Requests by definition. Only a failed command's output
+# is ever matched, so a pull request's own text cannot trip it.
+RATE_LIMIT_PATTERN='API rate limit (already )?exceeded|secondary rate limit|abuse detection mechanism|\(HTTP 429\)'
+# A secondary limit names no reset in `rate_limit`, and gh shows no
+# retry-after header; GitHub's guidance then is to wait at least a minute
+# ("Rate limits for the REST API", GitHub Docs).
+SECONDARY_RATE_LIMIT_WAIT_SECONDS=60
+
+# A request GitHub refused for the token's rate limit answered nothing, so it
+# is never a verdict on the change: it is an unavailable provider, the class of
+# a job Actions refused (AUT-1594). Retrying spends the quota every session on
+# this token shares, the moment it resets (AUT-1638). So the command stops,
+# names when a re-run can succeed, and never retries: every operation here
+# resumes idempotently from the state GitHub holds.
+stop_on_rate_limit() {
+  local diagnostic="$1" filter limits core_remaining="" core_reset="" graphql_remaining="" graphql_reset=""
+  local limit reset_epoch rerun_after reason
+  printf '%s' "$diagnostic" | grep -qiE "$RATE_LIMIT_PATTERN" || return 0
+  # `rate_limit` is free: GitHub counts it against no quota and answers it
+  # while one is exhausted. One attempt; all it adds is the reset time.
+  filter='.resources | [.core.remaining, .core.reset, .graphql.remaining, .graphql.reset] | map(tostring) | @tsv'
+  if [ -n "${REPO_HOST:-}" ]; then
+    limits="$(gh api --hostname "$REPO_HOST" rate_limit --jq "$filter" 2>/dev/null)" || limits=""
+  else
+    limits="$(gh api rate_limit --jq "$filter" 2>/dev/null)" || limits=""
+  fi
+  [ -z "$limits" ] || IFS="$(printf '\t')" read -r core_remaining core_reset graphql_remaining graphql_reset <<<"$limits"
+  reset_epoch=""
+  if [ -z "$limits" ]; then
+    limit=unknown
+  elif [ "$core_remaining" = 0 ]; then
+    limit=core
+    reset_epoch="$core_reset"
+  elif [ "$graphql_remaining" = 0 ]; then
+    limit=graphql
+    reset_epoch="$graphql_reset"
+  else
+    limit=secondary
+  fi
+  case "$reset_epoch" in '' | *[!0-9]*) reset_epoch=$(($(date -u +%s) + SECONDARY_RATE_LIMIT_WAIT_SECONDS)) ;; esac
+  rerun_after="$(jq -nr --argjson at "$reset_epoch" '$at | todate')"
+  case "$limit" in
+    core) reason="GitHub's REST rate limit for this token is exhausted until $rerun_after; re-run the same command after that" ;;
+    graphql) reason="GitHub's GraphQL rate limit for this token is exhausted until $rerun_after; re-run the same command after that" ;;
+    secondary) reason="GitHub's secondary rate limit refused this token's request; re-run the same command after $rerun_after" ;;
+    *) reason="GitHub refused this token's request for a rate limit, and gh api rate_limit could not say until when; re-run the same command after $rerun_after" ;;
+  esac
+  RATE_LIMIT_JSON="$(jq -cn --arg limit "$limit" --arg at "$rerun_after" '{limit:$limit, rerunAfter:$at}')"
+  fail_operation "$reason" "Nothing was retried: every session using this token shares its quota, so a retry now fails and spends it again. The refused request is no verdict on the change. GitHub said: $(clean_diagnostic "$diagnostic")"
+}
+
+# Every GitHub request whose failure is read goes through here, reads through
+# read_with_retry and mutations directly, so a rate-limited one stops the
+# command on this one path (stop_on_rate_limit) wherever it was made.
 capture_command() {
   local output diagnostic status=0
   # The scratch file keeps stderr out of the parsed stream (PR #883 found
@@ -235,6 +319,7 @@ capture_command() {
   if [ "$status" -ne 0 ]; then
     [ -z "$output" ] || diagnostic="${diagnostic}${diagnostic:+
 }${output}"
+    stop_on_rate_limit "$diagnostic"
     CAPTURE_ERROR="$(clean_diagnostic "$diagnostic")"
   fi
   return "$status"
@@ -302,6 +387,17 @@ project_git() {
 tool_git() {
   env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
     git -C "$TOOL_ROOT" "$@"
+}
+
+# The gh pull-request mutations that read the project's checkout run from its
+# root, with ambient Git variables unset as project_git unsets them. Invoked
+# only through capture_command, so a rate-limited mutation stops the command
+# like any read does (AUT-1638).
+project_gh() {
+  (
+    unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+    cd "$PROJECT_ROOT" && gh "$@"
+  )
 }
 
 read_repository() {
@@ -490,7 +586,9 @@ case "$REPO_URL" in
   *) fail_operation "GitHub returned an invalid repository URL" "Expected an HTTP(S) repository URL, got '$REPO_URL'." ;;
 esac
 REPO_SPEC="$REPO_HOST/$REPO"
-gh auth status --hostname "$REPO_HOST" >/dev/null 2>&1 \
+# Captured like every other request, so a rate-limited token is reported as
+# that, not as a failed login.
+capture_command gh auth status --hostname "$REPO_HOST" \
   || fail_operation "GitHub authentication failed for $REPO_HOST" "Run 'gh auth login --hostname $REPO_HOST' and retry."
 
 # The branch is reported, not just used: the operator's only check against
@@ -1505,8 +1603,32 @@ assert_wait_liveness() {
       "Integrate the live base, then re-run: touchstone pr open --expect-branch <branch>."
 }
 
+# Where a follow of GitHub state sleeps next, on the schedule
+# FOLLOW_BACKOFF_CAP_SECONDS describes. Sets FOLLOW_WAIT, or returns 1 once the
+# follow is spent: BUDGET seconds waited, or MAX_ATTEMPTS reads, the bound the
+# flat schedule had. The read bound decides only where the schedule cannot
+# grow: at a zero base delay, which the test suite uses and which never
+# sleeps, and at a base at or above the cap, which keeps the flat schedule
+# exactly. So a follow's last read is never earlier than the flat schedule's
+# last, and no wait carries it past its budget (AUT-1638).
+FOLLOW_WAIT=0
+follow_next_wait() {
+  local base="$1" attempt="$2" max_attempts="$3" waited="$4" budget="$5" previous="$6" next
+  [ "$attempt" -lt "$max_attempts" ] || return 1
+  if [ "$base" -eq 0 ]; then
+    FOLLOW_WAIT=0
+    return 0
+  fi
+  [ "$waited" -lt "$budget" ] || return 1
+  next=$((previous * 2))
+  [ "$next" -le "$FOLLOW_BACKOFF_CAP_SECONDS" ] || next="$FOLLOW_BACKOFF_CAP_SECONDS"
+  [ "$next" -ge "$base" ] || next="$base"
+  [ "$next" -le $((budget - waited)) ] || next=$((budget - waited))
+  FOLLOW_WAIT="$next"
+}
+
 wait_for_new_attempt() {
-  local run_id="$1" prior="$2" workflow_name="$3" number="$4" head="$5" base_ref="${6:-}" base_sha="${7:-}" attempt=1 seen
+  local run_id="$1" prior="$2" workflow_name="$3" number="$4" head="$5" base_ref="${6:-}" base_sha="${7:-}" attempt=1 seen waited=0 previous=0
   while :; do
     assert_wait_liveness "$number" "$head" "$base_ref" "$base_sha"
     read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$run_id" --jq '.run_attempt' \
@@ -1514,10 +1636,12 @@ wait_for_new_attempt() {
     seen="$READ_OUTPUT"
     case "$seen$prior" in *[!0-9]* | "") fail_operation "$workflow_name run $run_id reported a non-numeric attempt ('$seen' after '$prior')" "Inspect the run in the Actions tab." ;; esac
     [ "$seen" -le "$prior" ] || return 0
-    [ "$attempt" -lt "$GATE_ATTEMPTS" ] \
+    follow_next_wait "$GATE_RETRY_DELAY" "$attempt" "$GATE_ATTEMPTS" "$waited" "$((GATE_ATTEMPTS * GATE_RETRY_DELAY))" "$previous" \
       || fail_operation "$workflow_name run $run_id did not start its new attempt within $((GATE_ATTEMPTS * GATE_RETRY_DELAY))s" "Check the Actions tab, then retry."
     attempt=$((attempt + 1))
-    sleep "$GATE_RETRY_DELAY"
+    waited=$((waited + FOLLOW_WAIT))
+    previous="$FOLLOW_WAIT"
+    [ "$FOLLOW_WAIT" -eq 0 ] || sleep "$FOLLOW_WAIT"
   done
 }
 
@@ -1618,7 +1742,7 @@ rerun_required_workflow() {
   local number="$1" head="$2" workflow_name="$3" local_workflow_ids="$4" active_reuse_seconds="${5:-0}"
   local refresh_completed="${6:-true}" minimum_attempt="${7:-0}" minimum_attempt_run_id="${8:-}"
   local base_ref="${9:-}" base_sha="${10:-}" fresh_since="${11:-}"
-  local attempt=1 run_id run_node status conclusion selected_attempt run_started_at run_started_epoch now prior_attempt run_pages run_row workflow_ids workflow_id_count
+  local attempt=1 run_id run_node status conclusion selected_attempt run_started_at run_started_epoch now prior_attempt run_pages run_row workflow_ids workflow_id_count waited=0 previous=0
   local run_identity active_run_bound
   REQUIRED_WORKFLOW_RUN_ID=""
   REQUIRED_WORKFLOW_ALREADY_ACTIVE=false
@@ -1771,14 +1895,16 @@ rerun_required_workflow() {
       read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$run_id" --jq '.run_attempt' \
         || fail_operation "could not read $workflow_name run $run_id: $READ_OUTPUT" "Retry after GitHub recovers."
       prior_attempt="$READ_OUTPUT"
-      gh api --hostname "$REPO_HOST" -X POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>&1 \
-        || fail_operation "could not re-run $workflow_name run $run_id" "Re-run it from the Actions tab, then retry."
+      # Captured rather than discarded, so a rate-limited re-run stops the
+      # command as a rate limit and any other refusal is quoted.
+      capture_command gh api --hostname "$REPO_HOST" -X POST "repos/$REPO/actions/runs/$run_id/rerun" \
+        || fail_operation "could not re-run $workflow_name run $run_id: $CAPTURE_ERROR" "Re-run it from the Actions tab, then retry."
       wait_for_new_attempt "$run_id" "$prior_attempt" "$workflow_name" "$number" "$head" "$base_ref" "$base_sha"
       REQUIRED_WORKFLOW_MIN_ATTEMPT=$((prior_attempt + 1))
       REQUIRED_WORKFLOW_MIN_ATTEMPT_RUN_ID="$run_id"
       return 0
     fi
-    if [ "$attempt" -ge "$GATE_ATTEMPTS" ]; then
+    if ! follow_next_wait "$GATE_RETRY_DELAY" "$attempt" "$GATE_ATTEMPTS" "$waited" "$((GATE_ATTEMPTS * GATE_RETRY_DELAY))" "$previous"; then
       # No run at all is a different failure from a slow one: when Actions
       # are disabled, waiting cannot produce a run, and the remedy is the
       # setting, not patience.
@@ -1787,18 +1913,24 @@ rerun_required_workflow() {
       fi
       fail_operation "$workflow_name run for $head did not reach a re-runnable state within $((GATE_ATTEMPTS * GATE_RETRY_DELAY))s (last: ${run_id:-none} ${status:-absent})" "Wait for the gate run to finish, then re-run this command."
     fi
-    [ "$JSON_MODE" = true ] || printf '%s run %s; retrying in %ss.\n' "$workflow_name" "${status:-not yet present}" "$GATE_RETRY_DELAY" >&2
+    [ "$JSON_MODE" = true ] || printf '%s run %s; retrying in %ss.\n' "$workflow_name" "${status:-not yet present}" "$FOLLOW_WAIT" >&2
     attempt=$((attempt + 1))
-    sleep "$GATE_RETRY_DELAY"
+    waited=$((waited + FOLLOW_WAIT))
+    previous="$FOLLOW_WAIT"
+    [ "$FOLLOW_WAIT" -eq 0 ] || sleep "$FOLLOW_WAIT"
   done
 }
 
-# When the pull request's body last changed, as epoch seconds: its last edit,
-# or its creation if never edited. delivery-evidence reads the body and no
-# other field. Prints nothing when the time cannot be read, and the caller
-# then refreshes the evidence run rather than trust an older one.
+# When the pull request's body last changed, as epoch seconds, in
+# PR_BODY_CHANGED_EPOCH: its last edit, or its creation if never edited.
+# delivery-evidence reads the body and no other field. Empty when the time
+# cannot be read, and the caller then refreshes the evidence run rather than
+# trust an older one. Set, not printed: a read inside a command substitution
+# could not stop the command on a rate limit (AUT-1638).
+PR_BODY_CHANGED_EPOCH=""
 pr_body_last_changed_epoch() {
   local number="$1"
+  PR_BODY_CHANGED_EPOCH=""
   if ! read_with_retry gh api graphql --hostname "$REPO_HOST" \
     -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F number="$number" \
     -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){createdAt lastEditedAt}}}' \
@@ -1806,11 +1938,12 @@ pr_body_last_changed_epoch() {
     [ "$JSON_MODE" = true ] || printf 'Could not read when PR #%s body last changed; refreshing delivery evidence.\n' "$number" >&2
     return 0
   fi
-  printf '%s' "$READ_OUTPUT" | jq -er '
+  PR_BODY_CHANGED_EPOCH="$(printf '%s' "$READ_OUTPUT" | jq -er '
     if (.createdAt | type) != "string" then error("missing createdAt")
     elif .lastEditedAt != null and (.lastEditedAt | type) != "string" then error("invalid lastEditedAt")
     else [.createdAt, .lastEditedAt] | map(select(. != null) | fromdateiso8601) | max
-    end' 2>/dev/null || {
+    end' 2>/dev/null)" || {
+    PR_BODY_CHANGED_EPOCH=""
     [ "$JSON_MODE" = true ] || printf 'PR #%s reported no usable body timestamp; refreshing delivery evidence.\n' "$number" >&2
     return 0
   }
@@ -1994,6 +2127,7 @@ wait_for_request_binding() {
 announce_review_fallback() {
   local number="$1" head="$2" request_url="$3" evidence_seconds="${4:-}"
   local request_id rows primary_reply marker step waited=0 replied fallback_recorded now deadline wait_bound=0
+  local attempt=1 previous=0 response_attempts=0 observed_counts=""
   REVIEW_FALLBACK_STATE=""
   REVIEW_WAIT_WOKE_BY=""
   if [ -z "$evidence_seconds" ]; then
@@ -2004,8 +2138,11 @@ announce_review_fallback() {
     wait_bound=$(($(date -u +%s) + ${REVIEW_WAIT_MAX_SECONDS:-$((evidence_seconds + REVIEW_DEADLINE_MARGIN_SECONDS))}))
   fi
   marker="<!-- touchstone:review-fallback head=$head -->"
+  # The flat schedule's read count over the reply window, kept as the bound
+  # where the backoff cannot grow (follow_next_wait).
   step="$GATE_RETRY_DELAY"
   [ "$step" -gt 0 ] 2>/dev/null || step=1
+  [ -n "$evidence_seconds" ] || response_attempts=$(((REVIEW_RESPONSE_WAIT_SECONDS + step - 1) / step))
   while :; do
     assert_wait_liveness "$number" "$head"
     if [ -z "$evidence_seconds" ]; then
@@ -2018,7 +2155,20 @@ announce_review_fallback() {
       replied=false
       [ -z "$primary_reply" ] || replied=true
     else
-      read_primary_reply_to_head_request "$number" "$head" "$marker"
+      # One GraphQL read per poll, on a quota separate from REST's, says
+      # whether the review surface changed. The REST observation, which reads
+      # what the pinned gate reads, runs on the first poll, whenever a count
+      # moved, and whenever this poll could end the wait, so every decision
+      # rests on a fresh one (AUT-1638). The clock is read once, first: a poll
+      # that did not observe cannot end the wait on a later reading of it.
+      now="$(date -u +%s)"
+      read_review_surface_counts "$number"
+      if [ "$REVIEW_SURFACE_COUNTS" != "$observed_counts" ] \
+        || [ "$now" -ge $((REVIEW_REQUEST_CLOCK_EPOCH + evidence_seconds + REVIEW_DEADLINE_MARGIN_SECONDS)) ] \
+        || [ "$now" -ge "$wait_bound" ]; then
+        read_primary_reply_to_head_request "$number" "$head" "$marker"
+        observed_counts="$REVIEW_SURFACE_COUNTS"
+      fi
       primary_reply="$PRIMARY_REPLY_BODY"
       replied=false
       [ -z "$PRIMARY_REPLY_KIND" ] || replied=true
@@ -2048,7 +2198,6 @@ announce_review_fallback() {
       return 0
     fi
     if [ -n "$evidence_seconds" ]; then
-      now="$(date -u +%s)"
       deadline=$((REVIEW_REQUEST_CLOCK_EPOCH + evidence_seconds + REVIEW_DEADLINE_MARGIN_SECONDS))
       if [ "$now" -ge "$deadline" ] || [ "$now" -ge "$wait_bound" ]; then
         REVIEW_FALLBACK_STATE=pending
@@ -2063,17 +2212,25 @@ announce_review_fallback() {
         fi
         return 0
       fi
-      sleep "$REVIEW_WAIT_POLL_SECONDS"
+      # No faster than REVIEW_WAIT_POLL_SECONDS, and on the deadline or the
+      # wait bound rather than a poll past it. Both are still ahead here, so
+      # every wait is at least a second.
+      FOLLOW_WAIT="$REVIEW_WAIT_POLL_SECONDS"
+      [ $((deadline - now)) -ge "$FOLLOW_WAIT" ] || FOLLOW_WAIT=$((deadline - now))
+      [ $((wait_bound - now)) -ge "$FOLLOW_WAIT" ] || FOLLOW_WAIT=$((wait_bound - now))
+      sleep "$FOLLOW_WAIT"
       continue
     fi
-    waited=$((waited + step))
-    if [ "$waited" -ge "$REVIEW_RESPONSE_WAIT_SECONDS" ]; then
+    if ! follow_next_wait "$GATE_RETRY_DELAY" "$attempt" "$response_attempts" "$waited" "$REVIEW_RESPONSE_WAIT_SECONDS" "$previous"; then
       REVIEW_FALLBACK_STATE=pending
       printf 'No reply from the primary reviewer within %ss; the review-gate decides for %s. Re-run this command later to record a declined reply.\n' \
         "$REVIEW_RESPONSE_WAIT_SECONDS" "$head" >&2
       return 0
     fi
-    sleep "$GATE_RETRY_DELAY"
+    attempt=$((attempt + 1))
+    waited=$((waited + FOLLOW_WAIT))
+    previous="$FOLLOW_WAIT"
+    [ "$FOLLOW_WAIT" -eq 0 ] || sleep "$FOLLOW_WAIT"
   done
 }
 
@@ -2145,6 +2302,27 @@ read_primary_reply_to_head_request() {
   fi
 }
 
+# How many issue comments and reviews the pull request carries, in one GraphQL
+# read on a quota separate from REST's (AUT-1638). A reply, a new request, or
+# a new review moves a count, so the contract-4 wait re-reads the REST review
+# surface only when one moved. It is a change signal, never the observation
+# itself: a deletion and an addition between two polls cancel out, and the
+# wait then sees that reply on its next full observation, at the deadline at
+# the latest -- later, never wrongly.
+REVIEW_SURFACE_COUNTS=""
+read_review_surface_counts() {
+  local number="$1"
+  read_with_retry gh api graphql --hostname "$REPO_HOST" \
+    -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F number="$number" \
+    -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){comments{totalCount} reviews{totalCount}}}}' \
+    --jq '.data.repository.pullRequest | "\(.comments.totalCount) \(.reviews.totalCount)"' \
+    || fail_operation "could not read the review surface of PR #$number: $READ_OUTPUT" \
+      "Retry after GitHub recovers. The review request stands; re-running this command waits for it again."
+  printf '%s' "$READ_OUTPUT" | grep -Eqx '[0-9]+ [0-9]+' \
+    || fail_operation "GitHub returned malformed review-surface counts for PR #$number" "Retry after GitHub recovers."
+  REVIEW_SURFACE_COUNTS="$READ_OUTPUT"
+}
+
 # The gate's evidence deadline, read from the pinned review-gate.yml at every
 # revision GitHub enforces on this base -- the revisions the run binding
 # accepts. Overlapping pins take the longest, so no enforced gate is woken
@@ -2176,7 +2354,7 @@ read_review_evidence_deadline() {
 # contract-4 run is short. Its conclusion is reported as the gate reached it;
 # this client never reads findings or decides what they mean.
 wake_review_gate_once() {
-  local number="$1" head="$2" base_ref="$3" base_sha="$4" attempt=1 status run_attempt conclusion
+  local number="$1" head="$2" base_ref="$3" base_sha="$4" attempt=1 status run_attempt conclusion waited=0 previous=0
   rerun_declared_review_gate "$number" "$head" 0 "$base_ref" "$base_sha"
   if [ "$REVIEW_GATE_ACTION" = actions-refused ]; then
     record_actions_refusal review-gate "$REVIEW_GATE_RUN_ID"
@@ -2202,14 +2380,16 @@ wake_review_gate_once() {
       printf 'Review gate run %s concluded %s for %s.\n' "$REVIEW_GATE_RUN_ID" "${conclusion:-with no conclusion}" "$head" >&2
       return 0
     fi
-    if [ "$attempt" -ge "$GATE_ATTEMPTS" ]; then
+    if ! follow_next_wait "$GATE_RETRY_DELAY" "$attempt" "$GATE_ATTEMPTS" "$waited" "$((GATE_ATTEMPTS * GATE_RETRY_DELAY))" "$previous"; then
       REVIEW_GATE_STATUS="$status"
       printf 'Review gate run %s is still %s after %ss; it decides on its own.\n' \
         "$REVIEW_GATE_RUN_ID" "$status" "$((GATE_ATTEMPTS * GATE_RETRY_DELAY))" >&2
       return 0
     fi
     attempt=$((attempt + 1))
-    sleep "$GATE_RETRY_DELAY"
+    waited=$((waited + FOLLOW_WAIT))
+    previous="$FOLLOW_WAIT"
+    [ "$FOLLOW_WAIT" -eq 0 ] || sleep "$FOLLOW_WAIT"
   done
 }
 
@@ -2218,6 +2398,8 @@ wake_review_gate_once() {
 # request, or for that request to age past the gate's evidence deadline, then
 # ask GitHub to re-run the gate once and report where that run ended. The
 # client only wakes the gate; the verdict is the gate's.
+# Twelve follow delays: once a minute at the default five seconds.
+REVIEW_WAIT_POLL_DELAYS=12
 REVIEW_WAIT_POLL_SECONDS=0
 await_review_then_wake_gate() {
   local number="$1" head="$2" base_ref="$3" base_sha="$4"
@@ -2230,13 +2412,12 @@ await_review_then_wake_gate() {
     printf 'Not waiting for review: Actions refuses jobs for %s, so no review-gate run can be woken.\n' "$head" >&2
     return 0
   fi
-  case "$GATE_RETRY_DELAY" in '' | *[!0-9]*)
-    fail_input "TOUCHSTONE_GATE_RETRY_DELAY must be a non-negative integer" "Unset it, or pass whole seconds."
-    ;;
-  esac
-  # The review surface changes on the reviewer's minutes-long scale, so it is
-  # read a third as often as a workflow run's state.
-  REVIEW_WAIT_POLL_SECONDS=$((GATE_RETRY_DELAY * 3))
+  # The review surface changes on the reviewer's minutes-long scale -- a reply
+  # takes two to five minutes -- so it is read at most once a minute at the
+  # default delay, and never faster than once a second: at a zero delay the
+  # interval was zero, a busy loop (AUT-1636, AUT-1638).
+  REVIEW_WAIT_POLL_SECONDS=$((GATE_RETRY_DELAY * REVIEW_WAIT_POLL_DELAYS))
+  [ "$REVIEW_WAIT_POLL_SECONDS" -ge 1 ] || REVIEW_WAIT_POLL_SECONDS=1
   read_review_evidence_deadline
   printf 'Gate behavior contract 4: waiting here until the primary reviewer answers the latest request for %s, or that request passes the pinned gate'\''s %ss evidence deadline; then the gate is re-run once.\n' \
     "$head" "$REVIEW_EVIDENCE_DEADLINE_SECONDS" >&2
@@ -2337,8 +2518,13 @@ open_pr() {
   count="$(printf '%s\n' "$rows" | awk 'NF { count++ } END { print count + 0 }')"
   [ "$count" -le 1 ] || fail_operation "multiple open pull requests use branch '$branch'" "Close or retarget duplicates."
   if [ "$count" -eq 0 ]; then
-    create_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr create --repo "$REPO_SPEC" --head "$branch" --base "$BASE_REF" \
-      --title "$TITLE" --body-file "$BODY_FILE" 2>&1)" || create_status=$?
+    if capture_command project_gh pr create --repo "$REPO_SPEC" --head "$branch" --base "$BASE_REF" \
+      --title "$TITLE" --body-file "$BODY_FILE"; then
+      create_output="$CAPTURE_OUTPUT"
+    else
+      create_status=$?
+      create_output="$CAPTURE_ERROR"
+    fi
     read_open_pr_rows_for_head "$branch" "$local_head" \
       || fail_operation "PR creation could not be reconciled: $READ_OUTPUT" "Inspect GitHub before retrying."
     rows="$READ_OUTPUT"
@@ -2381,8 +2567,8 @@ open_pr() {
     [ "$live_title" = "$TITLE" ] || edit_args+=(--title "$TITLE")
     [ "$live_body" = "$wanted_body" ] || edit_args+=(--body-file "$BODY_FILE")
     if [ "${#edit_args[@]}" -gt 0 ]; then
-      edit_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr edit "$number" --repo "$REPO_SPEC" "${edit_args[@]}" 2>&1)" \
-        || fail_operation "could not apply the given title/body to PR #$number: $edit_output" "Inspect the PR on GitHub before retrying."
+      capture_command project_gh pr edit "$number" --repo "$REPO_SPEC" "${edit_args[@]}" \
+        || fail_operation "could not apply the given title/body to PR #$number: $CAPTURE_ERROR" "Inspect the PR on GitHub before retrying."
       read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json body --jq '.body' \
         || fail_operation "PR edit could not be reconciled: $READ_OUTPUT" "Inspect GitHub before retrying."
       [ "$READ_OUTPUT" = "$wanted_body" ] \
@@ -2404,7 +2590,10 @@ open_pr() {
     REQUIRED_WORKFLOW_REFUSED=false
     if [ "$state" = existing ]; then
       evidence_fresh_since=""
-      [ "$BODY_APPLIED" = updated ] || evidence_fresh_since="$(pr_body_last_changed_epoch "$number")"
+      if [ "$BODY_APPLIED" != updated ]; then
+        pr_body_last_changed_epoch "$number"
+        evidence_fresh_since="$PR_BODY_CHANGED_EPOCH"
+      fi
       rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS" 0 true 0 "" "$pr_base" "$pr_base_sha" "$evidence_fresh_since"
       evidence_min_attempt="$REQUIRED_WORKFLOW_MIN_ATTEMPT"
       evidence_min_attempt_run_id="$REQUIRED_WORKFLOW_MIN_ATTEMPT_RUN_ID"
@@ -3280,11 +3469,11 @@ status_pr() {
 # on the next base movement, so it is disarmed first, and the message says
 # whether it was.
 refuse_evicted_head() {
-  local number="$1" head="$2" disarm_output disarm_status=0 disarmed=""
+  local number="$1" head="$2" disarm_status=0 disarmed=""
   if [ "$AUTO_MERGE_ARMED" = true ]; then
-    disarm_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$number" --repo "$REPO_SPEC" --disable-auto 2>&1)" || disarm_status=$?
+    capture_command project_gh pr merge "$number" --repo "$REPO_SPEC" --disable-auto || disarm_status=$?
     if [ "$disarm_status" -ne 0 ]; then
-      fail_operation "PR #$number head $head was removed from the merge queue at ${MERGE_QUEUE_EVICTED_AT:-an unknown time} (${MERGE_QUEUE_EVICTION_REASON:-no reason recorded}) and nothing has changed since, but its armed auto-merge request could not be disarmed: $(clean_diagnostic "$disarm_output")" \
+      fail_operation "PR #$number head $head was removed from the merge queue at ${MERGE_QUEUE_EVICTED_AT:-an unknown time} (${MERGE_QUEUE_EVICTION_REASON:-no reason recorded}) and nothing has changed since, but its armed auto-merge request could not be disarmed: $CAPTURE_ERROR" \
         "Run gh pr merge $number --repo $REPO_SPEC --disable-auto so GitHub cannot re-queue this head, fix the failing check on a new head, then run touchstone pr merge $number --head <new head>."
     fi
     disarmed="; its armed auto-merge request was disarmed so GitHub does not re-queue this head meanwhile"
@@ -3384,7 +3573,7 @@ enqueue_armed_head() {
 }
 
 merge_pr() {
-  local number state url head head_repo base base_sha merge_state draft merge_output merge_status=0
+  local number state url head head_repo base base_sha merge_state draft merge_status=0
   local merge_diagnostic final_state="" unguarded_marker prior_records record_author merge_auto
   [ -n "$EXPECTED_HEAD" ] \
     || fail_input "merge requires --head SHA" "Pass the exact reviewed head from GitHub."
@@ -3481,9 +3670,9 @@ merge_pr() {
       # "0\n0" into a skipped record.
       prior_records="$(printf '%s\n' "$READ_OUTPUT" | awk '{ total += $1 } END { print total + 0 }')"
       if [ "$prior_records" = 0 ]; then
-        gh pr comment "$PR_NUMBER" --repo "$REPO_SPEC" --body "$unguarded_marker
-Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarded\`: enforcement on \`$base\` is $(enforcement_text) using \`$ENFORCEMENT_POLICY_SOURCE\` at \`$ENFORCEMENT_POLICY_REVISION\`, so GitHub's requirements for this merge differ from that policy by exactly what is listed (other checks or reviews may still have run). Apply that policy revision to close the gap." >/dev/null \
-          || fail_operation "could not record the unguarded merge request on PR #$PR_NUMBER" "Inspect GitHub before retrying."
+        capture_command gh pr comment "$PR_NUMBER" --repo "$REPO_SPEC" --body "$unguarded_marker
+Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarded\`: enforcement on \`$base\` is $(enforcement_text) using \`$ENFORCEMENT_POLICY_SOURCE\` at \`$ENFORCEMENT_POLICY_REVISION\`, so GitHub's requirements for this merge differ from that policy by exactly what is listed (other checks or reviews may still have run). Apply that policy revision to close the gap." \
+          || fail_operation "could not record the unguarded merge request on PR #$PR_NUMBER: $CAPTURE_ERROR" "Inspect GitHub before retrying."
       fi
       # The base inspected and recorded must be the base merged into.
       verify_live_head_and_base "$number" "$head" "$base" "$base_sha"
@@ -3513,9 +3702,13 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
       # way: GitHub enqueues it once the required gate succeeds.
       merge_auto=()
       [ "$ENFORCEMENT_QUEUE_APPLIED" = true ] && [ "$REVIEW_GATE_ACTION" != arm-auto-merge ] || merge_auto=(--auto)
-      merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash ${merge_auto[@]+"${merge_auto[@]}"} \
-        --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
-      merge_diagnostic="$(clean_diagnostic "$merge_output")"
+      if capture_command project_gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash ${merge_auto[@]+"${merge_auto[@]}"} \
+        --match-head-commit "$EXPECTED_HEAD"; then
+        merge_diagnostic="$(clean_diagnostic "$CAPTURE_OUTPUT")"
+      else
+        merge_status=$?
+        merge_diagnostic="$CAPTURE_ERROR"
+      fi
       reconcile_delivery merge "$merge_status" "$merge_diagnostic" \
         "GitHub did not accept merge for PR #$PR_NUMBER: $merge_diagnostic" "The repository ruleset remains authoritative."
       final_state="$RECONCILED_DELIVERY_STATE"

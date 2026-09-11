@@ -21,7 +21,9 @@ touchstone pr answer PR --all-resolved-check
 Every command accepts `--project DIR`; every command except `answer` accepts `--json` (`answer` has no observation to report and refuses it). JSON has schema
 `touchstone.pr/v2`; adding fields or enum values is compatible, while changing
 an existing value's meaning requires a new schema. Exit 0 means the reported state was verified, exit 1 is
-an operational or transport failure, and exit 2 is invalid or unsafe input. No
+an operational or transport failure, and exit 2 is invalid or unsafe input. A
+request GitHub refuses for the token's rate limit is exit 1 (see Safety and
+recovery). No
 command runs a daemon, stores credentials, or persists derived PR state.
 
 `policy apply` is the one exception to the PR schema: its deliberately smaller
@@ -494,6 +496,35 @@ successful mutation does not create a second PR, review request, reply, or
 other mutation. A moved head, unknown or changed review base, ambiguous
 branch-to-PR mapping, GitHub rejection, or unverified final state fails closed
 with a concrete remedy.
+
+A request GitHub refuses for the token's rate limit is never retried and never
+read as a verdict on the change: it is an unavailable provider, the class of a
+job Actions refused. Every session on a machine shares one token's quota; on
+2026-09-10 polling agents spent it to zero, and a retry spends it again the
+moment it resets (AUT-1638). A read or captured mutation whose `gh` diagnostic
+carries GitHub's rate-limit wording, primary (`API rate limit exceeded`) or
+secondary (`exceeded a secondary rate limit`, HTTP 429), ends the command with
+exit 1 after one read of `gh api rate_limit`, which GitHub counts against no
+quota. The reason names when a re-run can succeed: `GitHub's REST rate limit
+for this token is exhausted until <UTC>; re-run the same command after that`,
+or GraphQL where that quota is the exhausted one. A secondary limit names no
+reset, so its time is a minute on, GitHub's documented minimum. JSON carries
+the additive `rateLimit` object: `limit` (`core`, `graphql`, `secondary`, or
+`unknown` when `rate_limit` itself was unreadable) and `rerunAfter` (UTC).
+Re-running resumes from the state GitHub holds, as after any other failure.
+
+Waits space their reads for the same shared quota, and no deadline moves. A
+follow of GitHub state (a required workflow reaching a re-runnable state or
+starting its new attempt, a woken gate's run, or the primary's first reply
+under contracts 1-3) keeps its deadline, `TOUCHSTONE_GATE_ATTEMPTS` x
+`TOUCHSTONE_GATE_RETRY_DELAY` seconds or the reply window, and doubles its
+wait from the base delay up to 60 seconds, the last wait cut to land on the
+deadline. The contract-4 review wait reads at most once a minute at the
+default delay (twelve base delays, never under a second) and wakes on its
+deadline or bound rather than on a poll past it. Each of its polls is one
+GraphQL count of the pull request's comments and reviews; it re-reads the REST
+review surface only on the first poll, when a count moved, and when the poll
+could end the wait.
 
 GitHub response data and diagnostics remain separate. Successful commands are
 parsed from stdout alone; failed commands retain a bounded, sanitized
