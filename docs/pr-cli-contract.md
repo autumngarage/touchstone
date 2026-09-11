@@ -216,7 +216,11 @@ taking this document's word for it.
   history. A base that has merely advanced leaves no event on the PR and is
   still reported `evicted`, the conservative direction. The removal's
   `beforeCommit` is the merge-queue base the candidate was built on, not the
-  PR head, and is reported as `queueBase` for diagnosis only. Under a policy that enforces a merge queue, an armed auto-merge
+  PR head, and is reported as `queueBase` for diagnosis only. Where the policy
+  carries a review gate, an armed head is held to the same gate-binding
+  guards as an unarmed one, first: an ambiguous, unbound, or Actions-refused
+  gate is `action-required` (`inspect`), never `queue`, because `merge`
+  refuses on that same guard (AUT-1639). Under a policy that enforces a merge queue, an armed auto-merge
   request with no queue entry is read with what GitHub is waiting on, in
   GitHub's terms: a check run for the head still running is
   `armed-waiting-checks` (`wait`; GitHub enqueues the head when it passes); a
@@ -366,8 +370,9 @@ taking this document's word for it.
   no further mutation. A head that moved is refused with exit 2 and nothing
   is enqueued. An enqueue GitHub rejects is exit 1 carrying GitHub's error,
   and is never retried. No new status value or field. Raw recovery:
-  `gh pr view PR --json id --jq .id`, then
-  `gh api graphql -f query='mutation($id:ID!,$head:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$id,expectedHeadOid:$head}){mergeQueueEntry{state}}}' -f id=NODE_ID -f head=SHA`,
+  `gh pr view PR --json id --jq .id`, then, with HOST the repository's
+  GitHub host (GitHub Enterprise included),
+  `gh api graphql --hostname HOST -f query='mutation($id:ID!,$head:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$id,expectedHeadOid:$head}){mergeQueueEntry{state}}}' -f id=NODE_ID -f head=SHA`,
   then re-read `mergeQueueEntry` and `headRefOid`.
 
   Review is requested by `open` and refreshed by `answer`; `merge`
