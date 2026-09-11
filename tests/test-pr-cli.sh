@@ -577,7 +577,10 @@ case "$1 ${2:-}" in
         printf '%s\n' '{"jobs":[{"id":87,"name":"review-gate","run_attempt":3,"status":"in_progress","conclusion":null}]}'
       fi
     elif has '/actions/runs/77/attempts/2/jobs?per_page=100' "$@"; then
-      case "${GH_MODE:-ok}" in
+      # gate-job-refused: only the gate's job is refused, whatever the mode.
+      gate_jobs_mode="${GH_MODE:-ok}"
+      [ ! -f "$GH_STATE/gate-job-refused" ] || gate_jobs_mode=actions_refused
+      case "$gate_jobs_mode" in
         status_gate_pending | status_gate_run_recency)
           printf '%s\n' '{"jobs":[{"id":81,"name":"review-gate","run_attempt":2,"status":"in_progress","conclusion":null}]}' ;;
         status_gate_failure | status_gate_collision)
@@ -1963,6 +1966,12 @@ EOF
     || fail "open did not record the fallback on the pull request after the primary declined"
   assert_has "$TMP/out" '"reviewFallback":"fallback"'
   grep -q '^pr comment.*@codex review' "$GH_CALLS" || fail "open did not ask the primary reviewer before recording the fallback"
+  # The notice states the gate's rule, never a verdict: it is posted once the
+  # re-run is requested, before that run has evaluated anything (AUT-1636).
+  assert_not_has "$GH_CALLS" 'authored the verdict'
+  assert_has "$GH_CALLS" "when the gate's run evaluates this exact head it reviews it with its own reviewer"
+  awk '/actions\/runs\/77\/rerun/ && !r { r = NR } /^pr comment.*touchstone:review-fallback/ { n = NR } END { exit !(r && n > r) }' "$GH_CALLS" \
+    || fail "contract 3 posted the fallback notice before asking the gate to re-run"
   # Idempotent per head: a re-run sees its own notice and posts nothing.
   : >"$GH_CALLS"
   TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 GH_MODE=primary_quota run_pr_v3 "$TMP/out" open --title 'Declined' --body-file "$TMP/body"
@@ -1987,6 +1996,17 @@ EOF
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewFallback":"pending"'
   assert_not_has "$GH_CALLS" 'touchstone:review-fallback'
+  # A gate run Actions refused reviews nothing, so a quota reply posts no
+  # notice that the gate reviews the head; the refusal is the report (AUT-1610).
+  rm -f "$TMP/state/review-request" "$TMP/state/fallback-announced"
+  touch "$TMP/state/gate-job-refused"
+  TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=1 GH_MODE=primary_quota GH_GATE_CONCLUSION=failure run_pr_v3 "$TMP/out" open --title 'Declined' --body-file "$TMP/body"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'review-gate run 77: Actions refused this job (billing)'
+  assert_has "$TMP/out" 'no fallback notice was posted'
+  assert_not_has "$TMP/out" 'Watch the review-gate check'
+  assert_not_has "$GH_CALLS" 'touchstone:review-fallback'
+  rm -f "$TMP/state/gate-job-refused"
   rm -f "$TMP/state/review-gate" "$TMP/state/gate-reruns" "$TMP/state/review-request" "$TMP/state/fallback-announced" \
     "$TMP/state/behavior-version-next"
 
@@ -2019,7 +2039,7 @@ EOF
       "$TMP/state/gate-fresh-active" "$TMP/state/gate-after-rerun" "$TMP/state/gate-rerun-running" \
       "$TMP/state/review-gate-no-deadline" "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" \
       "$TMP/state/request-edited-at" "$TMP/state/primary-review-stale" "$TMP/state/primary-review-offset" \
-      "$TMP/state/abbrev-resolves-elsewhere"
+      "$TMP/state/abbrev-resolves-elsewhere" "$TMP/state/gate-job-refused"
   }
   # Exactly one re-run per wake and exactly one request per head, counted.
   v4_reruns() { if [ -f "$TMP/state/gate-reruns" ]; then grep -c 'rerun 77' "$TMP/state/gate-reruns" || true; else echo 0; fi; }
@@ -2088,6 +2108,18 @@ EOF
   [ "$(grep -c '^pr comment.*touchstone:review-fallback' "$GH_CALLS" || true)" -eq 1 ] \
     || fail "contract 4 did not record the move to the fallback exactly once"
   [ "$(v4_reruns)" -eq 1 ] || fail "contract 4 re-ran the gate $(v4_reruns) times after a quota notice; expected exactly one"
+  # Posted after the woken run, and claiming no verdict (AUT-1636).
+  awk '/actions\/runs\/77\/rerun/ && !r { r = NR } /^pr comment.*touchstone:review-fallback/ { n = NR } END { exit !(r && n > r) }' "$GH_CALLS" \
+    || fail "contract 4 posted the fallback notice before it woke the gate"
+  assert_not_has "$GH_CALLS" 'authored the verdict'
+  # A woken run Actions refused reviews nothing: no notice (AUT-1610).
+  v4_reset
+  touch "$TMP/state/gate-job-refused"
+  GH_MODE=primary_quota GH_GATE_CONCLUSION=failure run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'review-gate run 77: Actions refused this job (billing)'
+  assert_has "$TMP/out" 'no fallback notice was posted'
+  assert_not_has "$GH_CALLS" 'touchstone:review-fallback'
 
   # A contract-4 run is short and never the evaluator of record: a run still
   # in progress is waited on to completion and then re-run, not reused.
@@ -2229,6 +2261,14 @@ EOF
   assert_has "$TMP/out" 'with an error, so the pinned review-gate reviews it itself'
   assert_has "$TMP/out" "touchstone pr answer 7 --finding <id>"
   [ "$(v4_reruns)" -eq 1 ] || fail "contract 4 re-ran the gate $(v4_reruns) times after an error reply; expected exactly one"
+  # The error records the same notice, once, after the woken run, naming the
+  # error rather than a quota (AUT-1636).
+  [ "$(grep -c '^pr comment.*touchstone:review-fallback' "$GH_CALLS" || true)" -eq 1 ] \
+    || fail "an error reply did not record the fallback notice exactly once"
+  assert_has "$GH_CALLS" 'The primary reviewer answered the latest review request with an error'
+  assert_not_has "$GH_CALLS" 'replied that it is at capacity'
+  awk '/actions\/runs\/77\/rerun/ && !r { r = NR } /^pr comment.*touchstone:review-fallback/ { n = NR } END { exit !(r && n > r) }' "$GH_CALLS" \
+    || fail "contract 4 posted the error's fallback notice before it woke the gate"
   v4_reset
   error_comment
   run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body"
