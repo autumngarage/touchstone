@@ -80,7 +80,8 @@ ok() {
   cat >"$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >>"$GH_CALLS"
+# The fixture's own reads of its pages (GH_UNLOGGED) are not the command's.
+[ -n "${GH_UNLOGGED:-}" ] || printf '%s\n' "$*" >>"$GH_CALLS"
 has() { local needle="$1"; shift; printf '%s\n' "$*" | grep -qF -- "$needle"; }
 serve_rules() {
   # A real effective-rules document through the caller's real jq: the
@@ -188,12 +189,42 @@ fake_after_reads() {
   return 1
 }
 
+# The contract-4 wait's poll clock. Every poll re-reads liveness first, so a
+# primary reply that lands N polls into the wait is one that becomes visible
+# once N liveness reads were made while a review request exists. It counts
+# polls, not which endpoints a poll reads, so the same fixture measures any
+# implementation of the wait (AUT-1638).
+fake_tick() {
+  local counter="$GH_STATE/$1" left
+  [ -f "$counter" ] || return 0
+  left="$(cat "$counter")"
+  [ "$left" -le 0 ] || echo $((left - 1)) >"$counter"
+}
+fake_visible() { [ ! -f "$GH_STATE/$1" ] || [ "$(cat "$GH_STATE/$1")" -le 0 ]; }
+
 fake_comments='[]'
 fake_add_comment() {
   fake_comments="$(printf '%s' "$fake_comments" | jq -c --argjson id "$1" --arg login "$2" --arg at "$3" --arg body "$4" \
     '. + [{id:$id, user:{login:$login}, created_at:$at, updated_at:$at, body:$body}]')"
 }
 
+
+# GitHub refusing a request for the token's rate limit, as gh relays it
+# (AUT-1638): a REST refusal prints GitHub's message with its HTTP status on
+# stderr and the JSON body on stdout; a GraphQL one prints the message alone.
+if [ -n "${GH_RATE_LIMITED:-}" ] && has "$GH_RATE_LIMITED" "$@"; then
+  case "${GH_RATE_LIMIT_KIND:-core}" in
+    secondary) message='You have exceeded a secondary rate limit. Please wait a few minutes before you try again. If you reach out to GitHub Support for help, please include the request ID 0400:1B2C:3D4E.' ;;
+    graphql)
+      printf 'GraphQL: API rate limit exceeded for user ID 1. (RATE_LIMITED)\n' >&2
+      exit 1
+      ;;
+    *) message='API rate limit exceeded for user ID 1. If you reach out to GitHub Support for help, please include the request ID 0400:1B2C:3D4E.' ;;
+  esac
+  jq -cn --arg message "$message" '{message:$message, documentation_url:"https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api", status:"403"}'
+  printf 'gh: %s (HTTP 403)\n' "$message" >&2
+  exit 1
+fi
 
 case "$1 ${2:-}" in
   "auth status")
@@ -312,6 +343,12 @@ case "$1 ${2:-}" in
       fi
     elif has '--json state,headRefOid,baseRefName,baseRefOid' "$@"; then
       # The liveness precondition every GitHub-state wait re-reads each poll.
+      # Read while a review request exists, it is a poll of the contract-4
+      # wait: a primary reply landing N polls in appears on the Nth.
+      if [ -f "$GH_STATE/review-request" ] || [ "${GH_MODE:-ok}" = attest_request_present ]; then
+        fake_tick primary-comment-delay
+        fake_tick primary-review-delay
+      fi
       live_state=OPEN
       live_head="$GH_HEAD"
       live_base="$GH_BASE_REF"
@@ -386,6 +423,14 @@ case "$1 ${2:-}" in
     ;;
   "api user") printf '%s\n' alice ;;
   "api graphql")
+    # The review surface's counts (AUT-1638), taken from the very pages the
+    # REST reads serve, so the two can never disagree.
+    if has 'comments{totalCount}' "$@"; then
+      comment_count="$(GH_UNLOGGED=1 "$0" api --paginate "repos/fixture/issues/7/comments?per_page=100" | jq -s 'add | length')"
+      review_count="$(GH_UNLOGGED=1 "$0" api --paginate "repos/fixture/pulls/7/reviews?per_page=100" | jq -s 'add | length')"
+      printf '%s %s\n' "$comment_count" "$review_count"
+      exit 0
+    fi
     # When the PR body last changed (AUT-1632). By default the last edit is
     # after run 80 started, so run 80 is stale and a reused PR re-runs it.
     if has 'lastEditedAt' "$@"; then
@@ -673,7 +718,7 @@ case "$1 ${2:-}" in
       if [ "${GH_MODE:-ok}" = primary_quota ]; then
         fake_add_comment 101 "$primary" "$request_at" 'You have reached your Codex usage limits for code reviews.'
       fi
-      if [ -f "$GH_STATE/primary-comment" ] && fake_after_reads primary-comment-delay; then
+      if [ -f "$GH_STATE/primary-comment" ] && fake_visible primary-comment-delay; then
         fake_add_comment 102 "$primary" "$request_at" "$(cat "$GH_STATE/primary-comment")"
       fi
       if [ -f "$GH_STATE/fallback-announced" ]; then
@@ -753,7 +798,7 @@ case "$1 ${2:-}" in
       # must never wake the wait, and one submitted after it when a case asks.
       request_at="$(fake_request_at)"
       reviews='[{"id":60,"user":{"login":"chatgpt-codex-connector[bot]"},"state":"COMMENTED","submitted_at":"2026-08-01T00:00:00Z","body":"An earlier head."}]'
-      if [ -f "$GH_STATE/primary-review" ] && fake_after_reads primary-review-delay; then
+      if [ -f "$GH_STATE/primary-review" ] && fake_visible primary-review-delay; then
         submitted_at="$(jq -nr --arg at "$request_at" '($at | fromdateiso8601) + 60 | todate')"
         reviews="$(printf '%s' "$reviews" | jq -c --arg at "$submitted_at" \
           '. + [{id:61, user:{login:"chatgpt-codex-connector[bot]"}, state:"COMMENTED", submitted_at:$at, body:""}]')"
@@ -782,6 +827,21 @@ case "$1 ${2:-}" in
     printf '%s\n' 71
     ;;
   api*)
+    # The free rate-limit read, through the caller's real jq. Only the quota
+    # a case exhausts reads zero; a secondary limit leaves both untouched.
+    if has 'rate_limit' "$@"; then
+      [ ! -f "$GH_STATE/rate-limit-unreadable" ] || { printf 'gh: Bad credentials (HTTP 401)\n' >&2; exit 1; }
+      core_remaining=4321
+      graphql_remaining=4999
+      case "${GH_RATE_LIMIT_KIND:-core}" in
+        core) core_remaining=0 ;;
+        graphql) graphql_remaining=0 ;;
+      esac
+      jq -cn --argjson core "$core_remaining" --argjson graphql "$graphql_remaining" \
+        '{resources:{core:{limit:5000,used:(5000 - $core),remaining:$core,reset:1789086073},graphql:{limit:5000,used:(5000 - $graphql),remaining:$graphql,reset:1789086400}}}' \
+        | jq -r "$(value_after --jq "$@")"
+      exit 0
+    fi
     if has '/check-runs/' "$@" && has '/annotations' "$@"; then
       if [ -f "$GH_STATE/annotations-unreadable" ]; then
         printf 'gh: Not Found (HTTP 404)\n' >&2
@@ -1950,8 +2010,8 @@ EOF
   assert_has "$TMP/out" '"reviewFallback":"primary"'
   [ "$(v4_reruns)" -eq 1 ] || fail "contract 4 re-ran the gate $(v4_reruns) times for one wake; expected exactly one"
   [ "$(v4_requests)" -eq 1 ] || fail "contract 4 posted $(v4_requests) review requests for one head; expected exactly one"
-  [ "$(grep -c 'pulls/7/reviews' "$GH_CALLS" || true)" -ge 3 ] \
-    || fail "contract 4 stopped reading the review surface before the review arrived"
+  [ "$(grep -c 'comments{totalCount}' "$GH_CALLS" || true)" -ge 2 ] \
+    || fail "contract 4 stopped polling the review surface before the review arrived"
   grep -q 'workflows/review-gate.yml?ref=' "$GH_CALLS" \
     || fail "contract 4 did not derive its deadline from the pinned review-gate"
 
@@ -2045,6 +2105,128 @@ EOF
   assert_has "$TMP/out" '"wokeBy":"deadline"'
   [ "$(grep -c '^pr comment' "$GH_CALLS" || true)" -eq 0 ] || fail "await-review posted a comment"
   [ "$(v4_reruns)" -eq 1 ] || fail "await-review re-ran the gate $(v4_reruns) times; expected exactly one"
+
+  # Polling spends the REST quota every agent on the machine shares
+  # (AUT-1638). `sleep` is stubbed to record what the command asks for, so a
+  # schedule is asserted exactly and five minutes of waiting cost nothing.
+  mkdir -p "$TMP/clock-bin"
+  cat >"$TMP/clock-bin/sleep" <<'SLEEP'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >>"$SLEEP_LOG"
+[ "${SLEEP_REAL:-false}" = false ] || exec /bin/sleep "$1"
+SLEEP
+  chmod +x "$TMP/clock-bin/sleep"
+
+  echo "==> a gate follow backs off inside its unchanged deadline (AUT-1638)"
+  # The woken run never finishes. At the default five-second delay the follow
+  # keeps its 60 x 5 s deadline but reads nine times rather than sixty: its
+  # waits double from 5 s to the 60 s cap, the last cut to land on 300 s. The
+  # leading 5 s is the new-attempt wait, which sees the attempt on its second
+  # read.
+  v4_reset
+  echo 999 >"$TMP/state/gate-rerun-running"
+  : >"$TMP/sleeps"
+  PATH="$TMP/clock-bin:$PATH" SLEEP_LOG="$TMP/sleeps" TOUCHSTONE_GATE_RETRY_DELAY=5 TOUCHSTONE_GATE_ATTEMPTS=60 \
+    run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"in_progress","conclusion":null'
+  follow_sleeps="$(paste -sd' ' - <"$TMP/sleeps")"
+  [ "$follow_sleeps" = "5 5 10 20 40 60 60 60 45" ] \
+    || fail "the gate follow did not back off to its deadline: slept '$follow_sleeps', expected '5 5 10 20 40 60 60 60 45'"
+  follow_total="$(tail -n +2 "$TMP/sleeps" | awk '{ total += $1 } END { print total + 0 }')"
+  [ "$follow_total" -eq 300 ] || fail "the gate follow waited ${follow_total}s; its deadline is 60 x 5 = 300s, no more and no less"
+  [ "$(v4_reruns)" -eq 1 ] || fail "the backed-off follow re-ran the gate $(v4_reruns) times; expected exactly one"
+
+  echo "==> a zero follow delay does not busy-loop the review wait (AUT-1636)"
+  # The review wait's interval was three follow delays, so zero at
+  # TOUCHSTONE_GATE_RETRY_DELAY=0. It is floored at a second: with the request
+  # fresh and a two-second bound, the wait sleeps a second at a time and ends
+  # on the bound. Real sleeps, so the case costs two seconds.
+  v4_reset
+  date -u +%Y-%m-%dT%H:%M:%SZ >"$TMP/state/request-at"
+  : >"$TMP/sleeps"
+  PATH="$TMP/clock-bin:$PATH" SLEEP_LOG="$TMP/sleeps" SLEEP_REAL=true TOUCHSTONE_REVIEW_WAIT_MAX_SECONDS=2 \
+    run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"wokeBy":"wait-bound"'
+  if grep -qvx '[1-9][0-9]*' "$TMP/sleeps"; then
+    fail "the review wait slept under a second between polls at a zero follow delay: $(paste -sd' ' - <"$TMP/sleeps")"
+  fi
+  [ "$(wc -l <"$TMP/sleeps" | tr -d ' ')" -le 3 ] \
+    || fail "the review wait slept $(wc -l <"$TMP/sleeps" | tr -d ' ') times inside a two-second bound"
+
+  echo "==> the review wait's REST reads do not grow with its polls (AUT-1638)"
+  # One GraphQL count per poll says whether the review surface changed, and
+  # the REST observation runs on the first poll and when a count moves. A
+  # review landing two polls in and one landing eight polls in therefore cost
+  # the same REST reads. The counts printed here are the PR's measurement.
+  v4_rest_calls() { grep '^api ' "$GH_CALLS" | grep -vc '^api graphql' || true; }
+  v4_rest_for_review_after() {
+    v4_reset
+    date -u +%Y-%m-%dT%H:%M:%SZ >"$TMP/state/request-at"
+    touch "$TMP/state/primary-review"
+    echo "$1" >"$TMP/state/primary-review-delay"
+    : >"$TMP/sleeps"
+    PATH="$TMP/clock-bin:$PATH" SLEEP_LOG="$TMP/sleeps" TOUCHSTONE_REVIEW_WAIT_MAX_SECONDS=30 \
+      run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+    assert_rc "$RUN_RC" 0
+    assert_has "$TMP/out" '"wokeBy":"primary-review"'
+    V4_REST_CALLS="$(v4_rest_calls)"
+    echo "  REST calls for a contract-4 open whose review lands $1 polls in: $V4_REST_CALLS ($(grep -c '^api graphql' "$GH_CALLS" || true) GraphQL api calls)"
+  }
+  v4_rest_for_review_after 2
+  rest_review_after_2="$V4_REST_CALLS"
+  v4_rest_for_review_after 8
+  rest_review_after_8="$V4_REST_CALLS"
+  [ "$rest_review_after_2" -eq "$rest_review_after_8" ] \
+    || fail "the review wait's REST reads grew with its polls: $rest_review_after_2 for a review two polls in, $rest_review_after_8 for one eight polls in"
+
+  echo "==> a rate-limited GitHub request stops the command and names the reset; it is never retried (AUT-1638)"
+  # Every session on the machine shares one token's quota, and a retry spends
+  # it again the moment it resets. The command stops, reads the reset from the
+  # free rate_limit endpoint, and says when to re-run; the refusal is no
+  # verdict on anything.
+  v4_reset
+  touch "$TMP/state/pr-exists"
+  GH_RATE_LIMITED='rules/branches/' run_pr_v4 "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" '"schema":"touchstone.pr/v2","operation":"status","status":"failed"'
+  assert_has "$TMP/out" "GitHub's REST rate limit for this token is exhausted until 2026-09-11T00:21:13Z; re-run the same command after that"
+  assert_has "$TMP/out" '"rateLimit":{"limit":"core","rerunAfter":"2026-09-11T00:21:13Z"}'
+  [ "$(grep -c 'rules/branches/' "$GH_CALLS" || true)" -eq 1 ] \
+    || fail "a rate-limited read was retried: $(grep -c 'rules/branches/' "$GH_CALLS" || true) requests"
+  assert_has "$GH_CALLS" 'rate_limit'
+  # A secondary limit names no reset: the command still stops at once.
+  GH_RATE_LIMITED='rules/branches/' GH_RATE_LIMIT_KIND=secondary run_pr_v4 "$TMP/out" status 7
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" "GitHub's secondary rate limit refused this token's request; re-run the same command after"
+  [ "$(grep -c 'rules/branches/' "$GH_CALLS" || true)" -eq 1 ] \
+    || fail "a read refused by the secondary limit was retried: $(grep -c 'rules/branches/' "$GH_CALLS" || true) requests"
+  # GraphQL has its own quota, and the reset named is that one's.
+  GH_RATE_LIMITED='pr view' GH_RATE_LIMIT_KIND=graphql run_pr_v4 "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" "GitHub's GraphQL rate limit for this token is exhausted until 2026-09-11T00:26:40Z"
+  assert_has "$TMP/out" '"rateLimit":{"limit":"graphql","rerunAfter":"2026-09-11T00:26:40Z"}'
+  [ "$(grep -c '^pr view' "$GH_CALLS" || true)" -eq 1 ] \
+    || fail "a rate-limited GraphQL read was retried: $(grep -c '^pr view' "$GH_CALLS" || true) requests"
+  # An unreadable rate_limit still stops the command; it only cannot say when.
+  touch "$TMP/state/rate-limit-unreadable"
+  GH_RATE_LIMITED='rules/branches/' run_pr_v4 "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'gh api rate_limit could not say until when'
+  assert_has "$TMP/out" '"rateLimit":{"limit":"unknown","rerunAfter":'
+  rm -f "$TMP/state/rate-limit-unreadable"
+  # A refused mutation stops open too, naming the PR it already holds, and
+  # reports no gate verdict: the re-run was never made.
+  v4_reset
+  GH_RATE_LIMITED='actions/runs/77/rerun' run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" "GitHub's REST rate limit for this token is exhausted until 2026-09-11T00:21:13Z"
+  assert_has "$TMP/out" '"pullRequest":7'
+  assert_not_has "$TMP/out" '"conclusion"'
+  [ "$(grep -c 'actions/runs/77/rerun' "$GH_CALLS" || true)" -eq 1 ] \
+    || fail "a rate-limited re-run was retried: $(grep -c 'actions/runs/77/rerun' "$GH_CALLS" || true) requests"
+  [ "$(v4_reruns)" -eq 0 ] || fail "a rate-limited re-run was recorded as made"
 
   # Contract 3 is unchanged: no local wait, no review read, no deadline read,
   # and the same result document as before. A repository's gate stays
@@ -4055,7 +4237,8 @@ STATUS_STUB
     || fail "the long-thread fixture does not depend on the newest comment: '$ROUND_OUT_TRUNCATED'"
 
   echo "==> every GitHub-state wait re-checks liveness on each poll (AUT-1179)"
-  # A loop that sleeps on GATE_RETRY_DELAY is waiting for GitHub state to
+  # A loop that sleeps on GATE_RETRY_DELAY, or on the FOLLOW_WAIT backoff
+  # derived from it (AUT-1638), is waiting for GitHub state to
   # change. Between its "while :; do" and that sleep it must call the
   # liveness precondition, so a PR that merged, closed, or moved its head
   # ends the wait on the next poll instead of exhausting the attempt budget.
@@ -4067,7 +4250,7 @@ STATUS_STUB
     found="$(awk -v file="$wait_script" '
       /while :; do/ { in_loop = 1; live = 0; loop_line = NR }
       /assert_wait_liveness|require_open_pr_head/ { if (in_loop) live = 1 }
-      /sleep "\$GATE_RETRY_DELAY"/ { sleeps++; if (in_loop && !live) print file ":" loop_line " waits on GitHub state without a liveness check" }
+      /sleep "\$(GATE_RETRY_DELAY|FOLLOW_WAIT)"/ { sleeps++; if (in_loop && !live) print file ":" loop_line " waits on GitHub state without a liveness check" }
       /^[[:space:]]*done([[:space:]]|$)/ { in_loop = 0 }
       END { print "SLEEPS=" sleeps }' "$TOUCHSTONE_ROOT/scripts/$wait_script")"
     wait_sleeps=$((wait_sleeps + $(printf '%s\n' "$found" | sed -n 's/^SLEEPS=//p')))
@@ -4077,6 +4260,29 @@ STATUS_STUB
   [ -z "$wait_violations" ] && ok "every GitHub-state wait re-checks liveness on each poll" \
     || fail "GitHub-state wait without a liveness check:
   $wait_violations"
+
+  echo "==> no GitHub request runs inside a command substitution, where a rate limit could not stop the command (AUT-1638)"
+  # capture_command stops the command on a rate limit. Inside $(...) or <(...)
+  # that exit ends only a subshell, and in --json mode the error document
+  # becomes the captured value. Every function that reaches a request is
+  # found transitively, and none may be called inside one.
+  pr_script="$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh"
+  requesters="read_with_retry capture_command"
+  while :; do
+    requester_pattern="$(printf '%s\n' $requesters | paste -sd'|' -)"
+    callers="$(awk -v pattern="(^|[^a-zA-Z0-9_])($requester_pattern)([^a-zA-Z0-9_]|\$)" '
+      /^[a-z_]+\(\) \{/ { name = $1; sub(/\(\)$/, "", name); next }
+      /^\}/ { name = ""; next }
+      name != "" && $0 !~ /^[[:space:]]*#/ && $0 ~ pattern { print name }
+    ' "$pr_script")"
+    next_requesters="$(printf '%s\n' $requesters $callers | sort -u | paste -sd' ' -)"
+    [ "$next_requesters" != "$(printf '%s\n' $requesters | sort -u | paste -sd' ' -)" ] || break
+    requesters="$next_requesters"
+  done
+  substituted="$(grep -nE "[\$<]\\((${requester_pattern})([^a-zA-Z0-9_]|\$)" "$pr_script" | grep -vE '^[0-9]+:[[:space:]]*#' || true)"
+  [ -z "$substituted" ] && ok "no function that reaches a GitHub request runs inside a command substitution" \
+    || fail "a GitHub request runs inside a command substitution, where a rate limit cannot stop the command:
+  $substituted"
 
   echo "==> the queue-history read includes every event that invalidates an eviction (AUT-1179)"
   # The fake serves the post-jq event list, so it cannot prove which timeline
