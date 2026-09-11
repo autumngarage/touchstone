@@ -26,6 +26,7 @@ To hold those lines, Touchstone does three things and nothing else:
 1. **Constrain** — adopted GitHub policy blocks unsafe delivery; before adoption, the driver follows the same delivery contract and treats missing enforcement as a tracked gap.
 2. **Make state legible** — what happened lives in git, PRs, and issues, verifiable without trusting your narration.
 3. **Carry the contract** — the same rules reach every project and every agent, automatically.
+   - **Every agent on a machine shares one GitHub REST quota.** Poll PR and check state no faster than every 2 min, GraphQL first; run `gh api rate_limit` before bulk reads; never retry-loop on a 403 rate limit — wait for the reset.
 
 Before adding anything here, name which of the three it serves; if you cannot, it does not belong. "Is it useful?" is not the test: does it constrain the agent, or merely serve it? Automating what you can already do (retrying a push, recovering a moved base) belongs in the project, not here: you are the recovery mechanism.
 
