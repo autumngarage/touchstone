@@ -202,6 +202,25 @@ graphql_with_retry() {
   done
 }
 
+# Which behavior GitHub's effective, exact pinned review-gate implements,
+# asked of the shared PR observer: local policy bytes alone are rollout intent.
+# A failed read fails the answer after what it already recorded, and says so.
+# It never guesses: each contract refreshes the gate differently, and the
+# behavior-v1 guess this replaced re-ran a contract-4 gate at once -- spending
+# its one wake before the reviewer was asked for the verdict -- while the
+# answer reported success (AUT-1636).
+read_gate_behavior() {
+  local recorded="$1" status_rc=0 reason=""
+  PR_STATUS="$(bash "$TOOL_ROOT/scripts/touchstone-pr.sh" status "$PR_NUMBER" --json)" || status_rc=$?
+  if [ "$status_rc" -ne 0 ]; then
+    # status --json reports its own failure as a document on stdout.
+    reason="$(printf '%s' "$PR_STATUS" | jq -r '[.reason, .remedy] | map(select(type == "string" and . != "")) | join(" ")' 2>/dev/null)" || reason=""
+    fail "$recorded, but which review-gate behavior GitHub enforces could not be read, so no review-gate re-run or review request was made: touchstone pr status $PR_NUMBER exited $status_rc${reason:+ ($reason)}. Re-run this command once that read succeeds; it records nothing twice."
+  fi
+  GATE_BEHAVIOR_VERSION="$(printf '%s' "$PR_STATUS" | jq -er '.reviewGateBehaviorContractVersion // 1')" \
+    || fail "effective review-gate status reported an invalid behavior contract."
+}
+
 # All thread scans paginate: a PR can carry more than one page of review
 # threads, and a fixed-size query would silently ignore later pages —
 # --all-resolved-check would pass with unresolved threads remaining.
@@ -338,7 +357,10 @@ $FINDING_MARKER"
   fi
   # The gate reads the body on its next run, so ask for one: the latest
   # review-gate run for this head is re-run when it is complete, and left
-  # alone when it is still evaluating (it reads the body when it decides).
+  # alone when it is still evaluating (it reads the body when it decides) --
+  # except under contract 4, whose run evaluates once and may have read the
+  # body before this answer: that run is followed to completion and re-run
+  # once, by the same wake `open` and the attest request use (AUT-1636).
   GATE_ROW="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/actions/runs?head_sha=$HEAD_SHA&per_page=30" \
     --jq '[.workflow_runs[] | select(.name == "review-gate")] | sort_by(.run_number) | last | if . == null then "" else [.id, .status] | @tsv end')" \
     || fail "the answer is recorded, but the review-gate runs for $HEAD_SHA could not be listed: $GATE_ROW"
@@ -350,7 +372,16 @@ $FINDING_MARKER"
       || fail "the answer is recorded, but review-gate run $GATE_RUN could not be re-run; re-run it from the Actions tab."
     echo "==> Review gate re-run requested (run $GATE_RUN)."
   else
-    echo "==> Review gate run $GATE_RUN is still evaluating this head; it reads the answer when it decides."
+    # Only a run still evaluating needs the contract: a completed run is
+    # re-run above under every one.
+    read_gate_behavior "the answer is recorded"
+    if [ "$GATE_BEHAVIOR_VERSION" = 4 ]; then
+      echo "==> Behavior contract 4: review-gate run $GATE_RUN is still evaluating $HEAD_SHA and decides once, possibly from the body before this answer; waiting for it to finish, then re-running it once."
+      bash "$TOOL_ROOT/scripts/touchstone-pr.sh" wake-review-gate "$PR_NUMBER" --head "$HEAD_SHA" \
+        || fail "the answer is recorded, but following review-gate run $GATE_RUN or re-running it failed (above); re-run this command to wait again -- it records the answer once."
+    else
+      echo "==> Review gate run $GATE_RUN is still evaluating this head; it reads the answer when it decides."
+    fi
   fi
   echo "    then: touchstone pr merge $PR_NUMBER --head $HEAD_SHA"
   exit 0
@@ -452,18 +483,13 @@ LIVE_HEAD="$(gh_read pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" \
 # authorize the behavior-v2 early return.
 GATE_BEHAVIOR_VERSION=1
 BOUND_GATE_RUN_ID=""
-if PR_STATUS="$(bash "$TOOL_ROOT/scripts/touchstone-pr.sh" status "$PR_NUMBER" --json)"; then
-  GATE_BEHAVIOR_VERSION="$(printf '%s' "$PR_STATUS" | jq -er '.reviewGateBehaviorContractVersion // 1')" \
-    || fail "effective review-gate status reported an invalid behavior contract."
-  if [ "$GATE_BEHAVIOR_VERSION" = 2 ] || [ "$GATE_BEHAVIOR_VERSION" = 3 ]; then
-    BOUND_GATE_RUN_ID="$(printf '%s' "$PR_STATUS" | jq -r \
-      '.reviewGateCheck | select(.present == true and ((.unbound // false) | not)) | .workflowRunId // empty')"
-    if [ -z "$BOUND_GATE_RUN_ID" ]; then
-      echo "WARNING: behavior v2 has no verified policy-bound review-gate run; conservatively refreshing through the behavior-v1 path." >&2
-    fi
+read_gate_behavior "the reply and resolution are recorded"
+if [ "$GATE_BEHAVIOR_VERSION" = 2 ] || [ "$GATE_BEHAVIOR_VERSION" = 3 ]; then
+  BOUND_GATE_RUN_ID="$(printf '%s' "$PR_STATUS" | jq -r \
+    '.reviewGateCheck | select(.present == true and ((.unbound // false) | not)) | .workflowRunId // empty')"
+  if [ -z "$BOUND_GATE_RUN_ID" ]; then
+    echo "WARNING: behavior v2 has no verified policy-bound review-gate run; conservatively refreshing through the behavior-v1 path." >&2
   fi
-else
-  echo "WARNING: could not verify behavior v2; conservatively refreshing the gate through the behavior-v1 path." >&2
 fi
 ROUND_REQUEST_PRESENT=false
 if [ "$GATE_BEHAVIOR_VERSION" = 3 ] || [ "$GATE_BEHAVIOR_VERSION" = 4 ]; then

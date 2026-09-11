@@ -31,6 +31,20 @@ FOLLOW_BACKOFF_CAP_SECONDS=60
 # first; the fallback is recorded only after the primary has declined.
 PRIMARY_REVIEWER_LOGIN="${TOUCHSTONE_PRIMARY_REVIEWER_LOGIN:-chatgpt-codex-connector[bot]}"
 PRIMARY_DECLINED_PATTERN='reached your .* usage limits|usage limits for code reviews|Review limit reached|reached its usage spending cap'
+# The primary's explicit error reply, which the pinned contract-4 gate reads as
+# "cannot answer" and hands to its fallback reviewer (touchstone#1190:
+# "Codex Review: Something went wrong. Try again later ...", naming a head it
+# said did not exist). Mirrored, not invented: the gate's copy is `error_reply`
+# in provider_unavailable(), between the touchstone:provider-state markers of
+# autumngarage/touchstone-workflows .github/workflows/review-gate.yml, whose
+# `quota_notice` there is PRIMARY_DECLINED_PATTERN above. The gate counts it
+# only when it is the reviewer's latest utterance and follows the head's
+# latest request; the contract-4 wait applies the same rule.
+PRIMARY_ERROR_REPLY_PATTERN='^[[:space:]]*Codex Review:[[:space:]]*Something went wrong'
+# A security-review quota notice, never review evidence
+# (`provisional_quota_notice` in .github/review-gate/evaluate-v3.jq). It still
+# ends the contract-4 wait, as docs/pr-cli-contract.md promises.
+PRIMARY_PROVISIONAL_QUOTA_PATTERN='^[[:space:]]*Security review[[:space:]]+(usage limit|quota)([[:space:]:-]|$)'
 # GitHub's annotation on a job it refused for the account's Actions billing,
 # read verbatim from hesperus run 34491554998 and vesper run 34492905104:
 # "The job was not started because recent account payments have failed or
@@ -443,7 +457,7 @@ require_option_value() {
 }
 
 case "$OPERATION" in
-  status | merge | await-review)
+  status | merge | await-review | wake-review-gate)
     [ "$#" -ge 2 ] || usage
     PR_NUMBER="$2"
     case "$PR_NUMBER" in "" | *[!0-9]*) usage ;; esac
@@ -511,9 +525,9 @@ case "$OPERATION" in
     [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_BRANCH" ] \
       || fail_input "merge received an option for another operation" "Use only --head and --unguarded."
     ;;
-  await-review)
+  await-review | wake-review-gate)
     [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_BRANCH" ] && [ -n "$EXPECTED_HEAD" ] \
-      || fail_input "await-review takes only --head SHA" "Pass the exact head whose review request was posted."
+      || fail_input "$OPERATION takes only --head SHA" "Pass the exact head the answer was recorded against."
     ;;
   policy-status)
     [ -z "$TITLE$BODY_FILE$EXPECTED_HEAD$EXPECTED_BRANCH" ] && [ "$UNGUARDED" = false ] \
@@ -595,7 +609,7 @@ capture_command gh auth status --hostname "$REPO_HOST" \
 # acting on the wrong worktree used to be inferring it from the PR URL.
 BODY_APPLIED=""
 emit_open_result() {
-  local state="$1" number="$2" url="$3" head="$4" request="$5" branch="$6"
+  local state="$1" number="$2" url="$3" head="$4" request="$5" branch="$6" review_cause
   # On a reused PR, "body" says whether the title/body given now were applied
   # (updated) or already matched (unchanged); a created PR carries the body by
   # construction.
@@ -631,7 +645,9 @@ emit_open_result() {
       "$number" "$state" "$url" "$branch" "$head" "$request"
     case "$REVIEW_FALLBACK_STATE" in
       fallback)
-        printf '  review: the pinned review-gate reviews this head itself — complete review evidence, not a degraded mode (the primary reviewer is at capacity).\n'
+        review_cause="the primary reviewer is at capacity"
+        [ "$REVIEW_WAIT_WOKE_BY" != primary-error ] || review_cause="the primary reviewer answered with an error"
+        printf '  review: the pinned review-gate reviews this head itself — complete review evidence, not a degraded mode (%s).\n' "$review_cause"
         printf '  answer a finding: touchstone pr answer %s --finding <id> --body-file <reply> --no-code-change (refute) or --fix-commit <sha> (fixed)\n' "$number"
         ;;
       primary) printf '  review: primary reviewer replied; the review-gate decides.\n' ;;
@@ -2175,6 +2191,15 @@ announce_review_fallback() {
     fi
     if [ "$replied" = true ]; then
       [ -z "$evidence_seconds" ] || REVIEW_WAIT_WOKE_BY="primary-$PRIMARY_REPLY_KIND"
+      # The gate hands an explicit error reply to its fallback reviewer, so
+      # the driver hears that here, with the remedy. The pull-request notice
+      # below names a quota decline, so it stays the decline's.
+      if [ -n "$evidence_seconds" ] && [ "$PRIMARY_REPLY_KIND" = error ]; then
+        REVIEW_FALLBACK_STATE=fallback
+        printf 'The primary reviewer answered the latest request for %s with an error, so the pinned review-gate reviews it itself: complete review evidence, not a degraded mode. Watch the review-gate check.\n' "$head" >&2
+        printf 'Its findings are in the review-gate run log, each with an id. Answer one with: touchstone pr answer %s --finding <id> --body-file <reply> --no-code-change (refute) or --fix-commit <sha> (fixed).\n' "$number" >&2
+        return 0
+      fi
       if printf '%s' "$primary_reply" | grep -qiE "$PRIMARY_DECLINED_PATTERN"; then
         REVIEW_FALLBACK_STATE=fallback
         if [ -n "$evidence_seconds" ]; then
@@ -2234,72 +2259,127 @@ announce_review_fallback() {
   done
 }
 
-# One observation for the contract-4 wait. The anchor is the latest review
-# request naming this head in a Touchstone marker: the requests the pinned
-# evaluator's `requestedAt` counts (touchstone#1192), from every author, so
-# this clock can only start at or after the gate's. It starts at the newest
-# `updated_at` among them -- a request edited later is clocked from the edit,
-# the conservative reading of a case the gate may decide either way. The
-# primary's reply is its next issue comment after the anchor, other than its
-# status dashboard, or else a review it submitted after the anchor.
+# One observation for the contract-4 wait. It decides only when to wake the
+# gate and how to label the wake; the gate's re-run still decides the verdict.
+#
+# The anchor is the latest review request naming this head in a Touchstone
+# marker: the requests the pinned evaluator's `requestedAt` counts
+# (touchstone#1192), from every author. One instant is that request's time,
+# both its evidence clock and the point every reply must follow: the latest
+# edit, when a request was edited after it was created (evaluate-v3.jq's
+# request_at). Clocked from the edit but anchored on the creation, a review
+# posted between the two woke the wait for a request made after it (AUT-1636).
+#
+# A reply wakes the wait only when it can change what the re-run decides
+# (AUT-1636). A formal review is one when GitHub bound it to this head
+# (`commit_id`); a comment when the commit it says it reviewed is this head --
+# a full SHA, or an abbreviation GitHub resolves to the head, as the gate
+# resolves it. A reply to an earlier head that lands late, formal or not, used
+# to wake the wait and spend its one re-run before this head's review arrived.
+# Quota and decline notices wake it as before, and so does an explicit error
+# reply when the gate would read it as "cannot answer" (PRIMARY_ERROR_REPLY_
+# PATTERN), which is labelled `error` because the gate's fallback answers it.
+# The status dashboard is never a reply.
 PRIMARY_REPLY_BODY=""
 PRIMARY_REPLY_KIND=""
 REVIEW_FALLBACK_RECORDED=false
 REVIEW_REQUEST_CLOCK_EPOCH=0
 read_primary_reply_to_head_request() {
-  local number="$1" head="$2" marker="$3" observation anchor_at
+  local number="$1" head="$2" marker="$3" head_lc comments reviews observation wakes wake kind abbrev
   PRIMARY_REPLY_BODY=""
   PRIMARY_REPLY_KIND=""
+  head_lc="$(printf '%s' "$head" | tr 'A-F' 'a-f')"
   read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$number/comments?per_page=100" \
     || fail_operation "could not read the review request and the primary reviewer's reply on PR #$number: $READ_OUTPUT" "Retry after GitHub recovers."
-  observation="$(printf '%s\n' "$READ_OUTPUT" | jq -sce \
-    --arg head "$(printf '%s' "$head" | tr 'A-F' 'a-f')" --arg primary "$PRIMARY_REVIEWER_LOGIN" \
-    --arg dashboard "$PRIMARY_DASHBOARD_MARKER" --arg marker "$marker" '
-      def head_request:
-        ((.body // "") | test("^[[:space:]]*@codex[[:space:]]+review([[:space:]]|$)"; "i"))
-        and ((.body // "") | ascii_downcase
-          | test("<!--[[:space:]]*touchstone:[a-z-]+[[:space:]]+head=" + $head + "([[:space:]]|-->)"));
+  comments="$(printf '%s\n' "$READ_OUTPUT" | jq -sce '
       if length == 0 or any(.[]; type != "array") then error("expected issue-comment arrays") else [.[][]] end
       | if any(.[]; (.id | type) != "number" or (.created_at | type) != "string") then
           error("an issue comment has no id or creation time")
-        else . end
-      | . as $comments
-      | [$comments[] | select(head_request)] as $requests
-      | if ($requests | length) == 0 then {anchorAt: null}
-        else ($requests | max_by(.id)) as $anchor
-          | {
-              anchorAt: $anchor.created_at,
-              clock: ([$requests[] | (.updated_at // .created_at) | fromdateiso8601] | max),
-              fallbackRecorded: any($comments[]; (.body // "") | contains($marker)),
-              reply: ([$comments[] | select((.user.login // "") == $primary and .id > $anchor.id
-                  and ((.body // "") | contains($dashboard) | not))]
-                | min_by(.id) | if . == null then null else {body: (.body // "")} end)
-            }
-        end')" \
+        else . end')" \
     || fail_operation "GitHub returned malformed issue comments for PR #$number" "Retry after GitHub returns complete comment pages."
-  anchor_at="$(printf '%s' "$observation" | jq -r '.anchorAt // ""')"
-  [ -n "$anchor_at" ] \
-    || fail_operation "no review request naming $head is visible on PR #$number, so the gate has no request whose evidence window it can clock" \
-      "Run touchstone pr open for this head: it posts or reuses the exact-head request."
-  REVIEW_REQUEST_CLOCK_EPOCH="$(printf '%s' "$observation" | jq -r '.clock | floor')"
-  REVIEW_FALLBACK_RECORDED="$(printf '%s' "$observation" | jq -r '.fallbackRecorded')"
-  if [ "$(printf '%s' "$observation" | jq -r '.reply != null')" = true ]; then
-    PRIMARY_REPLY_KIND=comment
-    PRIMARY_REPLY_BODY="$(printf '%s' "$observation" | jq -r '.reply.body')"
-    return 0
-  fi
   read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/pulls/$number/reviews?per_page=100" \
     || fail_operation "could not read the primary reviewer's reviews on PR #$number: $READ_OUTPUT" "Retry after GitHub recovers."
-  observation="$(printf '%s\n' "$READ_OUTPUT" | jq -sce --arg primary "$PRIMARY_REVIEWER_LOGIN" --arg after "$anchor_at" '
-      if length == 0 or any(.[]; type != "array") then error("expected review arrays") else [.[][]] end
-      | [.[] | select((.user.login // "") == $primary and ((.submitted_at // "") > $after))]
-      | min_by(.submitted_at)
-      | {review: (if . == null then null else {body: (.body // "")} end)}')" \
+  reviews="$(printf '%s\n' "$READ_OUTPUT" | jq -sce '
+      if length == 0 or any(.[]; type != "array") then error("expected review arrays") else [.[][]] end')" \
     || fail_operation "GitHub returned malformed reviews for PR #$number" "Retry after GitHub returns complete review pages."
-  if [ "$(printf '%s' "$observation" | jq -r '.review != null')" = true ]; then
-    PRIMARY_REPLY_KIND=review
-    PRIMARY_REPLY_BODY="$(printf '%s' "$observation" | jq -r '.review.body')"
+  observation="$(printf '%s\n%s\n' "$comments" "$reviews" | jq -sce \
+    --arg head "$head_lc" --arg primary "$PRIMARY_REVIEWER_LOGIN" \
+    --arg dashboard "$PRIMARY_DASHBOARD_MARKER" --arg marker "$marker" \
+    --arg declined "$PRIMARY_DECLINED_PATTERN" --arg provisional "$PRIMARY_PROVISIONAL_QUOTA_PATTERN" \
+    --arg error_reply "$PRIMARY_ERROR_REPLY_PATTERN" '
+      def body: .body // "";
+      def by_primary: (.user.login // "") == $primary;
+      def head_request:
+        (body | test("^[[:space:]]*@codex[[:space:]]+review([[:space:]]|$)"; "i"))
+        and (body | ascii_downcase
+          | test("<!--[[:space:]]*touchstone:[a-z-]+[[:space:]]+head=" + $head + "([[:space:]]|-->)"));
+      # evaluate-v3.jq request_at: a request exists from its latest edit.
+      def request_at: .created_at as $created | (.updated_at // $created) as $updated
+        | if $updated > $created then $updated else $created end;
+      # evaluate-v3.jq reviewed_abbrev.
+      def reviewed_abbrev:
+        body | (capture("Reviewed commit:[*]*[[:space:]]*`(?<sha>[0-9a-fA-F]{7,40})`")? // {sha: ""})
+        | .sha | ascii_downcase;
+      # The time the gate orders reviewer utterances by (provider_unavailable).
+      def utterance_at: .created_at // .submitted_at // .updated_at // "";
+      .[0] as $comments | .[1] as $reviews
+      | [$comments[] | select(head_request)] as $requests
+      | if ($requests | length) == 0 then {anchor: null}
+        else ([$requests[] | request_at | fromdateiso8601] | max) as $anchor
+          | ([($comments[], $reviews[]) | select(by_primary and utterance_at != "")] | sort_by(utterance_at) | last) as $latest
+          | {
+              anchor: $anchor,
+              fallbackRecorded: any($comments[]; body | contains($marker)),
+              error: (if $latest != null and ($latest | body | test($error_reply; "i"))
+                  and ($latest | utterance_at | fromdateiso8601) > $anchor
+                then {body: ($latest | body)} else null end),
+              wakes: ([
+                  ($comments[]
+                    | select(by_primary and (.created_at | fromdateiso8601) > $anchor and (body | contains($dashboard) | not))
+                    | reviewed_abbrev as $abbrev
+                    | (if (body | test($declined; "i")) or (body | test($provisional; "i")) or $abbrev == $head then "comment"
+                       elif $abbrev != "" and ($head | startswith($abbrev)) then "candidate"
+                       else empty end) as $kind
+                    | {kind: $kind, abbrev: $abbrev, at: (.created_at | fromdateiso8601), id, body: body}),
+                  ($reviews[]
+                    | select(by_primary and (.submitted_at // "") != ""
+                        and (.submitted_at | fromdateiso8601) > $anchor
+                        and ((.commit_id // "") | ascii_downcase) == $head)
+                    | {kind: "review", abbrev: "", at: (.submitted_at | fromdateiso8601), id, body: body})
+                ] | sort_by(.at, .id))
+            }
+        end')" \
+    || fail_operation "GitHub returned malformed issue comments or reviews for PR #$number" "Retry after GitHub returns complete comment and review pages."
+  [ "$(printf '%s' "$observation" | jq -r '.anchor != null')" = true ] \
+    || fail_operation "no review request naming $head is visible on PR #$number, so the gate has no request whose evidence window it can clock" \
+      "Run touchstone pr open for this head: it posts or reuses the exact-head request."
+  REVIEW_REQUEST_CLOCK_EPOCH="$(printf '%s' "$observation" | jq -r '.anchor | floor')"
+  REVIEW_FALLBACK_RECORDED="$(printf '%s' "$observation" | jq -r '.fallbackRecorded')"
+  if [ "$(printf '%s' "$observation" | jq -r '.error != null')" = true ]; then
+    PRIMARY_REPLY_KIND=error
+    PRIMARY_REPLY_BODY="$(printf '%s' "$observation" | jq -r '.error.body')"
+    return 0
   fi
+  wakes="$(printf '%s' "$observation" | jq -c '.wakes[]')"
+  while IFS= read -r wake; do
+    [ -n "$wake" ] || continue
+    kind="$(printf '%s' "$wake" | jq -r '.kind')"
+    if [ "$kind" = candidate ]; then
+      # An abbreviation is a candidate, never a binding: only GitHub's
+      # resolution of it to the head makes it this head's review.
+      abbrev="$(printf '%s' "$wake" | jq -r '.abbrev')"
+      if ! read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/commits/$abbrev" --jq '.sha'; then
+        printf 'The primary reviewer named commit %s, a prefix of %s, and GitHub did not resolve it (%s); the wait does not read it as this head'\''s review, and the gate resolves it itself.\n' \
+          "$abbrev" "$head" "$READ_OUTPUT" >&2
+        continue
+      fi
+      [ "$(printf '%s' "$READ_OUTPUT" | tr 'A-F' 'a-f')" = "$head_lc" ] || continue
+      kind=comment
+    fi
+    PRIMARY_REPLY_KIND="$kind"
+    PRIMARY_REPLY_BODY="$(printf '%s' "$wake" | jq -r '.body')"
+    return 0
+  done <<<"$wakes"
 }
 
 # How many issue comments and reviews the pull request carries, in one GraphQL
@@ -2426,9 +2506,17 @@ await_review_then_wake_gate() {
 }
 
 # The contract-4 wait for a request another step posted: `answer`'s attest
-# request. It is `open`'s own wait-and-wake, reached from respond-review.sh
-# the way `status` is, so the two flows share one code path rather than two
-# polling loops. It posts nothing: never a request, never a second re-run.
+# request (await-review). It is `open`'s own wait-and-wake, reached from
+# respond-review.sh the way `status` is, so the two flows share one code path
+# rather than two polling loops. It posts nothing: never a request, never a
+# second re-run.
+#
+# wake-review-gate is the same wake without the wait, for an answer to a
+# finding the gate reported itself: that answer asks the reviewer nothing, so
+# there is no reply to wait for. What it needs is the wake's own first step: a
+# contract-4 run still in progress may have read the pull request body before
+# the answer landed and evaluates once, so it is followed to completion and
+# then re-run, never left to decide without the answer (AUT-1636).
 await_review() {
   local number state url head head_repo base base_sha merge_state draft
   read_pr_row
@@ -2446,16 +2534,22 @@ await_review() {
     || fail_input "the effective review-gate on $base does not implement gate behavior contract 4, so it is not woken by a local wait" \
       "Only a contract-4 gate evaluates once and needs waking."
   verify_live_coordinates "$number" "$head" "$base" "$base_sha"
-  await_review_then_wake_gate "$number" "$head" "$base" "$base_sha"
+  if [ "$OPERATION" = await-review ]; then
+    await_review_then_wake_gate "$number" "$head" "$base" "$base_sha"
+  else
+    wake_review_gate_once "$number" "$head" "$base" "$base_sha"
+  fi
   verify_live_coordinates "$number" "$head" "$base" "$base_sha"
   [ -z "$OPEN_ACTIONS_REFUSALS" ] \
     || fail_operation "Actions refused the review-gate for PR #$number at $head, so no required check can pass. $OPEN_ACTIONS_REFUSALS" \
       "$(actions_refusal_remedy)"
   if [ "$JSON_MODE" = true ]; then
-    printf '{"schema":"%s","operation":"await-review","status":"woken","pullRequest":%s,"head":' "$OUTPUT_SCHEMA" "$number"
+    printf '{"schema":"%s","operation":"%s","status":"woken","pullRequest":%s,"head":' "$OUTPUT_SCHEMA" "$OPERATION" "$number"
     json_string "$head"
-    printf ',"reviewFallback":'
-    json_string "$REVIEW_FALLBACK_STATE"
+    if [ "$OPERATION" = await-review ]; then
+      printf ',"reviewFallback":'
+      json_string "$REVIEW_FALLBACK_STATE"
+    fi
     printf ',"reviewGate":{"runId":'
     json_string "$REVIEW_GATE_RUN_ID"
     printf ',"action":'
@@ -3762,6 +3856,6 @@ case "$OPERATION" in
   open) open_pr ;;
   status) status_pr ;;
   merge) merge_pr ;;
-  await-review) await_review ;;
+  await-review | wake-review-gate) await_review ;;
   policy-status) policy_status ;;
 esac
