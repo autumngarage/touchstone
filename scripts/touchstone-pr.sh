@@ -389,6 +389,17 @@ tool_git() {
     git -C "$TOOL_ROOT" "$@"
 }
 
+# The gh pull-request mutations that read the project's checkout run from its
+# root, with ambient Git variables unset as project_git unsets them. Invoked
+# only through capture_command, so a rate-limited mutation stops the command
+# like any read does (AUT-1638).
+project_gh() {
+  (
+    unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+    cd "$PROJECT_ROOT" && gh "$@"
+  )
+}
+
 read_repository() {
   (
     unset GH_REPO GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
@@ -2507,8 +2518,13 @@ open_pr() {
   count="$(printf '%s\n' "$rows" | awk 'NF { count++ } END { print count + 0 }')"
   [ "$count" -le 1 ] || fail_operation "multiple open pull requests use branch '$branch'" "Close or retarget duplicates."
   if [ "$count" -eq 0 ]; then
-    create_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr create --repo "$REPO_SPEC" --head "$branch" --base "$BASE_REF" \
-      --title "$TITLE" --body-file "$BODY_FILE" 2>&1)" || create_status=$?
+    if capture_command project_gh pr create --repo "$REPO_SPEC" --head "$branch" --base "$BASE_REF" \
+      --title "$TITLE" --body-file "$BODY_FILE"; then
+      create_output="$CAPTURE_OUTPUT"
+    else
+      create_status=$?
+      create_output="$CAPTURE_ERROR"
+    fi
     read_open_pr_rows_for_head "$branch" "$local_head" \
       || fail_operation "PR creation could not be reconciled: $READ_OUTPUT" "Inspect GitHub before retrying."
     rows="$READ_OUTPUT"
@@ -2551,8 +2567,8 @@ open_pr() {
     [ "$live_title" = "$TITLE" ] || edit_args+=(--title "$TITLE")
     [ "$live_body" = "$wanted_body" ] || edit_args+=(--body-file "$BODY_FILE")
     if [ "${#edit_args[@]}" -gt 0 ]; then
-      edit_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr edit "$number" --repo "$REPO_SPEC" "${edit_args[@]}" 2>&1)" \
-        || fail_operation "could not apply the given title/body to PR #$number: $edit_output" "Inspect the PR on GitHub before retrying."
+      capture_command project_gh pr edit "$number" --repo "$REPO_SPEC" "${edit_args[@]}" \
+        || fail_operation "could not apply the given title/body to PR #$number: $CAPTURE_ERROR" "Inspect the PR on GitHub before retrying."
       read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json body --jq '.body' \
         || fail_operation "PR edit could not be reconciled: $READ_OUTPUT" "Inspect GitHub before retrying."
       [ "$READ_OUTPUT" = "$wanted_body" ] \
@@ -3453,11 +3469,11 @@ status_pr() {
 # on the next base movement, so it is disarmed first, and the message says
 # whether it was.
 refuse_evicted_head() {
-  local number="$1" head="$2" disarm_output disarm_status=0 disarmed=""
+  local number="$1" head="$2" disarm_status=0 disarmed=""
   if [ "$AUTO_MERGE_ARMED" = true ]; then
-    disarm_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$number" --repo "$REPO_SPEC" --disable-auto 2>&1)" || disarm_status=$?
+    capture_command project_gh pr merge "$number" --repo "$REPO_SPEC" --disable-auto || disarm_status=$?
     if [ "$disarm_status" -ne 0 ]; then
-      fail_operation "PR #$number head $head was removed from the merge queue at ${MERGE_QUEUE_EVICTED_AT:-an unknown time} (${MERGE_QUEUE_EVICTION_REASON:-no reason recorded}) and nothing has changed since, but its armed auto-merge request could not be disarmed: $(clean_diagnostic "$disarm_output")" \
+      fail_operation "PR #$number head $head was removed from the merge queue at ${MERGE_QUEUE_EVICTED_AT:-an unknown time} (${MERGE_QUEUE_EVICTION_REASON:-no reason recorded}) and nothing has changed since, but its armed auto-merge request could not be disarmed: $CAPTURE_ERROR" \
         "Run gh pr merge $number --repo $REPO_SPEC --disable-auto so GitHub cannot re-queue this head, fix the failing check on a new head, then run touchstone pr merge $number --head <new head>."
     fi
     disarmed="; its armed auto-merge request was disarmed so GitHub does not re-queue this head meanwhile"
@@ -3557,7 +3573,7 @@ enqueue_armed_head() {
 }
 
 merge_pr() {
-  local number state url head head_repo base base_sha merge_state draft merge_output merge_status=0
+  local number state url head head_repo base base_sha merge_state draft merge_status=0
   local merge_diagnostic final_state="" unguarded_marker prior_records record_author merge_auto
   [ -n "$EXPECTED_HEAD" ] \
     || fail_input "merge requires --head SHA" "Pass the exact reviewed head from GitHub."
@@ -3654,9 +3670,9 @@ merge_pr() {
       # "0\n0" into a skipped record.
       prior_records="$(printf '%s\n' "$READ_OUTPUT" | awk '{ total += $1 } END { print total + 0 }')"
       if [ "$prior_records" = 0 ]; then
-        gh pr comment "$PR_NUMBER" --repo "$REPO_SPEC" --body "$unguarded_marker
-Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarded\`: enforcement on \`$base\` is $(enforcement_text) using \`$ENFORCEMENT_POLICY_SOURCE\` at \`$ENFORCEMENT_POLICY_REVISION\`, so GitHub's requirements for this merge differ from that policy by exactly what is listed (other checks or reviews may still have run). Apply that policy revision to close the gap." >/dev/null \
-          || fail_operation "could not record the unguarded merge request on PR #$PR_NUMBER" "Inspect GitHub before retrying."
+        capture_command gh pr comment "$PR_NUMBER" --repo "$REPO_SPEC" --body "$unguarded_marker
+Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarded\`: enforcement on \`$base\` is $(enforcement_text) using \`$ENFORCEMENT_POLICY_SOURCE\` at \`$ENFORCEMENT_POLICY_REVISION\`, so GitHub's requirements for this merge differ from that policy by exactly what is listed (other checks or reviews may still have run). Apply that policy revision to close the gap." \
+          || fail_operation "could not record the unguarded merge request on PR #$PR_NUMBER: $CAPTURE_ERROR" "Inspect GitHub before retrying."
       fi
       # The base inspected and recorded must be the base merged into.
       verify_live_head_and_base "$number" "$head" "$base" "$base_sha"
@@ -3686,9 +3702,13 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
       # way: GitHub enqueues it once the required gate succeeds.
       merge_auto=()
       [ "$ENFORCEMENT_QUEUE_APPLIED" = true ] && [ "$REVIEW_GATE_ACTION" != arm-auto-merge ] || merge_auto=(--auto)
-      merge_output="$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE && cd "$PROJECT_ROOT" && gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash ${merge_auto[@]+"${merge_auto[@]}"} \
-        --match-head-commit "$EXPECTED_HEAD" 2>&1)" || merge_status=$?
-      merge_diagnostic="$(clean_diagnostic "$merge_output")"
+      if capture_command project_gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash ${merge_auto[@]+"${merge_auto[@]}"} \
+        --match-head-commit "$EXPECTED_HEAD"; then
+        merge_diagnostic="$(clean_diagnostic "$CAPTURE_OUTPUT")"
+      else
+        merge_status=$?
+        merge_diagnostic="$CAPTURE_ERROR"
+      fi
       reconcile_delivery merge "$merge_status" "$merge_diagnostic" \
         "GitHub did not accept merge for PR #$PR_NUMBER: $merge_diagnostic" "The repository ruleset remains authoritative."
       final_state="$RECONCILED_DELIVERY_STATE"

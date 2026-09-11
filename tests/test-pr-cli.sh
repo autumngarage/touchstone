@@ -2227,6 +2227,18 @@ SLEEP
   [ "$(grep -c 'actions/runs/77/rerun' "$GH_CALLS" || true)" -eq 1 ] \
     || fail "a rate-limited re-run was retried: $(grep -c 'actions/runs/77/rerun' "$GH_CALLS" || true) requests"
   [ "$(v4_reruns)" -eq 0 ] || fail "a rate-limited re-run was recorded as made"
+  # So does a mutation gh makes on its own terms, such as the body edit of a
+  # reused pull request: no generic failure, no reconciliation read after it.
+  v4_reset
+  touch "$TMP/state/pr-exists"
+  printf 'An older body.\n' >"$TMP/state/pr-body"
+  GH_RATE_LIMITED='pr edit' run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" "GitHub's REST rate limit for this token is exhausted until 2026-09-11T00:21:13Z"
+  assert_has "$TMP/out" '"rateLimit":{"limit":"core"'
+  [ "$(grep -c '^pr edit' "$GH_CALLS" || true)" -eq 1 ] \
+    || fail "a rate-limited body edit was retried: $(grep -c '^pr edit' "$GH_CALLS" || true) requests"
+  v4_reset
 
   # Contract 3 is unchanged: no local wait, no review read, no deadline read,
   # and the same result document as before. A repository's gate stays
@@ -4283,6 +4295,37 @@ STATUS_STUB
   [ -z "$substituted" ] && ok "no function that reaches a GitHub request runs inside a command substitution" \
     || fail "a GitHub request runs inside a command substitution, where a rate limit cannot stop the command:
   $substituted"
+
+  echo "==> every GitHub request goes through the rate-limit path (AUT-1638)"
+  # capture_command is where a rate-limited request stops the command; a gh
+  # command anywhere else fails generically, or is retried, instead. Allowed:
+  # a gh command on a capture_command or read_with_retry line; one inside a
+  # function only ever invoked through them (read_repository, project_gh);
+  # and stop_on_rate_limit's own free rate_limit read, which names the reset
+  # and must not recurse into the path it serves.
+  direct_requests="$(awk '
+    /^[a-z_]+\(\) \{/ { name = $1; sub(/\(\)$/, "", name); next }
+    /^\}/ { name = ""; next }
+    /^[[:space:]]*#/ { next }
+    /(^[[:space:]]*|\$\(|&&[[:space:]]*|\|\|[[:space:]]*|;[[:space:]]*|\|[[:space:]]*)gh[[:space:]]+[a-z]/ && !/capture_command|read_with_retry/ { print (name == "" ? "-" : name) "\t" NR ": " $0 }
+  ' "$pr_script")"
+  [ -n "$direct_requests" ] \
+    || fail "the direct-request scan found no gh command at all; it is not seeing the script"
+  unrouted=""
+  while IFS="$(printf '\t')" read -r request_function request_line; do
+    [ -n "$request_line" ] || continue
+    [ "$request_function" != stop_on_rate_limit ] || continue
+    if [ "$request_function" != - ]; then
+      # Every use of the function other than its definition, comments, and
+      # calls through capture_command or read_with_retry.
+      other_uses="$(grep -nE "(^|[^a-zA-Z0-9_])$request_function([^a-zA-Z0-9_(]|\$)" "$pr_script" | grep -vE "^[0-9]+:[[:space:]]*#" | grep -vE "(capture_command|read_with_retry)[[:space:]]+$request_function([^a-zA-Z0-9_]|\$)" || true)"
+      [ -n "$other_uses" ] || continue
+    fi
+    unrouted="$unrouted
+  $request_line"
+  done <<<"$direct_requests"
+  [ -z "$unrouted" ] && ok "every gh command runs through capture_command or read_with_retry" \
+    || fail "a gh command bypasses the rate-limit path in capture_command:$unrouted"
 
   echo "==> the queue-history read includes every event that invalidates an eviction (AUT-1179)"
   # The fake serves the post-jq event list, so it cannot prove which timeline
