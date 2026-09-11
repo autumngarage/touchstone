@@ -75,11 +75,17 @@ taking this document's word for it.
   not "no-ops": a body silently kept let the required `delivery-evidence`
   gate fail with no signal from the one command the driver uses (AUT-437).
   After convergence, a reused PR asks the policy-declared organization-required
-  `delivery-evidence` run to evaluate the surviving body and waits for that
-  run's next attempt, or a distinct newer policy-bound run for the same head,
-  to succeed before requesting hosted review. Attempt thresholds are scoped to
-  the run that was explicitly rerun; a newer run starts at attempt one. A new
-  PR waits for the initial attempt created by GitHub rather than redundantly
+  `delivery-evidence` run to evaluate the surviving body only when no
+  policy-bound run for the same head started at or after the body's last change
+  (its `lastEditedAt`, or `createdAt` if it was never edited). A
+  ruleset-required workflow never runs for a body edit, so a body `open` has
+  just edited is always re-run, and so is one whose change time cannot be read;
+  otherwise `open` waits on the run that already read the current body and
+  takes its verdict (AUT-1632). When it does re-run, it waits for that run's
+  next attempt, or a distinct newer policy-bound run for the same head, to
+  succeed before requesting hosted review. Attempt thresholds are scoped to the
+  run that was explicitly rerun; a newer run starts at attempt one. A new PR
+  waits for the initial attempt created by GitHub rather than redundantly
   rerunning it.
   A required job that Actions failed without starting it is not an evidence
   or review verdict. The jobs API reports such a job as `failure` with no
@@ -94,11 +100,12 @@ taking this document's word for it.
   (the Emergency path in `principles/git-workflow.md` reports that none
   exists). Restoring Actions capacity is the human's decision, and the refused
   runs are re-run once jobs run again (AUT-1594).
-  GitHub exposes only a
-  PR-wide update timestamp, so the sequencer does not guess whether activity was
-  a body edit: it requests a fresh attempt, then re-verifies the body, head, and
-  base immediately before success without closing the PR or disturbing
-  auto-merge (AUT-481). Its invisible
+  Whichever run supplies the verdict, the sequencer then
+  re-verifies the body, head, and base immediately before success without
+  closing the PR or disturbing auto-merge (AUT-481). GitHub records a body
+  edit's time in `lastEditedAt`, separately from the PR-wide `updated_at`,
+  which also moves for comments and pushes; the freshness check reads the
+  former (AUT-1632). Its invisible
   comment marker (`<!-- touchstone:pr-open head=… base=… base_sha=… -->`)
   is what a pinned `review-gate` reads as the request, and it makes partial
   reruns idempotent. It reports success only after any policy-declared gate

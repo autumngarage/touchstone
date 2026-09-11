@@ -386,6 +386,16 @@ case "$1 ${2:-}" in
     ;;
   "api user") printf '%s\n' alice ;;
   "api graphql")
+    # When the PR body last changed (AUT-1632). By default the last edit is
+    # after run 80 started, so run 80 is stale and a reused PR re-runs it.
+    if has 'lastEditedAt' "$@"; then
+      if [ -f "$GH_STATE/body-timing-unavailable" ]; then
+        printf 'GraphQL unavailable\n' >&2
+        exit 1
+      fi
+      printf '{"createdAt":"%s","lastEditedAt":%s}\n' "${GH_PR_CREATED_AT:-2026-08-26T20:00:00Z}" "${GH_PR_LAST_EDITED_AT_JSON:-\"2026-08-27T17:00:00Z\"}"
+      exit 0
+    fi
     # The enqueue mutation: admitted unless a case says GitHub refuses it.
     if has 'enqueuePullRequest' "$@"; then
       if [ -f "$GH_STATE/enqueue-fails" ]; then
@@ -2060,6 +2070,52 @@ EOF
     && ok "a corrected body re-ran the organization-required delivery-evidence run" \
     || fail "a corrected body did not re-run delivery evidence"
   assert_has "$TMP/out" 'Delivery evidence accepted by run 80 before hosted review.'
+
+  echo "==> open re-runs delivery evidence only when no run for this head read the current body (AUT-1632)"
+  # Unchanged body, and run 80 started after the body's last edit: it read
+  # this body at this head, so it is the verdict and nothing is re-run.
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/review-request"
+  cp "$TMP/body2" "$TMP/state/pr-body"
+  : >"$GH_CALLS"
+  GH_PR_LAST_EDITED_AT_JSON='"2026-08-26T21:00:00Z"' run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'lastEditedAt'
+  [ ! -f "$TMP/state/evidence-reruns" ] \
+    && ok "an unchanged body whose run already read it is not re-run" \
+    || fail "an unchanged body re-ran a delivery-evidence run that had already read it"
+  assert_has "$TMP/out" 'Delivery evidence accepted by run 80 before hosted review.'
+  assert_has "$TMP/out" 'already read this body at this head'
+
+  # A body this command edits is always re-run, however fresh the run looks:
+  # no run can have read an edit made a moment ago.
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/review-request"
+  printf 'Original evidence body.\n' >"$TMP/state/pr-body"
+  GH_PR_LAST_EDITED_AT_JSON='"2026-08-26T21:00:00Z"' run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 0
+  grep -q 'rerun 80' "$TMP/state/evidence-reruns" 2>/dev/null \
+    && ok "a body edited by open is re-run even when an earlier run looks fresh" \
+    || fail "a body edited by open was not re-run"
+
+  # Unchanged here, but edited on GitHub after run 80 started: run 80 read an
+  # older body, so it is never taken as the verdict without a re-run.
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/review-request"
+  cp "$TMP/body2" "$TMP/state/pr-body"
+  GH_PR_LAST_EDITED_AT_JSON='"2026-08-27T17:00:00Z"' run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 0
+  grep -q 'rerun 80' "$TMP/state/evidence-reruns" 2>/dev/null \
+    && ok "a run that started before the body's last edit is re-run" \
+    || fail "a run that started before the body's last edit was taken as the verdict"
+
+  # When the body's change time cannot be read, open re-runs rather than trust
+  # an older run: an unknown time fails toward an extra run.
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/review-request"
+  touch "$TMP/state/body-timing-unavailable"
+  GH_PR_LAST_EDITED_AT_JSON='"2026-08-26T21:00:00Z"' run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 0
+  grep -q 'rerun 80' "$TMP/state/evidence-reruns" 2>/dev/null \
+    && ok "an unreadable body change time re-runs delivery evidence" \
+    || fail "an unreadable body change time skipped the delivery-evidence re-run"
+  rm -f "$TMP/state/body-timing-unavailable"
 
   rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/review-request"
   GH_MODE=delivery_new_run_after_rerun run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
