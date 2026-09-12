@@ -112,7 +112,7 @@ for file in \
   # A parent deleted two clean worktrees while their workers were still live;
   # one lost its final push. Cleanup cannot infer task lifecycle from GitHub or
   # git state, so the terminal-owner precondition must be auto-loaded by every
-  # driver rather than left only in the routed swarm guide.
+  # driver rather than left only in the routed workflow.
   assert_contains "$file" "remove one only after final result delivery"
   assert_contains "$file" "or confirmed cancellation"
   assert_contains "$file" "this session created"
@@ -149,12 +149,12 @@ assert_not_contains "$TOUCHSTONE_ROOT/bin/touchstone" \
 assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-cleanup.sh" \
   '"I cleaned up" is a verified state'
 
-assert_contains "$TOUCHSTONE_ROOT/principles/agent-swarms.md" \
-  "acknowledged its cancellation; an open"
-assert_contains "$TOUCHSTONE_ROOT/principles/agent-swarms.md" \
-  "merged PR and a clean worktree prove"
-assert_contains "$TOUCHSTONE_ROOT/principles/agent-swarms.md" \
-  "interrupt or cancel it, confirm that it is"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  "confirm its task is terminal and the parent"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  "either received its final report or acknowledged its cancellation"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  "after every prunable worker meets that lifecycle proof"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
   "only after its task is terminal"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
@@ -867,7 +867,7 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "PR cr
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Merge is allowed only after PR-visible review and check approval"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "project-documented executable merge boundary"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "It is the whole mechanism"
-assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Parallel file-writing agents use worktrees by default"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Use worktrees for file-writing parallel agents"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "only model-routing decision"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "OpenRouter Auto Router"
 

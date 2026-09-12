@@ -94,7 +94,6 @@ Never push directly to the default branch, even in an emergency; rewriting your 
 | start a non-trivial code change | `principles/pre-implementation-checklist.md` |
 | understand the *why* of a daily-reminder rule | `principles/engineering-principles.md` |
 | edit, write, or audit documentation | `principles/documentation-ownership.md` |
-| coordinate parallel agents (subagents or worktrees) | `principles/agent-swarms.md` |
 | audit a structural bug class after fixing one instance | `principles/audit-weak-points.md` |
 | hit a bug in an upstream tool (don't silently work around it) | `principles/file-upstream-bugs.md` |
 | write, trust, or audit agent memory — it is a cache, not truth | `principles/memory-hygiene.md` |
@@ -119,7 +118,7 @@ You are maintaining the standard baseline for a solo developer directing many ag
   squash merge.
 - Ship with `git push -u origin HEAD`, then use `bash bin/touchstone pr open` with the reviewed title and body, and `--expect-branch <the branch you created in step 2>` — write the name out, never `$(git branch --show-current)`, which reads the same checkout the command does and so agrees with a wrong worktree; merge with `bash bin/touchstone pr merge <n> --head <reviewed-sha>`. The source commands sequence GitHub and verify surviving state; `principles/git-workflow.md` carries their raw recovery equivalents.
 - The PR is the review surface. Do not treat PR creation as completion: answer every piece of PR feedback and resolve its thread — whoever left it — before merging.
-- File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md`; use `git worktree add` and `git worktree remove` for setup and teardown.
+- File-writing subagents use isolated worktrees by default. Follow `principles/git-workflow.md`; use `git worktree add` and `git worktree remove` for setup and teardown.
 
 ### Touchstone-Specific Rules
 

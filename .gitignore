@@ -14,7 +14,7 @@ credentials.json
 *.key
 *.p12
 
-# Agent worktrees (parallel agent slices; see principles/agent-swarms.md).
+# Agent worktrees (parallel agent slices; see principles/git-workflow.md).
 # Touchstone's own dirty-tree guards refuse whenever an agent worktree
 # exists, which is most of the time, so it must apply this rule to itself.
 .claude/worktrees/

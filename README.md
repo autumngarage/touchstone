@@ -301,7 +301,6 @@ CLI boundary, its versioned output, and the raw recovery equivalents live in
 - **[fresh-consumer-harness.md](docs/fresh-consumer-harness.md)** — scratch-repository adoption, compatibility, policy, and mutation proofs
 - **[ai-delivery-architecture.md](principles/ai-delivery-architecture.md)** — the AI-authored change lifecycle
 - **[pre-implementation-checklist.md](principles/pre-implementation-checklist.md)** — the gate before a non-trivial change
-- **[agent-swarms.md](principles/agent-swarms.md)** — parallel agents, slice manifests, worktree isolation
 - **[audit-weak-points.md](principles/audit-weak-points.md)** — auditing a bug class after fixing one instance
 - **[documentation-ownership.md](principles/documentation-ownership.md)** — who owns which doc, and what not to duplicate
 - **[file-upstream-bugs.md](principles/file-upstream-bugs.md)** — don't silently work around an upstream bug

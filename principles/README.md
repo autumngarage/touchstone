@@ -10,4 +10,3 @@ Universal engineering standards that apply to all projects. `touchstone steering
 | [memory-hygiene.md](memory-hygiene.md) | Agent memory is a cache: verify against the fact's canonical owner, date every claim, and get consent plus a backup before editing it |
 | [documentation-ownership.md](documentation-ownership.md) | Single canonical owner per volatile fact |
 | [git-workflow.md](git-workflow.md) | Feature branch lifecycle with PR-visible review and merge |
-| [agent-swarms.md](agent-swarms.md) | Worktree-isolated parallel agent workflow, slice manifests, and cleanup rules |
