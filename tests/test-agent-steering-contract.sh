@@ -169,7 +169,6 @@ for file in \
   "$TOUCHSTONE_ROOT/GEMINI.md" \
   "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
   "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  "$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md" \
   "$TOUCHSTONE_ROOT/.github/pull_request_template.md"; do
   assert_contains "$file" 'touchstone review check'
   assert_contains "$file" 'touchstone review run'
@@ -179,7 +178,6 @@ done
 for file in \
   "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
   "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  "$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md" \
   "$TOUCHSTONE_ROOT/.github/pull_request_template.md"; do
   assert_contains "$file" 'may waive only when Codex and the fallback are both unavailable'
   # A waiver documented without its alternative is how the tier lost its local
@@ -313,15 +311,19 @@ assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   || fail "retired CodeRabbit prompt contract still exists"
 
 GIT_WORKFLOW_SKILL="$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md"
-assert_contains "$GIT_WORKFLOW_SKILL" "Inspect the repository's effective rules"
-assert_contains "$GIT_WORKFLOW_SKILL" "Where installed and verified as required"
-assert_contains "$GIT_WORKFLOW_SKILL" "missing enforcement as an adoption gap"
-# The skill sent agents to look for a notice and an answer command that the
-# CLI deliberately withholds while Actions refuses jobs for the head, and for
-# one it could not post (AUT-1610). Shipped guidance states both exceptions.
-assert_contains "$GIT_WORKFLOW_SKILL" "while Actions refuses jobs for the head"
-assert_contains "$GIT_WORKFLOW_SKILL" "a notice GitHub refuses to accept is reported on stderr"
-assert_not_contains "$GIT_WORKFLOW_SKILL" 'Review is enforced by `review-gate`.'
+PRE_IMPL_SKILL="$TOUCHSTONE_ROOT/skills/touchstone-pre-impl/SKILL.md"
+echo "==> workflow skills route to canonical procedures instead of copying them"
+assert_contains "$GIT_WORKFLOW_SKILL" 'principles/git-workflow.md'
+assert_contains "$GIT_WORKFLOW_SKILL" 'principles/local-review.md'
+assert_contains "$PRE_IMPL_SKILL" 'principles/pre-implementation-checklist.md'
+# These conflicting copies caused AUT-1668. The canonical owners below retain
+# the procedure assertions; the activation skills must not restore the copies.
+assert_not_contains "$GIT_WORKFLOW_SKILL" 'After the policy-owned exact-head gate succeeds'
+assert_not_contains "$PRE_IMPL_SKILL" 'Any "no" answer to a check is a stop signal'
+# The CLI contract owns the two notice exceptions previously copied into the
+# workflow skill (AUT-1610).
+assert_contains "$TOUCHSTONE_ROOT/docs/pr-cli-contract.md" 'While Actions refuses a'
+assert_contains "$TOUCHSTONE_ROOT/docs/pr-cli-contract.md" 'GitHub refuses to accept is reported on stderr'
 
 GIT_WORKFLOW_GUIDE="$TOUCHSTONE_ROOT/principles/git-workflow.md"
 assert_contains "$GIT_WORKFLOW_GUIDE" \
@@ -342,8 +344,6 @@ assert_contains "$GIT_WORKFLOW_GUIDE" \
   "The human must explicitly authorize bypassing normal policy"
 assert_contains "$GIT_WORKFLOW_GUIDE" \
   "Do not probe the rule by mutation"
-assert_contains "$GIT_WORKFLOW_SKILL" \
-  "A live exact-head queue entry receives zero more merge mutations"
 assert_not_contains "$GIT_WORKFLOW_GUIDE" \
   'Direct pushes to `main` are rejected by the server even for organization admins.'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
@@ -362,64 +362,57 @@ echo "==> review-request recovery is complete, bounded, and fail-closed"
 # stall, and a clean result can arrive as a conversation comment rather than a
 # formal review. The workflow must model both without turning retry into a loop
 # or allowing acceptance alone to stand in for exact-head evidence.
-for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
-  # Every agent-facing workflow needs the complete, copyable GitHub path. A
-  # recovery rule is useless if the driver cannot reliably request, answer,
-  # bind, and merge the ordinary review first.
-  assert_contains "$file" "not by hand"
-  assert_contains "$file" "headRefOid"
-  assert_contains "$file" "resolveReviewThread"
-  assert_contains "$file" "--match-head-commit"
-  assert_contains "$file" "submitted, accepted, and completed states"
-  assert_contains "$file" "PR conversation comments"
-  assert_contains "$file" "accepted but stalled"
-  assert_contains "$file" "A quota notice resolves; it is not a blocker and not a wait"
-  # A Validation row may not assert state the reviewed head cannot have
-  # produced. #1137 claimed six applied rulesets, none had been applied, and the
-  # pin it deployed broke every gate in the repository.
-  assert_contains "$file" "observed at the reviewed head"
-  # A closed issue reads as current state. Leaving a claim its own fix
-  # invalidated is how AUT-1236 sent a later session down four wrong turns.
-  assert_contains "$file" "that the change invalidated"
-  # A worktree's local default branch is routinely stale, and --base picks the
-  # merge base, so naming the local ref inflates the reviewed slice with merged
-  # work. Reported 2026-09-05: 35 commits stale, 138 files, size limit blown.
-  assert_contains "$file" 'review run --base origin/<default>'
-  assert_not_contains "$file" 'review run --base <default>'
-  assert_contains "$file" 'Corrected <date>'
-  assert_contains "$file" "recorded as pending, never as done"
-  assert_contains "$file" "complete review evidence, not a degraded mode"
-  assert_contains "$file" 'touchstone pr answer <n> --finding <id>'
-  assert_not_contains "$file" "keep watching the complete PR surface through the completion deadline"
-  assert_contains "$file" "at least 30 minutes after submission"
-  assert_contains "$file" "earliest acceptance signal"
-  assert_contains "$file" "immediately before posting"
-  assert_contains "$file" 're-run the pinned `review-gate`'
-  assert_contains "$file" "still reports no request"
-  assert_not_contains "$file" "touchstone/review-request-v1"
-  assert_contains "$file" "non-trigger audit note"
-  assert_contains "$file" "fall back to the original marker"
-  assert_contains "$file" "exactly one replacement trigger"
-  assert_contains "$file" "exact head-and-base binding"
-  assert_contains "$file" "Four cases permit another request while the head stays unchanged"
-  assert_contains "$file" "base ref or base SHA"
-  assert_contains "$file" "earlier request is completed or explicitly failed"
-  assert_contains "$file" "integrate the current base into the branch"
-  assert_contains "$file" "results identify the head"
-  assert_contains "$file" "Never manufacture an empty"
-  assert_contains "$file" "trusted exact-head review evidence"
-  assert_contains "$file" "merge on acceptance alone"
-  assert_contains "$file" "do not push a fourth on the same"
-  assert_contains "$file" "implementation shape"
-  assert_contains "$file" "redesigned attempt"
-  assert_contains "$file" "capability"
-  assert_not_contains "$file" "retry until review"
-done
-
-assert_contains "$GIT_WORKFLOW_SKILL" "Review cannot amend the approved scope"
-assert_contains "$GIT_WORKFLOW_SKILL" "answering is not implementing"
-assert_contains "$GIT_WORKFLOW_SKILL" "Stop only widened work and requests on that shape"
-assert_contains "$GIT_WORKFLOW_SKILL" "in-scope fixes continue to exact-head review"
+# Every agent-facing workflow needs the complete, copyable GitHub path. A
+# recovery rule is useless if the driver cannot reliably request, answer,
+# bind, and merge the ordinary review first.
+assert_contains "$GIT_WORKFLOW_GUIDE" "not by hand"
+assert_contains "$GIT_WORKFLOW_GUIDE" "headRefOid"
+assert_contains "$GIT_WORKFLOW_GUIDE" "resolveReviewThread"
+assert_contains "$GIT_WORKFLOW_GUIDE" "--match-head-commit"
+assert_contains "$GIT_WORKFLOW_GUIDE" "submitted, accepted, and completed states"
+assert_contains "$GIT_WORKFLOW_GUIDE" "PR conversation comments"
+assert_contains "$GIT_WORKFLOW_GUIDE" "accepted but stalled"
+assert_contains "$GIT_WORKFLOW_GUIDE" "A quota notice resolves; it is not a blocker and not a wait"
+# A Validation row may not assert state the reviewed head cannot have
+# produced. #1137 claimed six applied rulesets, none had been applied, and the
+# pin it deployed broke every gate in the repository.
+assert_contains "$GIT_WORKFLOW_GUIDE" "observed at the reviewed head"
+# A closed issue reads as current state. Leaving a claim its own fix
+# invalidated is how AUT-1236 sent a later session down four wrong turns.
+assert_contains "$GIT_WORKFLOW_GUIDE" "that the change invalidated"
+# A worktree's local default branch is routinely stale, and --base picks the
+# merge base, so naming the local ref inflates the reviewed slice with merged
+# work. Reported 2026-09-05: 35 commits stale, 138 files, size limit blown.
+assert_contains "$GIT_WORKFLOW_GUIDE" 'review run --base origin/<default>'
+assert_not_contains "$GIT_WORKFLOW_GUIDE" 'review run --base <default>'
+assert_contains "$GIT_WORKFLOW_GUIDE" 'Corrected <date>'
+assert_contains "$GIT_WORKFLOW_GUIDE" "recorded as pending, never as done"
+assert_contains "$GIT_WORKFLOW_GUIDE" "complete review evidence, not a degraded mode"
+assert_contains "$GIT_WORKFLOW_GUIDE" 'touchstone pr answer <n> --finding <id>'
+assert_not_contains "$GIT_WORKFLOW_GUIDE" "keep watching the complete PR surface through the completion deadline"
+assert_contains "$GIT_WORKFLOW_GUIDE" "at least 30 minutes after submission"
+assert_contains "$GIT_WORKFLOW_GUIDE" "earliest acceptance signal"
+assert_contains "$GIT_WORKFLOW_GUIDE" "immediately before posting"
+assert_contains "$GIT_WORKFLOW_GUIDE" 're-run the pinned `review-gate`'
+assert_contains "$GIT_WORKFLOW_GUIDE" "still reports no request"
+assert_not_contains "$GIT_WORKFLOW_GUIDE" "touchstone/review-request-v1"
+assert_contains "$GIT_WORKFLOW_GUIDE" "non-trigger audit note"
+assert_contains "$GIT_WORKFLOW_GUIDE" "fall back to the original marker"
+assert_contains "$GIT_WORKFLOW_GUIDE" "exactly one replacement trigger"
+assert_contains "$GIT_WORKFLOW_GUIDE" "exact head-and-base binding"
+assert_contains "$GIT_WORKFLOW_GUIDE" "Four cases permit another request while the head stays unchanged"
+assert_contains "$GIT_WORKFLOW_GUIDE" "base ref or base SHA"
+assert_contains "$GIT_WORKFLOW_GUIDE" "earlier request is completed or explicitly failed"
+assert_contains "$GIT_WORKFLOW_GUIDE" "integrate the current base into the branch"
+assert_contains "$GIT_WORKFLOW_GUIDE" "results identify the head"
+assert_contains "$GIT_WORKFLOW_GUIDE" "Never manufacture an empty"
+assert_contains "$GIT_WORKFLOW_GUIDE" "trusted exact-head review evidence"
+assert_contains "$GIT_WORKFLOW_GUIDE" "merge on acceptance alone"
+assert_contains "$GIT_WORKFLOW_GUIDE" "do not push a fourth on the same"
+assert_contains "$GIT_WORKFLOW_GUIDE" "implementation shape"
+assert_contains "$GIT_WORKFLOW_GUIDE" "redesigned attempt"
+assert_contains "$GIT_WORKFLOW_GUIDE" "capability"
+assert_not_contains "$GIT_WORKFLOW_GUIDE" "retry until review"
 
 echo "==> CLAUDE.md loads the steering router once, not twice"
 # `touchstone steering install` writes the TOUCHSTONE.md block into
@@ -615,7 +608,6 @@ assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   "run another only if a fix materially changed the risk surface"
 assert_contains "$TOUCHSTONE_ROOT/principles/audit-weak-points.md" \
   "search and classify the weak-point class before further edits"
-assert_contains "$GIT_WORKFLOW_SKILL" "A review-fix regression is a stop signal"
 assert_contains "$TOUCHSTONE_ROOT/skills/touchstone-audit-weak-points/SKILL.md" \
   "This audit is not permission to patch the failed implementation forward"
 
@@ -637,14 +629,10 @@ for file in \
     "Hosted review owns exact heads"
   assert_contains "$file" "never rerun to confirm fixes"
 done
-for file in \
-  "$GIT_WORKFLOW_GUIDE" \
-  "$GIT_WORKFLOW_SKILL"; do
-  assert_contains "$file" \
-    "A tier-required local AI pass runs at most once per coherent review unit"
-  assert_contains "$file" \
-    "the hosted PR reviewer owns exact-head review for every pushed head"
-done
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "A tier-required local AI pass runs at most once per coherent review unit"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "the hosted PR reviewer owns exact-head review for every pushed head"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   "runs at most once before its first push"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
@@ -892,38 +880,25 @@ if [ -n "$active_router_refs" ]; then
 fi
 
 echo "==> Pre-implementation gate covers migration-state enumeration (issue #558)"
-# The canonical checklist and its user-scoped skill must stay in sync on the
-# subsystem-removal gate: states are derived from the subsystem's own
-# persistence boundary (not a fixed global matrix), each supported state names
+# The canonical checklist owns the subsystem-removal gate: states derive from
+# the subsystem's persistence boundary (not a fixed global matrix), each supported state names
 # its source of truth and fail-closed behavior, and shims are explicitly
 # inert and time-bounded.
-for file in \
-  "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
-  "$TOUCHSTONE_ROOT/skills/touchstone-pre-impl/SKILL.md"; do
-  assert_contains "$file" "removing or replacing a subsystem"
-  assert_contains "$file" "persistence boundary"
-  assert_contains "$file" "source of truth"
-  assert_contains "$file" "fail-closed"
-  assert_contains "$file" "before the first review request"
-  assert_contains "$file" "time-bounded migration shims"
-  assert_contains "$file" "unmatched"
-done
-assert_contains "$TOUCHSTONE_ROOT/skills/touchstone-pre-impl/SKILL.md" \
-  "The seven questions"
-assert_not_contains "$TOUCHSTONE_ROOT/skills/touchstone-pre-impl/SKILL.md" \
-  "The six questions"
-for file in \
-  "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
-  "$TOUCHSTONE_ROOT/skills/touchstone-pre-impl/SKILL.md"; do
-  assert_contains "$file" "reviewable unit with adversarial boundary coverage"
-  assert_contains "$file" "serial test discovery"
-  assert_contains "$file" "effective"
-  assert_contains "$file" "where applicable"
-  assert_contains "$file" "domain can express"
-  assert_contains "$file" "non-filesystem"
-  assert_contains "$file" "symlink"
-  assert_contains "$file" "malformed"
-done
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "removing or replacing a subsystem"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "persistence boundary"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "source of truth"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "fail-closed"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "before the first review request"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "time-bounded migration shims"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "unmatched"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "reviewable unit with adversarial boundary coverage"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "serial test discovery"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "effective"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "where applicable"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "domain can express"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "non-filesystem"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "symlink"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "malformed"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
   "migration-state matrix"
 # The principle syncs into downstream projects, where Touchstone-local PR and
@@ -1070,7 +1045,6 @@ $TOUCHSTONE_ROOT/GEMINI.md
 $TOUCHSTONE_ROOT/README.md
 $TOUCHSTONE_ROOT/principles/git-workflow.md
 $TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md
-$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md
 "
 
 echo "==> every gate description names enforced exact-head review binding"
