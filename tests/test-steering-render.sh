@@ -446,7 +446,7 @@ if [ -f "$HROUTE/.touchstone/principles/MY-NOTES.md" ]; then
 else
   fail "uninstall deleted an operator file it did not install"
 fi
-if [ -f "$HROUTE/.touchstone/principles/agent-swarms.md" ]; then
+if [ -f "$HROUTE/.touchstone/principles/documentation-ownership.md" ]; then
   fail "uninstall left an untouched installed document behind"
 else
   pass "uninstall removes the documents it installed"
@@ -1123,36 +1123,44 @@ else
   fail "install destroyed content on a self-authenticating ownership claim"
 fi
 
-echo "==> a release that stops shipping a document removes its copy"
-# The old manifest is the only record that we wrote the file, and replacing
-# it is the moment that knowledge is lost -- so reconcile before replacing.
+echo "==> retiring the swarm guidance preserves operator content"
+# Model a prior managed install at the removed paths. The contents are test
+# sentinels: manifest ownership and operator edits determine retirement.
 H25="$TMP_DIR/h25"
-NEXT="$TMP_DIR/next-release-trimmed"
-mkdir -p "$NEXT/scripts" "$NEXT/principles"
+H26="$TMP_DIR/h26"
+NEXT="$TMP_DIR/prior-release-swarm"
+mkdir -p "$NEXT/scripts" "$NEXT/principles" "$NEXT/skills/touchstone-agent-swarms"
 cp "$REPO_ROOT/TOUCHSTONE.md" "$NEXT/TOUCHSTONE.md"
 cp "$INSTALL" "$NEXT/scripts/$(basename "$INSTALL")"
 cp "$REPO_ROOT"/principles/*.md "$NEXT/principles/"
-bash "$NEXT/scripts/$(basename "$INSTALL")" install --home "$H25" >/dev/null 2>&1
-rm -f "$NEXT/principles/agent-swarms.md"
-bash "$NEXT/scripts/$(basename "$INSTALL")" install --home "$H25" >/dev/null 2>&1
-if [ -f "$H25/.touchstone/principles/agent-swarms.md" ]; then
-  fail "a document the release stopped shipping was orphaned on disk"
-else
-  pass "a document no longer shipped is removed, not orphaned"
-fi
-# An orphan the operator edited is theirs; it is kept and reported instead.
-H26="$TMP_DIR/h26"
-mkdir -p "$NEXT/principles"
-cp "$REPO_ROOT/principles/agent-swarms.md" "$NEXT/principles/agent-swarms.md"
-bash "$NEXT/scripts/$(basename "$INSTALL")" install --home "$H26" >/dev/null 2>&1
-printf 'MY EDIT\n' >>"$H26/.touchstone/principles/agent-swarms.md"
-rm -f "$NEXT/principles/agent-swarms.md"
-bash "$NEXT/scripts/$(basename "$INSTALL")" install --home "$H26" >/dev/null 2>&1
-if grep -qF 'MY EDIT' "$H26/.touchstone/principles/agent-swarms.md" 2>/dev/null; then
-  pass "an edited document is kept when the release stops shipping it"
-else
-  fail "reconciliation deleted a document the operator had edited"
-fi
+cp -R "$REPO_ROOT/skills/." "$NEXT/skills/"
+printf 'Prior swarm playbook\n' >"$NEXT/principles/agent-swarms.md"
+printf 'Prior swarm skill\n' >"$NEXT/skills/touchstone-agent-swarms/SKILL.md"
+for prior_home in "$H25" "$H26"; do
+  bash "$NEXT/scripts/$(basename "$INSTALL")" install --home "$prior_home" >/dev/null 2>&1
+  for retired in .touchstone/principles/agent-swarms.md .claude/skills/touchstone-agent-swarms/SKILL.md; do
+    [ -f "$prior_home/$retired" ] || fail "prior install did not create $retired"
+  done
+done
+for retired in .touchstone/principles/agent-swarms.md .claude/skills/touchstone-agent-swarms/SKILL.md; do
+  printf 'MY EDIT\n' >>"$H26/$retired"
+done
+bash "$INSTALL" install --home "$H25" >"$TMP_DIR/h25.out" 2>&1
+bash "$INSTALL" install --home "$H26" >"$TMP_DIR/h26.out" 2>&1
+for retired in .touchstone/principles/agent-swarms.md .claude/skills/touchstone-agent-swarms/SKILL.md; do
+  if [ ! -e "$H25/$retired" ] && [ -f "$H25/$(dirname "$retired")/.$(basename "$retired").replaced" ]; then
+    pass "$retired is retired with a recoverable copy"
+  else
+    fail "$retired remains active or lost its recoverable copy"
+  fi
+  if grep -qF 'MY EDIT' "$H26/$retired" && grep -qF 'is no longer shipped but has been edited' "$TMP_DIR/h26.out"; then
+    pass "edited $retired is preserved and reported"
+  else
+    fail "edited $retired was lost or silently skipped"
+  fi
+done
+bash "$INSTALL" install --home "$H25" >/dev/null 2>&1
+bash "$INSTALL" check --home "$H25" >/dev/null 2>&1 || fail "repeat install did not converge after swarm retirement"
 
 echo "==> preserving a replaced document never clobbers an earlier copy"
 # An earlier upgrade's backup can be the only surviving copy of operator
@@ -1494,8 +1502,8 @@ H46="$TMP_DIR/h46"
 bash "$INSTALL" install --home "$H46" >/dev/null 2>&1
 rm -f "$H46/.touchstone/principles/.touchstone-installed"
 mkdir -p "$H46/dotfiles"
-mv "$H46/.touchstone/principles/agent-swarms.md" "$H46/dotfiles/as.md"
-ln -s "$H46/dotfiles/as.md" "$H46/.touchstone/principles/agent-swarms.md"
+mv "$H46/.touchstone/principles/documentation-ownership.md" "$H46/dotfiles/as.md"
+ln -s "$H46/dotfiles/as.md" "$H46/.touchstone/principles/documentation-ownership.md"
 printf 'my own file\n' >"$H46/.touchstone/principles/mine.md"
 out="$(bash "$INSTALL" uninstall --home "$H46" 2>&1)"
 leftover_docs=0
@@ -1541,10 +1549,15 @@ grep -q 'preserved: touchstone-git-workflow/SKILL.md -> .SKILL.md.replaced' "$TM
   && pass "a stale unmanaged skill is preserved and taken over" \
   || fail "stale skill was not preserved and replaced: $(cat "$TMP_DIR/hs.out")"
 grep -q 'open-pr' "$HS/.claude/skills/touchstone-git-workflow/SKILL.md" && fail "the stale skill text survived the install" || true
-for skill in touchstone-git-workflow touchstone-pre-impl touchstone-agent-swarms touchstone-audit-weak-points memory-audit; do
+for skill in touchstone-git-workflow touchstone-pre-impl touchstone-audit-weak-points memory-audit; do
   [ -f "$HS/.claude/skills/$skill/SKILL.md" ] || fail "skill $skill was not installed"
 done
 [ -f "$HS/.claude/skills/memory-audit/agents/openai.yaml" ] || fail "nested skill asset was not installed"
+[ ! -e "$HS/.claude/skills/touchstone-agent-swarms/SKILL.md" ] \
+  && [ ! -e "$HS/.touchstone/principles/agent-swarms.md" ] \
+  && pass "fresh installs ship no standalone swarm guidance" \
+  || fail "fresh install still ships standalone swarm guidance"
+
 grep -qF "$HS/.touchstone/principles/git-workflow.md" "$HS/.claude/skills/touchstone-git-workflow/SKILL.md" \
   && pass "skills reference the installed principles by absolute path" \
   || fail "skill cross-references were not rewritten"

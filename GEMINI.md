@@ -92,7 +92,6 @@ Never push directly to the default branch, even in an emergency; rewriting your 
 | start a non-trivial code change | `principles/pre-implementation-checklist.md` |
 | understand the *why* of a daily-reminder rule | `principles/engineering-principles.md` |
 | edit, write, or audit documentation | `principles/documentation-ownership.md` |
-| coordinate parallel agents (subagents or worktrees) | `principles/agent-swarms.md` |
 | audit a structural bug class after fixing one instance | `principles/audit-weak-points.md` |
 | hit a bug in an upstream tool (don't silently work around it) | `principles/file-upstream-bugs.md` |
 | write, trust, or audit agent memory — it is a cache, not truth | `principles/memory-hygiene.md` |

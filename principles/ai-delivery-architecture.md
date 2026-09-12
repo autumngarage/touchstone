@@ -113,27 +113,7 @@ The configured GitHub reviewer is an asynchronous, PR-visible adapter.
   `review-gate` workflow can evaluate from GitHub.
 - Never mutate the local branch or own merge authority.
 
-## Agent Swarms And Worktrees
-
-Parallel file-writing agents use worktrees by default.
-
-```text
-Driver AI
-  |
-  | decides work is parallelizable
-  v
-Agent swarm
-  |
-  | one agent per worktree
-  | each agent gets an explicit file/module scope
-  | agents commit only in their own worktree
-  v
-Driver AI integration
-  |
-  | integrates candidate changes into the primary PR branch
-  | resolves conflicts
-  | owns PR review loop, final checks, merge, and cleanup
-```
+## Worktree isolation
 
 Rules:
 
