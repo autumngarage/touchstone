@@ -569,14 +569,30 @@ job Actions refused. Every session on a machine shares one token's quota; on
 moment it resets (AUT-1638). A read or captured mutation whose `gh` diagnostic
 carries GitHub's rate-limit wording, primary (`API rate limit exceeded`) or
 secondary (`exceeded a secondary rate limit`, HTTP 429), ends the command with
-exit 1 after one read of `gh api rate_limit`, which GitHub counts against no
-quota. The reason names when a re-run can succeed: `GitHub's REST rate limit
-for this token is exhausted until <UTC>; re-run the same command after that`,
-or GraphQL where that quota is the exhausted one. A secondary limit names no
-reset, so its time is a minute on, GitHub's documented minimum. JSON carries
-the additive `rateLimit` object: `limit` (`core`, `graphql`, `secondary`, or
-`unknown` when `rate_limit` itself was unreadable) and `rerunAfter` (UTC).
-Re-running resumes from the state GitHub holds, as after any other failure.
+exit 1 after one read of `gh api rate_limit --hostname <the repository's
+host>`, which GitHub counts against no quota. Until GitHub has answered which
+host that is — the repository read is the first request every command makes,
+so a refusal of it arrives before that answer does — the host comes from the
+checkout's own `origin` remote, never a default of github.com. The reason
+names when a re-run can succeed: `GitHub's REST rate limit for this token is
+exhausted until <UTC>; re-run the same command after that`, or GraphQL where
+that quota is the exhausted one. Which quota is named is the one the refused
+request spent, read from GitHub's own words (`gh` prefixes what the GraphQL
+API said), so a machine that has exhausted both is told the reset that applies
+to it. A secondary limit names no reset, so its time is a minute on, GitHub's
+documented minimum. JSON carries the additive `rateLimit` object: `limit`
+(`core`, `graphql`, `secondary`, or `unknown` when `rate_limit` itself was
+unreadable) and `rerunAfter` (UTC). Re-running resumes from the state GitHub
+holds, as after any other failure.
+
+`answer` stops on the same refusal, with the same words, and retries nothing:
+its own reads ask `touchstone-pr.sh rate-limit-check`, an internal operation
+that classifies the diagnostic it reads on stdin — exit 1 with the reason and
+the reset for a rate limit, exit 0 for any other failure — rather than
+carrying a second copy of GitHub's wording and the reset arithmetic. It makes
+no request of its own beyond that one free quota read, so an exhausted session
+can always run it. Raw equivalent: read `gh api rate_limit` yourself and wait
+for the reset it names.
 
 Waits space their reads for the same shared quota, and no deadline moves. A
 follow of GitHub state (a required workflow reaching a re-runnable state or
@@ -586,10 +602,13 @@ under contracts 1-3) keeps its deadline, `TOUCHSTONE_GATE_ATTEMPTS` x
 wait from the base delay up to 60 seconds, the last wait cut to land on the
 deadline. The contract-4 review wait reads at most once a minute at the
 default delay (twelve base delays, never under a second) and wakes on its
-deadline or bound rather than on a poll past it. Each of its polls is one
+deadline or bound rather than on a poll past it: that spacing is measured from
+the clock as the poll ends, so a slow read shortens the wait it precedes
+instead of carrying the next read past the deadline. Each of its polls is one
 GraphQL count of the pull request's comments and reviews; it re-reads the REST
 review surface only on the first poll, when a count moved, and when the poll
-could end the wait.
+could end the wait. Whether a poll may end the wait is decided from the clock
+as that poll began: a poll that did not observe never ends it.
 
 GitHub response data and diagnostics remain separate. Successful commands are
 parsed from stdout alone; failed commands retain a bounded, sanitized
@@ -597,7 +616,11 @@ diagnostic. Debug output on stderr therefore cannot become a head, URL, or
 repository identity. This is not hypothetical: review of PR #883 at commit
 `6cb9b85` found successful `gh` reads becoming corrupt TSV and URL data when
 stderr was merged into the parsed stream, and the same class was found across
-the prepared read paths here.
+the prepared read paths here. Both properties hold where no temporary
+directory is writable — a read-only sandbox — because the two streams are
+captured apart there too, rather than the diagnostic being dropped: a GraphQL
+refusal, which reports on stderr alone, was invisible there and a rate limit
+went unrecognized (AUT-1648).
 
 Repository identity includes the canonical GitHub hostname as well as
 `owner/repo`. PR, REST, and GraphQL operations retain that host, so verification

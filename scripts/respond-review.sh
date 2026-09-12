@@ -55,7 +55,10 @@
 # this client.
 #
 # Transient GraphQL failures (gateway HTML instead of JSON, rate blips) are
-# retried up to 3 times with a short delay before failing closed.
+# retried up to 3 times with a short delay before failing closed. A request
+# GitHub refused for the token's rate limit is not transient and is never
+# retried: it stops the command, naming the quota and when a re-run can
+# succeed, exactly as the rest of the CLI does (AUT-1638, AUT-1648).
 #
 set -euo pipefail
 
@@ -157,12 +160,30 @@ REPO_NAME="${REPO_WITH_OWNER##*/}"
 [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] \
   || fail "could not parse owner/name from '$REPO_WITH_OWNER'."
 
+# A request GitHub refused for the token's rate limit, told apart from every
+# other failure by the same handler the rest of the CLI uses: this script runs
+# in a checkout, so it asks `touchstone-pr.sh rate-limit-check` rather than
+# carrying a second copy of GitHub's wording, the free quota read, and the
+# reset arithmetic (AUT-1648). Exit 1 there means rate-limited and prints the
+# reason; exit 0 means another failure; any other exit means the check itself
+# could not run, and the caller is left to report the failure as it was.
+RATE_LIMITED_STATUS=99
+rate_limit_reason() {
+  local reason status=0
+  reason="$(printf '%s' "$1" \
+    | bash "$TOOL_ROOT/scripts/touchstone-pr.sh" rate-limit-check 2>&1)" || status=$?
+  [ "$status" -eq 1 ] || return 1
+  printf '%s\n' "$reason"
+}
+
 # Every parsed GitHub response comes through here. A successful gh call may
 # still write debug or warning diagnostics to stderr; merging the streams
 # turned those lines into an author login or a reply id (AUT-294). On success
-# only stdout is returned; on failure both streams form the error detail.
+# only stdout is returned; on failure both streams form the error detail --
+# and a failure that is GitHub's rate limit says so, with the reset time,
+# under an exit status no retry loop here may swallow.
 gh_read() {
-  local stderr_file output status=0
+  local stderr_file output status=0 diagnostic reason
   stderr_file="$(mktemp "${TMPDIR:-/tmp}/respond-review.XXXXXXXX")" \
     || {
       echo "could not create a file for gh diagnostics"
@@ -171,11 +192,18 @@ gh_read() {
   output="$(gh "$@" 2>"$stderr_file")" || status=$?
   if [ "$status" -eq 0 ]; then
     printf '%s\n' "$output"
-  else
-    cat "$stderr_file"
-    [ -z "$output" ] || printf '%s\n' "$output"
+    rm -f -- "$stderr_file"
+    return 0
   fi
+  diagnostic="$(cat "$stderr_file")"
   rm -f -- "$stderr_file"
+  [ -z "$output" ] || diagnostic="${diagnostic:+$diagnostic
+}${output}"
+  if reason="$(rate_limit_reason "$diagnostic")"; then
+    printf '%s\n' "$reason"
+    return "$RATE_LIMITED_STATUS"
+  fi
+  [ -z "$diagnostic" ] || printf '%s\n' "$diagnostic"
   return "$status"
 }
 
@@ -190,6 +218,15 @@ graphql_with_retry() {
     if [ "$status" -eq 0 ]; then
       printf '%s\n' "$output"
       return 0
+    fi
+    # A rate limit is not a transient blip: every session on this machine
+    # shares the token's quota, so retrying spends it again the moment it
+    # resets, and the refusal answered nothing about this pull request
+    # (AUT-1638). Stop where the CLI stops, naming the reset (AUT-1648).
+    if [ "$status" -eq "$RATE_LIMITED_STATUS" ]; then
+      echo "ERROR: GitHub refused the request for this token's rate limit; nothing was retried:" >&2
+      printf '%s\n' "$output" | sed 's/^/       /' >&2
+      return "$status"
     fi
     if [ "$attempt" -ge "$GRAPHQL_ATTEMPTS" ]; then
       echo "ERROR: GraphQL call failed after $GRAPHQL_ATTEMPTS attempt(s):" >&2
