@@ -310,6 +310,31 @@ else
   echo "  ok: $(printf '%s\n' "$steering_steps" | wc -l | tr -d ' ') steps, same numbers and leading verbs"
 fi
 
+echo "==> Shared-quota rule: the steering still carries it, in the shape agents act on"
+# The one rule that governs what every agent on a machine may spend, and the
+# first casualty of a trim: it is one bullet in a section about carrying the
+# contract, and nothing else in the steering says it. Each clause is asserted
+# separately because each is a separate instruction an edit can drop -- the
+# polling floor, the free quota read (hostname included, or an Enterprise
+# checkout reads github.com's quota), and the refusal to retry either status
+# GitHub refuses with. Presence only: the steering's own words are the rule.
+quota_rule="$(grep -F 'Every agent on a machine shares one GitHub REST quota' "$TOUCHSTONE_ROOT/TOUCHSTONE.md" || true)"
+if [ -z "$quota_rule" ]; then
+  fail "TOUCHSTONE.md no longer carries the shared-quota rule under Carry the contract"
+else
+  quota_missing=0
+  for clause in 'no faster than every 2 min' \
+    'gh api rate_limit --hostname' \
+    '403 or 429' \
+    'wait for the reset'; do
+    printf '%s\n' "$quota_rule" | grep -qF -- "$clause" && continue
+    fail "the shared-quota rule no longer says '$clause'"
+    quota_missing=$((quota_missing + 1))
+  done
+  [ "$quota_missing" -gt 0 ] \
+    || printf '  ok: the shared-quota rule names the polling floor, the hostname-qualified quota read, both refusal statuses, and the reset\n'
+fi
+
 if [ "$ERRORS" -gt 0 ]; then
   echo ""
   echo "==> FAIL: $ERRORS scope-guardrail check(s) failed"
