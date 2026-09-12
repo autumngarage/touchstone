@@ -255,10 +255,48 @@ clean_diagnostic() {
 # HTTP 429 is Too Many Requests by definition. Only a failed command's output
 # is ever matched, so a pull request's own text cannot trip it.
 RATE_LIMIT_PATTERN='API rate limit (already )?exceeded|secondary rate limit|abuse detection mechanism|\(HTTP 429\)'
+# gh's prefix for an error the GraphQL API itself returned, and so which of
+# the token's two quotas the refused request spent. The request's own argv
+# cannot say: `pr list --json`, `pr view --json` and `repo view --json` all
+# speak GraphQL, and a REST refusal carries its HTTP status instead.
+GRAPHQL_DIAGNOSTIC_PATTERN='GraphQL:'
 # A secondary limit names no reset in `rate_limit`, and gh shows no
 # retry-after header; GitHub's guidance then is to wait at least a minute
 # ("Rate limits for the REST API", GitHub Docs).
 SECONDARY_RATE_LIMIT_WAIT_SECONDS=60
+
+# The host whose quota the free `rate_limit` read must name. REPO_HOST is
+# GitHub's own answer, set the moment `gh repo view` succeeds -- but that read
+# is the first request every command makes, so a refusal of it left the host
+# unknown and read github.com's quota on an Enterprise checkout (AUT-1648).
+# Until GitHub has answered, the checkout's own remote names the host.
+rate_limit_hostname() {
+  local url host=""
+  if [ -n "${REPO_HOST:-}" ]; then
+    printf '%s' "$REPO_HOST"
+    return 0
+  fi
+  if [ -n "${PROJECT_ROOT:-}" ]; then
+    url="$(project_git remote get-url origin 2>/dev/null)" || url=""
+    case "$url" in
+      *://*)
+        host="${url#*://}"
+        host="${host%%/*}"
+        host="${host#*@}"
+        host="${host%%:*}"
+        ;;
+      *@*:*)
+        host="${url#*@}"
+        host="${host%%:*}"
+        ;;
+    esac
+  fi
+  # A path remote (a local clone, as the tests use) names no host, and neither
+  # does anything that does not read as one; gh then resolves the host it is
+  # configured for, as it did before.
+  case "$host" in '' | *[!a-zA-Z0-9.-]*) host="" ;; esac
+  printf '%s' "$host"
+}
 
 # A request GitHub refused for the token's rate limit answered nothing, so it
 # is never a verdict on the change: it is an unavailable provider, the class of
@@ -267,14 +305,20 @@ SECONDARY_RATE_LIMIT_WAIT_SECONDS=60
 # names when a re-run can succeed, and never retries: every operation here
 # resumes idempotently from the state GitHub holds.
 stop_on_rate_limit() {
-  local diagnostic="$1" filter limits core_remaining="" core_reset="" graphql_remaining="" graphql_reset=""
+  local diagnostic="$1" filter limits host api core_remaining="" core_reset="" graphql_remaining="" graphql_reset=""
   local limit reset_epoch rerun_after reason
   printf '%s' "$diagnostic" | grep -qiE "$RATE_LIMIT_PATTERN" || return 0
+  # Which API refused, from GitHub's own words. With both quotas exhausted --
+  # the shape a machine of polling agents reaches -- reporting whichever was
+  # read first named the wrong reset half the time (AUT-1648).
+  api=rest
+  ! printf '%s' "$diagnostic" | grep -qE "$GRAPHQL_DIAGNOSTIC_PATTERN" || api=graphql
   # `rate_limit` is free: GitHub counts it against no quota and answers it
   # while one is exhausted. One attempt; all it adds is the reset time.
   filter='.resources | [.core.remaining, .core.reset, .graphql.remaining, .graphql.reset] | map(tostring) | @tsv'
-  if [ -n "${REPO_HOST:-}" ]; then
-    limits="$(gh api --hostname "$REPO_HOST" rate_limit --jq "$filter" 2>/dev/null)" || limits=""
+  host="$(rate_limit_hostname)"
+  if [ -n "$host" ]; then
+    limits="$(gh api --hostname "$host" rate_limit --jq "$filter" 2>/dev/null)" || limits=""
   else
     limits="$(gh api rate_limit --jq "$filter" 2>/dev/null)" || limits=""
   fi
@@ -282,6 +326,12 @@ stop_on_rate_limit() {
   reset_epoch=""
   if [ -z "$limits" ]; then
     limit=unknown
+  elif [ "$api" = graphql ] && [ "$graphql_remaining" = 0 ]; then
+    limit=graphql
+    reset_epoch="$graphql_reset"
+  elif [ "$api" = rest ] && [ "$core_remaining" = 0 ]; then
+    limit=core
+    reset_epoch="$core_reset"
   elif [ "$core_remaining" = 0 ]; then
     limit=core
     reset_epoch="$core_reset"
@@ -307,14 +357,9 @@ stop_on_rate_limit() {
 # read_with_retry and mutations directly, so a rate-limited one stops the
 # command on this one path (stop_on_rate_limit) wherever it was made.
 capture_command() {
-  local output diagnostic status=0
+  local output diagnostic status=0 framed metadata
   # The scratch file keeps stderr out of the parsed stream (PR #883 found
   # successful reads turning into corrupt data when the two were merged).
-  # Where no temporary directory is writable -- a read-only sandbox, where
-  # fresh agents run `policy status` and `pr status` -- the read still
-  # happens: stdout alone is captured and parsed, and stderr passes through
-  # to the terminal instead of being quoted back. The property that matters
-  # (diagnostics never enter the data) holds either way.
   if CAPTURE_STDERR_TEMP="$(mktemp "${TMPDIR:-/tmp}/touchstone-pr-read.XXXXXX" 2>/dev/null)"; then
     set +e
     output="$("$@" 2>"$CAPTURE_STDERR_TEMP")"
@@ -324,12 +369,49 @@ capture_command() {
     rm -f -- "$CAPTURE_STDERR_TEMP"
     CAPTURE_STDERR_TEMP=""
   else
+    # No writable temporary directory -- a read-only sandbox, where fresh
+    # agents run `policy status` and `pr status`. The read still happens, and
+    # the two streams still stay apart: the inner substitution captures
+    # stderr while the command's stdout passes through fd 3 to the outer one,
+    # so diagnostics never enter the parsed data. This used to drop stderr
+    # entirely, which left a GraphQL refusal -- reported on stderr alone,
+    # with no JSON body on stdout -- unrecognized, and the command carried on
+    # past a rate limit it should have stopped on (AUT-1648).
+    #
+    # The diagnostic rides back on one trailing line, cleaned to a single
+    # line first, so the parsed stdout is everything before the final
+    # newline and no diagnostic byte can be read as data.
     CAPTURE_STDERR_TEMP=""
     set +e
-    output="$("$@")"
-    status=$?
+    framed="$(
+      set +e
+      exec 3>&1
+      captured_diagnostic="$("$@" 2>&1 1>&3 3>&-)"
+      captured_status=$?
+      printf '\n%s\t%s' "$captured_status" "$(clean_diagnostic "$captured_diagnostic")"
+    )"
     set -e
-    diagnostic="(diagnostics were printed above; no writable temporary directory under ${TMPDIR:-/tmp} to capture them)"
+    metadata="${framed##*$'\n'}"
+    output="${framed%$'\n'*}"
+    status="${metadata%%$'\t'*}"
+    diagnostic="${metadata#*$'\t'}"
+    # No trailing line at all means the capture itself died: fail closed
+    # rather than parse whatever did arrive as data.
+    if [ "$metadata" = "$framed" ]; then
+      output=""
+      status=1
+      diagnostic="the read produced no result and no diagnostic; no writable temporary directory under ${TMPDIR:-/tmp} to capture them"
+    fi
+    case "$status" in
+      '' | *[!0-9]*)
+        output=""
+        status=1
+        diagnostic="the read reported no exit status; no writable temporary directory under ${TMPDIR:-/tmp} to capture it"
+        ;;
+    esac
+    # Command substitution strips every trailing newline; the temp-file branch
+    # above therefore returns data without one, and so must this.
+    while [ "${output%$'\n'}" != "$output" ]; do output="${output%$'\n'}"; done
   fi
   CAPTURE_OUTPUT="$output"
   CAPTURE_ERROR=""
@@ -466,7 +548,7 @@ case "$OPERATION" in
     case "$PR_NUMBER" in "" | *[!0-9]*) usage ;; esac
     shift 2
     ;;
-  open | policy-status) shift ;;
+  open | policy-status | rate-limit-check) shift ;;
   *) usage ;;
 esac
 
@@ -536,6 +618,10 @@ case "$OPERATION" in
     [ -z "$TITLE$BODY_FILE$EXPECTED_HEAD$EXPECTED_BRANCH" ] && [ "$UNGUARDED" = false ] \
       || fail_input "policy status accepts only --base" "Pass only --base, --project, and --json."
     ;;
+  rate-limit-check)
+    [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_HEAD$EXPECTED_BRANCH" ] && [ "$UNGUARDED" = false ] \
+      || fail_input "rate-limit-check reads a diagnostic on stdin; it takes no mutation options" "Pass only --project and --json."
+    ;;
 esac
 [ "$UNGUARDED" = false ] || [ "$OPERATION" = merge ] \
   || fail_input "--unguarded applies to merge only" "Remove --unguarded."
@@ -575,6 +661,21 @@ PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 
 project_git rev-parse --git-dir >/dev/null 2>&1 \
   || fail_input "project is not a Git repository" "Initialize the project before using PR commands."
+
+# The rate-limit classifier the answer client shares (AUT-1648). `pr answer`
+# makes its own reads and retries them, and must stop on a rate limit exactly
+# as this script does; it asks this operation rather than carrying a second
+# copy of GitHub's wording, the free quota read, and the reset arithmetic --
+# which would drift, and did not exist there at all. The diagnostic arrives on
+# stdin: exit 1 with the reason and the reset means GitHub refused that
+# request for the token's rate limit, exit 0 means it was some other failure.
+# It answers before this command makes any request of its own, so an
+# exhausted session can always run it.
+if [ "$OPERATION" = rate-limit-check ]; then
+  RATE_LIMIT_DIAGNOSTIC="$(cat)"
+  stop_on_rate_limit "$RATE_LIMIT_DIAGNOSTIC"
+  exit 0
+fi
 
 # Bind the caller's intent to the resolved branch, the way merge binds --head.
 # Without it, open acts on whatever branch the invoking directory happens to
@@ -2216,7 +2317,7 @@ wait_for_request_binding() {
 # until the reply arrives or the request reaches the gate's evidence deadline.
 announce_review_fallback() {
   local number="$1" head="$2" request_url="$3" evidence_seconds="${4:-}"
-  local request_id rows primary_reply marker step waited=0 replied now deadline wait_bound=0
+  local request_id rows primary_reply marker step waited=0 replied now spacing_from deadline wait_bound=0
   local attempt=1 previous=0 response_attempts=0 observed_counts=""
   REVIEW_FALLBACK_STATE=""
   REVIEW_FALLBACK_CAUSE=""
@@ -2304,12 +2405,21 @@ announce_review_fallback() {
         return 0
       fi
       # No faster than REVIEW_WAIT_POLL_SECONDS, and on the deadline or the
-      # wait bound rather than a poll past it. Both are still ahead here, so
-      # every wait is at least a second.
+      # wait bound rather than a poll past it -- measured from the instant the
+      # spacing starts, not the one the poll began at. `now` above is read
+      # before this poll's own reads, deliberately: a poll that did not
+      # observe must not end the wait on a later reading of the clock. Spacing
+      # it from that stale instant put the next read as far past the deadline
+      # as the poll had taken (AUT-1648), so the clock is read again here.
+      # Read now, neither bound is still ahead by construction: a poll that
+      # outlasted the time left schedules no wait at all, and the next poll
+      # ends the wait.
+      spacing_from="$(date -u +%s)"
       FOLLOW_WAIT="$REVIEW_WAIT_POLL_SECONDS"
-      [ $((deadline - now)) -ge "$FOLLOW_WAIT" ] || FOLLOW_WAIT=$((deadline - now))
-      [ $((wait_bound - now)) -ge "$FOLLOW_WAIT" ] || FOLLOW_WAIT=$((wait_bound - now))
-      sleep "$FOLLOW_WAIT"
+      [ $((deadline - spacing_from)) -ge "$FOLLOW_WAIT" ] || FOLLOW_WAIT=$((deadline - spacing_from))
+      [ $((wait_bound - spacing_from)) -ge "$FOLLOW_WAIT" ] || FOLLOW_WAIT=$((wait_bound - spacing_from))
+      [ "$FOLLOW_WAIT" -gt 0 ] || FOLLOW_WAIT=0
+      [ "$FOLLOW_WAIT" -eq 0 ] || sleep "$FOLLOW_WAIT"
       continue
     fi
     if ! follow_next_wait "$GATE_RETRY_DELAY" "$attempt" "$response_attempts" "$waited" "$REVIEW_RESPONSE_WAIT_SECONDS" "$previous"; then

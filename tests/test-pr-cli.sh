@@ -438,6 +438,9 @@ case "$1 ${2:-}" in
     # The review surface's counts (AUT-1638), taken from the very pages the
     # REST reads serve, so the two can never disagree.
     if has 'comments{totalCount}' "$@"; then
+      # A poll whose own reads outlast the time left before the deadline: the
+      # real /bin/sleep, never the stub the caller may have on PATH.
+      [ -z "${GH_SLOW_SURFACE_SECONDS:-}" ] || /bin/sleep "$GH_SLOW_SURFACE_SECONDS"
       comment_count="$(GH_UNLOGGED=1 "$0" api --paginate "repos/fixture/issues/7/comments?per_page=100" | jq -s 'add | length')"
       review_count="$(GH_UNLOGGED=1 "$0" api --paginate "repos/fixture/pulls/7/reviews?per_page=100" | jq -s 'add | length')"
       printf '%s %s\n' "$comment_count" "$review_count"
@@ -859,9 +862,15 @@ case "$1 ${2:-}" in
       [ ! -f "$GH_STATE/rate-limit-unreadable" ] || { printf 'gh: Bad credentials (HTTP 401)\n' >&2; exit 1; }
       core_remaining=4321
       graphql_remaining=4999
-      case "${GH_RATE_LIMIT_KIND:-core}" in
+      # Which quota is spent, defaulting to the one the refusal came from;
+      # `both` is the machine that polled every quota to zero (AUT-1638).
+      case "${GH_RATE_LIMIT_EXHAUSTED:-${GH_RATE_LIMIT_KIND:-core}}" in
         core) core_remaining=0 ;;
         graphql) graphql_remaining=0 ;;
+        both)
+          core_remaining=0
+          graphql_remaining=0
+          ;;
       esac
       jq -cn --argjson core "$core_remaining" --argjson graphql "$graphql_remaining" \
         '{resources:{core:{limit:5000,used:(5000 - $core),remaining:$core,reset:1789086073},graphql:{limit:5000,used:(5000 - $graphql),remaining:$graphql,reset:1789086400}}}' \
@@ -2456,6 +2465,26 @@ SLEEP
   [ "$(wc -l <"$TMP/sleeps" | tr -d ' ')" -le 3 ] \
     || fail "the review wait slept $(wc -l <"$TMP/sleeps" | tr -d ' ') times inside a two-second bound"
 
+  echo "==> the review wait spaces its next poll from the clock after the poll (AUT-1648)"
+  # The poll's own reads outlast the time left before the wait ends: five
+  # seconds of bound, an eight-second poll. Spacing the next read from the
+  # instant the poll started -- the clock read before those reads -- put it
+  # that far past the end; the spacing is measured from the clock as it is
+  # when the spacing begins, so there is none left to take here. The decision
+  # to end the wait keeps the poll's own instant, so nothing ends early: the
+  # bound is still what wakes it. Sleeps are recorded in the call log, so a
+  # wait scheduled before the gate is woken is told from the gate follow's.
+  v4_reset
+  date -u +%Y-%m-%dT%H:%M:%SZ >"$TMP/state/request-at"
+  PATH="$TMP/clock-bin:$PATH" SLEEP_LOG="$GH_CALLS" GH_SLOW_SURFACE_SECONDS=8 \
+    TOUCHSTONE_REVIEW_WAIT_MAX_SECONDS=5 TOUCHSTONE_GATE_RETRY_DELAY=5 \
+    run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"wokeBy":"wait-bound"'
+  review_wait_sleeps="$(awk '/actions\/runs\/77\/rerun/ { exit } /^[0-9]+$/ { print }' "$GH_CALLS" | paste -sd' ' -)"
+  [ -z "$review_wait_sleeps" ] \
+    || fail "the review wait scheduled a wait (${review_wait_sleeps}s) from the clock as it was before its poll, with its bound already reached"
+
   echo "==> the review wait's REST reads do not grow with its polls (AUT-1638)"
   # One GraphQL count per poll says whether the review surface changed, and
   # the REST observation runs on the first poll and when a count moves. A
@@ -2539,6 +2568,50 @@ SLEEP
   assert_has "$TMP/out" '"rateLimit":{"limit":"core"'
   [ "$(grep -c '^pr edit' "$GH_CALLS" || true)" -eq 1 ] \
     || fail "a rate-limited body edit was retried: $(grep -c '^pr edit' "$GH_CALLS" || true) requests"
+  v4_reset
+
+  echo "==> a rate limit is recognized where no temporary directory is writable (AUT-1648)"
+  # A GraphQL refusal is reported on stderr alone -- no JSON body on stdout --
+  # so a read-only sandbox, which cannot capture stderr to a scratch file, saw
+  # nothing to match and carried on retrying into the exhausted quota.
+  v4_reset
+  touch "$TMP/state/pr-exists"
+  TMPDIR="$TMP/does-not-exist" GH_RATE_LIMITED='pr view' GH_RATE_LIMIT_KIND=graphql \
+    run_pr_v4 "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" "GitHub's GraphQL rate limit for this token is exhausted until 2026-09-11T00:26:40Z"
+  assert_has "$TMP/out" '"rateLimit":{"limit":"graphql","rerunAfter":"2026-09-11T00:26:40Z"}'
+  [ "$(grep -c '^pr view' "$GH_CALLS" || true)" -eq 1 ] \
+    || fail "a rate-limited read without a writable temporary directory was retried: $(grep -c '^pr view' "$GH_CALLS" || true) requests"
+
+  echo "==> both quotas exhausted reports the one the refused request spent (AUT-1648)"
+  # Reading core first named the REST reset for a GraphQL refusal, sending the
+  # driver back five minutes before its quota could answer.
+  v4_reset
+  touch "$TMP/state/pr-exists"
+  GH_RATE_LIMITED='pr view' GH_RATE_LIMIT_KIND=graphql GH_RATE_LIMIT_EXHAUSTED=both \
+    run_pr_v4 "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" '"rateLimit":{"limit":"graphql","rerunAfter":"2026-09-11T00:26:40Z"}'
+  assert_not_has "$TMP/out" '"limit":"core"'
+  # A REST refusal with the same two quotas spent still names the REST reset.
+  GH_RATE_LIMITED='rules/branches/' GH_RATE_LIMIT_EXHAUSTED=both \
+    run_pr_v4 "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" '"rateLimit":{"limit":"core","rerunAfter":"2026-09-11T00:21:13Z"}'
+
+  echo "==> the first request's quota read names the checkout's own host (AUT-1648)"
+  # The repository read is the first request every command makes, so a refusal
+  # of it leaves GitHub's answer for the host unknown; reading github.com's
+  # quota there reports a reset an Enterprise token never had.
+  v4_reset
+  touch "$TMP/state/pr-exists"
+  git -C "$TMP/project" remote set-url origin https://github.example.com/autumngarage/current.git
+  GH_RATE_LIMITED='repo view' run_pr_v4 "$TMP/out" status 7 --json
+  git -C "$TMP/project" remote set-url origin "$TMP/origin.git"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" '"rateLimit":{"limit":"core","rerunAfter":"2026-09-11T00:21:13Z"}'
+  assert_has "$GH_CALLS" 'api --hostname github.example.com rate_limit'
   v4_reset
 
   # Contract 3 is unchanged: no local wait, no review read, no deadline read,
@@ -3896,6 +3969,24 @@ echo "gh: debug detail for $*" >&2
 has() { local needle="$1"; shift; for arg in "$@"; do [[ "$arg" == *"$needle"* ]] && return 0; done; return 1; }
 value_after() { local wanted="$1"; shift; while [ "$#" -gt 0 ]; do if [ "$1" = "$wanted" ]; then printf '%s\n' "$2"; return 0; fi; shift; done; return 1; }
 field_value() { local wanted="$1"; shift; for arg in "$@"; do case "$arg" in "$wanted"=*) printf '%s\n' "${arg#*=}"; return 0 ;; esac; done; return 1; }
+# The free quota read the shared handler answers from, and GitHub refusing
+# this token's GraphQL requests for its rate limit (AUT-1648). The quota read
+# comes first: it is REST, and GitHub answers it while a quota is exhausted.
+if has 'rate_limit' "$@"; then
+  jq -cn '{resources:{core:{remaining:4321,reset:1789086073},graphql:{remaining:0,reset:1789086400}}}' \
+    | jq -r "$(value_after --jq "$@")"
+  exit 0
+fi
+if [ -f "$GH_STATE/rate-limited-graphql" ] && [ "${1:-}" = api ] && [ "${2:-}" = graphql ]; then
+  printf 'GraphQL: API rate limit exceeded for user ID 1. (RATE_LIMITED)\n' >&2
+  exit 1
+fi
+# `repo view --json` is a GraphQL request too, and it is the first one this
+# client makes: the one an exhausted session meets first.
+if [ -f "$GH_STATE/rate-limited-repo-view" ] && [ "${1:-}" = repo ] && [ "${2:-}" = view ]; then
+  printf 'GraphQL: API rate limit exceeded for user ID 1. (RATE_LIMITED)\n' >&2
+  exit 1
+fi
 case "$1 $2" in
   "api repos/autumngarage/current/pulls/7")
     printf '%s\n' "${GH_EXISTING_PR_BODY:-existing body}"
@@ -4058,6 +4149,7 @@ exit 0
 STUB
   chmod +x "$RR/bin/gh"
   export PATH="$RR/bin:$PATH" GH_STATE="$RR/state"
+  export TOUCHSTONE_PR_REAL="$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" TOUCHSTONE_PR_PROJECT="$TOUCHSTONE_ROOT"
 
   mkdir -p "$RR/tool-v1/scripts"
   cp "$TOUCHSTONE_ROOT/scripts/respond-review.sh" "$RR/tool-v1/scripts/respond-review.sh"
@@ -4077,6 +4169,16 @@ if [ "${1:-}" = wake-review-gate ]; then
   [ ! -f "$GH_STATE/wake-fails" ] || { echo "ERROR: the stubbed wake failed" >&2; exit 1; }
   echo "PR #7: review gate woken"
   exit 0
+fi
+# The rate-limit classifier is the real sequencer's, not a second fake of it:
+# the point of the case is that the answer client stops where the rest of the
+# CLI stops, with the same words (AUT-1648).
+if [ "${1:-}" = rate-limit-check ]; then
+  printf '%s\n' "$*" >>"$GH_STATE/rate-limit-checks"
+  # --project only so the case does not depend on the directory the suite was
+  # started from; in production the same root comes from the answer client's
+  # own working directory.
+  exec bash "$TOUCHSTONE_PR_REAL" "$@" --project "$TOUCHSTONE_PR_PROJECT"
 fi
 version=null
 # A failed status reports itself as a JSON document on stdout, as the real
@@ -4591,6 +4693,33 @@ STATUS_STUB
   [ "$RUN_RC" -eq 1 ] || fail "failed login read exited $RUN_RC, expected 1"
   grep -qF 'bad credentials' "$RR/out" && ok "failure keeps the stderr detail" \
     || fail "failure diagnostic was dropped"
+
+  echo "==> a rate-limited read stops the answer with the reset, unretried (AUT-1648)"
+  # This client had its own read retries and no rate-limit handling at all:
+  # every session on the machine shares the token's quota, so those retries
+  # spent it again the moment it reset. It stops where the rest of the CLI
+  # stops, through the same handler, with the same words.
+  rm -f "$GH_STATE/rate-limit-checks"
+  touch "$GH_STATE/rate-limited-graphql"
+  TOUCHSTONE_GRAPHQL_RETRY_DELAY=0 run 7 --all-resolved-check
+  rm -f "$GH_STATE/rate-limited-graphql"
+  [ "$RUN_RC" -ne 0 ] || fail "a rate-limited --all-resolved-check reported the PR clean"
+  grep -qF "GitHub's GraphQL rate limit for this token is exhausted until 2026-09-11T00:26:40Z" "$RR/out" \
+    || fail "the answer client did not name the quota and its reset: $(tail -3 "$RR/out")"
+  ! grep -qF 'GraphQL attempt' "$RR/out" \
+    || fail "a rate-limited read was retried: $(grep -c 'GraphQL attempt' "$RR/out") attempt notices"
+  [ -f "$GH_STATE/rate-limit-checks" ] \
+    || fail "the answer client classified the refusal itself instead of asking the shared handler"
+  # The repository read is the first request this client makes, so it is the
+  # one an exhausted session meets first; read outside gh_read, with its
+  # diagnostic discarded, it reported only that the repository could not be
+  # resolved and named no quota (PR #1213 review, P1).
+  touch "$GH_STATE/rate-limited-repo-view"
+  run 7 --all-resolved-check
+  rm -f "$GH_STATE/rate-limited-repo-view"
+  [ "$RUN_RC" -ne 0 ] || fail "a rate-limited repository read reported the PR clean"
+  grep -qF "GitHub's GraphQL rate limit for this token is exhausted until 2026-09-11T00:26:40Z" "$RR/out" \
+    || fail "the first read did not name the quota and its reset: $(tail -3 "$RR/out")"
 
   echo "==> no production script captures a gh response with stderr merged in"
   # The guardrail for the class: a $(gh ... 2>&1) capture parses diagnostics
