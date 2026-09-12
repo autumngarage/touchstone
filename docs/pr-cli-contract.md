@@ -196,9 +196,12 @@ taking this document's word for it.
   lists each one whose newest run for the head Actions refused, as
   `{workflow, workflowRunId, jobId, billing, annotation, annotationError}`,
   and is absent when there is none. Any such run also makes the phase
-  `action-required` (`inspect`). Human output names each refused run and
-  prints one next step, the refusal remedy naming every refused run
-  (AUT-1610). The adjacent
+  `action-required` (`inspect`), except while GitHub holds a live merge-queue
+  entry for the head, which stays `queued`: GitHub has already admitted that
+  head, and the queue's own checks are refused the same way. The refused runs
+  themselves, and the one next step, are reported in every phase. Human output
+  names each refused run and prints one next step, the refusal remedy naming
+  every refused run (AUT-1610). The adjacent
   `reviewGateBehaviorContractVersion` is the version verified at the effective
   exact pinned revision, or `null` when that live binding is not verified; PR
   clients use this field instead of inferring behavior from local policy bytes.
