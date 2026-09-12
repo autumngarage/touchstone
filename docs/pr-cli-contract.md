@@ -97,16 +97,27 @@ taking this document's word for it.
   A required job that Actions failed without starting it is not an evidence
   or review verdict. The jobs API reports such a job as `failure` with no
   steps, which is how an exhausted Actions budget or a failed payment shows up.
-  `open` reports it as `Actions refused this job`, quotes the job's annotation
-  (or says it was unreadable), and neither waits on the run nor re-runs it,
-  because GitHub refuses a re-run the same way. The hosted review request still
+  Its annotation decides whether Actions refused it: one naming that billing
+  refusal, or none that can be read, is a refusal. A readable annotation
+  naming anything else, such as a runner that never picked the job up, is an
+  ordinary failure that keeps the ordinary retry, and `open` prints GitHub's
+  text (AUT-1610). `open` reports a refused job as `Actions refused this job`,
+  quotes the job's annotation (or says it was unreadable), and neither waits
+  on the run nor re-runs it, because GitHub refuses a re-run the same way.
+  Under gate behavior contract 4, a refused `delivery-evidence` run ends `open`
+  before its review wait, but the head's `review-gate` run is still read,
+  never re-run, so a refused one is named too. The hosted review request still
   posts, since the reviewer runs outside Actions. The command then exits 1,
   naming each refused run and the next step. The body needs no change. No
   merge can complete while Actions refuses jobs, because the merge queue's own
   checks are refused the same way and the queue rule admits no audited bypass
   (the Emergency path in `principles/git-workflow.md` reports that none
-  exists). Restoring Actions capacity is the human's decision, and the refused
-  runs are re-run once jobs run again (AUT-1594).
+  exists). Recovery is the human's, and this is the one place it is stated:
+  `open` never re-runs a refused run, because it cannot see when Actions
+  accepts jobs again. Once capacity is restored, re-run each refused run
+  (`gh api --hostname HOST -X POST repos/O/R/actions/runs/ID/rerun`, which
+  every refusal remedy prints for each run it names), then re-run `open`
+  (AUT-1594, AUT-1610).
   Whichever run supplies the verdict, the sequencer then
   re-verifies the body, head, and base immediately before success without
   closing the PR or disturbing auto-merge (AUT-481). GitHub records a body
@@ -173,13 +184,21 @@ taking this document's word for it.
   does not attribute historical same-named runs to policy. If GitHub reports
   no such CheckRun, `reviewGateCheck.present` is false; when a bound workflow run
   already exists, its current status remains visible. When every failed job in
-  the current attempt has no steps, Actions refused to start it, and the
+  the current attempt has no steps and its annotation names the billing
+  refusal or cannot be read, Actions refused it, and the
   additive `reviewGateCheck.actionsRefused` object carries `jobId`, `billing`
   (the annotation names GitHub's spending-limit or payment refusal),
   `annotation` (the job's annotation text, or `null`), and `annotationError`
   (why it could not be read, or `null`). The phase is then `action-required`
   rather than `fix-required`, because no review exists to address. The field is
-  absent otherwise. The adjacent
+  absent otherwise. The policy's other required workflows are read the same
+  way, from the same run pages: the additive top-level `actionsRefusedRuns`
+  lists each one whose newest run for the head Actions refused, as
+  `{workflow, workflowRunId, jobId, billing, annotation, annotationError}`,
+  and is absent when there is none. Any such run also makes the phase
+  `action-required` (`inspect`). Human output names each refused run and
+  prints one next step, the refusal remedy naming every refused run
+  (AUT-1610). The adjacent
   `reviewGateBehaviorContractVersion` is the version verified at the effective
   exact pinned revision, or `null` when that live binding is not verified; PR
   clients use this field instead of inferring behavior from local policy bytes.
@@ -314,7 +333,12 @@ taking this document's word for it.
   exists (AUT-1636). Under contract 4 an explicit error reply records the same
   notice, naming the error instead of a quota. While Actions refuses a
   required job for the head, no notice is posted, because no gate run can
-  review it; the command's failure names the refused runs (AUT-1610).
+  review it; the command's failure names the refused runs (AUT-1610). A notice
+  GitHub refuses to accept is reported on stderr, naming the marker to post by
+  hand, and is never fatal: the head's gate step has already run, and failing
+  here would discard a concluded gate observation and send the retry through
+  the whole wait again, spending a second gate run and a second fallback
+  review on a head already evaluated (AUT-1610).
 
 - Under gate behavior contract 4 the pinned gate evaluates once per run and
   no longer polls, so `open` waits on the driver's machine instead of an
@@ -366,7 +390,10 @@ taking this document's word for it.
   head: successful, it asks GitHub to merge; still evaluating, it arms
   auto-merge bound to that head so GitHub admits it when the gate succeeds
   (`reviewGate.action` is `arm-auto-merge`). A failed, absent, unbound, or
-  ambiguous gate causes no merge or queue mutation. Under a policy that
+  ambiguous gate causes no merge or queue mutation. A gate Actions refused is
+  refused with the refusal's own remedy, re-running the refused run once
+  Actions accepts jobs, rather than answering findings (AUT-1610). Under a
+  policy that
   enforces a merge queue, a head whose newest queue event is a removal (the
   `evicted` phase `status` reports) is refused with exit 2 and no merge
   mutation: the required check already failed on this exact head and nothing

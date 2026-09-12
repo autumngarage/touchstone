@@ -290,6 +290,10 @@ case "$1 ${2:-}" in
     ;;
   "pr comment")
     if has 'touchstone:review-fallback' "$@"; then
+      if [ -f "$GH_STATE/fallback-comment-fails" ]; then
+        printf 'gh: Server Error (HTTP 502)\n' >&2
+        exit 1
+      fi
       touch "$GH_STATE/fallback-announced"
       printf '%s\n' https://example.test/pr/7#issuecomment-3
       exit 0
@@ -613,6 +617,9 @@ case "$1 ${2:-}" in
       else
         printf '%s\n' '{"total_count":1,"jobs":[{"id":102919300001,"run_id":80,"name":"delivery-evidence","run_attempt":2,"status":"completed","conclusion":"failure","steps":[{"name":"Set up job","status":"completed","conclusion":"success","number":1},{"name":"Check delivery evidence","status":"completed","conclusion":"failure","number":2}]}]}'
       fi
+    elif has '/actions/runs/90/attempts/1/jobs?per_page=100' "$@"; then
+      # The validate job Actions refused (validate-refused): no steps.
+      printf '%s\n' '{"total_count":1,"jobs":[{"id":102919304400,"run_id":90,"workflow_name":"validate","name":"validate","run_attempt":1,"status":"completed","conclusion":"failure","steps":[],"labels":["ubuntu-latest"],"runner_id":0,"runner_name":""}]}'
     elif has 'check-runs?check_name=review-gate&filter=all&per_page=100' "$@"; then
       case "${GH_MODE:-ok}" in
         status_gate_pending)
@@ -865,6 +872,11 @@ case "$1 ${2:-}" in
       if [ -f "$GH_STATE/annotations-unreadable" ]; then
         printf 'gh: Not Found (HTTP 404)\n' >&2
         exit 1
+      fi
+      # A job a runner never picked up: readable, and naming no billing.
+      if [ -f "$GH_STATE/annotations-nonbilling" ]; then
+        jq -cn '[{path:".github",start_line:1,annotation_level:"failure",title:"",message:"The job was not acquired by Runner of type hosted even after multiple attempts",raw_details:""}]'
+        exit 0
       fi
       # The annotation GitHub attached to every refused job on hesperus#354
       # and vesper#1255, verbatim.
@@ -1173,6 +1185,10 @@ case "$1 ${2:-}" in
         fi
         if [ -f "$GH_STATE/same-name-external-decoy" ] || [ -f "$GH_STATE/same-name-external-decoy-only" ]; then
           runs="$(printf '%s' "$runs" | jq -c '.workflow_runs += [{"id":82,"node_id":"RUN_82","name":"delivery-evidence","head_sha":"'"$GH_HEAD"'","check_suite_id":905,"run_attempt":1,"event":"pull_request","status":"completed","conclusion":"success","workflow_id":1001,"run_started_at":"2026-08-27T17:25:00Z","updated_at":"2026-08-27T17:25:00Z","pull_requests":[{"number":7}]}]')"
+        fi
+        # The policy's validate workflow, refused by Actions for this head.
+        if [ -f "$GH_STATE/validate-refused" ]; then
+          runs="$(printf '%s' "$runs" | jq -c '.workflow_runs += [{"id":90,"node_id":"RUN_90","name":"validate","head_sha":"'"$GH_HEAD"'","check_suite_id":908,"run_attempt":1,"event":"pull_request","status":"completed","conclusion":"failure","workflow_id":1002,"run_started_at":"2026-08-27T17:05:00Z","updated_at":"2026-08-27T17:06:00Z","pull_requests":[{"number":7}]}]')"
         fi
         if [ "${GH_MODE:-ok}" = delivery_new_run_after_rerun ] && [ -f "$GH_STATE/evidence-reruns" ]; then
           runs="$(printf '%s' "$runs" | jq -c '.workflow_runs += [{
@@ -1783,6 +1799,10 @@ EOF
   assert_has "$TMP/out" 'The PR body needs no change: nothing evaluated it.'
   assert_has "$TMP/out" 'the queue rule admits no audited bypass, so none exists to use'
   assert_has "$TMP/out" 'Restoring Actions capacity (budget or allowance) is the human'\''s decision'
+  # The recovery is stated once, with each refused run's exact re-run: open
+  # never re-runs one itself (AUT-1610).
+  assert_has "$TMP/out" 'touchstone pr open never re-runs a refused run'
+  assert_has "$TMP/out" 're-run each refused run (gh api --hostname github.com -X POST repos/autumngarage/current/actions/runs/80/rerun; gh api --hostname github.com -X POST repos/autumngarage/current/actions/runs/77/rerun)'
   assert_not_has "$TMP/out" 'organization admin'
   assert_has "$TMP/out" 'PR #7 exists at https://example.test/pr/7'
   assert_not_has "$TMP/out" 'correct the recorded evidence'
@@ -1811,6 +1831,68 @@ EOF
   assert_not_has "$TMP/out" 'correct the recorded evidence'
   rm -f "$TMP/state/annotations-unreadable" "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request" \
     "$TMP/state/behavior-version-next"
+
+  echo "==> a job that never started for a reason other than billing keeps the ordinary retry (AUT-1610)"
+  # Only a billing annotation, or none that can be read, makes a job refused.
+  # A runner that never picked the job up is a failure a re-run can clear.
+  touch "$TMP/state/review-gate" "$TMP/state/behavior-version-next" "$TMP/state/pr-exists" "$TMP/state/annotations-nonbilling"
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/evidence-reruns" "$TMP/state/review-request"
+  GH_MODE=actions_refused run_pr_v3 "$TMP/out" open --title 'Refused' --body-file "$TMP/body"
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'actions/runs/80/rerun'
+  assert_has "$GH_CALLS" 'actions/runs/77/rerun'
+  assert_has "$TMP/out" 'delivery-evidence run 80 failed without running a step, and its annotation names no Actions billing refusal (GitHub says "The job was not acquired by Runner'
+  assert_not_has "$TMP/out" 'Actions refused this job'
+  # status reads the same gate job the same way. GitHub declares contract 4
+  # again here, so the gate is applied and actually read (checkRunId).
+  rm -f "$TMP/state/behavior-version-next"
+  GH_MODE=status_gate_refused run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"checkRunId":102919303302'
+  assert_not_has "$TMP/out" 'actionsRefused'
+  rm -f "$TMP/state/annotations-nonbilling" "$TMP/state/review-request" \
+    "$TMP/state/gate-reruns" "$TMP/state/evidence-reruns"
+
+  echo "==> merge gives a refused gate the refusal's own remedy, not findings to answer (AUT-1610)"
+  GH_MODE=status_gate_refused run_pr "$TMP/out" merge 7 --head "$HEAD_SHA"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'Actions refused this job (billing)'
+  assert_has "$TMP/out" 're-run each refused run (gh api --hostname github.com -X POST repos/autumngarage/current/actions/runs/77/rerun)'
+  assert_not_has "$TMP/out" 'answer the reported findings'
+  assert_not_has "$GH_CALLS" 'pr merge'
+
+  echo "==> status reads delivery-evidence and validate refusals through the gate's reader (AUT-1610)"
+  GH_MODE=actions_refused run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"actionsRefused":{"jobId":102919303302'
+  assert_has "$TMP/out" '"actionsRefusedRuns":[{"workflow":"delivery-evidence","workflowRunId":80,"jobId":102919303957,"billing":true'
+  assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'
+  GH_MODE=actions_refused run_pr "$TMP/out" status 7
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '  required run: delivery-evidence run 80: Actions refused this job (billing)'
+  assert_has "$TMP/out" 're-run each refused run (gh api --hostname github.com -X POST repos/autumngarage/current/actions/runs/77/rerun; gh api --hostname github.com -X POST repos/autumngarage/current/actions/runs/80/rerun)'
+  [ "$(grep -c 'next step:' "$TMP/out" || true)" -eq 1 ] || fail "status printed other than one next step for the refused runs"
+  # validate alone: the gate passed, yet the head is held rather than ready.
+  touch "$TMP/state/validate-refused"
+  GH_MODE=status_gate_success run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"actionsRefusedRuns":[{"workflow":"validate","workflowRunId":90,"jobId":102919304400,"billing":true'
+  assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'
+  assert_not_has "$TMP/out" '"phase":"ready-to-queue"'
+  rm -f "$TMP/state/validate-refused"
+  GH_MODE=status_gate_success run_pr "$TMP/out" status 7 --json
+  assert_not_has "$TMP/out" 'actionsRefusedRuns'
+
+  echo "==> under contract 4, open names a refused review-gate run beside the refused evidence run (AUT-1610)"
+  rm -f "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request" "$TMP/state/gate-reruns"
+  GH_MODE=actions_refused run_pr "$TMP/out" open --title 'Refused' --body-file "$TMP/body"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'Not waiting for review'
+  assert_has "$TMP/out" 'delivery-evidence run 80: Actions refused this job (billing)'
+  assert_has "$TMP/out" 'review-gate run 77: Actions refused this job (billing)'
+  assert_has "$TMP/out" 'actions/runs/80/rerun; gh api --hostname github.com -X POST repos/autumngarage/current/actions/runs/77/rerun)'
+  assert_not_has "$GH_CALLS" 'actions/runs/77/rerun'
+  rm -f "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request" "$TMP/state/gate-reruns"
 
   echo "==> open re-runs the pinned review gate where the repository has one"
   touch "$TMP/state/review-gate" "$TMP/state/behavior-version-legacy"
@@ -2112,6 +2194,21 @@ EOF
   awk '/actions\/runs\/77\/rerun/ && !r { r = NR } /^pr comment.*touchstone:review-fallback/ { n = NR } END { exit !(r && n > r) }' "$GH_CALLS" \
     || fail "contract 4 posted the fallback notice before it woke the gate"
   assert_not_has "$GH_CALLS" 'authored the verdict'
+  # A notice GitHub refuses is not a lost gate observation. The woken run has
+  # already concluded by the time the notice is posted, so failing here threw
+  # that away and asked for a retry that would wake the gate a second time --
+  # a second fallback review of a head it had already evaluated (AUT-1610,
+  # routed from touchstone#1210).
+  v4_reset
+  touch "$TMP/state/fallback-comment-fails"
+  GH_MODE=primary_quota run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'Could not post the review-fallback notice on PR #7: gh: Server Error (HTTP 502)'
+  assert_has "$TMP/out" 'post a comment carrying <!-- touchstone:review-fallback head='
+  assert_has "$TMP/out" '"reviewGate":{"runId":"77","action":"rerun-requested","status":"completed","conclusion":"success"}'
+  assert_has "$TMP/out" '"reviewFallback":"fallback"'
+  [ "$(v4_reruns)" -eq 1 ] || fail "a refused fallback notice cost $(v4_reruns) gate runs; expected the one already woken"
+  rm -f "$TMP/state/fallback-comment-fails"
   # A woken run Actions refused reviews nothing: no notice (AUT-1610).
   v4_reset
   touch "$TMP/state/gate-job-refused"

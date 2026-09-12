@@ -316,6 +316,11 @@ GIT_WORKFLOW_SKILL="$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md"
 assert_contains "$GIT_WORKFLOW_SKILL" "Inspect the repository's effective rules"
 assert_contains "$GIT_WORKFLOW_SKILL" "Where installed and verified as required"
 assert_contains "$GIT_WORKFLOW_SKILL" "missing enforcement as an adoption gap"
+# The skill sent agents to look for a notice and an answer command that the
+# CLI deliberately withholds while Actions refuses jobs for the head, and for
+# one it could not post (AUT-1610). Shipped guidance states both exceptions.
+assert_contains "$GIT_WORKFLOW_SKILL" "while Actions refuses jobs for the head"
+assert_contains "$GIT_WORKFLOW_SKILL" "a notice GitHub refuses to accept is reported on stderr"
 assert_not_contains "$GIT_WORKFLOW_SKILL" 'Review is enforced by `review-gate`.'
 
 GIT_WORKFLOW_GUIDE="$TOUCHSTONE_ROOT/principles/git-workflow.md"

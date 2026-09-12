@@ -1670,10 +1670,16 @@ wait_for_new_attempt() {
 # cause (hesperus#354, vesper#1255). That is no verdict on anything the pull
 # request carries, and reporting it as one sent drivers to rewrite a body the
 # gate never read (AUT-1594). "Never started" is read from GitHub's own record
-# -- every failed job in the attempt has no steps -- and the annotation only
-# names the cause, so an unreadable annotation is reported, never dropped, and
-# never turns a refusal back into a verdict.
+# -- every failed job in the attempt has no steps. The annotation then decides
+# whether Actions refused it: one naming the billing refusal, or none that can
+# be read, is a refusal, reported and never re-run, and an unreadable one is
+# reported, never dropped. A readable annotation naming anything else -- a
+# runner that never picked the job up -- is an ordinary failure a re-run can
+# clear: it keeps the ordinary retry, and the caller reports its text
+# (AUT-1610).
 ACTIONS_REFUSAL_JSON="null"
+# The annotation of a job that never started for a reason other than billing.
+ACTIONS_UNSTARTED_ANNOTATION=""
 ACTIONS_REFUSAL_JQ='def refusal_text:
   "Actions refused this job (" + (if .billing then "billing" else "no step ran" end)
   + "), not an evidence verdict: "
@@ -1684,6 +1690,7 @@ ACTIONS_REFUSAL_JQ='def refusal_text:
 classify_actions_refusal() {
   local job_pages="$1" workflow_name="$2" run_id="$3" job_id annotation="" annotation_error="" billing=false
   ACTIONS_REFUSAL_JSON="null"
+  ACTIONS_UNSTARTED_ANNOTATION=""
   job_id="$(printf '%s\n' "$job_pages" | jq -sr '
     if length == 0 then error("expected at least one job response page")
     elif any(.[]; (.jobs | type) != "array") then error("expected jobs arrays")
@@ -1709,6 +1716,9 @@ classify_actions_refusal() {
   [ -z "$annotation" ] || annotation="$(clean_diagnostic "$annotation")"
   if [ -n "$annotation" ] && printf '%s' "$annotation" | grep -qiE "$ACTIONS_BILLING_PATTERN"; then
     billing=true
+  elif [ -n "$annotation" ]; then
+    ACTIONS_UNSTARTED_ANNOTATION="$annotation"
+    return 0
   fi
   ACTIONS_REFUSAL_JSON="$(jq -cn --argjson job_id "$job_id" --argjson billing "$billing" \
     --arg annotation "$annotation" --arg annotation_error "$annotation_error" '{
@@ -1735,20 +1745,102 @@ actions_refusal_text() {
 # to route around it: with the merge-queue rule on, an admin merge and the
 # REST merge both return 405, and the queue's own merge_group checks are
 # refused by the same limit, so enqueuing only evicts (hesperus#354).
-# Editing the body cannot help either.
+# Editing the body cannot help either, and neither does re-running
+# touchstone pr open: it never re-runs a refused run, because it cannot see
+# when Actions accepts jobs again and a re-run before then is refused the same
+# way. So recovery is the human's, and this is the one place the CLI states
+# it, with the exact re-run of each refused run it names (AUT-1610). The
+# argument is those workflow-run ids, space-separated.
 actions_refusal_remedy() {
-  printf '%s' "The PR body needs no change: nothing evaluated it. No merge can complete while Actions refuses jobs: required checks cannot pass, the merge queue's own checks are refused the same way, and the queue rule admits no audited bypass, so none exists to use (the Emergency path in $TOOL_ROOT/principles/git-workflow.md reports exactly that). Restoring Actions capacity (budget or allowance) is the human's decision; tell them. Once jobs run again, re-run the refused runs named above, then re-run touchstone pr open."
+  local run_id reruns=""
+  for run_id in $1; do
+    reruns="${reruns:+$reruns; }gh api --hostname $REPO_HOST -X POST repos/$REPO/actions/runs/$run_id/rerun"
+  done
+  printf '%s' "The PR body needs no change: nothing evaluated it. No merge can complete while Actions refuses jobs: required checks cannot pass, the merge queue's own checks are refused the same way, and the queue rule admits no audited bypass, so none exists to use (the Emergency path in $TOOL_ROOT/principles/git-workflow.md reports exactly that). Restoring Actions capacity (budget or allowance) is the human's decision; tell them. touchstone pr open never re-runs a refused run, since it cannot see when Actions accepts jobs again. Once jobs run again, re-run each refused run${reruns:+ ($reruns)}, then re-run touchstone pr open."
+}
+
+# A job that never started for a reason other than billing is handled as an
+# ordinary failure, and the driver still hears GitHub's reason (AUT-1610).
+report_unstarted_run() {
+  [ -n "$ACTIONS_UNSTARTED_ANNOTATION" ] && [ "$JSON_MODE" = false ] || return 0
+  printf '%s run %s failed without running a step, and its annotation names no Actions billing refusal (GitHub says "%s"), so it is handled as an ordinary failed run.\n' \
+    "$1" "$2" "$ACTIONS_UNSTARTED_ANNOTATION" >&2
 }
 
 # open still requests hosted review when Actions refuses a required job, since
 # the reviewer runs outside Actions; each refusal is kept for the one failure
 # it reports once the request is bound.
 OPEN_ACTIONS_REFUSALS=""
+OPEN_ACTIONS_REFUSED_RUN_IDS=""
 record_actions_refusal() {
   local line
   line="$1 run $2: $(actions_refusal_text "$ACTIONS_REFUSAL_JSON")"
   OPEN_ACTIONS_REFUSALS="${OPEN_ACTIONS_REFUSALS:+$OPEN_ACTIONS_REFUSALS; }$line"
+  OPEN_ACTIONS_REFUSED_RUN_IDS="${OPEN_ACTIONS_REFUSED_RUN_IDS:+$OPEN_ACTIONS_REFUSED_RUN_IDS }$2"
   [ "$JSON_MODE" = true ] || printf '%s\n' "$line" >&2
+}
+
+# The newest run of a required workflow for this pull request at its head, as
+# one row -- id, node id, status, attempt start, attempt, conclusion ("-" when
+# none) -- or empty when there is none. Organization-required runs carry a
+# target-repository workflow id, so repository-local look-alikes are excluded,
+# and two external identities of one name are refused. The one selection the
+# re-run and every read-only refusal check share.
+REQUIRED_RUN_ROW=""
+select_required_workflow_run() {
+  local run_pages="$1" workflow_name="$2" local_workflow_ids="$3" number="$4" head="$5" workflow_ids workflow_id_count
+  REQUIRED_RUN_ROW=""
+  workflow_ids="$(printf '%s\n' "$run_pages" | jq -sec \
+    --arg workflow "$workflow_name" --argjson local_ids "$local_workflow_ids" --argjson number "$number" \
+    '[.[].workflow_runs[]? | select(.name == $workflow and .workflow_id != null and (.workflow_id as $id | $local_ids | index($id)) == null and (.event == "pull_request" or .event == "merge_group") and any(.pull_requests[]?; .number == $number)) | .workflow_id] | unique')" \
+    || fail_operation "GitHub returned malformed $workflow_name run pages for $head" "Retry after GitHub returns complete workflow-run pages."
+  workflow_id_count="$(printf '%s' "$workflow_ids" | jq 'length')"
+  [ "$workflow_id_count" -le 1 ] \
+    || fail_operation "multiple external $workflow_name workflow identities ran for PR #$number at $head" "Remove the same-named required-workflow ambiguity, then retry."
+  REQUIRED_RUN_ROW="$(printf '%s\n' "$run_pages" | jq -ser \
+    --arg workflow "$workflow_name" --argjson workflow_ids "$workflow_ids" --argjson number "$number" \
+    '[.[].workflow_runs[]? | select(.name == $workflow and (.workflow_id as $id | $workflow_ids | index($id)) != null and (.event == "pull_request" or .event == "merge_group") and any(.pull_requests[]?; .number == $number))]
+    | if length == 0 then ""
+      elif any(.[]; (.id | type) != "number" or (.node_id | type) != "string" or .node_id == ""
+        or (.run_attempt | type) != "number"
+        or (.run_started_at | type) != "string" or .run_started_at == ""
+        or (.status | type) != "string") then
+        error("workflow run is missing its id, attempt, status, or execution timestamp")
+      else (map(.run_started_at) | max) as $latest_start
+        | [.[] | select(.run_started_at == $latest_start)] as $latest_runs
+        | if ($latest_runs | length) > 1 then
+            error("multiple workflow runs share the newest execution timestamp")
+          else $latest_runs[0] | "\(.id) \(.node_id) \(.status) \(.run_started_at) \(.run_attempt) \(.conclusion // "-")"
+          end
+      end')" \
+    || fail_operation "GitHub returned malformed $workflow_name run pages for $head" "Retry after GitHub returns complete workflow-run pages."
+}
+
+# A required run Actions refused, read without mutating anything: the newest
+# run of the workflow for this pull request at its head, selected as the
+# re-run selects it and classified by the same job and annotation read. Only a
+# completed failure is read. Sets REQUIRED_RUN_REFUSED_ID to the run's id, and
+# ACTIONS_REFUSAL_JSON to its refusal, when Actions refused it.
+REQUIRED_RUN_REFUSED_ID=""
+read_required_run_refusal() {
+  local run_pages="$1" workflow_name="$2" local_workflow_ids="$3" number="$4" head="$5"
+  local run_id run_node status run_started_at attempt conclusion
+  REQUIRED_RUN_REFUSED_ID=""
+  ACTIONS_REFUSAL_JSON="null"
+  select_required_workflow_run "$run_pages" "$workflow_name" "$local_workflow_ids" "$number" "$head"
+  read -r run_id run_node status run_started_at attempt conclusion <<<"$REQUIRED_RUN_ROW"
+  [ -n "$run_id" ] && [ "$status" = completed ] && [ "$conclusion" = failure ] || return 0
+  read_actions_refusal "$run_id" "$attempt" "$workflow_name"
+  [ "$ACTIONS_REFUSAL_JSON" = null ] || REQUIRED_RUN_REFUSED_ID="$run_id"
+}
+
+# Every workflow run for the head, the page set a refusal check selects from.
+# Set, not printed, so a rate-limited read stops the command (AUT-1638).
+HEAD_RUN_PAGES=""
+read_head_run_pages() {
+  read_with_retry gh api --hostname "$REPO_HOST" --paginate "repos/$REPO/actions/runs?head_sha=$1&per_page=100" \
+    || fail_operation "could not inspect the required workflow runs for $1: $READ_OUTPUT" "Retry after GitHub recovers."
+  HEAD_RUN_PAGES="$READ_OUTPUT"
 }
 
 REQUIRED_WORKFLOW_RUN_ID=""
@@ -1761,7 +1853,7 @@ rerun_required_workflow() {
   local number="$1" head="$2" workflow_name="$3" local_workflow_ids="$4" active_reuse_seconds="${5:-0}"
   local refresh_completed="${6:-true}" minimum_attempt="${7:-0}" minimum_attempt_run_id="${8:-}"
   local base_ref="${9:-}" base_sha="${10:-}" fresh_since="${11:-}"
-  local attempt=1 run_id run_node status conclusion selected_attempt run_started_at run_started_epoch now prior_attempt run_pages run_row workflow_ids workflow_id_count waited=0 previous=0
+  local attempt=1 run_id run_node status conclusion selected_attempt run_started_at run_started_epoch now prior_attempt run_pages waited=0 previous=0
   local run_identity active_run_bound
   REQUIRED_WORKFLOW_RUN_ID=""
   REQUIRED_WORKFLOW_ALREADY_ACTIVE=false
@@ -1779,31 +1871,8 @@ rerun_required_workflow() {
       "repos/$REPO/actions/runs?head_sha=$head&per_page=100" \
       || fail_operation "could not inspect $workflow_name runs for $head: $READ_OUTPUT" "Retry after GitHub recovers."
     run_pages="$READ_OUTPUT"
-    workflow_ids="$(printf '%s\n' "$run_pages" | jq -sec \
-      --arg workflow "$workflow_name" --argjson local_ids "$local_workflow_ids" --argjson number "$number" \
-      '[.[].workflow_runs[]? | select(.name == $workflow and .workflow_id != null and (.workflow_id as $id | $local_ids | index($id)) == null and (.event == "pull_request" or .event == "merge_group") and any(.pull_requests[]?; .number == $number)) | .workflow_id] | unique')" \
-      || fail_operation "GitHub returned malformed $workflow_name run pages for $head" "Retry after GitHub returns complete workflow-run pages."
-    workflow_id_count="$(printf '%s' "$workflow_ids" | jq 'length')"
-    [ "$workflow_id_count" -le 1 ] \
-      || fail_operation "multiple external $workflow_name workflow identities ran for PR #$number at $head" "Remove the same-named required-workflow ambiguity, then retry."
-    run_row="$(printf '%s\n' "$run_pages" | jq -ser \
-      --arg workflow "$workflow_name" --argjson workflow_ids "$workflow_ids" --argjson number "$number" \
-      '[.[].workflow_runs[]? | select(.name == $workflow and (.workflow_id as $id | $workflow_ids | index($id)) != null and (.event == "pull_request" or .event == "merge_group") and any(.pull_requests[]?; .number == $number))]
-      | if length == 0 then ""
-        elif any(.[]; (.id | type) != "number" or (.node_id | type) != "string" or .node_id == ""
-          or (.run_attempt | type) != "number"
-          or (.run_started_at | type) != "string" or .run_started_at == ""
-          or (.status | type) != "string") then
-          error("workflow run is missing its id, attempt, status, or execution timestamp")
-        else (map(.run_started_at) | max) as $latest_start
-          | [.[] | select(.run_started_at == $latest_start)] as $latest_runs
-          | if ($latest_runs | length) > 1 then
-              error("multiple workflow runs share the newest execution timestamp")
-            else $latest_runs[0] | "\(.id) \(.node_id) \(.status) \(.run_started_at) \(.run_attempt) \(.conclusion // "-")"
-            end
-        end')" \
-      || fail_operation "GitHub returned malformed $workflow_name run pages for $head" "Retry after GitHub returns complete workflow-run pages."
-    read -r run_id run_node status run_started_at selected_attempt conclusion <<<"$run_row"
+    select_required_workflow_run "$run_pages" "$workflow_name" "$local_workflow_ids" "$number" "$head"
+    read -r run_id run_node status run_started_at selected_attempt conclusion <<<"$REQUIRED_RUN_ROW"
     if [ -n "$run_id" ]; then
       if [ "$workflow_name" = delivery-evidence ]; then
         run_identity="$(jq -cn --argjson run_id "$run_id" --arg run_node "$run_node" '{runId:$run_id, runNodeId:$run_node}')"
@@ -1900,6 +1969,7 @@ rerun_required_workflow() {
           REQUIRED_WORKFLOW_REFUSED=true
           return 0
         fi
+        report_unstarted_run "$workflow_name" "$run_id"
       fi
       if [ "$refresh_completed" = false ]; then
         [ "$conclusion" = success ] \
@@ -2264,6 +2334,13 @@ announce_review_fallback() {
 # (AUT-1636). A run Actions refused reviews nothing, so while this command has
 # recorded a refusal no notice is posted, and the driver is told why; the
 # command's own failure names the refused runs (AUT-1610).
+#
+# The notice is a PR-visible record of the gate's rule, not the record GitHub
+# gates on, and by the time it is posted the head's gate step has already run.
+# So a post GitHub refuses is reported, never fatal: failing here discarded a
+# gate observation that had already concluded, and the retry it asked for sent
+# the whole wait-and-wake round again -- a second gate run, and a second
+# fallback review, on a head the gate had already evaluated (AUT-1610).
 record_review_fallback() {
   local number="$1" head="$2" marker="<!-- touchstone:review-fallback head=$2 -->" reply
   [ "$REVIEW_FALLBACK_STATE" = fallback ] || return 0
@@ -2279,7 +2356,8 @@ record_review_fallback() {
     fi
     capture_command gh pr comment "$number" --repo "$REPO_SPEC" --body "$marker
 **The pinned \`review-gate\` reviews \`$head\` itself.** The primary reviewer $reply, so when the gate's run evaluates this exact head it reviews it with its own reviewer — complete review evidence, not a degraded mode. This is not a blocker and not a wait for the primary: watch the \`review-gate\` check. Once that run has evaluated, its findings are in the run log (\`gh run view <run-id> --log\`), each with an id; answer one with \`touchstone pr answer $number --finding <id> --body-file <reply> --no-code-change\` (refute) or \`--fix-commit <sha>\` (fixed), then run \`touchstone pr merge $number --head $head\`." \
-      || fail_operation "could not record the review fallback on PR #$number: $CAPTURE_ERROR" "Inspect comments before retrying."
+      || printf 'Could not post the review-fallback notice on PR #%s: %s. The gate step for this head has already run, so that observation is kept rather than discarded by a failure here; nothing about the gate'\''s verdict changes. Re-running this command would wake the gate a second time for a head it has already evaluated, so it is not the recovery: to leave a PR-visible record, post a comment carrying %s by hand.\n' \
+        "$number" "$CAPTURE_ERROR" "$marker" >&2
   fi
   if [ "$REVIEW_FALLBACK_CAUSE" = error ]; then
     printf 'The primary reviewer answered the latest request for %s with an error, so the pinned review-gate reviews it itself: complete review evidence, not a degraded mode. Watch the review-gate check.\n' "$head" >&2
@@ -2486,6 +2564,7 @@ wake_review_gate_once() {
       if [ "$conclusion" = failure ]; then
         read_actions_refusal "$REVIEW_GATE_RUN_ID" "$run_attempt" review-gate
         [ "$ACTIONS_REFUSAL_JSON" = null ] || record_actions_refusal review-gate "$REVIEW_GATE_RUN_ID"
+        report_unstarted_run review-gate "$REVIEW_GATE_RUN_ID"
       fi
       printf 'Review gate run %s concluded %s for %s.\n' "$REVIEW_GATE_RUN_ID" "${conclusion:-with no conclusion}" "$head" >&2
       return 0
@@ -2520,6 +2599,15 @@ await_review_then_wake_gate() {
   # refusal the command reports.
   if [ -n "$OPEN_ACTIONS_REFUSALS" ]; then
     printf 'Not waiting for review: Actions refuses jobs for %s, so no review-gate run can be woken.\n' "$head" >&2
+    # The gate's run for this head is still read, never re-run, so a refused
+    # one is named with the rest, as the contract says (AUT-1610).
+    read_head_run_pages "$head"
+    read_required_run_refusal "$HEAD_RUN_PAGES" review-gate "$REQUIRED_WORKFLOW_LOCAL_IDS" "$number" "$head"
+    if [ -n "$REQUIRED_RUN_REFUSED_ID" ]; then
+      REVIEW_GATE_RUN_ID="$REQUIRED_RUN_REFUSED_ID"
+      REVIEW_GATE_ACTION=actions-refused
+      record_actions_refusal review-gate "$REQUIRED_RUN_REFUSED_ID"
+    fi
     return 0
   fi
   # The review surface changes on the reviewer's minutes-long scale -- a reply
@@ -2573,7 +2661,7 @@ await_review() {
   verify_live_coordinates "$number" "$head" "$base" "$base_sha"
   [ -z "$OPEN_ACTIONS_REFUSALS" ] \
     || fail_operation "Actions refused the review-gate for PR #$number at $head, so no required check can pass. $OPEN_ACTIONS_REFUSALS" \
-      "$(actions_refusal_remedy)"
+      "$(actions_refusal_remedy "$OPEN_ACTIONS_REFUSED_RUN_IDS")"
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"%s","status":"woken","pullRequest":%s,"head":' "$OUTPUT_SCHEMA" "$OPERATION" "$number"
     json_string "$head"
@@ -2833,7 +2921,7 @@ $request_marker"
 finish_open() {
   if [ -n "$OPEN_ACTIONS_REFUSALS" ]; then
     fail_operation "Actions refused required jobs for PR #$2 at $4, so no required check can pass; hosted review was still requested ($5) because the reviewer runs outside Actions. $OPEN_ACTIONS_REFUSALS" \
-      "$(actions_refusal_remedy)"
+      "$(actions_refusal_remedy "$OPEN_ACTIONS_REFUSED_RUN_IDS")"
   fi
   emit_open_result "$@"
 }
@@ -3139,6 +3227,9 @@ classify_pr_phase() {
     PR_NEXT_ACTION=inspect
     return 0
   fi
+  # A required run Actions refused holds the head: no check can pass until it
+  # is re-run, and there is no review to address (AUT-1610).
+  [ "$REQUIRED_RUNS_REFUSED_JSON" = "[]" ] || return 0
 
   if [ "$AUTO_MERGE_ARMED" = true ]; then
     # Armed changes who admits the head, not whether its gate observation can
@@ -3234,6 +3325,7 @@ select_review_gate_run_identity() {
     "repos/$REPO/actions/runs?head_sha=$head&per_page=100" \
     || fail_operation "could not inspect review-gate runs for $head: $READ_OUTPUT" "Retry after GitHub recovers."
   run_pages="$READ_OUTPUT"
+  HEAD_RUN_PAGES="$run_pages"
   REVIEW_GATE_RUN_IDENTITY="$(printf '%s\n' "$run_pages" | jq -sc \
     --arg head "$head" --argjson number "$number" --argjson local_ids "$local_workflow_ids" '
       if length == 0 then error("expected at least one workflow-run response page")
@@ -3339,6 +3431,7 @@ read_review_gate_check() {
     else [.[].workflows[]?.id] | unique
     end')" \
     || fail_operation "GitHub returned malformed workflow pages for $REPO" "Retry after GitHub returns complete workflow pages."
+  REQUIRED_WORKFLOW_LOCAL_IDS="$local_workflow_ids"
   if [ -n "$seeded_run_identity" ]; then
     run_identity="$seeded_run_identity"
   else
@@ -3508,10 +3601,39 @@ require_review_gate_success() {
       return 0
       ;;
     *)
+      # A refused gate carries no findings to answer; its remedy is the
+      # refusal's own (AUT-1610).
+      [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.actionsRefused == null')" = true ] \
+        || fail_input "review gate for $head is not successful: $gate_text" "$(actions_refusal_remedy "$REVIEW_GATE_RUN_ID")"
       fail_input "review gate for $head is not successful: $gate_text" \
         "Use touchstone pr open for an unbound head or answer the reported findings, then wait for a successful exact-head gate."
       ;;
   esac
+}
+
+# The required runs other than the gate that Actions refused for this head,
+# read where the pinned gate is applied from the run pages and local workflow
+# ids read_review_gate_check has just read, so the only extra reads are the
+# jobs of a failed run (AUT-1610). The gate's own refusal stays in
+# reviewGateCheck.actionsRefused. Required runs take their workflow file's
+# name, as the re-run already assumes for delivery-evidence and review-gate.
+REQUIRED_RUNS_REFUSED_JSON="[]"
+REQUIRED_RUNS_REFUSED_IDS=""
+read_required_runs_refused() {
+  local number="$1" head="$2" paths path name
+  REQUIRED_RUNS_REFUSED_JSON="[]"
+  REQUIRED_RUNS_REFUSED_IDS=""
+  paths="$(enforcement_policy_jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]?.path | select(. != ".github/workflows/review-gate.yml")] | unique | .[]')" \
+    || fail_operation "could not read the required workflows the policy declares" "Reinstall touchstone; the policy file is corrupt or incomplete."
+  for path in $paths; do
+    name="$(basename "$path" .yml)"
+    read_required_run_refusal "$HEAD_RUN_PAGES" "$name" "$REQUIRED_WORKFLOW_LOCAL_IDS" "$number" "$head"
+    [ -n "$REQUIRED_RUN_REFUSED_ID" ] || continue
+    REQUIRED_RUNS_REFUSED_IDS="${REQUIRED_RUNS_REFUSED_IDS:+$REQUIRED_RUNS_REFUSED_IDS }$REQUIRED_RUN_REFUSED_ID"
+    REQUIRED_RUNS_REFUSED_JSON="$(printf '%s' "$REQUIRED_RUNS_REFUSED_JSON" | jq -c \
+      --arg workflow "$name" --argjson run_id "$REQUIRED_RUN_REFUSED_ID" --argjson refusal "$ACTIONS_REFUSAL_JSON" \
+      '. + [{workflow:$workflow, workflowRunId:$run_id} + $refusal]')"
+  done
 }
 
 status_pr() {
@@ -3525,6 +3647,7 @@ status_pr() {
   read_enforcement "$base" "$base_sha" "$head" "$head_repo" "$number"
   if [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ]; then
     read_review_gate_check "$head" "$number"
+    read_required_runs_refused "$number" "$head"
   else
     REVIEW_GATE_CHECK_JSON="$(jq -cn --arg head "$head" '{present:false, head:$head, configured:false}')"
   fi
@@ -3566,6 +3689,7 @@ status_pr() {
         ;;
     esac
     printf ',"reviewGateCheck":%s' "$gate_check_json"
+    [ "$REQUIRED_RUNS_REFUSED_JSON" = "[]" ] || printf ',"actionsRefusedRuns":%s' "$REQUIRED_RUNS_REFUSED_JSON"
     printf ',"reviewGateBehaviorContractVersion":'
     if [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ] && [ -n "$ENFORCEMENT_GATE_BEHAVIOR_VERSION" ]; then
       printf '%s' "$ENFORCEMENT_GATE_BEHAVIOR_VERSION"
@@ -3580,8 +3704,12 @@ status_pr() {
     printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  phase: %s\n  next action: %s\n  merge state: %s\n  draft: %s\n  auto-merge: %s\n  merge queue: %s\n  review gate: %s\n' \
       "$number" "$state" "$url" "$head" "$base" "$base_sha" "$PR_PHASE" "$next_action_text" "$merge_state" "$draft" "$(auto_merge_text)" "$(merge_queue_text)" "$(review_gate_check_text)"
     [ "$MERGE_QUEUE_EVICTED" != true ] || printf '  merge queue history: %s\n' "$(merge_queue_eviction_text)"
+    local refused_run_ids="$REQUIRED_RUNS_REFUSED_IDS"
     [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.actionsRefused == null')" = true ] \
-      || printf '  next step: %s\n' "$(actions_refusal_remedy)"
+      || refused_run_ids="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.workflowRunId')${refused_run_ids:+ $refused_run_ids}"
+    [ "$REQUIRED_RUNS_REFUSED_JSON" = "[]" ] \
+      || printf '%s' "$REQUIRED_RUNS_REFUSED_JSON" | jq -r "$ACTIONS_REFUSAL_JQ"' .[] | "  required run: \(.workflow) run \(.workflowRunId): \(refusal_text)"'
+    [ -z "$refused_run_ids" ] || printf '  next step: %s\n' "$(actions_refusal_remedy "$refused_run_ids")"
     [ "$PR_GATE_FAILURE_MAY_BE_WAITING" != true ] \
       || printf '  next step: this gate failure may be a head still waiting for review, not findings; read %s. %s\n' \
         "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r 'if .detailsUrl != null then "the gate run at \(.detailsUrl)" else "the log of review-gate workflow run \(.workflowRunId)" end')" \
