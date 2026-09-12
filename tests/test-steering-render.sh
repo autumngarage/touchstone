@@ -1558,9 +1558,22 @@ done
   && pass "fresh installs ship no standalone swarm guidance" \
   || fail "fresh install still ships standalone swarm guidance"
 
-grep -qF "$HS/.touchstone/principles/git-workflow.md" "$HS/.claude/skills/touchstone-git-workflow/SKILL.md" \
-  && pass "skills reference the installed principles by absolute path" \
-  || fail "skill cross-references were not rewritten"
+# Activation skills must route to the installed owners from any consumer
+# directory, including the separate local-review owner used before committing.
+for route in touchstone-git-workflow:git-workflow.md touchstone-git-workflow:local-review.md touchstone-pre-impl:pre-implementation-checklist.md; do
+  skill="${route%%:*}"
+  principle="${route#*:}"
+  if grep -qF "$HS/.touchstone/principles/$principle" "$HS/.claude/skills/$skill/SKILL.md" \
+    && [ -f "$HS/.touchstone/principles/$principle" ]; then
+    pass "$skill routes to installed $principle"
+  else
+    fail "$skill has no usable installed route to $principle"
+  fi
+done
+if grep -qF 'Any "no" answer to a check is a stop signal' "$HS/.claude/skills/touchstone-pre-impl/SKILL.md" \
+  || grep -qF 'After the policy-owned exact-head gate succeeds' "$HS/.claude/skills/touchstone-git-workflow/SKILL.md"; then
+  fail "installation retained a conflicting duplicate procedure"
+fi
 grep -q 'touchstone-git-workflow/SKILL.md' "$HS/.claude/skills/.touchstone-installed" \
   && grep -q 'memory-audit/agents/openai.yaml' "$HS/.claude/skills/.touchstone-installed" \
   && pass "skills are recorded in their own manifest with relative paths" \
