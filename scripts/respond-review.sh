@@ -153,13 +153,6 @@ fi
 TMP_BODY_FILE="$(mktemp "${TMPDIR:-/tmp}/respond-review-body.XXXXXXXX")" || fail "could not create a temporary file for the pull request body."
 trap 'rm -f "$TMP_BODY_FILE"' EXIT
 
-REPO_WITH_OWNER="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)" \
-  || fail "could not resolve the GitHub repository (gh repo view failed)."
-REPO_OWNER="${REPO_WITH_OWNER%%/*}"
-REPO_NAME="${REPO_WITH_OWNER##*/}"
-[ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] \
-  || fail "could not parse owner/name from '$REPO_WITH_OWNER'."
-
 # A request GitHub refused for the token's rate limit, told apart from every
 # other failure by the same handler the rest of the CLI uses: this script runs
 # in a checkout, so it asks `touchstone-pr.sh rate-limit-check` rather than
@@ -238,6 +231,18 @@ graphql_with_retry() {
     sleep "$GRAPHQL_RETRY_DELAY"
   done
 }
+
+# The repository identity, read through gh_read like every other request: it
+# is the first request this command makes, so it is the one a session with an
+# exhausted quota meets first. Read before gh_read existed, with its
+# diagnostic discarded, every rate-limited answer reported only "could not
+# resolve the GitHub repository" and named no quota or reset (AUT-1648).
+REPO_WITH_OWNER="$(gh_read repo view --json nameWithOwner --jq '.nameWithOwner')" \
+  || fail "could not resolve the GitHub repository: $REPO_WITH_OWNER"
+REPO_OWNER="${REPO_WITH_OWNER%%/*}"
+REPO_NAME="${REPO_WITH_OWNER##*/}"
+[ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] \
+  || fail "could not parse owner/name from '$REPO_WITH_OWNER'."
 
 # Which behavior GitHub's effective, exact pinned review-gate implements,
 # asked of the shared PR observer: local policy bytes alone are rollout intent.

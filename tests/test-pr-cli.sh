@@ -3981,6 +3981,12 @@ if [ -f "$GH_STATE/rate-limited-graphql" ] && [ "${1:-}" = api ] && [ "${2:-}" =
   printf 'GraphQL: API rate limit exceeded for user ID 1. (RATE_LIMITED)\n' >&2
   exit 1
 fi
+# `repo view --json` is a GraphQL request too, and it is the first one this
+# client makes: the one an exhausted session meets first.
+if [ -f "$GH_STATE/rate-limited-repo-view" ] && [ "${1:-}" = repo ] && [ "${2:-}" = view ]; then
+  printf 'GraphQL: API rate limit exceeded for user ID 1. (RATE_LIMITED)\n' >&2
+  exit 1
+fi
 case "$1 $2" in
   "api repos/autumngarage/current/pulls/7")
     printf '%s\n' "${GH_EXISTING_PR_BODY:-existing body}"
@@ -4704,6 +4710,16 @@ STATUS_STUB
     || fail "a rate-limited read was retried: $(grep -c 'GraphQL attempt' "$RR/out") attempt notices"
   [ -f "$GH_STATE/rate-limit-checks" ] \
     || fail "the answer client classified the refusal itself instead of asking the shared handler"
+  # The repository read is the first request this client makes, so it is the
+  # one an exhausted session meets first; read outside gh_read, with its
+  # diagnostic discarded, it reported only that the repository could not be
+  # resolved and named no quota (PR #1213 review, P1).
+  touch "$GH_STATE/rate-limited-repo-view"
+  run 7 --all-resolved-check
+  rm -f "$GH_STATE/rate-limited-repo-view"
+  [ "$RUN_RC" -ne 0 ] || fail "a rate-limited repository read reported the PR clean"
+  grep -qF "GitHub's GraphQL rate limit for this token is exhausted until 2026-09-11T00:26:40Z" "$RR/out" \
+    || fail "the first read did not name the quota and its reset: $(tail -3 "$RR/out")"
 
   echo "==> no production script captures a gh response with stderr merged in"
   # The guardrail for the class: a $(gh ... 2>&1) capture parses diagnostics
