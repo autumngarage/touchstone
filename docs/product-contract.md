@@ -301,3 +301,36 @@ Touchstone does not provide:
 These exclusions are architectural boundaries, not an unfinished feature
 list. Reintroducing one requires changing this contract explicitly and proving
 why the original failure class no longer applies.
+
+### Local review results
+
+`touchstone review run [--base REF] --json` emits exactly one
+`touchstone.review-result/v1` object on stdout; progress and diagnostics go to
+stderr. Without `--json`, the command retains human-readable output. Both
+adapters use the same validated findings and evidence formatter.
+
+A completed result has `status: completed`, `backend` (`codex` or
+`openrouter`), `model`, `reviewedRevision`, `scope`, `findingCount`, `findings`,
+`summary`, `cost`, `tokens`, `evidence`, and `error: null`. Scope carries
+`type` (`staged` or `range`), the requested `base`, resolved `mergeBase`, and
+`diffOid` (the Git blob hash of the exact diff submitted). A staged review's
+HEAD is context, not proof that its staged changes are committed; its diff hash
+identifies the reviewed input. An unborn HEAD is null. Each finding carries
+severity, file, nullable line, title, and body. Evidence is the complete value
+for the PR's Local review row, accepted verbatim by delivery-evidence.
+
+OpenRouter reports model, USD cost, and prompt/completion tokens from its
+response. Codex's structured final response does not report accounting or model;
+those fields are null, not zero or inferred from configuration. The serious
+path requests schema-constrained findings through read-only `codex exec`; an
+absent, failed, or malformed Codex result takes the existing single bounded
+OpenRouter fallback. Human and JSON output never count findings from prose.
+
+An error exits nonzero and emits `status: error`, `evidence: null`, and
+`error: {code, message}`. Codes distinguish `invalid_argument`, `invalid_policy`,
+`invalid_scope`, `input_limit`, `dependency_unavailable`, `credential_unavailable`,
+`credential_rejected`, `quota_exhausted`, `transport_error`, `provider_error`,
+`completion_limit`, `malformed_response`, and `reviewer_error`. Messages carry
+diagnostics and may evolve; consume codes, not their wording. An input limit is
+a slicing refusal, not a reviewer-unavailability waiver. A completed result
+may contain findings; exit zero means a review was obtained, not a clean verdict.
