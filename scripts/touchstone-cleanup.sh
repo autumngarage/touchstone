@@ -299,12 +299,7 @@ if [ "$GH_OK" = true ]; then
     child="$(bases_open_pr "$branch")"
     pr="$(finished_for "$branch" "$sha")"
     if [ -n "$child" ]; then
-      case "$pr" in
-        *merged)
-          finding "$location-branch" "$([ "$location" = local ] || printf 'origin/')$branch ($pr) still bases open PR $child" "do not delete: retarget $child to $(q "$DEFAULT_BRANCH") and rebase it first"
-          ;;
-        *) finding "$location-branch" "$branch still bases open PR $child (parent delivery unverified)" "preserve this active dependency; finish or explicitly replan the parent before changing the child's base" ;;
-      esac
+      finding "$location-branch" "$branch still bases open PR $child" "preserve this active dependency; reconcile the live parent and child with their owner before changing the child's base"
       return
     fi
     # A checked-out no-PR branch is observable active work, not abandonment.

@@ -133,7 +133,7 @@ grep -E '^  local-branch.*feat/reused' "$TMP/out" >/dev/null && fail "a reused b
 grep -E '^  local-branch.*feat/fork-name.*#44' "$TMP/out" >/dev/null && fail "a fork's PR with the same head name counted as ours" || ok "fork PR with the same name is not ours"
 grep -q "repo wt \[feat/in-flight\]" "$TMP/out" && ok "worktree path with a space kept whole" || fail "worktree path split: $(grep worktree "$TMP/out")"
 grep -E '^  remote-branch.*feat/stack-parent.*still bases open PR #46' "$TMP/out" >/dev/null && ! grep -E 'delete feat/stack-parent' "$TMP/out" >/dev/null \
-  && ok "a merged branch that bases an open PR is preserved, retarget named" || fail "stack parent not protected: $(grep stack-parent "$TMP/out")"
+  && ok "a merged branch that bases an open PR is preserved" || fail "stack parent not protected: $(grep stack-parent "$TMP/out")"
 grep -E '^  local-branch.*feat/fork-open \(#47 merged\)' "$TMP/out" >/dev/null && ok "a fork's open PR does not hide our finished branch" || fail "fork open PR hid a finished branch"
 grep -q 'confirm the worker is terminal, then confirm its final report reached the parent or its cancellation was acknowledged; then git worktree remove' "$TMP/out" \
   && ok "worktree removal requires terminal-worker evidence" || fail "worktree removal remedy trusts repository state alone"
@@ -259,6 +259,12 @@ printf 'feat/child\t400\tOPEN\t%s\tautumngarage/current\tfeat/no-pr\n' "$DONE_SH
 run --json
 jq -e 'all(.findings[] | select(.subject | contains("feat/no-pr")); (.remedy | contains("retarget") | not))' "$TMP/out" >/dev/null \
   || fail "unmerged stack parent recommended retargeting"
+# A stale merged local parent must not authorize changing a live child's base.
+git -C "$TMP/repo" branch feat/stack-parent "$PARENT_SHA"
+git -C "$TMP/repo" push -q origin feat/no-pr:refs/heads/feat/stack-parent
+run --json
+jq -e '[.findings[] | select(.subject | contains("feat/stack-parent"))] | length == 2 and all(.[]; (.remedy | contains("preserve this active dependency")) and (.remedy | contains("retarget") | not))' "$TMP/out" >/dev/null \
+  || fail "stale merged local parent authorized changing the live child base"
 for quota_case in quota-empty quota-small; do
   touch "$TMP/state/$quota_case"
   before_calls="$(wc -l <"$TMP/state/inventory-calls")"
