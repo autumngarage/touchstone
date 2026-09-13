@@ -476,6 +476,22 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
   'Work still moving stays In Progress'
 
+# AUT-1086: completion reconciles the work's open ledger, including older
+# tasks, without turning every milestone or unfinished item into a closure.
+assert_not_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 'make tracker terminal'
+assert_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 'reconcile open tasks before declaring completion'
+assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'work blocked: move the state'
+for clause in \
+  'Change state only when the event changes the item' \
+  'including earlier sessions and all result pages' \
+  'Mark Done only when all approved acceptance criteria are satisfied' \
+  'Cancel superseded or deliberately abandoned tasks' \
+  'Park unfinished work in Todo/Backlog' \
+  'Re-read every reconciled item after the writes' \
+  'An unavailable tracker or failed write is an explicit completion gap'; do
+  assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "$clause"
+done
+
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Rewriting an unmerged branch"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '--force-with-lease="$(git branch --show-current):$EXPECTED"'
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '--force-with-lease="<child-branch>:$EXPECTED"'

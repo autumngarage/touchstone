@@ -831,10 +831,9 @@ git push origin --force-with-lease=<branch>:<merged-sha> :<branch>   # delete th
 git status --porcelain --untracked-files=all   # must print nothing: remove test/build residue or ignore it
 ```
 
-Then the tracker: every item this session claimed has been re-read and left in
-the state it should end in — "Keeping a tracked item current, and closing it"
-owns which state that is. Scratch files under `$TMPDIR` that the session
-created go too.
+Then reconcile the tracker under "Keeping a tracked item current, and closing
+it", including its project-completion sweep. Scratch files under `$TMPDIR`
+that the session created go too.
 
 `touchstone cleanup check` never deletes anything — what is finished is the
 driver's decision, and a tool that pruned branches on its own would be
@@ -1063,14 +1062,17 @@ criterion already implies — its regression test, the change that holds the sam
 invariant — belongs to the item you are on.
 
 **Update it at each milestone, not in a batch at the end.** PR merged, finding
-routed, scope split, work blocked: move the state and add one comment naming
+routed, scope split, work blocked: add one comment naming
 the evidence — the PR and SHA where they exist, the blocker or the receiving
-item where they do not — in the same breath as the event. A tracker reconciled
-hours later is how someone following the work without reading your session gets
-a wrong answer from it.
+item where they do not — in the same breath as the event.
+Change state only when the event changes the item's lifecycle; routing a
+finding does not stop implementation or review of the original task.
+A tracker reconciled hours later gives someone following the work without
+reading your session a wrong answer.
 
-**Close it when the work lands, and confirm it closed.** The proof is the state
-you read back, never the call you made:
+**Close it when its full approved scope lands, and confirm it closed.** A merged
+slice does not complete an umbrella task with unfinished acceptance criteria.
+The proof is the state you read back, never the call you made:
 
 - GitHub — `Closes #n` in the PR body closes the item on merge when it fires,
   and silently does not for a PR merged into a non-default branch, a body edited
@@ -1102,6 +1104,35 @@ not survive the session is one left there because attention moved on after the
 merge. This is the tracker half of "Leaving no mess", and no command reports it
 for you: a shell process has no transport to every tracker, so re-reading the
 items this session claimed is the driver's step.
+
+**Before declaring a project or approved unit of work complete, reconcile its
+open tasks.** List the configured tracker's open items for that scope,
+including earlier sessions and all result pages. Check parent tasks, subtasks,
+and linked follow-ups against the delivered work and current decisions; the
+last PR's closing reference is not the whole ledger. For each covered item:
+
+- Mark Done only when all approved acceptance criteria are satisfied, with
+  evidence of delivery or verification. Close tasks the integration missed.
+- Cancel superseded or deliberately abandoned tasks with the decision and
+  successor link where one exists; mark duplicates against their canonical task.
+- Park unfinished work in Todo/Backlog (or the tracker's equivalent), naming
+  what landed, what remains, and the blocker or resumption condition. Retain an
+  owner only where responsibility is current. In Progress requires actual
+  ongoing implementation; use In Review (or its equivalent) for work awaiting
+  review or merge.
+
+Do not close unfinished work to empty the tracker, change unrelated active
+work, or treat this sweep as permission to implement additional scope. If
+approved acceptance criteria remain unfinished, report the work as partial or
+blocked rather than complete. Review findings still follow the admission rule
+above; reconciling existing tasks does not require creating new ones.
+
+Re-read every reconciled item after the writes and confirm its surviving state
+before the completion report. Summarize closures and any intentionally open
+work with its next action.
+An unavailable tracker or failed write is an explicit completion gap, not a
+successful cleanup. The invariant: no covered task remains open for
+completed work, or In Progress merely because an earlier session stopped.
 
 ## Parallel work with worktrees
 
