@@ -90,8 +90,8 @@ finding() {
 REPO_ROW=""
 DEFAULT_BRANCH=""
 GH_OK=true
-if REPO_ROW="$(gh repo view --json nameWithOwner,defaultBranchRef --jq '[.nameWithOwner,.defaultBranchRef.name] | @tsv' 2>/dev/null)"; then
-  DEFAULT_BRANCH="${REPO_ROW#*	}"
+if REPO_ROW="$(gh repo view --json nameWithOwner,defaultBranchRef,url --jq '[.nameWithOwner,.defaultBranchRef.name,(.url | split("/")[2])] | @tsv' 2>/dev/null)"; then
+  IFS=$'\t' read -r REPO_FULL DEFAULT_BRANCH REPO_HOST <<<"$REPO_ROW"
 fi
 if [ -z "$DEFAULT_BRANCH" ]; then
   GH_OK=false
@@ -175,9 +175,51 @@ emit_worktree
 # One fully paginated GraphQL inventory, shared by both ref loops. A failed
 # page invalidates the whole inventory; never classify from partial results.
 if [ "$GH_OK" = true ]; then
-  REPO_FULL="${REPO_ROW%%	*}"
+  # Read GitHub's shared quota before the bulk inventory. This single
+  # connection costs one point per page; reserve no local shadow quota.
+  quota="$(gh api --hostname "$REPO_HOST" rate_limit \
+    --jq '[.resources.graphql.remaining,.resources.graphql.reset] | @tsv' 2>&1)" || quota=""
+  IFS=$'\t' read -r remaining reset <<<"$quota"
+  case "$remaining" in
+    '' | *[!0-9]*)
+      finding github "could not read shared GraphQL quota" "branch findings are withheld; retry when quota can be verified"
+      GH_OK=false
+      ;;
+    0)
+      finding github "GraphQL quota exhausted until $reset" "wait for the reset; branch findings are withheld"
+      GH_OK=false
+      ;;
+  esac
+  if [ "$GH_OK" = true ]; then
+    # Counting first bounds the required pages instead of choosing a recent-N
+    # history window. GitHub remains authoritative if concurrent work spends
+    # quota after this observation: any failed page discards the whole result.
+    inventory_budget="$(gh api graphql --hostname "$REPO_HOST" \
+      -F owner="${REPO_FULL%%/*}" -F name="${REPO_FULL#*/}" \
+      -f query='query($owner:String!,$name:String!) {
+        rateLimit { remaining resetAt }
+        repository(owner:$owner,name:$name) { pullRequests(first:1) { totalCount } }
+      }' --jq '[.data.repository.pullRequests.totalCount,.data.rateLimit.remaining,.data.rateLimit.resetAt] | @tsv' 2>&1)" || inventory_budget=""
+    IFS=$'\t' read -r total remaining reset <<<"$inventory_budget"
+    case "$total:$remaining" in
+      *[!0-9:]* | :* | *:)
+        finding github "pull-request read failed: could not size inventory" "branch findings are withheld; retry with GitHub access"
+        GH_OK=false
+        ;;
+      *)
+        pages=$(((total + 99) / 100))
+        [ "$pages" -gt 0 ] || pages=1
+        if [ "$pages" -gt "$remaining" ]; then
+          finding github "insufficient GraphQL quota for $pages inventory pages (reset $reset)" "wait for the reset; branch findings are withheld"
+          GH_OK=false
+        fi
+        ;;
+    esac
+  fi
+fi
+if [ "$GH_OK" = true ]; then
   PR_ROWS=""
-  if ! PR_ROWS="$(gh api graphql --paginate \
+  if ! PR_ROWS="$(gh api graphql --hostname "$REPO_HOST" --paginate \
     -F owner="${REPO_FULL%%/*}" -F name="${REPO_FULL#*/}" \
     -f query='query($owner:String!,$name:String!,$endCursor:String) {
       repository(owner:$owner,name:$name) {
@@ -220,7 +262,7 @@ if [ "$GH_OK" = true ]; then
     awk -v b="branch refs/heads/$1" '$0 == b { found = 1 } END { exit !found }' <<<"$WORKTREE_ROWS"
   }
   unknown_branch() {
-    local location="$1" branch="$2" sha="$3" subject kind date remote_sha ahead
+    local location="$1" branch="$2" sha="$3" subject kind date remote_sha ahead reachability
     subject="$branch"
     [ "$location" = local ] || subject="origin/$branch"
     if ! date="$(git show -s --format=%cI "$sha" -- 2>/dev/null)"; then
@@ -236,12 +278,19 @@ if [ "$GH_OK" = true ]; then
     fi
     kind=unshipped-branch
     remote_sha="$(awk -v ref="refs/heads/$branch" '$2 == ref { print $1 }' <<<"$REMOTE_HEADS")"
-    if [ "$location" = local ] && [ "$REMOTE_OK" = true ] && [ -z "$remote_sha" ]; then
-      kind=local-only-work
-      finding "$kind" "$subject" "coordinate with the owner: git push -u origin $(q "$branch"), open a PR, or record the decision to abandon this work"
-    else
-      finding "$kind" "$subject" "reconcile with the owner: open a PR or record the decision to abandon this work; no delivery proof exists for this head"
+    if [ "$location" = local ] && [ "$REMOTE_OK" = true ]; then
+      reachability=1
+      if [ -n "$remote_sha" ]; then
+        git merge-base --is-ancestor "$sha" "$remote_sha" 2>/dev/null && reachability=0 || reachability=$?
+      fi
+      if [ "$reachability" -ne 0 ]; then
+        kind=local-only-work
+        finding "$kind" "$subject (head not verified on origin)" "coordinate with the owner and reconcile origin/$branch first, then git push -u origin $(q "$branch"); only open a PR after verifying its remote head includes this work"
+        return
+      fi
     fi
+    finding "$kind" "$subject" "reconcile with the owner: open a PR or record the decision to abandon this work; no delivery proof exists for this head"
+
   }
   inspect_branch() {
     local location="$1" branch="$2" sha="$3" pr child
@@ -250,7 +299,12 @@ if [ "$GH_OK" = true ]; then
     child="$(bases_open_pr "$branch")"
     pr="$(finished_for "$branch" "$sha")"
     if [ -n "$child" ]; then
-      finding "$location-branch" "$([ "$location" = local ] || printf 'origin/')$branch ($pr) still bases open PR $child" "do not delete: retarget $child to $(q "$DEFAULT_BRANCH") and rebase it first"
+      case "$pr" in
+        *merged)
+          finding "$location-branch" "$([ "$location" = local ] || printf 'origin/')$branch ($pr) still bases open PR $child" "do not delete: retarget $child to $(q "$DEFAULT_BRANCH") and rebase it first"
+          ;;
+        *) finding "$location-branch" "$branch still bases open PR $child (parent delivery unverified)" "preserve this active dependency; finish or explicitly replan the parent before changing the child's base" ;;
+      esac
       return
     fi
     # A checked-out no-PR branch is observable active work, not abandonment.

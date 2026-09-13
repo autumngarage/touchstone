@@ -21,10 +21,25 @@ state="$GH_FAKE_STATE"
 case "$1 $2" in
   "repo view")
     [ -f "$state/gh-down" ] && exit 1
-    printf 'autumngarage/current\tmain\n'
+    printf 'autumngarage/current\tmain\tgithub.com\n'
+    ;;
+  "api --hostname")
+    case " $* " in *' --hostname github.com '*) ;; *) exit 1 ;; esac
+    [ ! -f "$state/quota-empty" ] || { printf '0\t2000000000\n'; exit 0; }
+    printf '5000\t2000000000\n'
     ;;
   "api graphql")
     [ -f "$state/api-down" ] || [ -f "$state/list-down" ] && { echo "gh: HTTP 502" >&2; exit 1; }
+    case "$*" in
+      *totalCount*)
+        remaining=5000
+        [ ! -f "$state/quota-small" ] || remaining=1
+        count=0
+        [ ! -f "$state/prs" ] || count="$(awk 'END { print NR }' "$state/prs")"
+        printf '%s\t%s\t2026-10-01T00:00:00Z\n' "$count" "$remaining"
+        exit 0
+        ;;
+    esac
     printf 'inventory\n' >>"$state/inventory-calls"
     case " $* " in *' --paginate '*) ;; *) echo "missing pagination" >&2; exit 1 ;; esac
     [ -f "$state/prs" ] || exit 0
@@ -225,12 +240,35 @@ jq -e 'all(.findings[] | select(.kind != "worktree"); (.subject | contains("feat
   || fail "active no-PR branch received a cleanup recommendation"
 git -C "$TMP/repo" worktree remove "$TMP/active"
 # More than a page of history must not hide an open head or an old merge.
-for n in $(seq 1 105); do
+for ((n = 1; n <= 105; n++)); do
   printf 'other/%s\t%s\tCLOSED\t%s\tautumngarage/current\tmain\n' "$n" "$((100 + n))" "$DONE_SHA" >>"$TMP/state/prs"
 done
 run --json
 jq -e '.findings[] | select(.subject == "feat/done (#41 merged)")' "$TMP/out" >/dev/null \
   || fail "old merged head fell outside inventory"
+# Local commits beyond an existing remote name still need publication.
+git -C "$TMP/repo" worktree add -q "$TMP/ahead" feat/no-pr
+printf 'ahead\n' >>"$TMP/ahead/new.txt"
+git -C "$TMP/ahead" -c user.email=t@example.com -c user.name=t commit -qam ahead
+git -C "$TMP/repo" worktree remove "$TMP/ahead"
+run --json
+jq -e '.findings[] | select(.kind == "local-only-work" and (.subject | startswith("feat/no-pr "))) | .remedy | contains("git push -u origin feat/no-pr")' "$TMP/out" >/dev/null \
+  || fail "existing remote name hid unpublished commits"
+# A child is active dependency evidence, not proof its parent landed.
+printf 'feat/child\t400\tOPEN\t%s\tautumngarage/current\tfeat/no-pr\n' "$DONE_SHA" >>"$TMP/state/prs"
+run --json
+jq -e 'all(.findings[] | select(.subject | contains("feat/no-pr")); (.remedy | contains("retarget") | not))' "$TMP/out" >/dev/null \
+  || fail "unmerged stack parent recommended retargeting"
+for quota_case in quota-empty quota-small; do
+  touch "$TMP/state/$quota_case"
+  before_calls="$(wc -l <"$TMP/state/inventory-calls")"
+  run --json
+  after_calls="$(wc -l <"$TMP/state/inventory-calls")"
+  [ "$before_calls" = "$after_calls" ] || fail "insufficient quota reached bulk inventory"
+  jq -e '.findings[] | select(.kind == "github" and (.subject | contains("quota")))' "$TMP/out" >/dev/null \
+    || fail "quota refusal was not explicit"
+  rm "$TMP/state/$quota_case"
+done
 ok "one paginated inventory serves all refs; unknown work never implies delivery"
 
 echo "==> a branch name with shell metacharacters is quoted in its remedy"
