@@ -1518,6 +1518,40 @@ case "$refusal" in
   *) ok "a present row is not reported missing" ;;
 esac
 
+# AUT-1523: a row near the beginning of a large section must have the
+# same verdict as a short body even when its reader exits before the producer.
+echo "==> large validation sections do not race their row readers"
+cat >"$EVIDENCE_TMP/large.md" <<'EOF'
+## Intent
+Exercise evidence transport independently of row semantics.
+## Validation
+- Build: passed
+- Automated tests: passed
+- Manual validation: inspected
+EOF
+# Exceed pipe buffering rather than relying on concurrent host load.
+awk 'BEGIN { for (i = 0; i < 32768; i++) print "Additional validation evidence recorded without changing the required rows." }' >>"$EVIDENCE_TMP/large.md"
+cat >>"$EVIDENCE_TMP/large.md" <<'EOF'
+## Review tier
+trivial
+## Why this tier
+Inert documentation update.
+EOF
+if ! large_out="$(bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/large.md" 2>&1)"; then
+  fail "large valid body was refused: $large_out"
+fi
+# The lookalike reader must keep its intended diagnostic on the same input.
+sed 's/- Build: passed/- Build extra: passed/' "$EVIDENCE_TMP/large.md" >"$EVIDENCE_TMP/lookalike-large.md"
+if large_out="$(bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/lookalike-large.md" 2>&1)"; then
+  fail "large malformed row was accepted"
+fi
+case "$large_out" in
+  *'Broken pipe'*) fail "lookalike reader lost its producer: $large_out" ;;
+esac
+printf '%s\n' "$large_out" | grep -F "got: '- Build extra: passed'" >/dev/null \
+  || fail "large lookalike body lost its diagnostic: $large_out"
+ok "large valid and malformed bodies retain their verdicts"
+
 echo "==> an unedited template is absence, not evidence"
 body '## Intent
 <State exactly what behavior this change creates.>

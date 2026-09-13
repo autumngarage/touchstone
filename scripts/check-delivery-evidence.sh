@@ -123,7 +123,7 @@ section() {
 # Placeholders from the template are absence wearing a costume: an angle
 # bracket line is the template, a bare "n/a" with no reason explains nothing.
 filled() {
-  printf '%s\n' "$1" | awk '
+  awk '
     { line = $0
       sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
       if (line == "") next
@@ -158,7 +158,7 @@ filled() {
       found = 1
     }
     END { exit !found }
-  '
+  ' <<<"$1"
 }
 
 # The template's three Validation rows are the promise: Build, Automated
@@ -178,8 +178,10 @@ Manual validation"
 # says which build they validated, and refusing it as "missing" sent three
 # complete bodies back for a rebind in one day (AUT-1294). The qualifier is
 # not read; the row is.
+# Direct input lets a first-match reader exit without closing a producer's
+# pipe under pipefail (AUT-1523). Keep the same trailing newline as printf.
 row_text() {
-  printf '%s\n' "$1" | awk -v label="$2" '
+  awk -v label="$2" '
     # Four or more leading spaces is indented code (CommonMark), not a row.
     BEGIN { pattern = "^ {0,3}[-*+][[:space:]]+" label "( \\([^)]*\\))?:" }
     in_fence {
@@ -200,7 +202,7 @@ row_text() {
       }
     }
     $0 ~ pattern { row = $0; sub(pattern "[[:space:]]*", "", row); print row; found = 1; exit }
-    END { if (!found) exit 1 }'
+    END { if (!found) exit 1 }' <<<"$1"
 }
 
 FAILURES=0
@@ -237,7 +239,7 @@ report_unreadable() {
 TIER_RAW="$(section "Review tier")"
 # Edge-trim and lowercase only: deleting internal whitespace would normalize
 # a visibly invalid 'nor mal' into an accepted tier.
-TIER="$(printf '%s\n' "$TIER_RAW" | awk 'NF { n++; line = $0 } END { if (n == 1) print line }' \
+TIER="$(awk 'NF { n++; line = $0 } END { if (n == 1) print line }' <<<"$TIER_RAW" \
   | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
 case " $REQUIRED_TIERS " in
   *" $TIER "*) ;;
@@ -268,10 +270,10 @@ checker_revision_note() {
 # read and the one that would pass, rather than "missing" for a row the
 # author can see (AUT-1294).
 row_lookalike() {
-  printf '%s\n' "$1" | awk -v label="$2" '
+  awk -v label="$2" '
     BEGIN { pattern = "^ {0,3}[-*+][[:space:]]+" label }
     $0 ~ pattern { print; found = 1; exit }
-    END { if (!found) exit 1 }'
+    END { if (!found) exit 1 }' <<<"$1"
 }
 while IFS= read -r row; do
   [ -n "$row" ] || continue
