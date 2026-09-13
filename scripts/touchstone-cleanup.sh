@@ -171,88 +171,114 @@ while IFS= read -r -d '' record; do
 done < <(git worktree list --porcelain -z)
 emit_worktree
 
-# --- branches whose pull request is finished ------------------------------------
-# A ref is "finished" only when a pull request from THIS repository with
-# that head name is merged or closed AND its head SHA is the ref's current
-# SHA. Name alone is not enough: a reused branch name, or a fork's PR with
-# the same name, would otherwise recommend deleting live work. The query is
-# driven by the refs being checked (one bounded read per ref), so there is
-# no "recent N pull requests" window to fall outside of. A failed read is a
-# finding, never an empty list.
+# --- branch inventory ---------------------------------------------------------
+# One fully paginated GraphQL inventory, shared by both ref loops. A failed
+# page invalidates the whole inventory; never classify from partial results.
 if [ "$GH_OK" = true ]; then
   REPO_FULL="${REPO_ROW%%	*}"
+  PR_ROWS=""
+  if ! PR_ROWS="$(gh api graphql --paginate \
+    -F owner="${REPO_FULL%%/*}" -F name="${REPO_FULL#*/}" \
+    -f query='query($owner:String!,$name:String!,$endCursor:String) {
+      repository(owner:$owner,name:$name) {
+        pullRequests(first:100,after:$endCursor) {
+          nodes { number state headRefName headRefOid baseRefName headRepository { nameWithOwner } }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }' --jq '.data.repository.pullRequests.nodes[] |
+      [.headRefName, .number, .state, .headRefOid,
+       (.headRepository.nameWithOwner // ""), .baseRefName] | @tsv' 2>&1)"; then
+    finding github "pull-request read failed: $PR_ROWS" "branch findings are withheld; retry with gh authenticated"
+    GH_OK=false
+  fi
+fi
+if [ "$GH_OK" = true ]; then
+  REMOTE_OK=true
+  if ! REMOTE_HEADS="$(git ls-remote --quiet --heads origin 2>&1)"; then
+    finding github "could not list origin's branches: $REMOTE_HEADS" "remote and local-only classifications are withheld; retry with network access"
+    REMOTE_HEADS=""
+    REMOTE_OK=false
+  fi
+  # The live default SHA, not a possibly stale local main, is the ancestry
+  # boundary. Missing objects stay unverified: this read-only check never fetches.
+  DEFAULT_SHA="$(awk -v ref="refs/heads/$DEFAULT_BRANCH" '$2 == ref { print $1 }' <<<"$REMOTE_HEADS")"
   finished_for() {
-    # $1 branch name, $2 current sha -> prints "#N merged|closed" or nothing
-    local rows
-    rows="$(gh pr list --state all --head "$1" --limit 1000 \
-      --json number,state,headRefOid,headRepository,headRepositoryOwner \
-      --jq '.[] | [.number, .state, .headRefOid, ((.headRepositoryOwner.login // "") + "/" + (.headRepository.name // ""))] | @tsv' 2>/dev/null)" || return 2
-    # Any OPEN pull request from THIS repository on this head means the
-    # branch is in flight; a fork's open PR with the same name is not ours.
-    printf '%s\n' "$rows" | awk -F'\t' -v repo="$REPO_FULL" '$2 == "OPEN" && $4 == repo { found = 1 } END { exit !found }' && return 1
-    printf '%s\n' "$rows" | awk -F'\t' -v sha="$2" -v repo="$REPO_FULL" \
-      '($2 == "MERGED" || $2 == "CLOSED") && $3 == sha && $4 == repo { print "#" $1 " " tolower($2); exit }'
+    awk -F'\t' -v b="$1" -v sha="$2" -v repo="$REPO_FULL" \
+      '$1 == b && $5 == repo && ($3 == "MERGED" || $3 == "CLOSED") && $4 == sha {
+        print "#" $2 " " tolower($3); exit
+      }' <<<"$PR_ROWS"
   }
-  # A branch that is still the BASE of an open pull request is a stack's
-  # parent: deleting it closes the child PR, which cannot be reopened
-  # (principles/git-workflow.md, stacked PRs). Read once.
-  # Every open PR, paginated, so no child is past a window; a failed read
-  # fails closed: no remote-branch deletion is recommended without it.
-  STACK_BASES_OK=true
-  STACK_BASES="$(gh api --paginate "repos/$REPO_FULL/pulls?state=open&per_page=100" --jq '.[] | [.base.ref, .number] | @tsv' 2>/dev/null)" || {
-    STACK_BASES_OK=false
-    finding "github" "open pull-request read failed" "remote-branch findings are withheld: a merged branch may still base an open stacked PR; retry with gh authenticated"
+  open_head() {
+    awk -F'\t' -v b="$1" -v repo="$REPO_FULL" \
+      '$1 == b && $3 == "OPEN" && $5 == repo { found = 1 } END { exit !found }' <<<"$PR_ROWS"
   }
   bases_open_pr() {
-    printf '%s\n' "$STACK_BASES" | awk -F'\t' -v b="$1" '$1 == b { print "#" $2; exit }'
+    awk -F'\t' -v b="$1" '$3 == "OPEN" && $6 == b { print "#" $2; exit }' <<<"$PR_ROWS"
   }
-  # finished_for runs in a command substitution, so it cannot record a
-  # finding itself: exit 2 means the read failed and the caller records it.
-  read_failed() {
-    finding "github" "pull-request read failed for $1" "branch findings are incomplete; run with gh authenticated and retry"
+  checked_out() {
+    awk -v b="branch refs/heads/$1" '$0 == b { found = 1 } END { exit !found }' <<<"$WORKTREE_ROWS"
   }
-  while IFS=$'\t' read -r branch sha; do
-    [ -n "$branch" ] && [ "$branch" != "$DEFAULT_BRANCH" ] || continue
-    pr="$(finished_for "$branch" "$sha")" || {
-      [ $? -eq 2 ] && read_failed "$branch"
-      continue
-    }
-    [ -n "$pr" ] || continue
-    case "$pr" in
-      *merged) finding "local-branch" "$branch ($pr)" "git branch -D $(q "$branch") after confirming the merged head (principles/git-workflow.md, 'Periodic branch hygiene')" ;;
-      *) finding "local-branch" "$branch ($pr)" "its PR was closed without merging: delete the branch if the work is abandoned, or reopen a PR for it" ;;
-    esac
-  done < <(git for-each-ref --format='%(refname:short)	%(objectname)' refs/heads/)
-  # Remote branches are judged by their LIVE SHA from one `git ls-remote`,
-  # never by refs/remotes/origin/*: a remote-tracking ref can hold the old
-  # merged SHA while another clone has since pushed new work to that name,
-  # and a recommendation built on the stale ref would delete live work.
-  if [ "$STACK_BASES_OK" = true ]; then
-    if ! REMOTE_HEADS="$(git ls-remote --quiet --heads origin 2>/dev/null)"; then
-      finding "github" "could not list origin's branches (origin unreachable?)" "remote-branch findings are withheld; retry with network access"
-      REMOTE_HEADS=""
+  unknown_branch() {
+    local location="$1" branch="$2" sha="$3" subject kind date remote_sha ahead
+    subject="$branch"
+    [ "$location" = local ] || subject="origin/$branch"
+    if ! date="$(git show -s --format=%cI "$sha" -- 2>/dev/null)"; then
+      finding unverified-branch "$subject ($sha; object unavailable)" "inspect this ref in its owning checkout; delivery and age are unverified"
+      return
     fi
-  else
-    REMOTE_HEADS=""
-  fi
-  while IFS=$'\t' read -r sha ref; do
-    branch="${ref#refs/heads/}"
-    [ -n "$branch" ] && [ "$branch" != "$DEFAULT_BRANCH" ] || continue
-    pr="$(finished_for "$branch" "$sha")" || {
-      [ $? -eq 2 ] && read_failed "origin/$branch"
-      continue
-    }
-    [ -n "$pr" ] || continue
+    subject="$subject (last commit $date)"
+    # Zero unique commits is proof; matching filenames or even matching trees
+    # cannot prove the branch's changes were delivered by another route.
+    if [ -n "$DEFAULT_SHA" ] && ahead="$(git rev-list --count "$DEFAULT_SHA..$sha" -- 2>/dev/null)" && [ "$ahead" = 0 ]; then
+      finding "$location-branch" "$subject (no unique commits against origin/$DEFAULT_BRANCH)" "confirm the owner has finished with this branch, then remove the ref at $sha"
+      return
+    fi
+    kind=unshipped-branch
+    remote_sha="$(awk -v ref="refs/heads/$branch" '$2 == ref { print $1 }' <<<"$REMOTE_HEADS")"
+    if [ "$location" = local ] && [ "$REMOTE_OK" = true ] && [ -z "$remote_sha" ]; then
+      kind=local-only-work
+      finding "$kind" "$subject" "coordinate with the owner: git push -u origin $(q "$branch"), open a PR, or record the decision to abandon this work"
+    else
+      finding "$kind" "$subject" "reconcile with the owner: open a PR or record the decision to abandon this work; no delivery proof exists for this head"
+    fi
+  }
+  inspect_branch() {
+    local location="$1" branch="$2" sha="$3" pr child
+    [ -n "$branch" ] && [ "$branch" != "$DEFAULT_BRANCH" ] || return 0
+    open_head "$branch" && return 0
     child="$(bases_open_pr "$branch")"
+    pr="$(finished_for "$branch" "$sha")"
     if [ -n "$child" ]; then
-      finding "remote-branch" "origin/$branch ($pr) still bases open PR $child" "do not delete: retarget $child to $(q "$DEFAULT_BRANCH") (gh pr edit ${child#\#} --base $(q "$DEFAULT_BRANCH")) and rebase it first"
-      continue
+      finding "$location-branch" "$([ "$location" = local ] || printf 'origin/')$branch ($pr) still bases open PR $child" "do not delete: retarget $child to $(q "$DEFAULT_BRANCH") and rebase it first"
+      return
     fi
-    case "$pr" in
-      *merged) finding "remote-branch" "origin/$branch ($pr)" "git push origin --force-with-lease=$(q "$branch"):$sha :$(q "$branch") (deletes only while the branch is still at that SHA)" ;;
-      *) finding "remote-branch" "origin/$branch ($pr)" "its PR was closed without merging: git push origin --force-with-lease=$(q "$branch"):$sha :$(q "$branch") if the work is abandoned" ;;
-    esac
-  done < <(printf '%s\n' "$REMOTE_HEADS" | awk 'NF == 2 { print $1 "\t" $2 }')
+    # A checked-out no-PR branch is observable active work, not abandonment.
+    if checked_out "$branch"; then return; fi
+    if [ -z "$pr" ]; then
+      unknown_branch "$location" "$branch" "$sha"
+      return
+    fi
+    if [ "$location" = local ]; then
+      case "$pr" in
+        *merged) finding local-branch "$branch ($pr)" "git branch -D $(q "$branch") after confirming the merged head (principles/git-workflow.md, 'Periodic branch hygiene')" ;;
+        *) finding local-branch "$branch ($pr)" "its PR was closed without merging: delete the branch if the work is abandoned, or reopen a PR for it" ;;
+      esac
+    else
+      case "$pr" in
+        *merged) finding remote-branch "origin/$branch ($pr)" "git push origin --force-with-lease=$(q "$branch"):$sha :$(q "$branch") (deletes only while the branch is still at that SHA)" ;;
+        *) finding remote-branch "origin/$branch ($pr)" "its PR was closed without merging: git push origin --force-with-lease=$(q "$branch"):$sha :$(q "$branch") if the work is abandoned" ;;
+      esac
+    fi
+  }
+  WORKTREE_ROWS="$(git worktree list --porcelain)"
+  while IFS=$'\t' read -r branch sha; do
+    inspect_branch local "$branch" "$sha"
+  done < <(git for-each-ref --format='%(refname:short)	%(objectname)' refs/heads/)
+  while IFS=$'\t' read -r sha ref; do
+    [ -n "$ref" ] || continue
+    inspect_branch remote "${ref#refs/heads/}" "$sha"
+  done <<<"$REMOTE_HEADS"
 fi
 
 # --- report -----------------------------------------------------------------------

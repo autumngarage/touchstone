@@ -23,18 +23,12 @@ case "$1 $2" in
     [ -f "$state/gh-down" ] && exit 1
     printf 'autumngarage/current\tmain\n'
     ;;
-  "api --paginate")
-    [ -f "$state/api-down" ] && { echo "gh: HTTP 502" >&2; exit 1; }
+  "api graphql")
+    [ -f "$state/api-down" ] || [ -f "$state/list-down" ] && { echo "gh: HTTP 502" >&2; exit 1; }
+    printf 'inventory\n' >>"$state/inventory-calls"
+    case " $* " in *' --paginate '*) ;; *) echo "missing pagination" >&2; exit 1 ;; esac
     [ -f "$state/prs" ] || exit 0
-    awk -F'\t' '$3 == "OPEN" { print $6 "\t" $2 }' "$state/prs"
-    ;;
-  "pr list")
-    # Rows in $state/prs: "head<TAB>number<TAB>state<TAB>sha<TAB>owner/repo<TAB>base"
-    [ -f "$state/list-down" ] && { echo "gh: GraphQL: rate limited" >&2; exit 1; }
-    head=""; fields=""
-    while [ "$#" -gt 0 ]; do [ "$1" = --head ] && head="$2"; [ "$1" = --json ] && fields="$2"; shift; done
-    [ -f "$state/prs" ] || exit 0
-    awk -F'\t' -v h="$head" '$1 == h { print $2 "\t" $3 "\t" $4 "\t" $5 }' "$state/prs"
+    cat "$state/prs"
     ;;
   *) echo "unhandled fake gh call: $*" >&2; exit 1 ;;
 esac
@@ -121,7 +115,7 @@ grep -q 'fix/abandoned (#42 closed)' "$TMP/out" && grep -q 'closed without mergi
   && ok "closed-unmerged branch gets the cautious remedy" || fail "closed branch remedy wrong"
 grep -E '^  (local|remote)-branch.*feat/in-flight' "$TMP/out" >/dev/null && fail "a branch with an open PR was reported as finished" || ok "open-PR branch is not a finished branch"
 grep -E '^  local-branch.*feat/reused' "$TMP/out" >/dev/null && fail "a reused branch name at a new SHA was reported as finished" || ok "reused name at a new SHA is live work"
-grep -E '^  local-branch.*feat/fork-name' "$TMP/out" >/dev/null && fail "a fork's PR with the same head name counted as ours" || ok "fork PR with the same name is not ours"
+grep -E '^  local-branch.*feat/fork-name.*#44' "$TMP/out" >/dev/null && fail "a fork's PR with the same head name counted as ours" || ok "fork PR with the same name is not ours"
 grep -q "repo wt \[feat/in-flight\]" "$TMP/out" && ok "worktree path with a space kept whole" || fail "worktree path split: $(grep worktree "$TMP/out")"
 grep -E '^  remote-branch.*feat/stack-parent.*still bases open PR #46' "$TMP/out" >/dev/null && ! grep -E 'delete feat/stack-parent' "$TMP/out" >/dev/null \
   && ok "a merged branch that bases an open PR is preserved, retarget named" || fail "stack parent not protected: $(grep stack-parent "$TMP/out")"
@@ -166,7 +160,7 @@ git -C "$TMP/repo" push -q -f origin "$DONE_SHA:refs/heads/feat/done"
 echo "==> a failed open-PR read withholds every remote-branch finding"
 touch "$TMP/state/api-down"
 run
-grep -q 'github.*open pull-request read failed' "$TMP/out" && ! grep -qE '^  remote-branch' "$TMP/out" \
+grep -q 'github.*pull-request read failed' "$TMP/out" && ! grep -qE '^  remote-branch' "$TMP/out" \
   && ok "no remote deletion recommended without the stack-base read" || fail "remote-branch findings issued despite a failed base read: $(cat "$TMP/out")"
 rm -f "$TMP/state/api-down"
 
@@ -198,6 +192,46 @@ run
 [ "$RC" -eq 1 ] && grep -q 'github.*repository read failed' "$TMP/out" && ok "gh failure reported" || fail "gh failure not reported: $(cat "$TMP/out")"
 grep -qE '^  (local|remote)-branch' "$TMP/out" && fail "branch findings claimed without GitHub" || ok "branch findings withheld without GitHub"
 rm -f "$TMP/state/gh-down"
+
+echo "==> no-PR work is visible without inventing delivery proof"
+# A canceled worker leaves its branch after its checkout is removed.
+git -C "$TMP/repo" worktree add -q "$TMP/canceled" -b feat/no-pr
+printf 'unshipped\n' >"$TMP/canceled/new.txt"
+git -C "$TMP/canceled" add new.txt
+git -C "$TMP/canceled" -c user.email=t@example.com -c user.name=t commit -q -m unshipped
+git -C "$TMP/repo" worktree remove "$TMP/canceled"
+# Same filename on main, DIFFERENT content: this is not delivery proof.
+printf 'different\n' >"$TMP/repo/new.txt"
+git -C "$TMP/repo" add new.txt
+git -C "$TMP/repo" -c user.email=t@example.com -c user.name=t commit -q -m other-content
+git -C "$TMP/repo" push -q origin main
+git -C "$TMP/repo" branch feat/zero-unique main
+before_calls="$(wc -l <"$TMP/state/inventory-calls")"
+run --json
+after_calls="$(wc -l <"$TMP/state/inventory-calls")"
+[ "$((after_calls - before_calls))" -eq 1 ] || fail "PR calls grow per ref"
+jq -e '.findings[] | select(.kind == "local-only-work" and (.subject | startswith("feat/no-pr "))) | (.remedy | contains("git push -u origin feat/no-pr") and (contains("delete") | not))' "$TMP/out" >/dev/null \
+  && ok "canceled no-PR work remains discoverable despite matching paths" || fail "local-only work missed: $(cat "$TMP/out")"
+jq -e '.findings[] | select(.kind == "local-branch" and (.subject | startswith("feat/zero-unique "))) | .subject | contains("no unique commits")' "$TMP/out" >/dev/null \
+  || fail "zero-unique branch lacked ancestry proof"
+git -C "$TMP/repo" push -q origin feat/no-pr
+run --json
+jq -e '[.findings[] | select(.kind == "unshipped-branch" and (.subject | contains("feat/no-pr")))] | length == 2' "$TMP/out" >/dev/null \
+  || fail "pushed no-PR branch should be reported locally and remotely"
+# An active no-PR checkout is not an abandonment signal, even at main's tip.
+git -C "$TMP/repo" worktree add -q "$TMP/active" -b feat/active-no-pr
+run --json
+jq -e 'all(.findings[] | select(.kind != "worktree"); (.subject | contains("feat/active-no-pr") | not))' "$TMP/out" >/dev/null \
+  || fail "active no-PR branch received a cleanup recommendation"
+git -C "$TMP/repo" worktree remove "$TMP/active"
+# More than a page of history must not hide an open head or an old merge.
+for n in $(seq 1 105); do
+  printf 'other/%s\t%s\tCLOSED\t%s\tautumngarage/current\tmain\n' "$n" "$((100 + n))" "$DONE_SHA" >>"$TMP/state/prs"
+done
+run --json
+jq -e '.findings[] | select(.subject == "feat/done (#41 merged)")' "$TMP/out" >/dev/null \
+  || fail "old merged head fell outside inventory"
+ok "one paginated inventory serves all refs; unknown work never implies delivery"
 
 echo "==> a branch name with shell metacharacters is quoted in its remedy"
 git -C "$TMP/repo" branch 'feat/semi;touch' "$DONE_SHA"
