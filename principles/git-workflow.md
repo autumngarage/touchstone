@@ -249,12 +249,12 @@ the check's page shows the summary. A closed gate with no PR comment means
 findings are waiting there. Each finding is printed with its severity and a
 16-character id, and the verdict is recorded once per head: a re-run of the
 gate for the same head reuses it, so the ids do not change under you. P0 and
-P1 close the gate; P2 and P3 are reported only — route them, do not fix them.
+P1 close the gate; P2 and P3 are reported only — use the dispositions below.
 Answer a gate-reported finding with the same command and dispositions as a
 review thread:
 
 ```bash
-touchstone pr answer <n> --finding <id> --body-file <reply> --no-code-change   # wrong or out of scope: refute with evidence
+touchstone pr answer <n> --finding <id> --body-file <reply> --no-code-change   # no code change: record the disposition
 touchstone pr answer <n> --finding <id> --body-file <reply> --fix-commit <sha> # fixed: the new head gets its own review
 ```
 
@@ -614,8 +614,8 @@ PR's bug.
    batch.
    A scope boundary never permits the PR to ship a **P0/P1** regression of its
    own; fix or revert that behavior here even when it falls outside the
-   planned change. At P2 or P3 the badge rule below governs instead: route it,
-   and say in the answer that the diff created it.
+   planned change. At P2 or P3 the badge rule below governs instead;
+   say in the answer that the diff created it.
    If the immediately preceding review fix created the regression, follow the
    cascade rule below instead of stacking another fix onto it.
 
@@ -643,20 +643,29 @@ PR's bug.
 
    **P2 and P3 are never fixed in the PR that received them.** They take
    disposition 3 or 4 — never 1 or 2. Push back where the finding is wrong;
-   otherwise answer, route to an issue, resolve the thread, and merge. That holds when the finding is correct, when the fix is one
+   otherwise use disposition 4, resolve the thread, and merge. That holds when the finding is correct, when the fix is one
    line, when the file is already open in the diff, and when fixing looks
    cheaper than writing the answer — those four are the rationalizations that
    produced the loops, not exceptions to the rule. "The diff created it" does
    not promote a P2. A finding with no badge, or an ambiguous one, is a P2.
-   If a P2 looks release-stopping to you, route it and say so in the answer;
-   promoting a finding is the human's call on the tracked issue, never a
-   reason to keep mutating the PR.
+   If a P2 looks release-stopping to you, say so in the answer;
+   promoting a finding is the human's call, never a reason to keep mutating
+   the PR. Follow-up work still needs the evidence required by disposition 4.
 2. **Fix and audit the class** — the in-scope finding is one instance of a
    shape. Grep for siblings before responding
    (`principles/audit-weak-points.md`); fix in-scope siblings and route any
    broader product behavior to its own issue rather than absorbing it here.
 3. **Push back with evidence** — the finding is factually wrong. Quote the file, cite the precedent, resolve without changing code. Never comply with a wrong finding to save a round.
-4. **Real, but not this PR's to fix** — route it to the owning issue with a comment, resolve the thread with the link. The load-bearing case: **never fix a finding by hardening a component the plan deletes.** Check the plan of record before fortifying anything the reviewer points at.
+4. **Acknowledge and stop** — for P2, P3, and unbadged feedback, consider the
+   observation, briefly answer, and resolve the thread. Default to no further
+   action. “Valid observation, not worth addressing” is a final disposition:
+   no new issue, investigation, code change, or compensating process is required.
+   The PR already preserves the evidence; use `--no-code-change` without an issue
+   link. New follow-up work is exceptional and must independently be worth doing
+   based on concrete evidence; validity or plausibility alone is insufficient.
+   For P0/P1 work outside this PR's scope, retain the owning-issue routing and
+   resolve with its link. **Never fix a finding by hardening a component the plan
+   deletes.** Check the plan of record before fortifying it.
 
 **Repeated widening is a design signal, not an implementation queue.** If
 successive findings keep adding syntax, runtimes, project types, or public
@@ -678,11 +687,11 @@ authorize further mutation after this stop signal.
 
 **When findings cluster, the design is the finding.** The badge decides what to
 do with *one* finding; it says nothing about what a *sequence* of them means.
-Several findings on the same surface this diff introduced are evidence about
+For findings eligible to fix here (P0/P1), several on the same surface are evidence about
 the design — and a wrong shape usually presents as a run of *small* findings
 rather than one large one. Each is defensible, each is genuinely a defect, and
-none of them is the problem. Severity is the wrong lens for this: a string of
-P2s often says more than a single P1 would.
+none of them is the problem. This diagnostic applies to allowed fixes; lower-severity observations do not
+require a design investigation.
 
 **The tell is repetition of shape, not count.** If the last two fixes were the
 same move — add another case, another scope, another branch, another accepted
@@ -700,16 +709,11 @@ wait for the third fix round; by then the cost is spent.
 3. *Should this surface exist at all?* Sometimes it was invented to serve the
    previous patch, and nothing actually requires it.
 
-**The signal changes what you file, not what you push.** Recognizing a design
-problem is not permission to fix it here. The badge rule is unchanged: P2 and
-P3 findings are answered and routed without moving the head, however many of
-them arrive, and a run of them never authorizes reopening the design of an
-otherwise mergeable PR. What the diagnostic changes is the *content* of the
-routed work — file the structural problem you found, not the three symptoms —
-and which cascade exit you take: merge if answered, split, or close and replan.
-Only where the clustering is in findings you were already allowed to fix (P0 or
-P1) does the cascade rule govern this head, and its exits are unchanged. The
-redesign, when it comes, is new scoped work with its own budget.
+**The signal does not authorize more work.** P2, P3, and unbadged findings
+keep disposition 4's no-further-action default, however many arrive. A run of
+them never authorizes reopening an otherwise mergeable PR's design. For P0/P1
+fixes, the cascade rule and its exits are unchanged. Any independently justified
+redesign is new scoped work with its own budget.
 
 The exit is nearly always **smaller** than the patch it replaces. That is the
 signature of having found the real problem rather than another symptom. This is
@@ -784,7 +788,7 @@ are:
 
 - **`merge-answered`** — merge it, only when no known P0/P1 defect remains.
   The answer flow's attest request still supplies the final clean verdict
-  first. Routing a P2, P3, or out-of-scope finding is not
+  first. Acknowledging a P2, P3, or out-of-scope finding is not
   permission to ship a known serious regression;
 - **`revert-simplify`** — drop the review-driven accretion and ship the
   materially narrower acceptance boundary, or the replacement architecture,

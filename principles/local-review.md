@@ -299,8 +299,9 @@ falls back first, and waives only if the fallback is also unavailable. The
 PR-visible review is the authority either way.
 
 Afterwards: triage each finding as valid, false positive, duplicate, or out of
-scope; apply valid **P0/P1** fixes and answer-and-route every valid P2 and P3,
-exactly as the delivery contract does on the PR side; do not
+scope; apply valid **P0/P1** fixes. Use the no-further-action default for P2,
+P3, and unbadged feedback in `principles/git-workflow.md`; record the disposition
+in the local review evidence. Do not
 re-run the pass to confirm the reviewer is now quiet; never expand the slice
 to address adjacent or pre-existing findings. If a review fix creates another
 defect, stop patching forward and follow the review-fix cascade rule in
@@ -326,8 +327,8 @@ three rounds (AUT-443). So the pass leaves evidence where the gate reads:
 the PR body's Validation block carries
 
 ```markdown
-- Local review: codex on abc1234: 3 findings, 2 fixed, 1 routed to AUT-n.
-- Local review: openrouter on abc1234: 2 findings, 1 fixed, 1 routed to AUT-n — codex is out of credits.
+- Local review: codex on abc1234: 3 findings, 2 fixed, 1 acknowledged, no further action.
+- Local review: openrouter on abc1234: 2 findings, 1 fixed, 1 acknowledged, no further action — codex is out of credits.
 - Local review: openrouter on the staged slice (review-normal): 0 findings.
 - Local review: n/a — `touchstone review check` reports that the OpenRouter credential is not configured.
 - Local review: n/a — the gate is on its fallback reviewer, which shares the OpenRouter account with the local pass.
