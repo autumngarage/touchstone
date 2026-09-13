@@ -1467,7 +1467,20 @@ cat >"$FAKE_CODEX" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$TOUCHSTONE_FAKE_CODEX_LOG"
-printf 'codex review output\n'
+output=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-last-message) output="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cat >/dev/null
+[ -n "$output" ] || exit 2
+if [ "${TOUCHSTONE_FAKE_CODEX_INVALID:-false}" = true ]; then
+  printf 'not JSON\n' >"$output"
+else
+  printf '%s\n' '{"summary":"codex review output","findings":[]}' >"$output"
+fi
 exit "${TOUCHSTONE_FAKE_CODEX_STATUS:-0}"
 EOF
 chmod +x "$FAKE_CODEX"
@@ -1486,12 +1499,101 @@ before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
   serious_command run --base main --codex-home "$REVIEW_HOME"
 ) >"$TEST_DIR/serious-ok.out" 2>&1 \
   || fail "serious review failed while codex succeeded: $(cat "$TEST_DIR/serious-ok.out")"
-assert_contains "$FAKE_CODEX_LOG" 'review --base main'
+assert_contains "$FAKE_CODEX_LOG" 'exec --sandbox read-only --output-schema'
 assert_contains "$TEST_DIR/serious-ok.out" 'codex review output'
 assert_contains "$TEST_DIR/serious-ok.out" "Evidence: codex on $RANGE_HEAD:"
 after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
 [ "$before_calls" = "$after_calls" ] \
   || fail "a successful codex review still spent an OpenRouter request"
+
+echo "==> review JSON is one object with exact scope and usable evidence"
+(
+  cd "$RANGE_REPOSITORY"
+  review_command run --json --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/review-json.out" 2>"$TEST_DIR/review-json.err" \
+  || fail "normal JSON review failed"
+jq -se 'length == 1 and (.[0] | .schema == "touchstone.review-result/v1" and
+  .status == "completed" and .backend == "openrouter" and .findingCount == 1 and
+  .scope.type == "staged" and (.scope.diffOid | length) == 40 and
+  .cost == 0.00042 and .tokens.prompt == 321 and
+  .evidence == "openrouter on the staged slice (review-normal): 1 findings")' "$TEST_DIR/review-json.out" >/dev/null \
+  || fail "normal JSON contract invalid: $(cat "$TEST_DIR/review-json.out")"
+(
+  cd "$RANGE_REPOSITORY"
+  serious_command run --json --base main --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/serious-json.out" 2>"$TEST_DIR/serious-json.err" \
+  || fail "Codex JSON review failed"
+jq -se --arg head "$RANGE_HEAD" 'length == 1 and (.[0] |
+  .status == "completed" and .backend == "codex" and .reviewedRevision == $head and
+  .scope.type == "range" and .scope.base == "main" and .findingCount == 0 and
+  .cost == null and .model == null and .tokens.prompt == null and
+  .evidence == ("codex on " + $head + ": 0 findings"))' "$TEST_DIR/serious-json.out" >/dev/null \
+  || fail "Codex JSON contract invalid: $(cat "$TEST_DIR/serious-json.out")"
+# Every evidence adapter must emit the gate's accepted row verbatim.
+json_evidence="$(jq -r .evidence "$TEST_DIR/serious-json.out")"
+cat >"$TEST_DIR/json-evidence.md" <<EOF
+## Intent
+Verify the emitted review evidence.
+## Invariants
+The captured head is the reviewed head.
+## Validation
+- Build: n/a — fixture
+- Automated tests: passed
+- Manual validation: inspected result
+- Local review: $json_evidence
+## Review tier
+serious
+## Why this tier
+Exercises the review boundary.
+EOF
+bash "$TOUCHSTONE_ROOT/scripts/check-delivery-evidence.sh" "$TEST_DIR/json-evidence.md" >/dev/null \
+  || fail "Codex evidence was not accepted verbatim"
+(
+  cd "$RANGE_REPOSITORY"
+  TOUCHSTONE_FAKE_CODEX_STATUS=1 serious_command run --json --base main --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/fallback-json.out" 2>"$TEST_DIR/fallback-json.err" \
+  || fail "JSON fallback failed"
+jq -se 'length == 1 and .[0].backend == "openrouter" and .[0].scope.type == "range"' "$TEST_DIR/fallback-json.out" >/dev/null \
+  || fail "fallback contaminated JSON stdout"
+(
+  cd "$RANGE_REPOSITORY"
+  TOUCHSTONE_FAKE_CODEX_INVALID=true serious_command run --json --base main --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/malformed-codex-json.out" 2>"$TEST_DIR/malformed-codex-json.err" \
+  || fail "malformed Codex output did not take the bounded fallback"
+jq -se 'length == 1 and .[0].backend == "openrouter"' "$TEST_DIR/malformed-codex-json.out" >/dev/null \
+  || fail "unvalidated Codex output was treated as a review"
+jq '.choices[0].message.content = "not JSON"' "$FAKE_RESPONSE" >"$TEST_DIR/malformed-review.json"
+if (
+  cd "$RANGE_REPOSITORY"
+  TOUCHSTONE_FAKE_REVIEW_RESPONSE="$TEST_DIR/malformed-review.json" review_command run --json --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/malformed-json.out" 2>"$TEST_DIR/malformed-json.err"; then
+  fail "malformed reviewer content exited zero"
+fi
+jq -se 'length == 1 and .[0].error.code == "malformed_response" and .[0].evidence == null' "$TEST_DIR/malformed-json.out" >/dev/null \
+  || fail "malformed response did not fail with structured evidence absence"
+for status in 401 429; do
+  if (
+    cd "$RANGE_REPOSITORY"
+    TOUCHSTONE_FAKE_HTTP_STATUS="$status" review_command run --json --codex-home "$REVIEW_HOME"
+  ) >"$TEST_DIR/error-json.out" 2>"$TEST_DIR/error-json.err"; then
+    fail "JSON provider failure exited zero"
+  fi
+  expected_code=credential_rejected
+  [ "$status" != 429 ] || expected_code=quota_exhausted
+  jq -se --arg code "$expected_code" 'length == 1 and .[0].status == "error" and .[0].error.code == $code and .[0].evidence == null' "$TEST_DIR/error-json.out" >/dev/null \
+    || fail "provider failure lacked stable JSON code: $(cat "$TEST_DIR/error-json.out")"
+done
+if review_command run --json --unknown >"$TEST_DIR/argument-json.out" 2>"$TEST_DIR/argument-json.err"; then
+  fail "unknown JSON argument accepted"
+fi
+jq -se 'length == 1 and .[0].error.code == "invalid_argument"' "$TEST_DIR/argument-json.out" >/dev/null \
+  || fail "argument failure did not emit one JSON error"
+(
+  cd "$RANGE_REPOSITORY"
+  TOUCHSTONE_REVIEW_POLICY_FILE="$SMALL_POLICY" review_command run --json --codex-home "$REVIEW_HOME"
+) >"$TEST_DIR/limit-json.out" 2>"$TEST_DIR/limit-json.err" && fail "JSON input ceiling accepted"
+jq -se 'length == 1 and .[0].error.code == "input_limit"' "$TEST_DIR/limit-json.out" >/dev/null \
+  || fail "input ceiling lost its non-waiver code"
 
 echo "==> a base behind its upstream is refused before any reviewer runs"
 # A stale base fills the slice with already-merged work, so the reviewer
@@ -1543,7 +1645,7 @@ before_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"
     serious_command run --base main --codex-home "$REVIEW_HOME"
 ) >"$TEST_DIR/serious-fallback.out" 2>&1 \
   || fail "a failed codex review was not covered by the fallback: $(cat "$TEST_DIR/serious-fallback.out")"
-assert_contains "$FAKE_CODEX_LOG" 'review --base main'
+assert_contains "$FAKE_CODEX_LOG" 'exec --sandbox read-only --output-schema'
 assert_contains "$TEST_DIR/serious-fallback.out" 'codex review exited 1'
 assert_contains "$TEST_DIR/serious-fallback.out" "Evidence: openrouter on $RANGE_HEAD:"
 after_calls="$(wc -l <"$FAKE_CURL_LOG" | tr -d ' ')"

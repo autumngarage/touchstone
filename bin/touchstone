@@ -29,6 +29,7 @@ Usage:
   touchstone policy apply --base BRANCH --project DIR --authorize-admin [--json]
   touchstone cleanup check [--project DIR] [--json]
   touchstone review setup|check|run|rotate|uninstall [--codex-home DIR] [--dry-run]
+  touchstone review run [--base REF] [--json]
   touchstone usage check|install|uninstall --enterprise SLUG [arguments]
   touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change)
   touchstone pr answer PR --finding ID --body-file FILE (--fix-commit SHA | --no-code-change)

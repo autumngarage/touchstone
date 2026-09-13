@@ -11,10 +11,41 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 POLICY_SOURCE="${TOUCHSTONE_REVIEW_POLICY_FILE:-$ROOT/config/review-normal.json}"
 PROMPT_SOURCE="${TOUCHSTONE_REVIEW_PROMPT_FILE:-$ROOT/config/review-normal-prompt.md}"
 KEYCHAIN_SERVICE="com.autumngarage.touchstone.review-normal"
+# JSON mode changes only the output adapter; diagnostics remain on stderr.
+JSON=false
+for arg in "$@"; do [ "$arg" != --json ] || JSON=true; done
+JSON_OWNER="$BASH_SUBSHELL"
+RESULT_JSON=""
+ERROR_CODE=invalid_argument
+ERROR_MESSAGE="review failed; see stderr"
+RESULT_BACKEND=""
+REVIEWED_REVISION=""
+MERGE_BASE=""
+DIFF_OID=""
+if [ "$JSON" = true ]; then
+  exec 3>&1
+  exec 1>&2
+fi
+emit_json_exit() {
+  local status="$1" jq_bin
+  [ "$JSON" = true ] && [ "$BASH_SUBSHELL" = "$JSON_OWNER" ] || return 0
+  if [ "$status" -eq 0 ] && [ -n "$RESULT_JSON" ]; then
+    printf '%s\n' "$RESULT_JSON" >&3
+  else
+    jq_bin="${TOUCHSTONE_REVIEW_JQ_BIN:-$(command -v jq || true)}"
+    if [ -n "$jq_bin" ] && [ -x "$jq_bin" ]; then
+      "$jq_bin" -cn --arg code "$ERROR_CODE" --arg message "$ERROR_MESSAGE" \
+        '{schema:"touchstone.review-result/v1",status:"error",error:{code:$code,message:$message},evidence:null}' >&3
+    else
+      printf '%s\n' '{"schema":"touchstone.review-result/v1","status":"error","error":{"code":"dependency_unavailable","message":"jq is unavailable"},"evidence":null}' >&3
+    fi
+  fi
+}
+trap 'emit_json_exit "$?"' EXIT
 ACTION="${1:-}"
 
 [ -n "$ACTION" ] || {
-  echo "Usage: touchstone review setup|check|run [--base <ref>]|rotate|uninstall" >&2
+  echo "Usage: touchstone review setup|check|run [--base <ref>] [--json]|rotate|uninstall" >&2
   exit 2
 }
 shift
@@ -44,6 +75,9 @@ while [ "$#" -gt 0 ]; do
       REVIEW_BASE="$2"
       shift 2
       ;;
+    --json)
+      shift
+      ;;
     --dry-run)
       DRY_RUN=true
       shift
@@ -56,9 +90,12 @@ while [ "$#" -gt 0 ]; do
 done
 
 die() {
+  ERROR_MESSAGE="$*"
   echo "ERROR: $*" >&2
   exit 1
 }
+
+[ "$JSON" = false ] || [ "$ACTION" = run ] || die "--json is only valid for: touchstone review run"
 
 case "$CODEX_HOME_DIR" in
   /*) ;;
@@ -241,11 +278,13 @@ cleanup_work_dir() {
       [ "$status" -ne 0 ] || status=1
     fi
   fi
+  emit_json_exit "$status"
   exit "$status"
 }
 
 prepare_request() {
   local repository_root input_bytes merge_base reviewed_head
+  ERROR_CODE=invalid_scope
 
   require_executable git "$GIT_BIN"
   repository_root="$(review_git -C "$(pwd -P)" rev-parse --show-toplevel 2>/dev/null)" \
@@ -285,6 +324,9 @@ prepare_request() {
     EVIDENCE_TARGET="the staged slice (review-normal)"
   fi
 
+  REVIEWED_REVISION="$(review_git -C "$repository_root" rev-parse --verify HEAD 2>/dev/null || true)"
+  MERGE_BASE="${merge_base:-}"
+  DIFF_OID="$(review_git -C "$repository_root" hash-object "$WORK_DIR/diff")"
   "$JQ_BIN" -n \
     --rawfile system "$PROMPT_SOURCE" \
     --rawfile diff "$WORK_DIR/diff" \
@@ -349,6 +391,7 @@ prepare_request() {
     || die "could not restrict temporary review input"
   input_bytes="$(wc -c <"$WORK_DIR/request.json" | tr -d ' ')"
   if [ "$input_bytes" -gt "$MAX_INPUT_BYTES" ]; then
+    ERROR_CODE=input_limit
     # Name what was measured. "Split the change" misleads when the reviewed
     # slice is not the change: the normal scope reviews the staged slice, so
     # anything else staged -- build output, a broad add -- lands here while
@@ -364,6 +407,11 @@ prepare_request() {
 }
 
 handle_http_error() {
+  ERROR_CODE=provider_error
+  case "$1" in
+    401 | 403) ERROR_CODE=credential_rejected ;;
+    402 | 429) ERROR_CODE=quota_exhausted ;;
+  esac
   if [ "$1" = 404 ] && "$JQ_BIN" -e '
     .error.message | type == "string" and
     contains("satisfy the max price")
@@ -428,46 +476,7 @@ response_unusable_fields() {
   ' "$WORK_DIR/response.json" 2>/dev/null || printf 'the body is not JSON\n'
 }
 
-print_response() {
-  local model prompt_tokens completion_tokens cost finding_count finish_reason RESPONSE_ROW
-  local provider_error unusable
-
-  # A 200 carrying a provider error is a transport failure, not a malformed
-  # review, and OpenRouter delivers "temporarily rate-limited upstream" exactly
-  # this way with no choices at all. Classifying it is what tells the operator
-  # that re-running the command is a fresh pass rather than prohibited
-  # fallback to another profile.
-  provider_error="$("$JQ_BIN" -r '
-    if ((.error.message | type == "string") and ((.error.message | length) > 0)
-      and ((.choices | type != "array") or ((.choices | length) == 0)))
-    then .error.message else empty end
-  ' "$WORK_DIR/response.json" 2>/dev/null)" || provider_error=""
-  if [ -n "$provider_error" ]; then
-    die_response "OpenRouter answered HTTP 200 with a provider error and no completion: $provider_error; the request was not retried, so re-running the command is a fresh pass and not fallback"
-  fi
-
-  # finish_reason is read BEFORE the malformed-field check, because exhausting
-  # the completion budget is what produces the malformed field. A reasoning
-  # model spends its thinking from the same budget as its answer, so it can
-  # return `content: null` with `finish_reason: length`; checked in the other
-  # order that arrives as "malformed response", and the same defect was being
-  # reported under two unrelated messages depending on whether the budget ran
-  # out before or during the answer.
-  finish_reason="$("$JQ_BIN" -r '.choices[0].finish_reason // empty' "$WORK_DIR/response.json" 2>/dev/null || true)"
-  if [ "$finish_reason" = length ]; then
-    die "OpenRouter stopped at the configured completion limit (limits.maxCompletionTokens in the managed review policy) before producing a review. A reasoning model spends its thinking from this same budget, so this is not evidence that the change is too large -- it has fired on a 24-line diff. It is also not a byte-ceiling refusal: the slice was accepted and the reviewer produced nothing, so re-slicing is not the remedy. Stop without retrying, as principles/local-review.md requires for every truncation failure; the durable fix is to raise limits.maxCompletionTokens."
-  fi
-  unusable="$(response_unusable_fields)"
-  if [ -n "$unusable" ]; then
-    die_response "OpenRouter returned a malformed review response; unusable: $unusable"
-  fi
-  case "$finish_reason" in
-    stop) ;;
-    *) die "OpenRouter did not complete the review; no local-review evidence was produced" ;;
-  esac
-  "$JQ_BIN" -r '.choices[0].message.content' "$WORK_DIR/response.json" \
-    >"$WORK_DIR/review.json" \
-    || die "OpenRouter returned unreadable review content"
+validate_review() {
   "$JQ_BIN" -e '
     def clean:
       type == "string" and length > 0 and
@@ -485,8 +494,77 @@ print_response() {
       (.title | clean) and
       (.body | clean)
     )
-  ' "$WORK_DIR/review.json" >/dev/null \
-    || die "OpenRouter returned review content outside the $REVIEW_POLICY_SCHEMA contract"
+  ' "$WORK_DIR/review.json" >/dev/null
+}
+
+# Both backends use the same finding object and evidence formatter. Unknown
+# Codex accounting is null, never a fabricated zero or a parsed prose number.
+record_result() {
+  local model="$1" prompt_tokens="$2" completion_tokens="$3" cost="$4" count evidence scope
+  count="$("$JQ_BIN" -r '.findings | length' "$WORK_DIR/review.json")"
+  evidence="$RESULT_BACKEND on $EVIDENCE_TARGET: $count findings"
+  scope=staged
+  [ -z "$REVIEW_BASE" ] || scope=range
+  RESULT_JSON="$("$JQ_BIN" -c \
+    --arg backend "$RESULT_BACKEND" --arg model "$model" \
+    --arg revision "$REVIEWED_REVISION" --arg scope "$scope" \
+    --arg base "$REVIEW_BASE" --arg mergeBase "$MERGE_BASE" --arg diffOid "$DIFF_OID" \
+    --arg evidence "$evidence" --argjson promptTokens "$prompt_tokens" \
+    --argjson completionTokens "$completion_tokens" --argjson cost "$cost" '
+      {schema:"touchstone.review-result/v1",status:"completed",backend:$backend,
+       model:(if $model == "" then null else $model end),
+       reviewedRevision:(if $revision == "" then null else $revision end),
+       scope:{type:$scope,base:(if $base == "" then null else $base end),
+         mergeBase:(if $mergeBase == "" then null else $mergeBase end),diffOid:$diffOid},
+       findingCount:(.findings|length),findings:.findings,summary:.summary,
+       cost:$cost,tokens:{prompt:$promptTokens,completion:$completionTokens},evidence:$evidence,error:null}
+    ' "$WORK_DIR/review.json")" || die "could not format review result"
+}
+
+print_response() {
+  local model prompt_tokens completion_tokens cost finding_count finish_reason RESPONSE_ROW
+  local provider_error unusable
+  ERROR_CODE=malformed_response
+
+  # A 200 carrying a provider error is a transport failure, not a malformed
+  # review, and OpenRouter delivers "temporarily rate-limited upstream" exactly
+  # this way with no choices at all. Classifying it is what tells the operator
+  # that re-running the command is a fresh pass rather than prohibited
+  # fallback to another profile.
+  provider_error="$("$JQ_BIN" -r '
+    if ((.error.message | type == "string") and ((.error.message | length) > 0)
+      and ((.choices | type != "array") or ((.choices | length) == 0)))
+    then .error.message else empty end
+  ' "$WORK_DIR/response.json" 2>/dev/null)" || provider_error=""
+  if [ -n "$provider_error" ]; then
+    ERROR_CODE=provider_error
+    die_response "OpenRouter answered HTTP 200 with a provider error and no completion: $provider_error; the request was not retried, so re-running the command is a fresh pass and not fallback"
+  fi
+
+  # finish_reason is read BEFORE the malformed-field check, because exhausting
+  # the completion budget is what produces the malformed field. A reasoning
+  # model spends its thinking from the same budget as its answer, so it can
+  # return `content: null` with `finish_reason: length`; checked in the other
+  # order that arrives as "malformed response", and the same defect was being
+  # reported under two unrelated messages depending on whether the budget ran
+  # out before or during the answer.
+  finish_reason="$("$JQ_BIN" -r '.choices[0].finish_reason // empty' "$WORK_DIR/response.json" 2>/dev/null || true)"
+  if [ "$finish_reason" = length ]; then
+    ERROR_CODE=completion_limit
+    die "OpenRouter stopped at the configured completion limit (limits.maxCompletionTokens in the managed review policy) before producing a review. A reasoning model spends its thinking from this same budget, so this is not evidence that the change is too large -- it has fired on a 24-line diff. It is also not a byte-ceiling refusal: the slice was accepted and the reviewer produced nothing, so re-slicing is not the remedy. Stop without retrying, as principles/local-review.md requires for every truncation failure; the durable fix is to raise limits.maxCompletionTokens."
+  fi
+  unusable="$(response_unusable_fields)"
+  if [ -n "$unusable" ]; then
+    die_response "OpenRouter returned a malformed review response; unusable: $unusable"
+  fi
+  case "$finish_reason" in
+    stop) ;;
+    *) die "OpenRouter did not complete the review; no local-review evidence was produced" ;;
+  esac
+  "$JQ_BIN" -r '.choices[0].message.content' "$WORK_DIR/response.json" \
+    >"$WORK_DIR/review.json" \
+    || die "OpenRouter returned unreadable review content"
+  validate_review || die "OpenRouter returned review content outside the $REVIEW_POLICY_SCHEMA contract"
 
   # One read for the scalar response fields; the findings loop and summary
   # stay separate because finding content may carry tabs or newlines.
@@ -495,6 +573,7 @@ print_response() {
   IFS="$(printf '\t')" read -r model prompt_tokens completion_tokens cost <<<"$RESPONSE_ROW"
   finding_count="$("$JQ_BIN" -r '.findings | length' "$WORK_DIR/review.json")"
 
+  record_result "$model" "$prompt_tokens" "$completion_tokens" "$cost"
   echo "OpenRouter review"
   printf 'Model: %s\n' "$model"
   printf 'Cost: $%s\n' "$cost"
@@ -505,18 +584,22 @@ print_response() {
     "\(.severity) \(.file):\(.line // $no_line) \(.title)\n  \(.body)"
   ' "$WORK_DIR/review.json"
   printf 'Summary: %s\n' "$("$JQ_BIN" -r '.summary' "$WORK_DIR/review.json")"
-  printf 'Evidence: openrouter on %s: %s findings\n' "$EVIDENCE_TARGET" "$finding_count"
+  printf 'Evidence: %s\n' "$("$JQ_BIN" -r '.evidence' <<<"$RESULT_JSON")"
 }
 
 run_openrouter() {
   local http_status curl_status
 
+  RESULT_BACKEND=openrouter
+  ERROR_CODE=dependency_unavailable
   require_executable curl "$CURL_BIN"
-  prepare_request
+  [ -n "$WORK_DIR" ] || prepare_request
+  ERROR_CODE=credential_unavailable
   # Empty/oversized slices fail before the credential lookup and network.
   require_keychain
   require_usable_key
 
+  ERROR_CODE=transport_error
   set +e
   http_status="$(
     {
@@ -594,21 +677,30 @@ run_branch_review() {
   require_executable git "$GIT_BIN"
   reviewed_head="$(review_git -C "$(pwd -P)" rev-parse --verify --quiet 'HEAD^{commit}')" \
     || die "serious review needs a committed HEAD; commit the branch before reviewing it"
+  ERROR_CODE=invalid_scope
   assert_base_not_behind_upstream "$(pwd -P)"
+  prepare_request
 
   if [ -n "$CODEX_BIN" ] && [ -x "$CODEX_BIN" ]; then
-    echo "==> codex review --base $REVIEW_BASE (reviewing $reviewed_head)"
+    RESULT_BACKEND=codex
+    ERROR_CODE=reviewer_error
+    "$JQ_BIN" '.response_format.json_schema.schema' "$WORK_DIR/request.json" >"$WORK_DIR/schema.json"
+    "$JQ_BIN" -r '.messages[].content' "$WORK_DIR/request.json" >"$WORK_DIR/prompt"
+    echo "==> codex structured review --base $REVIEW_BASE (reviewing $reviewed_head)"
     set +e
-    "$CODEX_BIN" review --base "$REVIEW_BASE"
+    "$CODEX_BIN" exec --sandbox read-only --output-schema "$WORK_DIR/schema.json" \
+      --output-last-message "$WORK_DIR/review.json" - <"$WORK_DIR/prompt" >&2
     codex_status="$?"
     set -e
-    if [ "$codex_status" -eq 0 ]; then
-      # Codex reports no machine-readable finding count, so the count stays the
-      # reader's to record; the reviewed revision is what this command knows.
+    if [ "$codex_status" -eq 0 ] && validate_review; then
+      record_result "" null null null
+      "$JQ_BIN" -r '.summary, (.findings[] | "\(.severity) \(.file):\(.line // "-") \(.title)\n  \(.body)")' "$WORK_DIR/review.json"
       printf 'Reviewed head: %s\n' "$reviewed_head"
-      printf 'Evidence: codex on %s: <count the findings above>\n' "$reviewed_head"
+      printf 'Evidence: %s\n' "$("$JQ_BIN" -r '.evidence' <<<"$RESULT_JSON")"
       return 0
     fi
+    # A zero exit with unusable output is still no verifiable review.
+    [ "$codex_status" -ne 0 ] || codex_status=1
     echo "==> codex review exited $codex_status; running the bounded OpenRouter pass over the same branch" >&2
   else
     echo "==> codex is not installed; running the bounded OpenRouter pass over the same branch" >&2
@@ -634,6 +726,7 @@ case "$ACTION" in
     echo "==> PASS: cost-bounded OpenRouter normal review is configured"
     ;;
   run)
+    ERROR_CODE=invalid_policy
     [ "$DRY_RUN" = false ] || die "--dry-run is not valid for run"
     # Validated first either way: with --base a broken policy would otherwise
     # surface at the fallback, after the expensive reviewer had already gone.
