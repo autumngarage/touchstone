@@ -4338,12 +4338,18 @@ STATUS_STUB
 
   echo "==> the recorded disposition is what the gate reads, never the prose"
   rm -f "$GH_STATE/replies" "$GH_STATE/reply-body" "$GH_STATE/resolved"
+  # AUT-1706: acknowledging a valid P2 needs neither a fix nor an issue link.
+  cp "$RR/body" "$RR/body-before-p2"
+  printf '%s\n' 'Valid P2 observation, not worth addressing. No further action.' >"$RR/body"
   run 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 0 ] \
     && grep -qF '<!-- touchstone:review-answer v=1 id=51 disposition=no-code-change -->' "$GH_STATE/reply-body" \
     && ! grep -qF 'disposition=fixed' "$GH_STATE/reply-body" \
-    && ok "a no-code-change answer records that disposition and invents no commit" \
-    || fail "no-code-change did not record its disposition: $(cat "$GH_STATE/reply-body")"
+    && grep -qF 'Valid P2 observation, not worth addressing. No further action.' "$GH_STATE/reply-body" \
+    && [ -f "$GH_STATE/resolved" ] \
+    && ok "a valid P2 is acknowledged and resolved without a commit or issue link" \
+    || fail "P2 no-action disposition did not complete: $(cat "$GH_STATE/reply-body")"
+  mv "$RR/body-before-p2" "$RR/body"
   rm -f "$GH_STATE/replies" "$GH_STATE/reply-body" "$GH_STATE/resolved"
   run 7 --comment-id 51 --body-file "$RR/body" --fix-commit abc123
   [ "$RUN_RC" -eq 0 ] \

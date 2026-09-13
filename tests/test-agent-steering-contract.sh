@@ -90,7 +90,10 @@ for file in \
   assert_contains "$file" "merge-answered, revert-simplify, split, close-replan"
   assert_contains "$file" "more rounds is not one"
   assert_contains "$file" "Answering is not implementing"
-  assert_contains "$file" "answer and route whatever you are not fixing"
+  assert_contains "$file" "answer what you are not fixing using the dispositions"
+  assert_contains "$file" "consider P2, P3, or unbadged feedback"
+  assert_contains "$file" "briefly answer and resolve; default to no further action"
+  assert_not_contains "$file" "answer and route every P2"
   # The bounded-review rule: severity decides what gets implemented, and the
   # loop terminates. Without these an agent treats a reviewer that always has
   # another remark as a finish line.
@@ -134,10 +137,20 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
   "Should this surface exist at all"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
   "smaller** than the patch it replaces"
-# The diagnostic must never read as licence for routed findings to mutate a
-# mergeable head; it informs what is filed and which exit is taken.
+# The diagnostic must not turn lower-severity feedback into more work.
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
-  "The signal changes what you file, not what you push"
+  "The signal does not authorize more work"
+# AUT-1706: a valid observation can terminate without a tracker task or a new
+# triage ritual. Pin both that disposition and the ban on fixing P2s here.
+for clause in 'P2 and P3 are never fixed in the PR that received them' \
+  'Acknowledge and stop' 'Default to no further' \
+  'no new issue, investigation, code change, or compensating process is required' \
+  'use `--no-code-change` without an issue' \
+  'validity or plausibility alone is insufficient'; do
+  assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "$clause"
+done
+assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'otherwise answer, route to an issue'
+assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'answer-and-route every valid P2'
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
   "repository-scoped, not a session-ownership"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
