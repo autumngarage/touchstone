@@ -840,6 +840,15 @@ jq -e '
 ' "$ROOT/policy/github/consumers/vesper.json" >/dev/null \
   && ok "vesper queues on its hosted macOS prospective-merge verdict" \
   || fail "vesper must queue on the required Build, test, and smoke merge-group status"
+# Nyx is the same hosted macOS lane under its post-rename coordinates, so its
+# checked-in policy keeps the queue and requires the same prospective-merge
+# verdict. Vesper stays until the parent coordinates the live cutover.
+jq -e '
+  any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")
+  and [.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] == ["Build, test, and smoke"]
+' "$ROOT/policy/github/consumers/nyx.json" >/dev/null \
+  && ok "nyx queues on its hosted macOS prospective-merge verdict" \
+  || fail "nyx must queue on the required Build, test, and smoke merge-group status"
 # Convoy's repository-owned publishers now report on merge_group. Its policy
 # must preserve the delivery-protocol status while making the queue the atomic
 # final review boundary. powershell-tests joined them when the unmanaged
