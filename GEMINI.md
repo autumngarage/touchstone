@@ -40,18 +40,20 @@ Before adding anything here, name which of the three it serves; if you cannot, i
 Non-negotiable. Every code change is reviewed against them. Full rationale lives in `principles/engineering-principles.md`.
 
 - **No band-aids** — fix the root cause; if patching a symptom, say so explicitly and name the root cause.
-- **Keep interfaces narrow** — expose the smallest stable contract; don't leak storage shape, vendor SDKs, or workflow sequencing.
-- **Derive limits from domain** — thresholds and sizes come from input/config/named constants; test at small, typical, and large scales.
-- **Derive, don't persist** — compute from the source of truth; persist derived state only with documented invalidation + rebuild path.
-- **No silent failures** — every exception is re-raised or logged with debug context. No `except: pass`, no swallowed errors.
-- **Every retained fix gets a test** — its CI regression test fails on the old code; a test never validates a fix-created regression.
-- **Think in invariants** — name and assert at least one invariant for nontrivial logic.
-- **One code path** — share business logic across modes; confine mode-specific differences to adapters, config, or the I/O boundary.
-- **Version your data boundaries** — when a model/algorithm/source change affects decisions, version the boundary; don't aggregate across.
-- **Separate behavior changes from tidying** — never mix functional changes with broad renames, formatting sweeps, or unrelated refactors.
-- **Make irreversible actions recoverable** — destructive operations need dry-run, backup, idempotency, rollback, or forward-fix plan before they run.
-- **Preserve compatibility at boundaries** — public API/config/schema/CLI/hook/template changes need a compatibility or migration plan.
-- **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill (Claude) or read `principles/audit-weak-points.md` (other drivers).
+- **Extend existing systems** — search for the existing owner; improve it before adding a parallel system. Reuse follows responsibility.
+- **Choose the simplest design** — justify abstractions by current needs; minimize concepts, not lines.
+- **Keep interfaces narrow** — hide internals, separate decisions from side effects, and make state/resource ownership explicit.
+- **Derive limits from domain** — use input/config/domain constants; test small, typical, and large scales.
+- **Derive, don't persist** — derived state needs a source of truth, invalidation, rebuild, and reconciliation.
+- **No silent failures** — propagate or report failures with diagnostic context; never expose secrets or hide errors behind defaults.
+- **Every retained fix gets a test** — a CI test fails on old code; it never justifies a fix-created regression.
+- **Think in invariants** — name and assert one for nontrivial logic; make invalid states hard to represent.
+- **One code path** — share business rules across modes; isolate differences at adapters/config/I/O.
+- **Version your data boundaries** — version decision-affecting model/algorithm/source changes; don't aggregate across.
+- **Separate behavior changes from tidying** — keep unrelated renames, formatting, and refactors separate.
+- **Make irreversible actions recoverable** — plan recovery before mutation, including partial completion and retries.
+- **Preserve compatibility at boundaries** — public contracts and generated artifacts need compatibility or migration plans.
+- **Audit weak-point classes** — search sibling defects and add a guardrail; follow `principles/audit-weak-points.md`.
 - **File-writing subagents** — use worktrees; remove one only after final result delivery or confirmed cancellation.
 - **File tracked bugs** — file bugs found here or upstream in the configured tracker; review feedback follows the dispositions in `principles/git-workflow.md`.
 - **Checkpoint scope expansion before editing** — a follow-up approves doing the work, not bundling it. Route independent additions pre-edit; file count alone never decides.

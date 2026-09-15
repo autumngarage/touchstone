@@ -52,6 +52,12 @@ for file in \
   assert_contains "$file" "Answer every piece of PR feedback before merging"
   assert_contains "$file" "Inspect GitHub's complete review surface"
   assert_contains "$file" "principles/git-workflow.md"
+  assert_contains "$file" "Extend existing systems"
+  assert_contains "$file" "search for the existing owner"
+  assert_contains "$file" "Choose the simplest design"
+  assert_contains "$file" "separate decisions from side effects"
+  assert_contains "$file" "state/resource ownership explicit"
+  assert_contains "$file" "make invalid states hard to represent"
   assert_not_contains "$file" "touchstone worker"
   assert_contains "$file" "Claim tracked work before implementation"
   assert_contains "$file" "assign yourself through the Linear MCP"
@@ -123,6 +129,21 @@ for file in \
   assert_contains "$file" "its nonzero exit never authorizes deleting another session's work"
   assert_not_contains "$file" "Review is an enforced gate."
 done
+
+# Guard the concise authoring contract and its pre-implementation route.
+# Phrase checks protect distribution, not actual agent compliance.
+assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" \
+  "reuse does not authorize an unrelated migration"
+assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" \
+  "explicit owner for its lifetime and cleanup"
+assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" \
+  "they do not prove it for untested inputs"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
+  "What existing system owns this responsibility?"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
+  "Choose the simplest design that meets the requirement"
+assert_not_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
+  "the fix is migration"
 
 # A run of findings on one new surface is a design signal, not a work queue.
 # The badge governs a single finding and deliberately says nothing about a
