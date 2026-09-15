@@ -4,9 +4,9 @@ Before writing code, walk through these questions. If any answer exposes duplica
 
 This checklist is a pre-flight prompt; the canonical rules live in [engineering-principles.md](engineering-principles.md).
 
-## 1. Am I adding to or patching local infrastructure that shared infrastructure should own?
+## 1. What existing system owns this responsibility?
 
-Search the project's existing shared layers (utilities, base classes, common modules) before writing or extending anything local. If a subsystem hand-rolls something the shared layer already provides, the fix is migration — not more hand-rolling. A patch on hand-rolled code deepens the debt; migration eliminates it.
+Search existing implementations and their callers before designing a new system. Name the owner you will extend, or the concrete requirement that needs a new one. Apply **Extend existing systems before inventing new ones** and **Choose the simplest design that meets the requirement** in the engineering principles. Keep any migration within approved scope.
 
 ## 2. Am I fixing the root cause or the symptom?
 
@@ -14,7 +14,7 @@ See **No band-aids** in the engineering principles. If this is a symptom patch, 
 
 ## 3. Will this create a second code path?
 
-See **One code path** in the engineering principles. If you must add a divergence, can you delete the old path in the same PR? If not, document the owner, the removal condition, and a follow-up issue before merging. Two code paths that do "almost the same thing" are a maintenance trap — they drift apart silently and bugs in one don't surface until production.
+See **One code path** in the engineering principles. If the same business rule will have parallel implementations, can you delete the old path in the same PR? If not, document the owner, removal condition, and follow-up issue. Distinct responsibilities and adapters are not duplicate business logic.
 
 ## 4. Am I changing a public boundary?
 
