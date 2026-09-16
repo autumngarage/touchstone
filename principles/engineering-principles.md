@@ -24,6 +24,8 @@ Compute from the source of truth by default. Persist derived state only when rec
 Propagate failures or report them with enough context to diagnose them, without exposing secrets. No swallowed errors or success-shaped defaults that hide failure. Fallback behavior must report what failed, what was skipped, and what safety boundary still holds.
 
 ## Every retained fix gets a test
+During exploratory iteration, defer writing or updating unit tests, regression tests, fixtures, and test scaffolding until the approach is selected to ship. Use manual checks or focused existing tests when they help decide whether the approach works; do not build coverage for alternatives still being tried. Once selected, add the required coverage and run applicable validation before local review and push. An existing instruction to implement and ship supplies that decision; no extra permission round is required. An explicit request for test-first development overrides this timing.
+
 Retained bug fixes need a CI regression test that reproduces the failure: it must fail on the old code and pass on the new code. Test observable behavior, not implementation structure. A regression test does not justify retaining a review fix that created another defect; revert or simplify that fix before another mutation.
 
 ## Think in invariants
