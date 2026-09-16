@@ -307,6 +307,7 @@ case "$1 ${2:-}" in
       printf '%s\n' https://example.test/pr/7#issuecomment-9
       exit 0
     fi
+    value_after --body "$@" >"$GH_STATE/posted-review-body"
     [ "${GH_MODE:-ok}" != comment_success_stderr ] || printf 'comment debug detail\n' >&2
     [ "${GH_MODE:-ok}" = comment_unverified ] ||
       printf '%s %s %s\n' "$GH_HEAD" "$GH_BASE_REF" "$GH_BASE_SHA" >"$GH_STATE/review-request"
@@ -2337,6 +2338,13 @@ EOF
     run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
     assert_rc "$RUN_RC" 0
     [ "$(v4_requests)" -eq 0 ] || fail "$order open retry requested review again"
+    if [ "$order" = open_answer ]; then
+      assert_has "$TMP/state/posted-review-body" 'Report only P0/P1 defects'
+      assert_has "$TMP/state/posted-review-body" 'do not raise their severity'
+    else
+      assert_has "$TMP/state/lifecycle-attest" 'Report only P0/P1 defects'
+      assert_has "$TMP/state/lifecycle-attest" 'do not raise their severity'
+    fi
     request_count=0
     [ ! -f "$TMP/state/review-request" ] || request_count=1
     if [ -f "$TMP/state/lifecycle-posts" ]; then
@@ -2344,7 +2352,7 @@ EOF
     fi
     [ "$request_count" -eq 1 ] || fail "$order and its retries posted $request_count requests"
   done
-  rm -f "$TMP/state/lifecycle" "$TMP/state/lifecycle-attest" "$TMP/state/lifecycle-posts" "$TMP/state/reply"
+  rm -f "$TMP/state/lifecycle" "$TMP/state/lifecycle-attest" "$TMP/state/lifecycle-posts" "$TMP/state/reply" "$TMP/state/posted-review-body"
 
   # The deadline is the pinned gate's; a gate that declares none fails closed
   # rather than waking on a deadline invented here.

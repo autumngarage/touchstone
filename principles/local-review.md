@@ -109,6 +109,7 @@ invalid intermediate state.
 
 ## Required PR context
 
+Use the concise-writing guidance in `principles/git-workflow.md`.
 Write the context before committing. The `Local review` row is the one
 field that cannot be truthful yet: fill it after the tier's pass has run
 (normal: before the commit; serious: after it, before the push) and before
@@ -121,18 +122,12 @@ the PR is opened.
 ## Invariants
 <conditions that must remain true>
 
-## Risk areas
-<only real risks introduced by this change>
-
 ## Validation
 - Build: <exact command and result>
 - Automated tests: <exact command and result>
 - Manual validation: <specific scenario and result>
 - Local review: <normal: openrouter on the staged slice (review-normal): <n> findings, <disposition>; serious: codex on <captured-head-sha>: <n> findings, <disposition>; or n/a — <reason>>
 - Review budget: v2 capability=<tracker ref> local_rounds=<local review passes> fix_rounds=<fix rounds spent on this PR> prior_fix_rounds=<fix rounds on this capability's replaced PRs> reviewed_head=<40-character SHA or none> cascade=<true|false> exit=<continue|merge-answered|revert-simplify|split|close-replan>
-
-## Out of scope
-<intentionally excluded related work>
 
 ## Review tier
 <trivial | normal | serious>

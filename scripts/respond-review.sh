@@ -588,10 +588,7 @@ if [ "$GATE_BEHAVIOR_VERSION" = 3 ] || [ "$GATE_BEHAVIOR_VERSION" = 4 ]; then
     if [ -n "$EXISTING_REQUEST" ]; then
       echo "==> Every thread is resolved; the $GATE_LABEL review request for this answer already exists."
     else
-      gh_read api "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments" -f body="@codex review
-
-$ATTEST_MARKER
-$ROUND_MARKER" --jq .id >/dev/null || fail "answers are recorded, but the fresh $GATE_LABEL review request failed; post '@codex review' on PR #$PR_NUMBER yourself."
+      gh_read api "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments" -f body="$(review_request_body "$ATTEST_MARKER" "$ROUND_MARKER")" --jq .id >/dev/null || fail "answers are recorded, but the fresh $GATE_LABEL review request failed; post '@codex review' on PR #$PR_NUMBER yourself."
       # The pre-answer head check bounds the window, not the race: prove the
       # coordinates survived the post, or say the request is stale-bound.
       POST_HEAD="$(gh_read pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" || fail "posted the $GATE_LABEL review request, but the head re-read failed; verify PR #$PR_NUMBER still heads $HEAD_SHA."
