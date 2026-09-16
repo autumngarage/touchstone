@@ -206,8 +206,12 @@ assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'release notes, br
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'a checkpoint does not'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'Repeat a check only when relevant code or inputs'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'exact-head review remain mandatory for every head that ships'
-assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'push after the'
-assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'Open the PR the moment'
+for file in principles/local-review.md principles/git-workflow.md; do
+  assert_not_contains "$TOUCHSTONE_ROOT/$file" 'push after the'
+  assert_not_contains "$TOUCHSTONE_ROOT/$file" 'Push after every commit'
+  assert_not_contains "$TOUCHSTONE_ROOT/$file" 'normal pushes when a commit is ready'
+  assert_not_contains "$TOUCHSTONE_ROOT/$file" 'Open the PR the moment'
+done
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'exploratory checkpoint commits do not trigger'
 
 echo "==> tiered review keeps a cost-bounded OpenRouter normal lane and Codex serious lane"
