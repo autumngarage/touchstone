@@ -1332,6 +1332,16 @@ EOF
   # The wait for the primary reviewer's reply is exercised by its own case.
   export TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=0
 
+  echo "==> the standalone read-only entrypoint needs no packaged request helper"
+  mkdir -p "$TMP/standalone"
+  cp "$ROOT/scripts/touchstone-pr.sh" "$TMP/standalone/touchstone-pr.sh"
+  set +e
+  printf 'not a quota failure\n' | bash "$TMP/standalone/touchstone-pr.sh" \
+    rate-limit-check --project "$TMP/project" >"$TMP/standalone.out" 2>&1
+  standalone_rc=$?
+  set -e
+  assert_rc "$standalone_rc" 0
+
   run_pr() {
     local output="$1"
     shift

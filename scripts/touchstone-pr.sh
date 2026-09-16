@@ -101,8 +101,6 @@ OPERATION="${1:-}"
 # The tool's own tree: the checked-in policy there says which repository and
 # revision the pinned gates must come from for enforcement to count.
 TOOL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-# shellcheck source=scripts/lib/touchstone-review-request.sh
-source "$TOOL_ROOT/scripts/lib/touchstone-review-request.sh"
 CANONICAL_POLICY="$TOOL_ROOT/policy/github/touchstone-main.json"
 PR_NUMBER=""
 CAPTURE_STDERR_TEMP=""
@@ -2796,6 +2794,10 @@ await_review() {
 }
 
 open_pr() {
+  # Only request creation needs this packaged helper. Read-only operations
+  # retain the single-file entrypoint used by older pinned workflows.
+  # shellcheck source=scripts/lib/touchstone-review-request.sh
+  source "$TOOL_ROOT/scripts/lib/touchstone-review-request.sh"
   local branch local_head remote_line remote_head rows count number url pr_head pr_base pr_base_sha create_output create_status=0
   local evidence_min_attempt=0 evidence_min_attempt_run_id=""
   local request_marker existing_request_marker comment_rows existing_request request_body request_url request_rows state request_author allow_attest select_rc
