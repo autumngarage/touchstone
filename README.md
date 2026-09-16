@@ -124,7 +124,10 @@ tool line, and the project-contract schema is versioned separately
 
 ### Cutting a release
 
-Bump `VERSION` through an ordinary PR, then tag the reviewed main sha:
+When a release is already authorized, include the `VERSION` bump in the final
+shipping PR and validate it with that change. If release approval arrives
+after that PR merged, use a separate version PR. Never infer release approval
+from an implementation request. After merge, tag the reviewed main sha:
 
 ```bash
 git tag -a vX.Y.Z -m "touchstone X.Y.Z" <reviewed main sha>

@@ -36,6 +36,9 @@ Release history lives in `git log` and `gh release list`; there is no `CHANGELOG
 
 ## Delivery
 
+Select focused checks using [Testing](AGENTS.md#testing), including the
+size, rendering, and contract checks for changed steering.
+
 The installed CLI is the sequencer everywhere; raw `git` and `gh` are the
 documented recovery path. In this source checkout,
 `bash bin/touchstone pr open|status|merge|answer`

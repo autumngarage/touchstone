@@ -227,6 +227,12 @@ what automation does not cover. Projects with a schema-2 declaration run
 `touchstone validate --stage commit`. AI review complements these; it never
 replaces them.
 
+Select checks by the contracts the changed files participate in, not just
+their extensions. Include existing size, generated-file consistency, and
+instruction-contract checks when those surfaces change. Run each applicable
+check once on the ready-to-ship change; repeat only after relevant changes,
+a failure, or new evidence that invalidates the result.
+
 A check that does not apply is recorded as `n/a` with the reason — a
 documentation-only change has no targeted build. Recording `n/a` is honest;
 claiming a check ran is not, and the two must never be confused.

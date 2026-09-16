@@ -163,6 +163,12 @@ this exception.
 
 ### Testing
 
+For shared or managed steering changes, include
+`tests/test-steering-size-caps.sh` and `tests/test-steering-render.sh` in the
+focused checks. Instruction changes also need
+`tests/test-agent-steering-contract.sh`. A prose diff can violate these
+contracts even when no executable code changes.
+
 Before pushing, run the smallest deterministic test files that exercise the
 changed behavior and the pre-commit checks for the changed files. Do not rerun
 the complete suite as confirmation: the protected hosted workflow pinned
