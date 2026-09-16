@@ -186,6 +186,14 @@ If they differ, push again before requesting review — otherwise the review bin
 
 ## Checking the gate
 
+While `open` or `answer` is already waiting for GitHub, resume that running
+tool session; do not start a second watcher or duplicate its GitHub reads.
+Use the command's progress and terminal result to choose the next action.
+If auto-merge or a queue entry is pending after the command exits, wait and
+read state at the shared-quota cadence. Repeated model turns and unchanged
+status summaries do not advance a gate; report observed transitions or
+actionable failures, subject to the driver's communication requirements.
+
 What the merge gate says right now, in three checks:
 
 ```bash

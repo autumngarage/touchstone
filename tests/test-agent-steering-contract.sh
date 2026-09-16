@@ -2006,6 +2006,12 @@ assert_contains "$TOUCHSTONE_ROOT/bin/touchstone" \
   'touchstone review setup|check|run|rotate|uninstall'
 
 echo "==> Touchstone keeps one complete-suite boundary"
+assert_contains "$TOUCHSTONE_ROOT/README.md" 'When a release is already authorized, include the `VERSION` bump'
+assert_contains "$TOUCHSTONE_ROOT/README.md" 'Never infer release approval'
+assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" '`tests/test-steering-size-caps.sh` and `tests/test-steering-render.sh`'
+assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" '`tests/test-agent-steering-contract.sh`. A prose diff can violate these'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'do not start a second watcher or duplicate its GitHub reads'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'Select checks by the contracts the changed files participate in'
 assert_not_contains "$TOUCHSTONE_ROOT/.pre-commit-config.yaml" 'touchstone-validate'
 assert_not_contains "$TOUCHSTONE_ROOT/.pre-commit-config.yaml" 'scripts/touchstone-run.sh validate'
 assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" 'Do not rerun'
