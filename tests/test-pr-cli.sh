@@ -249,7 +249,11 @@ case "$1 ${2:-}" in
         || git -C "$GH_SWITCH_BRANCH_IN" checkout -q feat/moved
     fi
     fake_repo="${GH_FAKE_REPO:-${GH_REPO:-autumngarage/current}}"
-    printf '%s\thttps://%s/%s\tmain\n' "$fake_repo" "${GH_REPO_HOST:-github.com}" "$fake_repo"
+    if [ "$(value_after --json "$@")" = nameWithOwner ]; then
+      printf '%s\n' "$fake_repo"
+    else
+      printf '%s\thttps://%s/%s\tmain\n' "$fake_repo" "${GH_REPO_HOST:-github.com}" "$fake_repo"
+    fi
     ;;
   "pr list")
     if [ -f "$GH_STATE/pr-exists" ]; then
@@ -341,6 +345,10 @@ case "$1 ${2:-}" in
       else
         printf '%s\t%s\n' "$GH_HEAD" "$GH_BASE_REF"
       fi
+    elif has '--json headRefOid --jq' "$@"; then
+      printf '%s\n' "$GH_HEAD"
+    elif has '--json state,headRefOid,baseRefName --jq' "$@"; then
+      printf 'OPEN\t%s\t%s\n' "$GH_HEAD" "$GH_BASE_REF"
     elif has '--json title,body' "$@"; then
       title="Test PR"; [ -f "$GH_STATE/pr-title" ] && title="$(cat "$GH_STATE/pr-title")"
       if [ -f "$GH_STATE/pr-body" ]; then body="$(cat "$GH_STATE/pr-body")"; else body="$(printf '%s\n' 'Change summary.' '' 'Closes #42')"; fi
@@ -554,6 +562,10 @@ case "$1 ${2:-}" in
       jq -cn --argjson id "$run_id" --arg revision "$source_revision" \
         --arg repository "$source_repository" --arg path "$source_path" \
         '{data:{node:{databaseId:$id,file:{path:$path,repositoryName:$repository,repositoryFileUrl:("https://github.com/" + $repository + "/blob/" + $revision + "/" + $path)}}}}'
+    elif has 'map(select(. != null))' "$@"; then
+      if [ -f "$GH_STATE/lifecycle-finding-at" ]; then cat "$GH_STATE/lifecycle-finding-at"; else printf '2026-08-01T00:00:00Z\n'; fi
+    elif has 'select(.isResolved == true)' "$@"; then
+      printf '51\n'
     elif has 'resolveReviewThread' "$@"; then
       printf '%s\n' true
     elif has 'node(id:' "$@"; then
@@ -726,6 +738,9 @@ case "$1 ${2:-}" in
 
 <!-- touchstone:pr-open head=$saved_head base=$saved_base base_sha=$saved_base_sha -->" "$(fake_request_edited_at)"
       fi
+      if [ -f "$GH_STATE/lifecycle-attest" ]; then
+        fake_add_comment 99 alice "$request_at" "$(cat "$GH_STATE/lifecycle-attest")"
+      fi
       if [ "${GH_MODE:-ok}" = attest_request_present ]; then
         fake_add_comment 91 alice "$request_at" "@codex review
 
@@ -757,6 +772,18 @@ case "$1 ${2:-}" in
         [ ! -f "$GH_STATE/fallback-announced" ] || printf '3\talice\t<!-- touchstone:review-fallback head=%s -->\n' "$GH_HEAD"
       elif has 'updated_at // .created_at' "$@"; then
         printf '%s\n' '2026-08-27T17:05:00Z'
+      elif [ -f "$GH_STATE/lifecycle" ]; then
+        if [ -f "$GH_STATE/review-request" ]; then
+          read -r saved_head saved_base saved_base_sha <"$GH_STATE/review-request"
+          jq -nr --arg at "$(fake_request_at)" --arg body "@codex review
+
+<!-- touchstone:pr-open head=$saved_head base=$saved_base base_sha=$saved_base_sha -->" \
+            '["https://example.test/pr/7#issuecomment-1", "alice", $body, $at] | @tsv'
+        fi
+        if [ -f "$GH_STATE/lifecycle-attest" ]; then
+          jq -nr --arg at "$(fake_request_at)" --rawfile body "$GH_STATE/lifecycle-attest" \
+            '["https://example.test/pr/7#issuecomment-99", "alice", $body, $at] | @tsv'
+        fi
       elif [ "${GH_MODE:-ok}" = many_requests ]; then
         for index in $(awk 'BEGIN { for (i = 1; i <= 4000; i++) print i }'); do
           printf 'https://example.test/pr/7#issuecomment-%s\talice\t%s\n' "$index" \
@@ -848,8 +875,18 @@ case "$1 ${2:-}" in
     elif has '/pulls/7/comments' "$@"; then
       if has 'updated_at // .created_at' "$@"; then
         printf '%s\n' '2026-08-27T17:07:00Z'
-      elif [ -f "$GH_STATE/reply" ]; then printf '%s\n' '<!-- touchstone:respond-review comment=51 -->'; fi
+      elif [ -f "$GH_STATE/reply" ]; then
+        printf '%s\n' '<!-- touchstone:respond-review comment=51 -->' '<!-- touchstone:review-answer v=1 id=51 disposition=no-code-change -->'
+      fi
     fi
+    ;;
+  "api repos/autumngarage/current/issues/7/comments")
+    value_after -f "$@" | sed 's/^body=//' >"$GH_STATE/lifecycle-attest"
+    echo posted >>"$GH_STATE/lifecycle-posts"
+    printf '99\n'
+    ;;
+  "api repos/autumngarage/current/rules/branches/main")
+    printf 'true\n'
     ;;
   "api repos/autumngarage/current/pulls/7/comments/51/replies")
     touch "$GH_STATE/reply"
@@ -1311,6 +1348,8 @@ EOF
   mkdir -p "$TMP/tool-v1/bin" "$TMP/tool-v1/scripts" "$TMP/tool-v1/policy/github"
   cp "$ROOT/bin/touchstone" "$TMP/tool-v1/bin/touchstone"
   cp "$ROOT/scripts/touchstone-pr.sh" "$TMP/tool-v1/scripts/touchstone-pr.sh"
+  mkdir -p "$TMP/tool-v1/scripts/lib"
+  cp "$TOUCHSTONE_ROOT/scripts/lib/touchstone-review-request.sh" "$TMP/tool-v1/scripts/lib/"
   cp -R "$ROOT/policy/github/." "$TMP/tool-v1/policy/github/"
   printf '3.7.6\n' >"$TMP/tool-v1/VERSION"
   # A released client carries the whole previous policy, not just its behavior
@@ -1336,6 +1375,8 @@ EOF
   mkdir -p "$TMP/tool-v3/bin" "$TMP/tool-v3/scripts" "$TMP/tool-v3/policy/github"
   cp "$ROOT/bin/touchstone" "$TMP/tool-v3/bin/touchstone"
   cp "$ROOT/scripts/touchstone-pr.sh" "$TMP/tool-v3/scripts/touchstone-pr.sh"
+  mkdir -p "$TMP/tool-v3/scripts/lib"
+  cp "$TOUCHSTONE_ROOT/scripts/lib/touchstone-review-request.sh" "$TMP/tool-v3/scripts/lib/"
   cp -R "$ROOT/policy/github/." "$TMP/tool-v3/policy/github/"
   cat "$ROOT/VERSION" >"$TMP/tool-v3/VERSION"
   jq '.workflowSource.sourceContract.gateBehaviorContractVersion = 3' \
@@ -1549,6 +1590,8 @@ EOF
   mkdir -p "$TMP/tool-queueless/bin" "$TMP/tool-queueless/scripts" "$TMP/tool-queueless/policy/github/workflow-sources"
   cp "$ROOT/bin/touchstone" "$TMP/tool-queueless/bin/touchstone"
   cp "$ROOT/scripts/touchstone-pr.sh" "$TMP/tool-queueless/scripts/touchstone-pr.sh"
+  mkdir -p "$TMP/tool-queueless/scripts/lib"
+  cp "$TOUCHSTONE_ROOT/scripts/lib/touchstone-review-request.sh" "$TMP/tool-queueless/scripts/lib/"
   cp -R "$ROOT/policy/github/." "$TMP/tool-queueless/policy/github/"
   cp "$ROOT/VERSION" "$TMP/tool-queueless/VERSION"
   jq '.managedRepositoryRuleset = null' "$ROOT/policy/github/workflow-sources/touchstone-workflows.json" \
@@ -2109,6 +2152,8 @@ EOF
   mkdir -p "$TMP/tool-v4/bin" "$TMP/tool-v4/scripts" "$TMP/tool-v4/policy/github"
   cp "$ROOT/bin/touchstone" "$TMP/tool-v4/bin/touchstone"
   cp "$ROOT/scripts/touchstone-pr.sh" "$TMP/tool-v4/scripts/touchstone-pr.sh"
+  mkdir -p "$TMP/tool-v4/scripts/lib"
+  cp "$TOUCHSTONE_ROOT/scripts/lib/touchstone-review-request.sh" "$TMP/tool-v4/scripts/lib/"
   cp -R "$ROOT/policy/github/." "$TMP/tool-v4/policy/github/"
   cat "$ROOT/VERSION" >"$TMP/tool-v4/VERSION"
   jq --argjson version 4 '.workflowSource.sourceContract.gateBehaviorContractVersion = $version' \
@@ -2248,6 +2293,48 @@ EOF
   assert_has "$TMP/out" '"wokeBy":"deadline"'
   [ "$(v4_requests)" -eq 0 ] || fail "contract 4 posted a second review request beside the attest request"
   [ "$(v4_reruns)" -eq 1 ] || fail "contract 4 re-ran the gate $(v4_reruns) times for a reused request; expected exactly one"
+
+  echo "==> real open/answer sequences share GitHub request state in either order"
+  cp "$ROOT/scripts/respond-review.sh" "$TMP/tool-v4/scripts/respond-review.sh"
+  run_lifecycle_answer() {
+    set +e
+    (cd "$TMP/project" && bash "$TMP/tool-v4/scripts/respond-review.sh" 7 \
+      --comment-id 51 --body-file "$TMP/answer-body" --no-code-change) >"$TMP/answer-out" 2>&1
+    RUN_RC=$?
+    set -e
+  }
+  printf 'Acknowledged; no further action.\n' >"$TMP/answer-body"
+  for order in open_answer answer_open; do
+    v4_reset
+    rm -f "$TMP/state/lifecycle-attest" "$TMP/state/lifecycle-posts" "$TMP/state/reply"
+    touch "$TMP/state/lifecycle" "$TMP/state/pr-exists"
+    if [ "$order" = open_answer ]; then
+      run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+      assert_rc "$RUN_RC" 0
+      run_lifecycle_answer
+      [ "$RUN_RC" -eq 0 ] || fail "$order answer failed: $(tail -4 "$TMP/answer-out")"
+      [ ! -f "$TMP/state/lifecycle-posts" ] || fail "$order posted a redundant attest request"
+    else
+      run_lifecycle_answer
+      [ "$RUN_RC" -eq 0 ] || fail "$order answer failed: $(tail -4 "$TMP/answer-out")"
+      run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+      assert_rc "$RUN_RC" 0
+      [ ! -f "$TMP/state/review-request" ] || fail "$order posted a redundant open request"
+      [ "$(wc -l <"$TMP/state/lifecycle-posts" | tr -d ' ')" = 1 ] || fail "$order did not post exactly one request"
+    fi
+    run_lifecycle_answer
+    [ "$RUN_RC" -eq 0 ] || fail "$order answer retry failed: $(tail -4 "$TMP/answer-out")"
+    run_pr_v4 "$TMP/out" open --title 'Gate v4' --body-file "$TMP/body" --json
+    assert_rc "$RUN_RC" 0
+    [ "$(v4_requests)" -eq 0 ] || fail "$order open retry requested review again"
+    request_count=0
+    [ ! -f "$TMP/state/review-request" ] || request_count=1
+    if [ -f "$TMP/state/lifecycle-posts" ]; then
+      request_count=$((request_count + $(wc -l <"$TMP/state/lifecycle-posts")))
+    fi
+    [ "$request_count" -eq 1 ] || fail "$order and its retries posted $request_count requests"
+  done
+  rm -f "$TMP/state/lifecycle" "$TMP/state/lifecycle-attest" "$TMP/state/lifecycle-posts" "$TMP/state/reply"
 
   # The deadline is the pinned gate's; a gate that declares none fails closed
   # rather than waking on a deadline invented here.
@@ -3436,6 +3523,8 @@ Closes #42'
   mkdir -p "$TMP/installed/bin" "$TMP/installed/scripts" "$TMP/installed/policy/github/workflow-sources"
   cp "$ROOT/bin/touchstone" "$TMP/installed/bin/touchstone"
   cp "$ROOT/scripts/touchstone-pr.sh" "$TMP/installed/scripts/touchstone-pr.sh"
+  mkdir -p "$TMP/installed/scripts/lib"
+  cp "$TOUCHSTONE_ROOT/scripts/lib/touchstone-review-request.sh" "$TMP/installed/scripts/lib/"
   cp "$ROOT/policy/github/touchstone-main.json" "$TMP/installed/policy/github/touchstone-main.json"
   printf '3.4.0\n' >"$TMP/installed/VERSION"
   set +e
@@ -4006,7 +4095,9 @@ case "$1 $2" in
     echo "alice"
     ;;
   "api graphql")
-    if has resolveReviewThread "$@"; then
+    if has 'map(select(. != null))' "$@"; then
+      if [ -f "$GH_STATE/finding-times" ]; then cat "$GH_STATE/finding-times"; else printf '2026-09-16T04:00:00Z\n'; fi
+    elif has resolveReviewThread "$@"; then
       touch "$GH_STATE/resolved"
       ! has THREAD_52 "$@" || touch "$GH_STATE/resolved-52"
       echo "true"
@@ -4081,6 +4172,8 @@ case "$1 $2" in
       [ ! -f "$GH_STATE/closed" ] || rr_state=CLOSED
       [ ! -f "$GH_STATE/wait-moved-head" ] || rr_head=feedfacefeedfacefeedfacefeedfacefeedface
       printf '%s\t%s\t%s\n' "$rr_state" "$rr_head" "$rr_base"
+    elif value_after --json "$@" | grep -q baseRefOid; then
+      printf 'abcdef0123456789abcdef0123456789abcdef01\tmain\tbase-sha\n'
     elif value_after --json "$@" | grep -q baseRefName; then
       printf 'abcdef0123456789abcdef0123456789abcdef01\tmain\n'
     elif [ -f "$GH_STATE/moved-head" ]; then
@@ -4093,7 +4186,11 @@ case "$1 $2" in
     if has 'actions/workflows' "$@"; then
       printf '1\n2\n3\n'
     elif has 'issues/7/comments' "$@"; then
-      [ ! -f "$GH_STATE/fresh-request" ] || cat "$GH_STATE/fresh-request"
+      [ ! -f "$GH_STATE/open-request-rows" ] || cat "$GH_STATE/open-request-rows"
+      if [ -f "$GH_STATE/fresh-request" ]; then
+        jq -nr --rawfile body "$GH_STATE/fresh-request" \
+          '["https://example.test/pr/7#issuecomment-99", "alice", $body, "2026-09-16T05:00:00Z"] | @tsv'
+      fi
     elif [ -f "$GH_STATE/replies" ]; then
       echo "<!-- touchstone:respond-review comment=51 -->"
       [ -f "$GH_STATE/legacy-reply-only" ] \
@@ -4153,6 +4250,8 @@ STUB
 
   mkdir -p "$RR/tool-v1/scripts"
   cp "$TOUCHSTONE_ROOT/scripts/respond-review.sh" "$RR/tool-v1/scripts/respond-review.sh"
+  mkdir -p "$RR/tool-v1/scripts/lib"
+  cp "$TOUCHSTONE_ROOT/scripts/lib/touchstone-review-request.sh" "$RR/tool-v1/scripts/lib/"
   cat >"$RR/tool-v1/scripts/touchstone-pr.sh" <<'STATUS_STUB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -4205,6 +4304,8 @@ STATUS_STUB
   }
   mkdir -p "$RR/tool-v2/scripts"
   cp "$TOUCHSTONE_ROOT/scripts/respond-review.sh" "$RR/tool-v2/scripts/respond-review.sh"
+  mkdir -p "$RR/tool-v2/scripts/lib"
+  cp "$TOUCHSTONE_ROOT/scripts/lib/touchstone-review-request.sh" "$RR/tool-v2/scripts/lib/"
   cp "$RR/tool-v1/scripts/touchstone-pr.sh" "$RR/tool-v2/scripts/touchstone-pr.sh"
   run_v2() {
     touch "$GH_STATE/effective-behavior-v2"
@@ -4546,6 +4647,54 @@ STATUS_STUB
     || fail "behavior v3 retry did not report the existing request"
   rm -f "$GH_STATE/gate-in-progress" "$GH_STATE/gate-reruns" "$GH_STATE/fresh-request"
 
+  echo "==> open then answer reuses the outstanding request (AUT-1810)"
+  request_row() {
+    jq -nr --arg head "${1:-abcdef0123456789abcdef0123456789abcdef01}" \
+      --arg author "${2:-alice}" --arg at "${3:-2026-09-16T04:51:49Z}" \
+      --arg base "${4:-main}" \
+      '["https://example.test/pr/7#issuecomment-98", $author,
+        ("@codex review\n\n<!-- touchstone:pr-open head=" + $head + " base=" + $base + " base_sha=base-sha -->"), $at] | @tsv'
+  }
+  request_row >"$GH_STATE/open-request-rows"
+  run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "open then answer failed: $(tail -3 "$RR/out")"
+  [ ! -f "$GH_STATE/fresh-request" ] || fail "open then answer requested a duplicate review"
+  grep -qF 'already exists' "$RR/out" || fail "answer did not report reusing open request"
+  # Retrying after a wait failure uses the same open request, without a
+  # synthetic attest marker or another review trigger.
+  touch "$GH_STATE/await-fails"
+  run_v4 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -ne 0 ] || fail "failed wait unexpectedly succeeded"
+  rm -f "$GH_STATE/await-fails"
+  run_v4 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] || fail "retry after failed wait failed"
+  [ ! -f "$GH_STATE/fresh-request" ] || fail "retry of reused request posted another review"
+  rm -f "$GH_STATE/await-calls"
+
+  for request_case in before_finding same_second other_head other_author missing_time; do
+    case "$request_case" in
+      before_finding) request_row '' alice 2026-09-16T03:00:00Z ;;
+      same_second) request_row '' alice 2026-09-16T04:00:00Z ;;
+      other_head) request_row 0000000000000000000000000000000000000000 ;;
+      other_author) request_row '' mallory ;;
+      missing_time) request_row | cut -f1-3 ;;
+    esac >"$GH_STATE/open-request-rows"
+    run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+    [ "$RUN_RC" -eq 0 ] || fail "$request_case failed: $(tail -3 "$RR/out")"
+    [ -f "$GH_STATE/fresh-request" ] || fail "$request_case suppressed a required fresh review"
+    rm -f "$GH_STATE/fresh-request"
+  done
+  request_row '' alice 2026-09-16T04:51:49Z release >"$GH_STATE/open-request-rows"
+  run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -ne 0 ] || fail "answer reused a request for another base"
+  [ ! -f "$GH_STATE/fresh-request" ] || fail "answer posted through a detected base mismatch"
+  request_row >"$GH_STATE/open-request-rows"
+  printf 'null\n' >"$GH_STATE/finding-times"
+  run_v3 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -ne 0 ] || fail "answer trusted incomplete finding timestamps"
+  [ ! -f "$GH_STATE/fresh-request" ] || fail "answer posted after incomplete finding timestamps"
+  rm -f "$GH_STATE/finding-times" "$GH_STATE/open-request-rows"
+
   # A later verdict on the unchanged head opens a new finding. Answering it
   # closes a new round, and the gate can only be satisfied by a request that
   # postdates that verdict — so the head-scoped request from the first round
@@ -4775,6 +4924,18 @@ STATUS_STUB
   rm -f "$ROUND_THREADS_JSON"
   [ -z "$ROUND_OUT_TRUNCATED" ] \
     || fail "the long-thread fixture does not depend on the newest comment: '$ROUND_OUT_TRUNCATED'"
+
+  echo "==> request reuse orders findings by publication, including delayed review submission"
+  FINDING_JQ="$(sed -nE "s/^[[:space:]]*--jq '(.*missing finding creation time.*)'[)].*/\\1/p" "$TOUCHSTONE_ROOT/scripts/respond-review.sh")"
+  [ -n "$FINDING_JQ" ] || fail "finding publication query was not found"
+  FINDING_JSON='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"root":{"nodes":[{"createdAt":"2026-09-16T03:00:00Z","pullRequestReview":{"submittedAt":"2026-09-16T05:00:00Z"}}]}},{"root":{"nodes":[{"createdAt":"2026-09-16T04:00:00Z","pullRequestReview":null}]}}]}}}}}'
+  FINDING_OUT="$(printf '%s' "$FINDING_JSON" | jq -r "$FINDING_JQ")"
+  [ "$FINDING_OUT" = "$(printf '2026-09-16T05:00:00Z\n2026-09-16T04:00:00Z')" ] \
+    || fail "finding reuse ignored delayed publication or an unbatched comment"
+  if printf '%s' "$FINDING_JSON" | jq 'del(.data.repository.pullRequest.reviewThreads.nodes[0].root.nodes[0].createdAt)' \
+    | jq -r "$FINDING_JQ" >/dev/null 2>&1; then
+    fail "a missing finding timestamp was ignored beside a readable one"
+  fi
 
   echo "==> every GitHub-state wait re-checks liveness on each poll (AUT-1179)"
   # A loop that sleeps on GATE_RETRY_DELAY, or on the FOLLOW_WAIT backoff

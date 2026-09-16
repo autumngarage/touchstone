@@ -101,6 +101,8 @@ OPERATION="${1:-}"
 # The tool's own tree: the checked-in policy there says which repository and
 # revision the pinned gates must come from for enforcement to count.
 TOOL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/lib/touchstone-review-request.sh
+source "$TOOL_ROOT/scripts/lib/touchstone-review-request.sh"
 CANONICAL_POLICY="$TOOL_ROOT/policy/github/touchstone-main.json"
 PR_NUMBER=""
 CAPTURE_STDERR_TEMP=""
@@ -2796,7 +2798,7 @@ await_review() {
 open_pr() {
   local branch local_head remote_line remote_head rows count number url pr_head pr_base pr_base_sha create_output create_status=0
   local evidence_min_attempt=0 evidence_min_attempt_run_id=""
-  local request_marker request_head_marker attest_marker existing_request_marker comment_rows existing_request moved_request request_body request_url request_rows state request_author
+  local request_marker existing_request_marker comment_rows existing_request request_body request_url request_rows state request_author allow_attest select_rc
   [ -n "$TITLE" ] || fail_input "open requires --title" "Pass the PR title explicitly."
   [ -f "$BODY_FILE" ] && [ -s "$BODY_FILE" ] \
     || fail_input "open requires a non-empty --body-file" "Put the reviewed PR description in that file."
@@ -2940,8 +2942,6 @@ open_pr() {
     fi
   fi
   request_marker="<!-- touchstone:pr-open head=$local_head base=$pr_base base_sha=$pr_base_sha -->"
-  request_head_marker="<!-- touchstone:pr-open head=$local_head "
-  attest_marker="<!-- touchstone:attest-request head=$local_head -->"
   read_with_retry gh api user --hostname "$REPO_HOST" --jq '.login' \
     || fail_operation "could not resolve the authenticated user: $READ_OUTPUT" "Verify authentication for $REPO_HOST."
   request_author="$READ_OUTPUT"
@@ -2954,47 +2954,19 @@ open_pr() {
     --jq '.[] | [.html_url, (.user.login // ""), (.body // "")] | @tsv' \
     || fail_operation "could not inspect existing review requests: $READ_OUTPUT" "Retry after GitHub recovers."
   comment_rows="$READ_OUTPUT"
-  existing_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$request_marker" -v author="$request_author" \
-    '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
-  existing_request_marker="$request_marker"
-  # Computed before the attest fallback below, not after. A request for this
-  # head under DIFFERENT base coordinates must still be refused, and the attest
-  # marker carries no base -- so reusing one first would return success on a
-  # head whose base has moved, reporting a stale request as bound.
-  moved_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$request_head_marker" -v author="$request_author" \
-    '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
-  if [ -z "$existing_request" ] && [ -n "$moved_request" ]; then
+  allow_attest=false
+  review_gate_required "$pr_base" && allow_attest=true
+  select_rc=0
+  existing_request="$(printf '%s\n' "$comment_rows" | select_review_request \
+    "$local_head" "$pr_base" "$pr_base_sha" "$request_author" "$allow_attest")" || select_rc=$?
+  if [ "$select_rc" -eq 3 ]; then
     fail_input "this head already has a review request for different base coordinates" \
       "Wait for that request to finish, then integrate or use the documented raw recovery path."
-  fi
-  # `pr answer` posts its own request for this head whenever an answer resolves
-  # the last open thread -- contract 3 needs a fresh verdict, and that request
-  # is the only thing that can produce one. It carries the attest marker, not
-  # this one. Scanning only for the pr-open marker therefore posted a SECOND
-  # "@codex review" for the same head: two hosted reviews of one diff, billed
-  # twice. Observed on touchstone#1174, 13:35:03 attest and 13:36:00 pr-open,
-  # 57 seconds apart on head 02fcd33c (AUT-1482).
-  #
-  # Reused ONLY where the pinned gate is required. The attest marker carries no
-  # base, so it cannot itself prove which base it was posted under, and a
-  # pull request that has only ever had attest requests offers no pr-open
-  # marker for the moved-base refusal above to catch -- so on a base with no
-  # gate, where the binding re-read is the only thing verifying coordinates,
-  # reusing one could report a request from an earlier base as bound to the
-  # current one. Where the gate IS required, binding does not parse base
-  # coordinates at all: the gate re-runs, `verify_live_coordinates` proves the
-  # pull request still heads and targets what this command was given, and the
-  # gate owns retarget semantics through its own evidence.
-  #
-  # Nothing is lost by the restriction: `pr answer` posts an attest request
-  # only under gate behavior contract 3, which is exactly where a gate exists.
-  if [ -z "$existing_request" ] && review_gate_required "$pr_base"; then
-    existing_request="$(printf '%s\n' "$comment_rows" | awk -F '\t' -v marker="$attest_marker" -v author="$request_author" \
-      '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
-    [ -z "$existing_request" ] || existing_request_marker="$attest_marker"
+  elif [ "$select_rc" -ne 0 ]; then
+    fail_operation "could not select an existing review request" "Inspect comments before retrying."
   fi
   if [ -n "$existing_request" ]; then
-    request_url="$(printf '%s\n' "$existing_request" | sed -n '1p')"
+    IFS="$(printf '\t')" read -r request_url existing_request_marker <<<"$existing_request"
     wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url" "$request_author" true "$existing_request_marker"
     verify_live_body "$number" "$wanted_body"
     finish_open "$state" "$number" "$url" "$local_head" "existing:$request_url" "$branch"

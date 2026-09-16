@@ -371,9 +371,19 @@ taking this document's word for it.
   means the gate decided, not that `open` failed. It never posts a second
   request. A driving session that dies first leaves the head red until the
   gate is re-run; nothing merges unreviewed. `answer` runs the same
-  wait-and-wake after the round's attest request exists, through
+  wait-and-wake after the round's request exists, through
   `touchstone-pr.sh await-review PR --head SHA`, an internal step shared with
-  `open` rather than a public operation. An answer to a finding the gate
+  `open` rather than a public operation. Both entry points share request
+  selection. `answer` reuses an authenticated driver's exact-head/base open
+  request when it was created strictly after every observed finding's
+  publication time (the later of inline creation and review submission).
+  Otherwise it posts the round's fresh attest request; a retry reuses that
+  round's marker. Timestamp ties do not prove ordering. `open` retains its
+  exact-coordinate checks and only reuses attest requests where the pinned
+  gate owns binding. This avoids redundant sequential requests in either
+  command order; GitHub comment creation has no atomic uniqueness guarantee,
+  so simultaneous independent writers can still race. Neither request reuse
+  nor thread resolution supplies a review verdict. An answer to a finding the gate
   reported (`--finding`) requests nothing, so no reply is waited for; when the
   head's review-gate run is still evaluating, `answer` follows it to
   completion and re-runs it once through
