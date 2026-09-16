@@ -71,6 +71,8 @@ GATE_ATTEMPTS="${TOUCHSTONE_GATE_ATTEMPTS:-60}"
 GATE_RETRY_DELAY="${TOUCHSTONE_GATE_RETRY_DELAY:-5}"
 GATE_V2_REVIEW_REUSE_SECONDS=3600
 TOOL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/lib/touchstone-review-request.sh
+source "$TOOL_ROOT/scripts/lib/touchstone-review-request.sh"
 
 usage() {
   sed -n '3,46p' "$0" | sed 's/^# \{0,1\}//'
@@ -289,7 +291,7 @@ list_unresolved_threads() {
 # does a thread whose text merely mentions the marker. The root comment is
 # read first and the newest 49 after it: the tool's reply is the newest
 # comment when it answers, so a long thread cannot hide it.
-ANSWERED_THREADS_QUERY='query($endCursor: String, $owner: String!, $name: String!, $pr: Int!) { repository(owner:$owner, name:$name) { pullRequest(number:$pr) { reviewThreads(first:100, after:$endCursor) { nodes { isResolved root: comments(first:1) { nodes { databaseId } } comments(last:50) { nodes { body } } } pageInfo { hasNextPage endCursor } } } } }'
+ANSWERED_THREADS_QUERY='query($endCursor: String, $owner: String!, $name: String!, $pr: Int!) { repository(owner:$owner, name:$name) { pullRequest(number:$pr) { reviewThreads(first:100, after:$endCursor) { nodes { isResolved root: comments(first:1) { nodes { databaseId createdAt pullRequestReview { submittedAt } } } comments(last:50) { nodes { body } } } pageInfo { hasNextPage endCursor } } } } }'
 list_resolved_thread_ids() {
   graphql_with_retry --paginate \
     -f owner="$REPO_OWNER" -f name="$REPO_NAME" -F pr="$PR_NUMBER" \
@@ -326,9 +328,9 @@ fi
 # The head this answer binds to is captured BEFORE any mutation. Read after
 # the reply, a push landing mid-run would bind the merge hint and the gate
 # re-run to a commit the answer never addressed.
-PR_ROW="$(gh_read pr view "$PR_NUMBER" --json headRefOid,baseRefName --jq '[.headRefOid,.baseRefName] | @tsv')" \
+PR_ROW="$(gh_read pr view "$PR_NUMBER" --json headRefOid,baseRefName,baseRefOid --jq '[.headRefOid,.baseRefName,.baseRefOid] | @tsv')" \
   || fail "could not read the PR coordinates: $PR_ROW"
-IFS="$(printf '\t')" read -r HEAD_SHA BASE_REF <<<"$PR_ROW"
+IFS="$(printf '\t')" read -r HEAD_SHA BASE_REF BASE_SHA <<<"$PR_ROW"
 [ -n "$HEAD_SHA" ] && [ -n "$BASE_REF" ] || fail "PR $PR_NUMBER has no readable head and base."
 
 # A fix reference is review evidence, not caller-supplied prose. Resolve it
@@ -558,8 +560,32 @@ if [ "$GATE_BEHAVIOR_VERSION" = 3 ] || [ "$GATE_BEHAVIOR_VERSION" = 4 ]; then
     ATTEST_MARKER="<!-- touchstone:attest-request head=$HEAD_SHA -->"
     ROUND_IDS="$(list_resolved_thread_ids)" || fail "answers are recorded, but the resolved-thread read failed; when every thread is resolved, post '@codex review' on PR #$PR_NUMBER for the $GATE_LABEL clean verdict."
     ROUND_MARKER="<!-- touchstone:attest-round head=$HEAD_SHA answered=${ROUND_IDS:-none} -->"
-    EXISTING_ATTEST="$(gh_read api --paginate "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments?per_page=100" --jq '.[].body')" || fail "answers are recorded, but the attest-request idempotency read failed; verify PR #$PR_NUMBER carries one '@codex review' for this head."
-    if printf '%s\n' "$EXISTING_ATTEST" | grep -qF "$ROUND_MARKER"; then
+    REQUEST_ROWS="$(gh_read api --paginate "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments?per_page=100" \
+      --jq '.[] | [.html_url, (.user.login // ""), (.body // ""), (.created_at // "")] | @tsv')" \
+      || fail "answers are recorded, but the review-request read failed; inspect comments before retrying."
+    # First reuse this round's attest. Only the open-before-answer path needs
+    # a timestamp comparison, so ordinary answer retries incur no extra read.
+    SELECT_RC=0
+    EXISTING_REQUEST="$(printf '%s\n' "$REQUEST_ROWS" | select_review_request \
+      "$HEAD_SHA" "$BASE_REF" "$BASE_SHA" "$REPLY_AUTHOR" true "$ROUND_MARKER")" || SELECT_RC=$?
+    [ "$SELECT_RC" -eq 0 ] || fail "answers are recorded, but existing review requests have different base coordinates; re-run pr open for the current base."
+    if [ -z "$EXISTING_REQUEST" ] && printf '%s\n' "$REQUEST_ROWS" | grep -qF "<!-- touchstone:pr-open head=$HEAD_SHA "; then
+      # A finding is published when its review is submitted, which can be
+      # later than the inline comment creation time. Use the later instant.
+      # Include every root, even one resolved outside this tool, so a newer
+      # finding cannot be hidden by the answered-round marker.
+      FINDING_TIMES="$(graphql_with_retry --paginate \
+        -f owner="$REPO_OWNER" -f name="$REPO_NAME" -F pr="$PR_NUMBER" \
+        -f query="$ANSWERED_THREADS_QUERY" \
+        --jq '.data.repository.pullRequest.reviewThreads.nodes[].root.nodes[0] | if (.createdAt // "") == "" then error("missing finding creation time") else [.createdAt, .pullRequestReview.submittedAt] | map(select(. != null)) | max end')" \
+        || fail "answers are recorded, but finding timestamps could not be read; inspect comments before retrying."
+      LATEST_FINDING="$(printf '%s\n' "$FINDING_TIMES" | jq -Rrse 'split("\n") | map(select(length > 0)) | if length == 0 then error("missing finding timestamps") else map(fromdateiso8601) | max | todateiso8601 end')" \
+        || fail "answers are recorded, but finding timestamps are incomplete; inspect comments before retrying."
+      EXISTING_REQUEST="$(printf '%s\n' "$REQUEST_ROWS" | select_review_request \
+        "$HEAD_SHA" "$BASE_REF" "$BASE_SHA" "$REPLY_AUTHOR" true "$ROUND_MARKER" "$LATEST_FINDING")" \
+        || fail "answers are recorded, but review request selection failed; inspect comments before retrying."
+    fi
+    if [ -n "$EXISTING_REQUEST" ]; then
       echo "==> Every thread is resolved; the $GATE_LABEL review request for this answer already exists."
     else
       gh_read api "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments" -f body="@codex review
