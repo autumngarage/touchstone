@@ -197,6 +197,19 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
   "abandonment, and a clean tree are not worker-lifecycle evidence"
 
+echo "==> shipping preparation waits for the user's decision to end iteration"
+for file in TOUCHSTONE.md AGENTS.md GEMINI.md; do
+  assert_contains "$TOUCHSTONE_ROOT/$file" 'ship when the user ends iteration'
+done
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'a pause in conversation, or the end of an agent turn is not that decision'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'release notes, broad validation runs, local AI review, and PR preparation'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'a checkpoint does not'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'Repeat a check only when relevant code or inputs'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'exact-head review remain mandatory for every head that ships'
+assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'push after the'
+assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'Open the PR the moment'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'exploratory checkpoint commits do not trigger'
+
 echo "==> tiered review keeps a cost-bounded OpenRouter normal lane and Codex serious lane"
 for file in \
   "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \

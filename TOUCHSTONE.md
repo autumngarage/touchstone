@@ -39,7 +39,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale lives
 - **Derive limits from domain** — use input/config/domain constants; test small, typical, and large scales.
 - **Derive, don't persist** — derived state needs a source of truth, invalidation, rebuild, and reconciliation.
 - **No silent failures** — propagate or report failures with diagnostic context; never expose secrets or hide errors behind defaults.
-- **Every retained fix gets a test** — defer test authoring until the change is selected to ship; before review and push, add a CI test that fails on old code. It never justifies a fix-created regression.
+- **Every retained fix gets a test** — a CI test fails on old code; it never justifies a fix-created regression.
 - **Think in invariants** — name and assert one for nontrivial logic; make invalid states hard to represent.
 - **One code path** — share business rules across modes; isolate differences at adapters/config/I/O.
 - **Version your data boundaries** — version decision-affecting model/algorithm/source changes; don't aggregate across.
@@ -60,7 +60,7 @@ Before the first edit of a tracked file in a session, run `git branch --show-cur
 
 ## Required Delivery Workflow
 
-Drive this lifecycle automatically; do not ask the user for permission at each step.
+Branch and claim before edits; ship when the user ends iteration. See `principles/local-review.md`.
 
 1. **Pull.** `git pull --rebase` on the default branch.
 2. **Branch.** Before any edit that might become a commit.

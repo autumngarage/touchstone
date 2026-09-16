@@ -59,31 +59,45 @@ atomic correctness change merely to reduce line count. A migration, API
 change, or invariant change stays one slice when its pieces must land
 together.
 
-## Cadence
+## Exploration and shipping
 
-Exploration precedes this shipping cadence. Defer test authoring until the
-approach is selected to ship, following **Every retained fix gets a test** in
-[engineering-principles.md](engineering-principles.md#every-retained-fix-gets-a-test).
-Then complete required coverage and validation before review and push.
+Start shipping preparation when the user says the unit is ready to ship,
+wrap up, or create a PR. A general implementation request, a passing check,
+a pause in conversation, or the end of an agent turn is not that decision.
+An explicit instruction to implement and ship already authorizes the
+transition once the requested work is complete; do not ask again.
+
+While iterating, defer test authoring and scaffolding, final documentation,
+release notes, broad validation runs, local AI review, and PR preparation
+and creation. Use the smallest manual check or existing test that answers
+the current uncertainty. Repeat a check only when relevant code or inputs
+change, it fails, or new evidence warrants it. Keep necessary correctness
+decisions and recovery notes as you work. Explicit requests for tests,
+documentation, or test-first development take precedence.
+
+Once the user ends iteration, complete the required coverage, documentation,
+validation, and tier-required review before pushing and creating the PR.
+Then drive the authorized delivery lifecycle without asking at each step.
+If iteration resumes, defer unfinished shipping preparation again and
+revalidate affected behavior when the unit is ready. Required checks and
+exact-head review remain mandatory for every head that ships.
+
+## Cadence
 
 Commits and PRs have different costs, so they get different rhythms.
 
-A commit costs nothing: the PR squash-merges, so intra-PR history is never
-the deliverable. Commit at every green working state and push after the
-first commit. An uncommitted hour is unrecoverable work; an unpushed branch
-can be dropped by a sibling session sharing the checkout. Never hold edits
-back to make a tidier history.
+Preserve coherent local checkpoints during iteration; a checkpoint does not
+trigger shipping preparation, local AI review, a push, or a PR. Keep the
+branch and tracked scope legible so another session can resume it.
 
 A PR carries fixed overhead regardless of size: the evidence body, the
 tier's local pass, the hosted gate run, and a merge-queue entry. Spend it
-once per complete invariant. Open the PR the moment one invariant is green
-and validated; do not wait for the conversation, the plan, or the session
-to end. Do not open one per commit either — a PR that ships half an
+once per complete invariant after the shipping decision and validation.
+Do not open one per commit — a PR that ships half an
 invariant pays the overhead twice and reviews a state nothing can validate.
 
-Ship what is done when a branch would outlive the session or another PR
-merges beneath it. A long-lived branch converts every later merge into
-rebase work and every review finding into a wider diff.
+If work outlives the session, leave a checkpoint and the remaining scope.
+A session ending or another PR merging does not authorize shipping.
 
 ## Scope-expansion checkpoint
 
@@ -94,15 +108,13 @@ conversation, branch, or eventual "ship everything" request.
 
 Before the first edit for a follow-up that can be reviewed independently:
 
-1. checkpoint the current coherent unit with its commit and PR/tracker context;
+1. checkpoint the current coherent unit with its commit and tracker context;
 2. put the addition in a sequential branch/PR or its own tracked item; or
 3. record why the addition is required to make the *same* invariant correct
    and retain the integrated unit.
 
-During exploratory UI work, checkpoint each accepted stable concern instead
-of waiting for a final shipping request to create all commits. Where the
-project has a release-note contract, decide note or no-note for each unit when
-writing its PR context, before commit.
+During exploratory UI work, checkpoint each accepted stable concern. Prepare
+its PR context and any required release notes after the shipping decision.
 
 Size is evidence to inspect, never the decision. A theme-picker change that
 grows into onboarding, a Metal renderer, command behavior, settings migrations,
@@ -115,7 +127,8 @@ invalid intermediate state.
 ## Required PR context
 
 Use the concise-writing guidance in `principles/git-workflow.md`.
-Write the context before committing. The `Local review` row is the one
+Write the context before the shipping commit, not for exploratory checkpoints.
+The `Local review` row is the one
 field that cannot be truthful yet: fill it after the tier's pass has run
 (normal: before the commit; serious: after it, before the push) and before
 the PR is opened.

@@ -40,6 +40,12 @@ The lifecycle is the ten-step **Required Delivery Workflow** in the steering
 block, and this document does not enumerate a second one: the steps below
 carry the same numbers and add only the detail the steering leaves out.
 
+[Exploration and shipping](local-review.md#exploration-and-shipping) owns the
+transition into delivery. Branch and claim work before implementation;
+exploratory checkpoint commits do not trigger steps 4–9's shipping preparation.
+Once the user ends iteration, perform those steps with the required coverage,
+validation, review, and PR context. A pause alone does not authorize delivery.
+
 1. **Pull.** `git pull --rebase` on the default branch before starting work.
 2. **Branch — before any edit that might become a commit.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`. Do this as step one of the work, not as a cleanup step later. Check the tree first: run `git status --short` and `git branch --show-current`. If the tree is dirty with unrelated user changes, do not stash them and do not auto-commit on the user's behalf — ask how to proceed, or branch around the changes when the file surfaces are disjoint. `git stash` is hidden multi-agent state, not a coordination mechanism.
 3. **Claim tracked work** — see "Claiming tracked work before agent dispatch" below.
