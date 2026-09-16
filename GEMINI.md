@@ -115,6 +115,10 @@ For deep references on specific topics, read `principles/*.md` files via the rou
 
 ## Delivery
 
+For this repository's bounded exception to normal-tier local AI review, follow
+[Normal local-review pilot](AGENTS.md#normal-local-review-pilot). It does not
+change serious-tier or hosted review requirements.
+
 In this source checkout, use `bash bin/touchstone pr open|status|merge|answer` for the
 four bounded PR operations (`answer` replies to a finding and resolves its thread). Pass `--expect-branch <branch>` to `open` with the branch name written out:
 it acts on whatever branch the invoking directory has checked out, which

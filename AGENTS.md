@@ -122,6 +122,35 @@ You are maintaining the standard baseline for a solo developer directing many ag
 - The PR is the review surface. Do not treat PR creation as completion: answer every piece of PR feedback and resolve its thread — whoever left it — before merging.
 - File-writing subagents use isolated worktrees by default. Follow `principles/git-workflow.md`; use `git worktree add` and `git worktree remove` for setup and teardown.
 
+### Normal local-review pilot
+
+Henry approved a Touchstone-only trial in
+[AUT-885](https://linear.app/autumngarage/issue/AUT-885): after the PR adding
+this section merges, local AI review is optional for ten normal-tier PRs.
+This project exception overrides only the normal tier's local pass and its
+credential preflight. Serious-tier local review, deterministic checks,
+hosted exact-head review, thread resolution, and merge-queue validation remain
+required. Classify risk before choosing whether to use the exception; never
+downgrade serious work to enroll it.
+
+Before skipping a normal pass, read AUT-885 and its enrollments. Reserve the
+branch and the choice there, re-read the reservation, and attach the PR once
+created. Count reservations and every enrolled PR, including closed or replaced
+ones. If enrollment or the remaining ten-PR budget cannot be established,
+use the standing local-review procedure. A requested local review still runs
+once; no confirming passes. An omitted pass is recorded honestly:
+`- Local review: n/a — AUT-885 optional normal local-review pilot; pass omitted.`
+Keep the usual tier and validation rows; this is not a reviewer outage.
+
+After each enrolled PR finishes, append its hosted findings and dispositions,
+review requests, open-to-merge time, and any observed escaped defect to AUT-885.
+Record local findings, elapsed time, and provider cost only when observed;
+unmeasured values stay unknown. At ten enrolled slots, stop enrolling and return
+to the standing mandatory normal pass until Henry reviews the results.
+An escaped P0/P1 plausibly attributable to omission pauses enrollment earlier.
+Activation is not completion of the trial. Other repositories do not inherit
+this exception.
+
 ### Touchstone-Specific Rules
 
 - **A rule must live at the layer that can enforce it.** GitHub enforces, prose instructs, scripts observe and sequence. Nothing lives at two layers at once. Re-deciding locally what GitHub decides at the merge button is the specific mistake that grew this repo to 49,000 lines.

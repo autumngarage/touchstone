@@ -215,6 +215,33 @@ done
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'exploratory checkpoint commits do not trigger'
 
 echo "==> tiered review keeps a cost-bounded OpenRouter normal lane and Codex serious lane"
+echo "==> the optional normal-review pilot is bounded and project-owned"
+assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" 'local AI review is optional for ten normal-tier PRs'
+assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" 'downgrade serious work to enroll it'
+assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" 'At ten enrolled slots, stop enrolling'
+assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" 'this is not a reviewer outage'
+for file in CLAUDE.md GEMINI.md; do
+  assert_contains "$TOUCHSTONE_ROOT/$file" 'AGENTS.md#normal-local-review-pilot'
+done
+assert_not_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 'AUT-885'
+cat >"$TEST_DIR/pilot-evidence.md" <<'EOF'
+## Intent
+Exercise the approved optional normal-review pilot.
+## Invariants
+Hosted exact-head review and deterministic validation remain required.
+## Validation
+- Build: n/a — fixture
+- Automated tests: fixture passed
+- Manual validation: checked pilot enrollment
+- Local review: n/a — AUT-885 optional normal local-review pilot; pass omitted.
+## Review tier
+normal
+## Why this tier
+Contained change without a serious-tier trigger.
+EOF
+bash "$TOUCHSTONE_ROOT/scripts/check-delivery-evidence.sh" "$TEST_DIR/pilot-evidence.md" >/dev/null \
+  || fail "the normal pilot's honest omission record is not accepted"
+
 for file in \
   "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
   "$TOUCHSTONE_ROOT/AGENTS.md" \
