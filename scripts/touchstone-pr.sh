@@ -2974,9 +2974,7 @@ open_pr() {
     finish_open "$state" "$number" "$url" "$local_head" "existing:$request_url" "$branch"
     return 0
   fi
-  request_body="@codex review
-
-$request_marker"
+  request_body="$(review_request_body "$request_marker")"
   # A conflicting head must be replaced before it can merge. Do not consume a
   # hosted review on a head whose only valid recovery creates a new head.
   refuse_conflicting_open_pr "$number" "$local_head" "$pr_base" "$pr_base_sha"

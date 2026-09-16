@@ -37,3 +37,10 @@ select_review_request() {
       else if (attest_url != "") print attest_url "\t" attest
     }'
 }
+
+# One hosted-review instruction for open and answer; markers remain unchanged.
+review_request_body() {
+  printf '%s\n\n' '@codex review' \
+    'Report only P0/P1 defects that should block this change. Omit P2/P3 findings; do not raise their severity to include them. Keep each finding brief: trigger, consequence, and needed correction.'
+  printf '%s\n' "$@"
+}

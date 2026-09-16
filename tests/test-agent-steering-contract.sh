@@ -39,6 +39,7 @@ for file in \
   assert_contains "$file" "Driving CLI"
   assert_contains "$file" "PR-visible reviewer"
   assert_contains "$file" "Required Delivery Workflow"
+  assert_contains "$file" "keep PRs, issues, and replies concise"
   assert_contains "$file" "Before the first edit"
   assert_contains "$file" "principles/ai-delivery-architecture.md"
   # The mechanics must be stated as raw commands, not delegated to a wrapper.
@@ -202,8 +203,7 @@ for file in \
   "$TOUCHSTONE_ROOT/AGENTS.md" \
   "$TOUCHSTONE_ROOT/GEMINI.md" \
   "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
-  "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  "$TOUCHSTONE_ROOT/.github/pull_request_template.md"; do
+  "$TOUCHSTONE_ROOT/principles/local-review.md"; do
   assert_contains "$file" 'touchstone review check'
   assert_contains "$file" 'touchstone review run'
   assert_contains "$file" 'touchstone review run --base origin/<default>'
@@ -211,8 +211,7 @@ for file in \
 done
 for file in \
   "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
-  "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  "$TOUCHSTONE_ROOT/.github/pull_request_template.md"; do
+  "$TOUCHSTONE_ROOT/principles/local-review.md"; do
   assert_contains "$file" 'may waive only when Codex and the fallback are both unavailable'
   # A waiver documented without its alternative is how the tier lost its local
   # pass to an exhausted quota in the first place (AUT-1217), so every surface
@@ -689,8 +688,14 @@ assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   "pass is neither required nor authorized"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   'reviewed_head="$(git rev-parse HEAD)"'
-assert_contains "$TOUCHSTONE_ROOT/.github/pull_request_template.md" \
-  'begin serious with `<reviewer> on <captured-head-sha>: <n> findings, <disposition>`'
+# The template activates the canonical procedure; copying its complete
+# instructions here made every PR start with a long, drifting prompt.
+assert_contains "$TOUCHSTONE_ROOT/.github/pull_request_template.md" 'principles/local-review.md'
+assert_contains "$TOUCHSTONE_ROOT/.github/pull_request_template.md" '- Local review:'
+assert_not_contains "$TOUCHSTONE_ROOT/.github/pull_request_template.md" 'touchstone review run --base'
+assert_contains "$GIT_WORKFLOW_GUIDE" '## Write briefly'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal-prompt.md" 'Report only P0/P1 defects'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal-prompt.md" 'do not raise their severity'
 
 echo "==> dirty PR recovery preserves authored work and re-ships the new head"
 assert_contains "$GIT_WORKFLOW_GUIDE" '## Recovering a `DIRTY` PR'
@@ -1297,6 +1302,9 @@ jq -e '
   (.tools == null)
 ' "$FAKE_CURL_CAPTURE" >/dev/null \
   || fail "OpenRouter request lost its model, price, output, or no-tools boundary: $(jq -c '{model, max_tokens, plugins, provider}' "$FAKE_CURL_CAPTURE" 2>&1)"
+# Check the request actually sent to the provider, not only the source file.
+jq -e '.messages[0].content | contains("Report only P0/P1 defects") and contains("do not raise their severity")' \
+  "$FAKE_CURL_CAPTURE" >/dev/null || fail "the provider did not receive the blocking-only review instruction"
 assert_contains "$FAKE_CURL_CAPTURE" 'reviewed value'
 assert_not_contains "$FAKE_CURL_CAPTURE" 'must not be reviewed'
 assert_not_contains "$FAKE_CURL_CAPTURE" 'also excluded'

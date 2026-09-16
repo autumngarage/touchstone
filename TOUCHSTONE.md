@@ -17,7 +17,7 @@ GitHub's effective repository policy is the enforcement authority. Where the Tou
 To hold those lines, Touchstone does three things and nothing else:
 
 1. **Constrain** — adopted GitHub policy blocks unsafe delivery; before adoption, the driver follows the same delivery contract and treats missing enforcement as a tracked gap.
-2. **Make state legible** — what happened lives in git, PRs, and issues, verifiable without trusting your narration.
+2. **Make state legible** — keep PRs, issues, and replies concise: behavior, reason, evidence. Git and GitHub prove outcomes.
 3. **Carry the contract** — the same rules reach every project and every agent, automatically.
    - **Every agent on a machine shares one GitHub REST quota.** Poll PR and check state no faster than every 2 min, GraphQL first; run `gh api rate_limit --hostname <host>` before bulk reads; never retry-loop on a rate limit (403 or 429) — wait for the reset.
 

@@ -64,6 +64,17 @@ is not `applied`, exact-head review and every answered finding remain
 mandatory driver procedure, `touchstone pr merge` refuses without
 `--unguarded`, and the gap is tracked — not inferred from this document.
 
+## Write briefly
+
+PR descriptions, tracker items, and review replies should contain only what
+someone needs to decide or act. Lead with the behavior and why it matters.
+Use one short paragraph for a simple change, plus the required evidence rows.
+Add detail for real risks, migration, or reproduction; omit empty sections,
+implementation diaries, repeated rules, and copied logs. Link existing evidence
+instead of retelling it. A review reply usually needs one sentence stating the
+disposition and reason. Do not create a task merely to acknowledge feedback;
+use the review dispositions below.
+
 ## Opening a PR
 
 ```bash
@@ -661,8 +672,8 @@ PR's bug.
    action. “Valid observation, not worth addressing” is a final disposition:
    no new issue, investigation, code change, or compensating process is required.
    The PR already preserves the evidence; use `--no-code-change` without an issue
-   link. New follow-up work is exceptional and must independently be worth doing
-   based on concrete evidence; validity or plausibility alone is insufficient.
+   link. Do not create a task from P2/P3 or unbadged feedback unless the user
+   explicitly requests that follow-up; validity or plausibility alone is insufficient.
    For P0/P1 work outside this PR's scope, retain the owning-issue routing and
    resolve with its link. **Never fix a finding by hardening a component the plan
    deletes.** Check the plan of record before fortifying it.
