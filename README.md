@@ -137,6 +137,25 @@ the tap formula's `url` and `sha256` through the shared `homebrew-bump`
 workflow; `brew upgrade touchstone` sees it about a minute later. Homebrew
 upgrades the installed tool only and never mutates a repository.
 
+Publication is not deployment. Before calling an upgrade complete:
+
+- Run `touchstone upgrade` on each supported agent machine, then verify
+  `touchstone version` and `touchstone steering check`. Active sessions must
+  reload their instructions.
+- If hosted behavior changed, update its independently pinned prompt or
+  workflow through a PR, apply the reviewed policy, and verify effective
+  pins with `touchstone policy status --project <dir>` for every affected
+  adopted project. A merged pin alone changes no GitHub rules.
+- Check for consumers that bundle a pinned Touchstone release. Upgrade them
+  through their own compatibility checks and release process; the machine
+  install cannot update an embedded copy.
+- Record the checked projects, installed version, effective workflow revision,
+  and any remaining gaps in the release task. Use each project's declaration
+  and effective policy; a missing consumer override does not mean unadopted.
+
+Keep this check within the existing upgrade and policy commands; ordinary
+upgrades must not require copied implementation or project rewrites.
+
 Where Homebrew does not run, fetch `install.sh` from the release tag and run
 the saved file (never pipe a moving branch into bash):
 
