@@ -82,7 +82,7 @@ ok() {
 set -euo pipefail
 # The fixture's own reads of its pages (GH_UNLOGGED) are not the command's.
 [ -n "${GH_UNLOGGED:-}" ] || printf '%s\n' "$*" >>"$GH_CALLS"
-has() { local needle="$1"; shift; printf '%s\n' "$*" | grep -qF -- "$needle"; }
+has() { local needle="$1"; shift; [[ "$*" == *"$needle"* ]]; }
 serve_rules() {
   # A real effective-rules document through the caller's real jq: the
   # policy's three pinned workflows plus the queue and the native rules
@@ -1311,6 +1311,21 @@ case "$1 ${2:-}" in
 esac
 EOF
   chmod +x "$TMP/bin/gh"
+  echo "==> the hot fixture matcher preserves literal matching without grep processes"
+  sed -n '/^has() /p' "$TMP/bin/gh" >"$TMP/matcher.sh"
+  cat >>"$TMP/matcher.sh" <<'EOF'
+set -euo pipefail
+grep() { echo 'fixture matcher spawned grep' >&2; return 99; }
+has '' ''
+has '--jq' api --jq '.data[]'
+has 'api graphql' api graphql
+has '*?[x]' 'prefix*?[x]suffix'
+has '$x' '$xyz'
+has 'two lines' $'first\ntwo lines'
+if has 'missing' api graphql; then exit 1; fi
+if has '*?[x]' 'prefixZxsuffix'; then exit 1; fi
+EOF
+  bash "$TMP/matcher.sh" || fail "fixture matcher changed semantics or launched grep"
   GH_POLICY_SHA="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[].sha] | unique | .[0]' "$ROOT/policy/github/touchstone-main.json")"
   # The workflow-source lineage the fake serves, relative to the revision the
   # tool's own policy file carries (GH_POLICY_SHA):
