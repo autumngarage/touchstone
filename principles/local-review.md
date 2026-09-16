@@ -61,6 +61,11 @@ together.
 
 ## Cadence
 
+Exploration precedes this shipping cadence. Defer test authoring until the
+approach is selected to ship, following **Every retained fix gets a test** in
+[engineering-principles.md](engineering-principles.md#every-retained-fix-gets-a-test).
+Then complete required coverage and validation before review and push.
+
 Commits and PRs have different costs, so they get different rhythms.
 
 A commit costs nothing: the PR squash-merges, so intra-PR history is never
