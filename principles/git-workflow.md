@@ -40,10 +40,16 @@ The lifecycle is the ten-step **Required Delivery Workflow** in the steering
 block, and this document does not enumerate a second one: the steps below
 carry the same numbers and add only the detail the steering leaves out.
 
+[Exploration and shipping](local-review.md#exploration-and-shipping) owns the
+transition into delivery. Branch and claim work before implementation;
+exploratory checkpoint commits do not trigger steps 4–9's shipping preparation.
+Once the user ends iteration, perform those steps with the required coverage,
+validation, review, and PR context. A pause alone does not authorize delivery.
+
 1. **Pull.** `git pull --rebase` on the default branch before starting work.
 2. **Branch — before any edit that might become a commit.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`. Do this as step one of the work, not as a cleanup step later. Check the tree first: run `git status --short` and `git branch --show-current`. If the tree is dirty with unrelated user changes, do not stash them and do not auto-commit on the user's behalf — ask how to proceed, or branch around the changes when the file surfaces are disjoint. `git stash` is hidden multi-agent state, not a coordination mechanism.
 3. **Claim tracked work** — see "Claiming tracked work before agent dispatch" below.
-4. **Change + commit.** Stage explicit file paths (not `git add -A`). Normal tier: first require `touchstone review check`, then run `touchstone review run` on the isolated staged slice before commit (`principles/local-review.md`). A failed check or run is an explicit normal-tier waiver, never permission to fall back to an unbounded model path. A tier-required local AI pass runs at most once per coherent review unit and is never rerun to confirm fixes; trivial work initiates none. Each meaningful sub-task gets its own concise commit. The tier sets push cadence: normal pushes when a commit is ready; serious pushes once per reviewed head. After a review round, batch every fix into one commit and push once.
+4. **Change + commit.** Stage explicit file paths (not `git add -A`). Normal tier: first require `touchstone review check`, then run `touchstone review run` on the isolated staged slice before commit (`principles/local-review.md`). A failed check or run is an explicit normal-tier waiver, never permission to fall back to an unbounded model path. A tier-required local AI pass runs at most once per coherent review unit and is never rerun to confirm fixes; trivial work initiates none. Each meaningful sub-task gets its own concise commit. After the user ends iteration, the tier sets push cadence: normal pushes when the shipping commit is ready; serious pushes once per reviewed head. After a review round, batch every fix into one commit and push once.
 5. **Local review evidence.** Serious tier: capture `reviewed_head="$(git rev-parse HEAD)"`, then run `touchstone review run --base origin/<default>` at most once on that coherent committed branch before its first push. It runs Codex and falls back to the bounded OpenRouter pass over the same branch on any Codex non-success, including an exhausted quota. This is the one step nothing else witnesses (AUT-443), so the PR body's `- Local review:` row records normal as `openrouter on the staged slice (review-normal): <n> findings, <disposition>` or serious as `<reviewer> on <captured-head-sha>: <n> findings, <disposition>` for whichever reviewer it reported. The serious SHA is the captured current head the pass reviewed; `<default>` is only its comparison boundary. Normal may waive for a failed configured check or pass; serious may waive only when Codex and the fallback are both unavailable. A byte-ceiling refusal is neither: re-slice (unstage what is not the change, fetch and name the real base, split) and run the pass; the gate refuses a waiver that cites the size limit. After allowed local findings are fixed, rerun deterministic checks and push; the hosted PR reviewer owns exact-head review for every pushed head. Another local AI pass is neither required nor authorized. `delivery-evidence` refuses a missing, malformed, or unexplained row.
 6. **Reconcile tracked work** before opening the PR — fixed items get the closing reference in the PR body; partial or stale items get a tracker note. **Correct any claim in a closed item's body that the change invalidated**, with a dated note at the top of the description. A closed issue is not archived: it is the most detailed and most persuasive document about the thing it describes, and a reader has no signal that it is historical. AUT-1236 said "a false positive P1 has no answer-and-resolve path", `pr answer --finding` shipped hours later, the sentence was never corrected, and a session then argued a working design was broken, filed two issues on the false premise and duplicated a shipped fix. Prepend `> **Corrected <date>.** …` naming what changed; it reaches a reader before the stale paragraph does.
 7. **Ship.** Push and open the PR — see "Opening a PR" below.
@@ -477,13 +483,10 @@ partial, or unrelated.
 
 ## Commit and push frequency
 
-**Commit at every clear stopping point.** A sub-task is complete and its tests pass — that's a commit boundary. Don't wait until "the whole feature is done." Holding hours of work in an uncommitted working tree creates four problems: (1) review faces one giant diff instead of a legible sequence, (2) any single mistake can lose all of it, (3) other branches can't pull your in-flight work, and (4) you lose the per-step `git log` story that future-you will rely on when debugging months later.
-
-**Push after every commit.** Local commits are not durable. Pushing means your work survives a laptop dying or a `git reset --hard` finger-slip. On a PR branch, pushing also makes incremental work visible from another worktree or session.
-
-**Cadence guidance.** A useful rhythm is roughly one commit per 30–60 minutes. If a session goes longer without a commit, ask whether you've passed a clean stopping point and didn't notice. If you can describe what you just finished in one sentence, that's a commit.
-
-**When *not* to commit.** Two cases: (1) a half-finished thought where the code is in a deliberately-broken intermediate state — squash that into a single sensible commit before pushing; (2) actively-iterating exploration where commits would just be noise.
+Follow [Exploration and shipping](local-review.md#exploration-and-shipping):
+preserve coherent local checkpoints while iterating, then prepare and push
+only after the user ends iteration. A checkpoint is recovery state, not a
+shipping decision; it does not require new tests or local AI review.
 
 **No checkpoint commits in review artifacts.** Local recovery commits are fine, but pushed `WIP:`, `checkpoint`, or deliberately broken commits do not belong on real review branches. Squash or fix them before opening the PR.
 

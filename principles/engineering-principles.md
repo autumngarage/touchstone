@@ -24,6 +24,8 @@ Compute from the source of truth by default. Persist derived state only when rec
 Propagate failures or report them with enough context to diagnose them, without exposing secrets. No swallowed errors or success-shaped defaults that hide failure. Fallback behavior must report what failed, what was skipped, and what safety boundary still holds.
 
 ## Every retained fix gets a test
+Defer test authoring, fixture updates, and test scaffolding during iteration, following [Exploration and shipping](local-review.md#exploration-and-shipping). Complete required coverage before local review and push once the user ends iteration.
+
 Retained bug fixes need a CI regression test that reproduces the failure: it must fail on the old code and pass on the new code. Test observable behavior, not implementation structure. A regression test does not justify retaining a review fix that created another defect; revert or simplify that fix before another mutation.
 
 ## Think in invariants

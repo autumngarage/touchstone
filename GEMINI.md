@@ -67,7 +67,7 @@ Before the first edit of a tracked file in a session, run `git branch --show-cur
 
 ## Required Delivery Workflow
 
-Drive this lifecycle automatically; do not ask the user for permission at each step.
+Branch and claim before edits; ship when the user ends iteration. See `principles/local-review.md`.
 
 1. **Pull.** `git pull --rebase` on the default branch.
 2. **Branch.** Before any edit that might become a commit.
