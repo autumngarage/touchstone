@@ -32,6 +32,10 @@ cat >"$TMP_DIR/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ "${1:-}" = pr ]; then
+  echo "PR $2 $3" >>"$GH_FAKE_STATE/pr-mutations.log"
+  exit 0
+fi
 method=GET
 fields=""
 endpoint=""
@@ -61,6 +65,30 @@ emit() {
 }
 
 case "$method $endpoint" in
+  "GET graphql")
+    case "$fields" in
+      *'mergeQueue(branch:'*)
+        case "${GH_FAKE_QUEUE:-empty}" in
+          error) exit 1 ;;
+          malformed) emit '{"data":{"repository":{}}}' ;;
+          graphql-error) emit '{"errors":[{"message":"unavailable"}],"data":{"repository":{"mergeQueue":null}}}' ;;
+          null) emit '{"data":{"repository":{"mergeQueue":null}}}' ;;
+          live) emit '{"data":{"repository":{"mergeQueue":{"entries":{"totalCount":2}}}}}' ;;
+          *) emit '{"data":{"repository":{"mergeQueue":{"entries":{"totalCount":0}}}}}' ;;
+        esac ;;
+      *'pullRequest(number:'*)
+        case "${GH_FAKE_PR_QUEUE:-empty}" in
+          error) exit 1 ;;
+          malformed) emit '{"data":{"repository":{"pullRequest":{}}}}' ;;
+          live) emit '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":{"id":"entry"}}}}}' ;;
+          *) emit '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":null}}}}' ;;
+        esac ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  "GET repos/autumngarage/touchstone/pulls?state=open&per_page=100")
+    if [ "${GH_FAKE_OPEN_PRS:-0}" = 1 ]; then emit '[{"number":42,"draft":false}]'; else emit '[]'; fi
+    ;;
   "GET repos/autumngarage/touchstone-workflows")
     if [ -f "$state/source-auto-merge" ]; then
       emit '{"id":1333343261,"allow_auto_merge":true}'
@@ -1059,6 +1087,18 @@ fi
   || fail "unmarked policy mutated an unrelated same-name organization ruleset"
 ok "only the derived ownership marker identifies a mutable ruleset"
 
+echo "==> Policy apply refuses a live or unverifiable queue before mutation"
+for queue_state in live error malformed graphql-error; do
+  before_queue_mutations="$(cat "$TMP_DIR/state/mutations.log" 2>/dev/null || true)"
+  if GH_FAKE_QUEUE="$queue_state" run_policy apply "$POLICY" >"$TMP_DIR/queue-refusal.out" 2>&1; then
+    fail "apply accepted queue state $queue_state"
+  fi
+  [ "$(cat "$TMP_DIR/state/mutations.log" 2>/dev/null || true)" = "$before_queue_mutations" ] \
+    || fail "queue refusal mutated policy for $queue_state"
+  grep -q 'queue' "$TMP_DIR/queue-refusal.out" || fail "queue refusal lacked a diagnostic"
+done
+ok "live, failed, malformed and GraphQL-error queue reads refuse without mutation"
+
 echo "==> Backup, apply, and idempotency"
 run_policy backup "$TMP_DIR/backup.json" "$POLICY"
 jq -e '.branchProtection.required_status_checks.checks | length == 2' "$TMP_DIR/backup.json" >/dev/null \
@@ -1096,6 +1136,22 @@ run_policy apply "$POLICY"
 after_count="$(wc -l <"$TMP_DIR/state/mutations.log" | tr -d ' ')"
 [ "$before_count" = "$after_count" ] || fail "second apply changed remote state"
 ok "apply is ordered safely and a second apply is a no-op"
+
+echo "==> Refresh preserves a PR that joined the queue after apply began"
+for queue_state in live error malformed; do
+  rm -f "$TMP_DIR/state/pr-mutations.log"
+  GH_FAKE_OPEN_PRS=1 GH_FAKE_PR_QUEUE="$queue_state" RETRIGGER_SPACING_SECONDS=0 \
+    run_policy apply "$POLICY" >"$TMP_DIR/queue-refresh.out" 2>&1
+  [ ! -f "$TMP_DIR/state/pr-mutations.log" ] || fail "refresh mutated queued or ambiguous PR ($queue_state)"
+  grep -q 'left untouched' "$TMP_DIR/queue-refresh.out" || fail "skipped refresh was silent"
+done
+GH_FAKE_QUEUE=null GH_FAKE_OPEN_PRS=1 RETRIGGER_SPACING_SECONDS=0 \
+  run_policy apply "$POLICY" >"$TMP_DIR/queue-refresh.out" 2>&1
+[ "$(cat "$TMP_DIR/state/pr-mutations.log")" = "$(printf 'PR close 42\nPR reopen 42')" ] \
+  || fail "an explicitly unqueued PR did not refresh"
+rm -f "$TMP_DIR/state/pr-mutations.log"
+ok "queued and unknown PRs stay untouched; a queue-less repository still refreshes unqueued PRs"
+
 jq -e '.rules[] | select(.type == "pull_request") | .parameters.required_reviewers == []' \
   "$TMP_DIR/state/ruleset.json" >/dev/null \
   || fail "fake API did not exercise GitHub's required_reviewers default"
