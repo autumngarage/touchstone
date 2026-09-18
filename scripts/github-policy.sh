@@ -729,6 +729,35 @@ set -- "${kept[@]+"${kept[@]}"}"
 # So the evidence is regenerated rather than grandfathered. Closing and
 # reopening re-runs the required workflows on the same head, which keeps the
 # reviewed SHA; editing does not start a new run.
+# A repin cannot regenerate checks for a live merge-group candidate. Refuse
+# before policy mutation; the queue must finish under the pin it started with.
+require_empty_merge_queue() {
+  local response count
+  response="$(api graphql -f query='query($owner:String!,$name:String!,$branch:String!){repository(owner:$owner,name:$name){mergeQueue(branch:$branch){entries(first:1){totalCount}}}}' \
+    -f owner="$ORG" -f name="$REPOSITORY" -f branch="$BRANCH")" \
+    || die "could not inspect the merge queue; policy was not changed"
+  count="$(jq -er '
+    if (.errors // [] | length) > 0 or (.data.repository | type) != "object"
+      or (.data.repository | has("mergeQueue") | not) then error("missing queue evidence")
+    elif .data.repository.mergeQueue == null then 0
+    else .data.repository.mergeQueue.entries.totalCount
+      | if type == "number" and . >= 0 and . == floor then . else error("invalid queue count") end
+    end' <<<"$response")" || die "ambiguous merge queue state; policy was not changed"
+  [ "$count" -eq 0 ] || die "merge queue has $count live entries; wait for it to empty before applying policy"
+}
+
+# A PR may join after the initial apply check. Never close a queued PR, and
+# never treat unavailable or malformed queue evidence as permission to close.
+pr_is_unqueued() {
+  local response
+  response="$(api graphql -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeQueueEntry{id}}}}' \
+    -f owner="$ORG" -f name="$REPOSITORY" -F number="$1")" || return 1
+  jq -e '(.errors // [] | length) == 0
+    and (.data.repository.pullRequest | type) == "object"
+    and (.data.repository.pullRequest | has("mergeQueueEntry"))
+    and .data.repository.pullRequest.mergeQueueEntry == null' <<<"$response" >/dev/null
+}
+
 retrigger_open_pull_requests() {
   local open_prs number failed=0
   [ "${RETRIGGER_OPEN_PRS:-true}" = true ] || {
@@ -743,6 +772,11 @@ retrigger_open_pull_requests() {
   [ -n "$open_prs" ] && [ "$open_prs" != "" ] || return 0
   echo "Re-running required workflows on open pull requests whose evidence this apply invalidated:"
   for number in $open_prs; do
+    if ! pr_is_unqueued "$number"; then
+      echo "  WARNING: not refreshing #$number: queued or queue state unavailable; left untouched." >&2
+      failed=1
+      continue
+    fi
     if gh pr close "$number" --repo "$ORG/$REPOSITORY" >/dev/null 2>&1 \
       && sleep 2 \
       && gh pr reopen "$number" --repo "$ORG/$REPOSITORY" >/dev/null 2>&1; then
@@ -883,6 +917,7 @@ case "$COMMAND" in
       bootstrap=true
       echo "No prior protection on $ORG/$REPOSITORY@$BRANCH: installing the policy fresh (bootstrap)."
     fi
+    require_empty_merge_queue
     if ! (
       if [ "$source_ruleset" = null ]; then
         printf '%s\n' "$desired" \
