@@ -179,21 +179,16 @@ Homebrew libexec path keep working on macOS and are migrated to the named
 form as each consumer is next touched; Touchstone does not write hook
 settings.
 
-Machine onboarding is one-time and keeps credentials out of review tools and
-durable review state (`review setup`, `check`, and `run` are macOS-only —
-they live on Keychain; on other platforms record the documented explicit
-review waiver instead):
+Machine onboarding is one-time:
 
 ```bash
 touchstone steering install   # user-scoped skills + steering surfaces
-touchstone review setup       # dedicated OpenRouter key into macOS Keychain
 ```
 
-`touchstone review check` validates the credential, local tools, and
-versioned review policy without a provider request. `touchstone review run`
-sends only the staged diff in one cost-bounded OpenRouter request, then
-reports the selected model, tokens, cost, and findings. Serious and
-PR-visible reviews remain on their default Codex paths.
+Nothing reviews a change on the machine before its PR. Review is the hosted
+`review-gate`'s, on every pushed head: the primary reviewer's verdict, or the
+pinned gate's own fallback review when the primary is at capacity. The retired
+`touchstone review` command now only says so and exits non-zero.
 
 ## Delivery
 

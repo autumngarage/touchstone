@@ -540,15 +540,21 @@ fi
 
 # The installed pre-PR procedure says no AI review runs before the PR
 # (AUT-1962) and revives neither retired local lane -- the OpenRouter command
-# nor the CodeRabbit path before it.
+# nor the CodeRabbit path before it -- and install offers no credential setup
+# for it.
 HCMD="$TMP_DIR/hcmd"
-bash "$INSTALL" install --home "$HCMD" >/dev/null 2>&1
+bash "$INSTALL" install --home "$HCMD" >"$TMP_DIR/hcmd.out" 2>&1
 if grep -qF -- 'No AI review runs before the PR' "$HCMD/.touchstone/principles/local-review.md" \
   && ! grep -qE -- 'touchstone review (run|check|setup)' "$HCMD/.touchstone/principles/local-review.md" \
   && ! grep -qF -- 'coderabbit review --agent --uncommitted' "$HCMD/.touchstone/principles/local-review.md"; then
   pass "installed pre-PR procedure runs no local review"
 else
   fail "installed local-review.md still carries a retired local review lane"
+fi
+if grep -qiE -- 'openrouter|review setup' "$TMP_DIR/hcmd.out"; then
+  fail "steering install still offers the retired review credential: $(cat "$TMP_DIR/hcmd.out")"
+else
+  pass "steering install offers no review credential setup"
 fi
 
 # A home containing a single quote cannot be rendered into a pasteable

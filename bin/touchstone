@@ -28,8 +28,6 @@ Usage:
   touchstone policy status [--base BRANCH] [--project DIR] [--json]
   touchstone policy apply --base BRANCH --project DIR --authorize-admin [--json]
   touchstone cleanup check [--project DIR] [--json]
-  touchstone review setup|check|run|rotate|uninstall [--codex-home DIR] [--dry-run]
-  touchstone review run [--base REF] [--json]
   touchstone usage check|install|uninstall --enterprise SLUG [arguments]
   touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change)
   touchstone pr answer PR --finding ID --body-file FILE (--fix-commit SHA | --no-code-change)
@@ -142,7 +140,22 @@ case "$COMMAND" in
     exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-cleanup.sh" "$@"
     ;;
   review)
-    exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" "$@"
+    # Retired (AUT-1962): review is the hosted review-gate's, on the exact
+    # head GitHub merges, and nothing reviews before the PR. The name stays so
+    # a stale caller -- an older daemon, a vendored shipping script, an agent
+    # following cached steering -- fails loudly with the reason instead of
+    # "unknown command", and so a machine that ran the retired `setup` learns
+    # how to remove the credential it left in Keychain. Every argument is
+    # ignored: nothing here reads a diff, a credential, or the network.
+    {
+      echo "ERROR: 'touchstone review' is retired (AUT-1962). Nothing reviews a change before its PR:"
+      echo "       review is the hosted review-gate's, on every pushed head. Open the PR with"
+      echo "       'touchstone pr open'; a PR body needs no '- Local review:' row."
+      echo "       To remove an OpenRouter key the retired 'touchstone review setup' saved on this Mac:"
+      echo "       security delete-generic-password -s com.autumngarage.touchstone.review-normal"
+      echo "       (once per saved key; it reports when none is left)"
+    } >&2
+    exit 2
     ;;
   usage)
     # GitHub Actions usage pace for an enterprise -- read-only against

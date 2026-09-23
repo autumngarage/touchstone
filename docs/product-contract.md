@@ -58,42 +58,25 @@ Two costs are accepted deliberately:
 Content outside the managed markers belongs to the operator and is never
 touched; `uninstall` removes the block and leaves the rest byte-identical.
 
-## Normal-review cost lane
+## Review before the PR (retired)
 
-Normal local review is intentionally routed through OpenRouter to reduce the
-cost of the common review tier. It leaves the PR-visible review path untouched.
-It does change the serious tier, which now runs `codex review` first and falls
-back to one bounded request over the same branch on any non-success. `touchstone review setup` stores a dedicated OpenRouter credential
-in macOS Keychain. `touchstone review check` validates the credential, local
-tools, and versioned policy without contacting the provider. `touchstone review
-run` reads only the staged Git diff — or, with `--base <ref>`, only the
-committed range `merge-base(<ref>, HEAD)..HEAD` — and makes one direct
-OpenRouter Chat Completions request. `--base` first runs `codex review` and
-falls back to that request on any non-success, so the serious tier keeps a
-bounded local pass when Codex is unavailable. A failed check or run permits the
-documented waiver; it never permits fallback to an unbounded model path.
+Touchstone runs no AI review on the machine (AUT-1962). The local lane it
+shipped — the `touchstone review` command, its `touchstone.review/v3` policy,
+and its Keychain-backed OpenRouter credential — was retired to streamline
+delivery: it duplicated the exact-head review the hosted gate already
+requires, drew on the same OpenRouter account as the gate's fallback reviewer,
+and its PR-body row could prove presence, never truth. Review is the hosted
+`review-gate`'s, on the exact head GitHub merges; the gate's own fallback
+reviewer covers a primary at capacity and reads its instructions from
+`config/review-normal-prompt.md` at a pinned revision, so that file stays here.
 
-The stable interface is `touchstone review`; the versioned backend contract is
-`touchstone.review/v3`. Its canonical non-secret policy lives in
-`config/review-normal.json`, and the canonical prompt lives in
-`config/review-normal-prompt.md`. V3 names one concrete model rather than
-routing, because the router selected reasoning models whose thinking is spent
-from the completion budget and left the pass unable to review an ordinary
-change; it imposes absolute provider price,
-input, output, and timeout ceilings, requests strict structured output, and
-prints the actual model, token counts, and provider-reported cost. No tools or
-agent loop are sent. Permanent HTTP failures and timeouts are not retried.
-
-The key is read only after the staged diff and request-size checks pass. It is
-validated before being written to curl's stdin configuration, never appears in
-an argument, environment variable, durable config, request body, output, or
-repository, and is unset after the call. The fully empowered same-user driving
-shell remains a trusted principal: no-prompt Keychain access cannot also
-protect a secret from that same principal. The Keychain account remains scoped
-to the selected Codex home for compatibility with already configured machines,
-so rotating or uninstalling one credential cannot invalidate another.
-`touchstone review rotate` is the explicit replacement path for a revoked or
-expired key.
+`touchstone review` remains a name so a stale caller fails loudly rather than
+as an unknown command: every invocation prints the retirement and the one
+remaining cleanup — removing a credential the retired `setup` saved in
+Keychain — and exits 2, without reading a diff, a credential, or the network.
+It no longer emits `touchstone.review-result/v1`: `--json` gets the same exit
+and nothing on stdout. The `delivery-evidence` gate no longer requires a
+`- Local review:` row and ignores one that is present.
 
 ## Outcome
 
@@ -130,7 +113,6 @@ explain that owner's decision; they may not recompute it.
 | Bind merge to the reviewed head | GitHub merge API | Expected head passed to the merge mutation | Moving the head before merge is rejected |
 | Claim work | Configured tracker adapter | Tracker-neutral claim contract | GitHub- and Linear-backed fixtures distinguish verified from unavailable transport |
 | Carry agent steering | The installed tool, machine-wide | One delimited block in each driver's user-level instruction file, the routed principles under `~/.touchstone/principles`, and the bundled Claude skills under `~/.claude/skills` — all installed, checked, and removed by `touchstone steering`; Touchstone installs and manages no repository copy | `touchstone steering check` compares the installed block against the tool's contract; deterministic size-cap, path-integrity, and steering-contract assertions run in the required suite |
-| Route normal local review through the lower-cost lane | The installed tool, machine-wide | Stable `touchstone review` command plus the versioned `touchstone.review/v3` policy and Keychain-backed OpenRouter adapter | Offline fixtures prove staged-only input, linked-worktree fidelity, the pinned model and absolute-price parameters, no tools, one-request failures, structured output, usage reporting, size limits, credential isolation, and fail-closed malformed states |
 | Adopt and evolve a repository | Touchstone CLI adoption module | Versioned project declarations and reviewable plan/apply output | Fresh, current, repeat, old-compatible, and unsupported-schema fixtures |
 | Classify a change against a declared path set | `touchstone paths classify|match|check`, reading the policy-side declaration only | Named sets of gitignore-syntax patterns under `pathSets` in the applied policy, matched by git itself; `classify` answers `all`/`none`/`mixed` with the paths that decided it, the source, and which input produced it — a git range, or an explicit changed-path list for a caller that must not check out the head it is judging | The declaration is policy-side so a pull request cannot widen the set that decides its own review; a set matching the workflows, evaluator, policy, or project declaration is refused at derivation and again at use by the same check; every error exits non-zero and emits no classification, and an empty diff is `none`, never a vacuous `all` |
 | Make repository cleanup residue legible | `touchstone cleanup check` (read-only) | Versioned report (`touchstone.cleanup/v1`): checkout, worktrees, finished branches, untracked and dirty files | Each residue kind is reported once without claiming session ownership and nothing is mutated; a failed GitHub read is a finding, not silence |
@@ -301,36 +283,3 @@ Touchstone does not provide:
 These exclusions are architectural boundaries, not an unfinished feature
 list. Reintroducing one requires changing this contract explicitly and proving
 why the original failure class no longer applies.
-
-### Local review results
-
-`touchstone review run [--base REF] --json` emits exactly one
-`touchstone.review-result/v1` object on stdout; progress and diagnostics go to
-stderr. Without `--json`, the command retains human-readable output. Both
-adapters use the same validated findings and evidence formatter.
-
-A completed result has `status: completed`, `backend` (`codex` or
-`openrouter`), `model`, `reviewedRevision`, `scope`, `findingCount`, `findings`,
-`summary`, `cost`, `tokens`, `evidence`, and `error: null`. Scope carries
-`type` (`staged` or `range`), the requested `base`, resolved `mergeBase`, and
-`diffOid` (the Git blob hash of the exact diff submitted). A staged review's
-HEAD is context, not proof that its staged changes are committed; its diff hash
-identifies the reviewed input. An unborn HEAD is null. Each finding carries
-severity, file, nullable line, title, and body. Evidence is the complete value
-for the PR's Local review row, accepted verbatim by delivery-evidence.
-
-OpenRouter reports model, USD cost, and prompt/completion tokens from its
-response. Codex's structured final response does not report accounting or model;
-those fields are null, not zero or inferred from configuration. The serious
-path requests schema-constrained findings through read-only `codex exec`; an
-absent, failed, or malformed Codex result takes the existing single bounded
-OpenRouter fallback. Human and JSON output never count findings from prose.
-
-An error exits nonzero and emits `status: error`, `evidence: null`, and
-`error: {code, message}`. Codes distinguish `invalid_argument`, `invalid_policy`,
-`invalid_scope`, `input_limit`, `dependency_unavailable`, `credential_unavailable`,
-`credential_rejected`, `quota_exhausted`, `transport_error`, `provider_error`,
-`completion_limit`, `malformed_response`, and `reviewer_error`. Messages carry
-diagnostics and may evolve; consume codes, not their wording. An input limit is
-a slicing refusal, not a reviewer-unavailability waiver. A completed result
-may contain findings; exit zero means a review was obtained, not a clean verdict.
