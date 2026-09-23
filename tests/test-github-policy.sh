@@ -544,29 +544,35 @@ jq -e '
   and .managedRepositoryRuleset.enforcement == "active"
   and .managedRepositoryRuleset.conditions.ref_name.include == ["~DEFAULT_BRANCH"]
   and any(.managedRepositoryRuleset.rules[]; .type == "merge_queue" and .parameters == {
-    check_response_timeout_minutes: 60,
+    check_response_timeout_minutes: 120,
     grouping_strategy: "ALLGREEN",
-    max_entries_to_build: 3,
+    max_entries_to_build: 1,
     max_entries_to_merge: 1,
     merge_method: "SQUASH",
     min_entries_to_merge: 1,
     min_entries_to_merge_wait_minutes: 0
   })
 ' "$POLICY" >/dev/null || fail "policy must carry the merge queue in the repository ruleset (GitHub rejects it in an organization ruleset) with no strict up-to-date rule"
-# One entry per merge *commit*, three builds in flight. The two limits are
+# One entry per merge *commit*, one build in flight. The two limits are
 # independent, and the distinction is the whole safety argument:
 #   max_entries_to_merge: 1  -- the queue branch names a single PR and the
 #     publisher evaluates that PR, so a grouped merge commit would carry one
 #     PR's verdict for several. Merge grouping is re-enabled only with a
 #     publisher that aggregates every PR in the group.
-#   max_entries_to_build: 3  -- build concurrency only. GitHub dispatches one
+#   max_entries_to_build: 1  -- build concurrency only. GitHub dispatches one
 #     merge_group webhook per entry, each with its own pr-N-<sha> branch, so
 #     every PR is still gated by a run that evaluated that PR. Groups are
 #     speculative and cumulative (entry 3 contains 1 and 2), so a failure
 #     upstream discards the builds behind it -- redundant CI, never a
 #     borrowed verdict.
-# Raised from 1 because a strictly serial queue made every pull request wait a
-# full prospective-merge run behind every other one.
+# It was raised from 1 to 3 while hosted runners built candidates in
+# parallel, because a strictly serial queue made every pull request wait a
+# full prospective-merge run behind every other one. It is 1 again, with a
+# 120-minute check timeout, because the checks now run on self-hosted
+# capacity with one job at a time on the macOS runner: three candidates only
+# waited for the same machine, and the later ones were evicted
+# checks_timed_out before their checks started (AUT-1959). Raise it again
+# when the checks regain parallel capacity.
 # Every gate the queue waits on is a pinned required workflow that runs on
 # merge_group itself (asserted in touchstone-workflows); nothing in this
 # repository publishes a check, so there is no status-context rule to keep in

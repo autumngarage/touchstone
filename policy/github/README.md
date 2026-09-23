@@ -101,6 +101,19 @@ native rules still apply, and the merge is not queued — the combination of
 two independently green PRs is validated by the next PR's run, not before
 landing. Regenerate without the flag when the plan or visibility changes.
 
+Every queued consumer builds one candidate at a time and waits 120 minutes for
+its required checks (`max_entries_to_build: 1`,
+`check_response_timeout_minutes: 120`). The organization's required checks
+run on self-hosted capacity -- one Mac for the macOS lanes, one job at a time,
+and a few Linux slots -- because hosted Actions are refused at the $0 budget
+(AUT-1582). With three candidates building and a 60-minute limit, the later
+candidates only waited for the machine and were evicted `checks_timed_out`
+before their checks started (nyx #1487 on 2026-09-23), then reran from
+nothing. 120 minutes covers another repository's candidate, a nightly, and a
+pull request's job ahead of a candidate plus its own run. It is one
+organization-wide value, like the rest of the contract; revisit it if the
+checks gain parallel capacity (AUT-1959).
+
 A queue-less consumer whose own workflow publishes a merge-blocking status the
 contract does not know about keeps it required with `--require-status CONTEXT`
 (repeatable): the derivation adds one `required_status_checks` rule naming
