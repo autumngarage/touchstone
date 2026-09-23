@@ -202,7 +202,7 @@ for file in TOUCHSTONE.md AGENTS.md GEMINI.md; do
   assert_contains "$TOUCHSTONE_ROOT/$file" 'ship when the user ends iteration'
 done
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'a pause in conversation, or the end of an agent turn is not that decision'
-assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'release notes, broad validation runs, local AI review, and PR preparation'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'release notes, broad validation runs, and PR preparation'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'a checkpoint does not'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'Repeat a check only when relevant code or inputs'
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'exact-head review remain mandatory for every head that ships'
@@ -214,178 +214,58 @@ for file in principles/local-review.md principles/git-workflow.md; do
 done
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'exploratory checkpoint commits do not trigger'
 
-echo "==> tiered review keeps a cost-bounded OpenRouter normal lane and Codex serious lane"
-echo "==> the optional normal-review pilot is bounded and project-owned"
-assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" 'local AI review is optional for ten normal-tier PRs'
-assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" 'downgrade serious work to enroll it'
-assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" 'At ten enrolled slots, stop enrolling'
-assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" 'this is not a reviewer outage'
-for file in CLAUDE.md GEMINI.md; do
-  assert_contains "$TOUCHSTONE_ROOT/$file" 'AGENTS.md#normal-local-review-pilot'
+echo "==> the local pre-PR review is retired; the hosted fallback keeps its prompt (AUT-1962)"
+# Review is the hosted review-gate's, on the exact head GitHub merges. The
+# local lane (`touchstone review`, its OpenRouter policy, its Keychain
+# credential) is gone, so any shipped surface that still tells an agent to run
+# it sends every driver into a refused command on every change. Scan every
+# guidance file this repository ships, not only the steering block.
+retired_review_surfaces=(
+  "$TOUCHSTONE_ROOT/TOUCHSTONE.md"
+  "$TOUCHSTONE_ROOT/AGENTS.md"
+  "$TOUCHSTONE_ROOT/CLAUDE.md"
+  "$TOUCHSTONE_ROOT/GEMINI.md"
+  "$TOUCHSTONE_ROOT/.github/pull_request_template.md"
+  "$TOUCHSTONE_ROOT/principles"/*.md
+  "$TOUCHSTONE_ROOT/skills"/*/SKILL.md
+)
+retired_review_refs="$(grep -nE 'touchstone review (run|check|setup|rotate|uninstall)|touchstone-review\.sh|review-normal\.json' \
+  "${retired_review_surfaces[@]}" || true)"
+if [ -n "$retired_review_refs" ]; then
+  printf '%s\n' "$retired_review_refs" >&2
+  fail "a shipped guidance surface still instructs the retired local review"
+fi
+for file in TOUCHSTONE.md AGENTS.md GEMINI.md; do
+  assert_contains "$TOUCHSTONE_ROOT/$file" 'No local AI review runs before the PR'
+  assert_not_contains "$TOUCHSTONE_ROOT/$file" 'run its one local pass'
+  assert_not_contains "$TOUCHSTONE_ROOT/$file" 'Local review handoff'
 done
-assert_not_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 'AUT-885'
-cat >"$TEST_DIR/pilot-evidence.md" <<'EOF'
-## Intent
-Exercise the approved optional normal-review pilot.
-## Invariants
-Hosted exact-head review and deterministic validation remain required.
-## Validation
-- Build: n/a — fixture
-- Automated tests: fixture passed
-- Manual validation: checked pilot enrollment
-- Local review: n/a — AUT-885 optional normal local-review pilot; pass omitted.
-## Review tier
-normal
-## Why this tier
-Contained change without a serious-tier trigger.
-EOF
-bash "$TOUCHSTONE_ROOT/scripts/check-delivery-evidence.sh" "$TEST_DIR/pilot-evidence.md" >/dev/null \
-  || fail "the normal pilot's honest omission record is not accepted"
-
-for file in \
-  "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
-  "$TOUCHSTONE_ROOT/AGENTS.md" \
-  "$TOUCHSTONE_ROOT/GEMINI.md" \
-  "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
-  "$TOUCHSTONE_ROOT/principles/local-review.md"; do
-  assert_contains "$file" 'touchstone review check'
-  assert_contains "$file" 'touchstone review run'
-  assert_contains "$file" 'touchstone review run --base origin/<default>'
-  assert_not_contains "$file" 'coderabbit review --agent --uncommitted'
+# The PR body carries no Local review row and the budget row no local count:
+# the gate stopped requiring the row, and a template that still ships it asks
+# every author for evidence of a step that no longer exists.
+assert_not_contains "$TOUCHSTONE_ROOT/.github/pull_request_template.md" '- Local review:'
+assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '- Local review: <'
+assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'local_rounds=<'
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'No AI review runs before the PR, in any tier.'
+# The pilot that made the normal-tier local pass optional here is moot, and
+# its section anchor would dangle.
+for file in AGENTS.md CLAUDE.md GEMINI.md; do
+  assert_not_contains "$TOUCHSTONE_ROOT/$file" 'normal-local-review-pilot'
 done
-for file in \
-  "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
-  "$TOUCHSTONE_ROOT/principles/local-review.md"; do
-  assert_contains "$file" 'may waive only when Codex and the fallback are both unavailable'
-  # A waiver documented without its alternative is how the tier lost its local
-  # pass to an exhausted quota in the first place (AUT-1217), so every surface
-  # that states the waiver states the fallback beside it.
-  assert_contains "$file" 'falls back to the bounded OpenRouter pass'
-done
-assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  'touchstone review setup'
-assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  '## The deep review pass'
-assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'OpenRouter'
-# Every policy parameter this document states in prose is bound to the JSON
-# that actually carries it. It drifted once in both directions at once: the
-# sentence claimed 4,096 completion tokens after the config moved to 16,384,
-# and it had been claiming a 100,000-byte ceiling against a configured 400,000
-# for longer than anyone noticed, with every test green. A fact in two places
-# is bound by a test or it is a fact in one place and a rumour in another.
-for policy_fact in \
-  'qwen/qwen3-coder' \
-  '$0.50 per million' \
-  '$2.00 per million' \
-  '400,000-byte request' \
-  '16,384 completion tokens' \
-  '300-second request timeout'; do
-  assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" "$policy_fact"
-done
-assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" '4,096 completion tokens'
-assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" '100,000-byte'
-# The contract version is the fact that drifted furthest: bumping v2 -> v3 moved
-# the config and the validator and left the script's own diagnostic and the
-# canonical product contract behind, each found one review round at a time.
-# Bind every surface that states it, and forbid the superseded string outright
-# so the next bump cannot leave a straggler.
-assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
-  'REVIEW_POLICY_SCHEMA="touchstone.review/v3"'
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"schema": "touchstone.review/v3"'
-assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
-  '`touchstone.review/v3`'
-for schema_surface in \
-  "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
-  "$TOUCHSTONE_ROOT/docs/product-contract.md" \
-  "$TOUCHSTONE_ROOT/principles/local-review.md"; do
-  assert_not_contains "$schema_surface" 'touchstone.review/v2'
-done
-# The diagnostic must read the constant, not repeat the literal -- repeating it
-# is exactly what left an operator pointed at a retired contract.
-assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
-  'outside the $REVIEW_POLICY_SCHEMA contract'
-# The canonical boundary states the pinned model too, and it is no longer routed.
-assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
-  'names one concrete model rather than'
-assert_not_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
-  'Auto Router'
-# The staleness claim: `check` makes no provider request, so it cannot detect a
-# retired pin. Saying otherwise justified the pin with a mitigation that does
-# not exist.
-assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  'Staleness surfaces from `touchstone review run`, not from `check`'
-assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  '`touchstone review check` fails loudly if the model'
-assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" 'one direct request'
-assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  'No tools or agent loop'
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"schema": "touchstone.review/v3"'
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"backend": "openrouter-chat-completions"'
-# The model is pinned rather than routed. `openrouter/auto` was chosen so no
-# model id could ever go stale, and that was the right instinct for the wrong
-# cost: the router selects reasoning models, whose thinking is spent from the
-# completion budget, and measured on 2026-09-09 that came to ~74 completion
-# tokens per line of diff -- a ceiling around 150 lines, below which the
-# required local pass simply cannot run on an ordinary change. Disabling
-# reasoning is not available: the API answers `reasoning: {enabled: false}`
-# with "Reasoning is mandatory for this endpoint and cannot be disabled".
-# So the id is pinned, and staleness becomes a thing to notice rather than a
-# thing that cannot happen.
-assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  'openrouter/auto'
-assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  'costTier'
-assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"id": "openai/'
-assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"id": "anthropic/'
-# The request must carry no router plugin: a pinned model and a plugin whose
-# job is to choose the model are incoherent together.
-assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
-  'plugins:'
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"maxPromptPricePerMillion": 0.5'
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"maxCompletionPricePerMillion": 2'
-# 4096 was sized for a model that answers without thinking. The auto-router
-# selects reasoning models, whose reasoning tokens are spent from this same
-# budget: one measured response burned 4323 reasoning tokens against a 4096
-# cap and returned no content at all. A 196-line slice failed six consecutive
-# passes at 4096 and passed first time at 16384, using 6281 completion tokens.
-# The per-million price caps above, not this number, are what bound the cost.
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"maxCompletionTokens": 16384'
-# The budget and the wall clock are one setting in two numbers. Raising
-# maxCompletionTokens to 16384 without this produced timeouts instead of
-# truncations: a reasoning model given four times the budget spends four times
-# as long producing it, and 120s stopped being enough. Measured 2026-09-09 --
-# three consecutive passes on one change, two of them timeouts at 120s.
-# AUT-1500 predicted exactly this ("raising the limit alone is not
-# sufficient"); #1178 raised the limit alone and this is the correction.
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  '"requestTimeoutSeconds": 300'
-assert_not_contains "$TOUCHSTONE_ROOT/config/review-normal.json" \
-  'gpt-5.6-sol'
-assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
-  'codex exec'
-assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
-  '--profile'
-assert_not_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
-  'tools:'
-assert_contains "$TOUCHSTONE_ROOT/scripts/touchstone-review.sh" \
-  '-q --config -'
-assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  'A normal-review failure never waives this pass.'
-assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  'or the same recorded waiver'
 [ ! -e "$TOUCHSTONE_ROOT/.touchstone-review.toml" ] \
   || fail "retired project-level review declaration still exists"
 [ ! -e "$TOUCHSTONE_ROOT/principles/local-review-contract.md" ] \
   || fail "retired CodeRabbit prompt contract still exists"
+# The hosted review-gate's fallback reviewer (touchstone-workflows,
+# .github/workflows/review-gate.yml) fetches this file from this repository
+# at a pinned revision and checksum. Retiring the local lane that also read it
+# must not take it with it: re-pinning to a revision without it would fail
+# every fallback review closed.
+[ -f "$TOUCHSTONE_ROOT/config/review-normal-prompt.md" ] \
+  || fail "config/review-normal-prompt.md is gone; the hosted review-gate fallback reads it"
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal-prompt.md" 'Report only P0/P1 defects'
+assert_contains "$TOUCHSTONE_ROOT/config/review-normal-prompt.md" 'do not raise their severity'
+
 
 GIT_WORKFLOW_SKILL="$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md"
 PRE_IMPL_SKILL="$TOUCHSTONE_ROOT/skills/touchstone-pre-impl/SKILL.md"
@@ -457,11 +337,6 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "observed at the reviewed head"
 # A closed issue reads as current state. Leaving a claim its own fix
 # invalidated is how AUT-1236 sent a later session down four wrong turns.
 assert_contains "$GIT_WORKFLOW_GUIDE" "that the change invalidated"
-# A worktree's local default branch is routinely stale, and --base picks the
-# merge base, so naming the local ref inflates the reviewed slice with merged
-# work. Reported 2026-09-05: 35 commits stale, 138 files, size limit blown.
-assert_contains "$GIT_WORKFLOW_GUIDE" 'review run --base origin/<default>'
-assert_not_contains "$GIT_WORKFLOW_GUIDE" 'review run --base <default>'
 assert_contains "$GIT_WORKFLOW_GUIDE" 'Corrected <date>'
 assert_contains "$GIT_WORKFLOW_GUIDE" "recorded as pending, never as done"
 assert_contains "$GIT_WORKFLOW_GUIDE" "complete review evidence, not a degraded mode"
@@ -696,7 +571,7 @@ assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" \
 assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" \
   "does not justify retaining a review fix"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  "does not earn another local review loop"
+  "stop and replan; it does not earn another"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   "run another only if a fix materially changed the risk surface"
 assert_contains "$TOUCHSTONE_ROOT/principles/audit-weak-points.md" \
@@ -704,42 +579,13 @@ assert_contains "$TOUCHSTONE_ROOT/principles/audit-weak-points.md" \
 assert_contains "$TOUCHSTONE_ROOT/skills/touchstone-audit-weak-points/SKILL.md" \
   "This audit is not permission to patch the failed implementation forward"
 
-echo "==> tier-required local review hands off once to hosted exact-head review"
-for file in \
-  "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
-  "$TOUCHSTONE_ROOT/AGENTS.md" \
-  "$TOUCHSTONE_ROOT/GEMINI.md"; do
-  assert_contains "$file" \
-    "Run at most one tier-required local AI pass per coherent unit"
-  assert_contains "$file" "none for trivial work"
-  assert_contains "$file" \
-    'waiving only if both are gone; never record the base'
-  assert_contains "$file" \
-    'Codex first, bounded fallback on any non-success'
-  assert_contains "$file" \
-    'record `<reviewer> on <head-sha>: <n> findings, <disposition>`'
-  assert_contains "$file" \
-    "Hosted review owns exact heads"
-  assert_contains "$file" "never rerun to confirm fixes"
-done
-assert_contains "$GIT_WORKFLOW_GUIDE" \
-  "A tier-required local AI pass runs at most once per coherent review unit"
+echo "==> the PR template activates the canonical pre-PR procedure"
 assert_contains "$GIT_WORKFLOW_GUIDE" \
   "the hosted PR reviewer owns exact-head review for every pushed head"
-assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  "runs at most once before its first push"
-assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  "pass is neither required nor authorized"
-assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
-  'reviewed_head="$(git rev-parse HEAD)"'
 # The template activates the canonical procedure; copying its complete
 # instructions here made every PR start with a long, drifting prompt.
 assert_contains "$TOUCHSTONE_ROOT/.github/pull_request_template.md" 'principles/local-review.md'
-assert_contains "$TOUCHSTONE_ROOT/.github/pull_request_template.md" '- Local review:'
-assert_not_contains "$TOUCHSTONE_ROOT/.github/pull_request_template.md" 'touchstone review run --base'
 assert_contains "$GIT_WORKFLOW_GUIDE" '## Write briefly'
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal-prompt.md" 'Report only P0/P1 defects'
-assert_contains "$TOUCHSTONE_ROOT/config/review-normal-prompt.md" 'do not raise their severity'
 
 echo "==> dirty PR recovery preserves authored work and re-ships the new head"
 assert_contains "$GIT_WORKFLOW_GUIDE" '## Recovering a `DIRTY` PR'
@@ -956,7 +802,8 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "proje
 assert_not_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "It is the whole mechanism"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Use worktrees for file-writing parallel agents"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "only model-routing decision"
-assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "OpenRouter Auto Router"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Touchstone initiates no local AI review"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" 'config/review-normal-prompt.md'
 
 echo "==> active product surfaces do not reintroduce the retired model router"
 # The two compatibility helpers may name retired paths solely to back them up

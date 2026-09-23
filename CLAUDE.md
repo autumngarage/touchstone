@@ -55,8 +55,4 @@ worktree and binds nothing.
 
 ## Distribution
 
-For this repository's bounded exception to normal-tier local AI review, follow
-[Normal local-review pilot](AGENTS.md#normal-local-review-pilot). It does not
-change serious-tier or hosted review requirements.
-
 Releases are tag-driven and Homebrew-distributed; a release is a name for reviewed state, never a new state. The cut procedure, the non-Homebrew installer, and the hook-by-name rule for consumer settings live in `README.md` under Distribution. Homebrew upgrades the installed tool only and never mutates a repository. The tool version and the project-contract schema are separate lines; see `docs/product-contract.md`.

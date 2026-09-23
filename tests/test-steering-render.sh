@@ -538,17 +538,17 @@ else
   fail "absent file misreported: $(grep GEMINI "$TMP_DIR/hver3.out" | head -1)"
 fi
 
-# The installed review procedure keeps the stable bounded OpenRouter command
-# and serious Codex invocation; it must not revive the retired CodeRabbit path.
+# The installed pre-PR procedure says no AI review runs before the PR
+# (AUT-1962) and revives neither retired local lane -- the OpenRouter command
+# nor the CodeRabbit path before it.
 HCMD="$TMP_DIR/hcmd"
 bash "$INSTALL" install --home "$HCMD" >/dev/null 2>&1
-if grep -qF -- 'touchstone review check' "$HCMD/.touchstone/principles/local-review.md" \
-  && grep -qF -- 'OpenRouter' "$HCMD/.touchstone/principles/local-review.md" \
-  && grep -qF -- 'touchstone review run' "$HCMD/.touchstone/principles/local-review.md" \
+if grep -qF -- 'No AI review runs before the PR' "$HCMD/.touchstone/principles/local-review.md" \
+  && ! grep -qE -- 'touchstone review (run|check|setup)' "$HCMD/.touchstone/principles/local-review.md" \
   && ! grep -qF -- 'coderabbit review --agent --uncommitted' "$HCMD/.touchstone/principles/local-review.md"; then
-  pass "installed local review uses the cost-bounded OpenRouter command"
+  pass "installed pre-PR procedure runs no local review"
 else
-  fail "installed local-review.md does not carry the OpenRouter command contract"
+  fail "installed local-review.md still carries a retired local review lane"
 fi
 
 # A home containing a single quote cannot be rendered into a pasteable
@@ -1559,7 +1559,7 @@ done
   || fail "fresh install still ships standalone swarm guidance"
 
 # Activation skills must route to the installed owners from any consumer
-# directory, including the separate local-review owner used before committing.
+# directory, including the separate pre-PR owner (local-review.md).
 for route in touchstone-git-workflow:git-workflow.md touchstone-git-workflow:local-review.md touchstone-pre-impl:pre-implementation-checklist.md; do
   skill="${route%%:*}"
   principle="${route#*:}"

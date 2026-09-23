@@ -1,35 +1,19 @@
-# Local Review — Slice, Tier, Then Ship
+# Before the PR — Slice, Tier, Then Ship
 
 You are preparing changes for a clean pull request. The priority is small,
-coherent, testable changes with minimal review churn. AI review is never an
+coherent, testable changes with minimal review churn. Review is never an
 excuse to expand scope, refactor adjacent systems, or iterate indefinitely.
 
 This document owns the pre-PR side: work slicing, the review tier, and the
-bounded local review. The GitHub side — answering findings, thread resolution,
-the round budget, merge — lives in `principles/git-workflow.md` and is not
-restated here.
+evidence the PR body carries. The GitHub side — answering findings, thread
+resolution, the round budget, merge — lives in `principles/git-workflow.md`
+and is not restated here.
 
-**The tier routes the review invocation — deterministically.** Classify the
-change, and the classification picks the review shape; no judgment is left in
-the loop:
-
-| Tier | Local pass | Command |
-|---|---|---|
-| trivial | none | — |
-| normal | one direct, cost-bounded OpenRouter review of the staged slice | `touchstone review run` |
-| serious | one review of the committed branch, pre-push | `touchstone review run --base origin/<default>` |
-
-The `touchstone review` command is the stable normal-review interface. Its
-versioned policy selects the backend and owns the cost limits, so the backend
-and routing strategy can evolve without changing the delivery workflow. The v2
-backend makes one OpenRouter Chat Completions request using Auto Router's
-low-cost tier and absolute prompt/completion price ceilings. It names no
-concrete review model; OpenRouter selects for the review prompt and the
-command reports what actually ran. The serious pass still prefers Codex: `--base` runs
-`codex review` first and falls back to the same bounded request over the branch
-range when Codex is unavailable, so an exhausted quota degrades that review
-instead of removing it. The PR-side reviewer runs on open regardless and
-remains the merge authority.
+**No AI review runs before the PR, in any tier.** The local pass this
+document used to own is retired (AUT-1962). Review is the hosted
+`review-gate`'s, on the exact head GitHub merges: where the primary reviewer
+is at capacity, the pinned gate reviews the head itself. The file keeps its
+name because the `delivery-evidence` gate and consumer PR templates route here.
 
 ## Work slicing
 
@@ -68,18 +52,18 @@ An explicit instruction to implement and ship already authorizes the
 transition once the requested work is complete; do not ask again.
 
 While iterating, defer test authoring and scaffolding, final documentation,
-release notes, broad validation runs, local AI review, and PR preparation
-and creation. Use the smallest manual check or existing test that answers
-the current uncertainty. Repeat a check only when relevant code or inputs
-change, it fails, or new evidence warrants it. Keep necessary correctness
-decisions and recovery notes as you work. Explicit requests for tests,
-documentation, or test-first development take precedence.
+release notes, broad validation runs, and PR preparation and creation. Use
+the smallest manual check or existing test that answers the current
+uncertainty. Repeat a check only when relevant code or inputs change, it
+fails, or new evidence warrants it. Keep necessary correctness decisions and
+recovery notes as you work. Explicit requests for tests, documentation, or
+test-first development take precedence.
 
 Once the user ends iteration, complete the required coverage, documentation,
-validation, and tier-required review before pushing and creating the PR.
-Then drive the authorized delivery lifecycle without asking at each step.
-If iteration resumes, defer unfinished shipping preparation again and
-revalidate affected behavior when the unit is ready. Required checks and
+and validation before pushing and creating the PR. Then drive the authorized
+delivery lifecycle without asking at each step. If iteration resumes, defer
+unfinished shipping preparation again and revalidate affected behavior when
+the unit is ready. Required checks and
 exact-head review remain mandatory for every head that ships.
 
 ## Cadence
@@ -87,14 +71,14 @@ exact-head review remain mandatory for every head that ships.
 Commits and PRs have different costs, so they get different rhythms.
 
 Preserve coherent local checkpoints during iteration; a checkpoint does not
-trigger shipping preparation, local AI review, a push, or a PR. Keep the
-branch and tracked scope legible so another session can resume it.
+trigger shipping preparation, a push, or a PR. Keep the branch and tracked
+scope legible so another session can resume it.
 
 A PR carries fixed overhead regardless of size: the evidence body, the
-tier's local pass, the hosted gate run, and a merge-queue entry. Spend it
-once per complete invariant after the shipping decision and validation.
-Do not open one per commit — a PR that ships half an
-invariant pays the overhead twice and reviews a state nothing can validate.
+hosted gate run, and a merge-queue entry. Spend it once per complete
+invariant after the shipping decision and validation. Do not open one per
+commit — a PR that ships half an invariant pays the overhead twice and
+reviews a state nothing can validate.
 
 If work outlives the session, leave a checkpoint and the remaining scope.
 A session ending or another PR merging does not authorize shipping.
@@ -128,10 +112,6 @@ invalid intermediate state.
 
 Use the concise-writing guidance in `principles/git-workflow.md`.
 Write the context before the shipping commit, not for exploratory checkpoints.
-The `Local review` row is the one
-field that cannot be truthful yet: fill it after the tier's pass has run
-(normal: before the commit; serious: after it, before the push) and before
-the PR is opened.
 
 ```markdown
 ## Intent
@@ -144,8 +124,7 @@ the PR is opened.
 - Build: <exact command and result>
 - Automated tests: <exact command and result>
 - Manual validation: <specific scenario and result>
-- Local review: <normal: openrouter on the staged slice (review-normal): <n> findings, <disposition>; serious: codex on <captured-head-sha>: <n> findings, <disposition>; or n/a — <reason>>
-- Review budget: v2 capability=<tracker ref> local_rounds=<local review passes> fix_rounds=<fix rounds spent on this PR> prior_fix_rounds=<fix rounds on this capability's replaced PRs> reviewed_head=<40-character SHA or none> cascade=<true|false> exit=<continue|merge-answered|revert-simplify|split|close-replan>
+- Review budget: v2 capability=<tracker ref> fix_rounds=<fix rounds spent on this PR> prior_fix_rounds=<fix rounds on this capability's replaced PRs> reviewed_head=<40-character SHA or none> cascade=<true|false> exit=<continue|merge-answered|revert-simplify|split|close-replan>
 
 ## Review tier
 <trivial | normal | serious>
@@ -155,17 +134,17 @@ the PR is opened.
 ```
 
 Never claim a build, test, or manual validation happened unless it actually
-ran.
+ran. There is no `- Local review:` row: `delivery-evidence` no longer requires
+one and ignores one that is present.
 
 The versioned `Review budget` row **is** the budget ledger; nothing else records
 what has been spent. `fix_rounds` counts the fix rounds spent on this PR and is
-incremented as each one is pushed, `prior_fix_rounds` carries those already spent
-on this capability's replaced PRs, and `local_rounds` counts local review passes.
-The count is written here rather than inferred from history because amend,
-squash, and rebase rewrite commit boundaries and lose push grouping
-(`principles/git-workflow.md`). Update the row after the local pass and as each
-fix round is pushed, and carry the current count into `prior_fix_rounds` when
-replacing a PR; a provider retry on the same
+incremented as each one is pushed, and `prior_fix_rounds` carries those already
+spent on this capability's replaced PRs. The count is written here rather than
+inferred from history because amend, squash, and rebase rewrite commit
+boundaries and lose push grouping (`principles/git-workflow.md`). Update the
+row as each fix round is pushed, and carry the current count into
+`prior_fix_rounds` when replacing a PR; a provider retry on the same
 head is not a round, and neither is an attest request, because a fix round is a
 push of review-driven change (`principles/git-workflow.md`). Row version 2
 renamed `prior_hosted_rounds` to `prior_fix_rounds` when the budget moved from
@@ -173,20 +152,27 @@ counting requests to counting mutation. A `v1` count is **not** convertible:
 it counted finding-bearing rounds including answer-only ones, so reading it as
 fix rounds overstates the spend and can exhaust a replacement PR's budget
 against work that never spent it. Treat a `v1` count as unknown, or
-reconstruct the fix rounds from the replaced PR's pushed heads. `reviewed_head` records the exact head the local pass
-saw, `cascade=true` means a review fix created another defect, and `exit`
-records the chosen stop path. A missing row is compatible with older PRs but
-reports unknown cross-PR history; it never waives the required exact-head PR
-review.
+reconstruct the fix rounds from the replaced PR's pushed heads.
+`reviewed_head` records the head the latest hosted review round covered
+(`none` before the first), `cascade=true` means a review fix created another
+defect, and `exit` records the chosen stop path. A v2 row written before
+AUT-1962 may also carry `local_rounds`, and its `reviewed_head` names the head
+the retired local pass saw; neither changes how the fix-round counts read. A
+missing row is compatible with older PRs but reports unknown cross-PR history;
+it never waives the required exact-head PR review.
 
 ## Tier classification
 
-Deterministic rules; classify every change.
+Deterministic rules; classify every change. The tier selects no review —
+every tier gets the same hosted exact-head review. It states the change's
+blast radius where the reviewer and the reader see it, and it sets the evidence
+bar `delivery-evidence` checks: every tier records its intent, validation, and
+why the tier applies; normal and serious also state their invariants.
 
 **Trivial** — *inert* documentation, comments, or formatting-only;
 generated-file-only or lockfile-only; a low-risk mechanical rename with no
 behavior change; or a change fully covered by deterministic checks with no
-logic or interface risk. Path: deterministic checks only. No initiated review.
+logic or interface risk. Path: deterministic checks, then the PR.
 
 Documentation is not automatically inert. A change to steering, policy, or any
 prompt that directs how agents work — `TOUCHSTONE.md`, `AGENTS.md`,
@@ -197,9 +183,8 @@ they change, never as trivial.
 **Normal** — ordinary contained work: small bug fixes, isolated application
 logic, localized implementation changes, safe refactors preserving a clearly
 testable behavior, anything with a focused validation path and no serious
-trigger. Path: deterministic checks, the offline policy/credential preflight,
-then **one** direct OpenRouter pass once the staged change is coherent, one
-bounded fix pass, commit, open the PR.
+trigger. Path: deterministic checks and the focused validation scenario, then
+the PR with its invariants stated.
 
 **Serious** — any of: networked or distributed state (RPCs, replication,
 client/server authority, prediction); concurrency (async handoff, scheduling,
@@ -209,23 +194,25 @@ data-loss risk); security (authentication, authorization, secrets, user data,
 payments, exposed APIs); public interfaces used by multiple subsystems;
 performance-critical paths; broad agent-generated or cross-system diffs that
 one focused scenario cannot validate; anything expensive to diagnose or roll
-back after merge. Path: deterministic checks, then one local Codex review of
-the branch before push — the only review a driver *initiates* for this tier.
-The deep review of the stable PR is the PR-side review that repository policy
-runs on open; it is the merge authority, not a second request, and a fix
-commit takes its one exact-head re-review per `principles/git-workflow.md` —
-never one per push.
+back after merge. Path: deterministic checks and a validation scenario for
+each trigger the change touches, then the PR with its invariants stated. The
+hosted review of the stable PR is the deep review and the merge authority; a
+fix commit takes its one exact-head re-review per `principles/git-workflow.md`
+— never one per push.
 
 When torn between normal and serious, pick serious only for genuinely high
 blast radius. Many lines is not a trigger.
 
-## Deterministic checks first
+## Deterministic checks
 
-Before any AI review: `git diff --check`, formatter/linter, targeted build,
-targeted tests, static analysis where available, and a focused manual test for
-what automation does not cover. Projects with a schema-2 declaration run
-`touchstone validate --stage commit`. AI review complements these; it never
-replaces them.
+Before the shipping push: `git diff --check`, formatter/linter, targeted
+build, targeted tests, static analysis where available, and a focused manual
+test for what automation does not cover. Projects with a schema-2 declaration
+run `touchstone validate --stage commit`. These are the author's focused
+feedback, not the gate. Where the repository's effective policy runs a
+protected validation workflow, that run on GitHub is the complete proof: do
+not repeat the complete suite locally as confirmation. Where it does not, run
+the complete suite locally and track the rollout gap.
 
 Select checks by the contracts the changed files participate in, not just
 their extensions. Include existing size, generated-file consistency, and
@@ -237,205 +224,35 @@ A check that does not apply is recorded as `n/a` with the reason — a
 documentation-only change has no targeted build. Recording `n/a` is honest;
 claiming a check ran is not, and the two must never be confused.
 
-## The local review pass
-
-At most once per coherent normal change, after deterministic checks pass. Stage
-only the intended slice; unstaged and untracked files are deliberately excluded.
-The command fails before credential lookup or network access when the staged
-diff is empty or the request exceeds the configured input limit.
-
-The normal credential is configured once per machine with:
-
-```bash
-touchstone review setup
-```
-
-On macOS, setup securely prompts for a dedicated OpenRouter key and saves it in
-Keychain. Use a key dedicated to review and set its monthly spending limit in
-OpenRouter. Already-running Claude, Codex, and Gemini sessions need no
-environment refresh, and future reviews need no approval prompt. `touchstone
-steering install` offers this setup during interactive onboarding.
-
-The versioned non-secret policy is `config/review-normal.json`; the review
-instructions are `config/review-normal-prompt.md`. The current policy pins the
-model `qwen/qwen3-coder`, with provider price ceilings of $0.50 per million
-prompt tokens and $2.00 per million completion tokens, a 400,000-byte request
-ceiling, 16,384 completion tokens, and a 300-second request timeout. Changing
-those parameters or adding a backend is a reviewable policy/adapter change
-behind the same command.
-
-The model is pinned rather than routed through `openrouter/auto`, and the
-reason is worth keeping: the router selects reasoning models, whose thinking is
-spent from the completion budget. Measured on 2026-09-09 that came to roughly
-74 completion tokens per line of diff — a ceiling near 150 lines, below which
-this pass could not run on an ordinary change at all. Disabling reasoning is
-not offered: the API answers `reasoning: {enabled: false}` with "Reasoning is
-mandatory for this endpoint and cannot be disabled". A pinned id can go stale
-where `openrouter/auto` could not, which is the cost being paid deliberately.
-Staleness surfaces from `touchstone review run`, not from `check`: `check`
-validates the policy, the executables and the credential and deliberately makes
-no provider request, so a removed or renamed model is invisible to it. The
-failure is loud when it comes, but it comes at the moment someone needs a
-review rather than before.
-
-Check the complete local boundary without making a provider request, then run:
-
-```bash
-touchstone review check
-touchstone review run
-```
-
-The v1 backend sends the staged diff as untrusted data in one direct request.
-No tools or agent loop are present, and no repository command can be issued by
-the model. The request requires structured JSON, filters providers above the
-absolute price ceilings, and prints the selected model, prompt/completion
-tokens, exact reported cost, findings, and evidence prefix. Provider, timeout,
-malformed-output, and truncation failures stop without retrying.
-
-If the check or run fails because the reviewer is unavailable (no credential,
-rejected credential, quota, provider error, timeout), record a reasoned
-normal-tier `n/a` waiver naming its concise cause and stop; never fall back to
-an unbounded model path. A byte-ceiling refusal is not that failure and is
-never a waiver: the reviewer was reachable and refused the slice, not the
-change. Re-slice and run the pass (see "An oversized slice" below). Do not retry
-or inspect credentials. Use `touchstone review setup` for a missing credential
-or `touchstone review rotate` for a rejected one. For the serious pass, capture
-`reviewed_head="$(git rev-parse HEAD)"` immediately before
-`touchstone review run --base origin/<default>` after the branch is committed. **`origin/` is load-bearing.** A worktree's local default branch is routinely behind — 35 commits behind, in the 2026-09-05 report — and `--base` picks the merge base, so a stale local ref inflates the reviewed slice with work that is already merged. That report's 138-file slice blew the size limit and the provider then rejected the request, none of which the diff itself caused. Fetch before reviewing; `origin/<default>` is only as current as your last fetch. It runs Codex and falls back to the bounded OpenRouter pass over the same branch on any Codex non-success, including an exhausted quota. Which one
-ran is in its output; record that reviewer. The captured current head is the
-immutable revision the pass reviews; `<default>` is only its comparison
-boundary. Record the captured head, never the symbolic base.
-The pass runs at most once before its first push.
-After allowed local findings are fixed, deterministic checks run again and the
-hosted PR reviewer owns exact-head review for every pushed head; another local
-pass is neither required nor authorized.
-
-The one-request rule limits accidental spend and makes permanent provider
-failures terminal instead of retry loops. When a quota or key limit is
-exhausted, the normal tier's local obligation is satisfied by deterministic
-checks plus recording that failure in the validation block; the serious tier
-falls back first, and waives only if the fallback is also unavailable. The
-PR-visible review is the authority either way.
-
-Afterwards: triage each finding as valid, false positive, duplicate, or out of
-scope; apply valid **P0/P1** fixes. Use the no-further-action default for P2,
-P3, and unbadged feedback in `principles/git-workflow.md`; record the disposition
-in the local review evidence. Do not
-re-run the pass to confirm the reviewer is now quiet; never expand the slice
-to address adjacent or pre-existing findings. If a review fix creates another
-defect, stop patching forward and follow the review-fix cascade rule in
-`principles/git-workflow.md`.
-
 ## Repository policy still runs
 
-Tiers govern review **you initiate**. A repository's configured reviewers run
-on PR open regardless of tier, and their findings are answered under
-`principles/git-workflow.md` — classified against the severity bar, fixed or
-routed, threads resolved. A trivial tier is not an exemption from the merge
-gate; it only means you request nothing extra.
-
-## Evidence
-
-The local pass is the one step of the delivery contract that no gate
-witnesses on its own: hooks gate commits, `delivery-evidence` gates the PR
-body, `review-gate` gates the PR review, the ruleset gates thread
-resolution. On 2026-08-21 an agent shipped four PRs with the tier declared
-in each body and never ran the pass; when it finally did, `codex review
---base main` returned seven findings the PR-side reviewer had missed across
-three rounds (AUT-443). So the pass leaves evidence where the gate reads:
-the PR body's Validation block carries
-
-```markdown
-- Local review: codex on abc1234: 3 findings, 2 fixed, 1 acknowledged, no further action.
-- Local review: openrouter on abc1234: 2 findings, 1 fixed, 1 acknowledged, no further action — codex is out of credits.
-- Local review: openrouter on the staged slice (review-normal): 0 findings.
-- Local review: n/a — `touchstone review check` reports that the OpenRouter credential is not configured.
-- Local review: n/a — the gate is on its fallback reviewer, which shares the OpenRouter account with the local pass.
-- Local review: openrouter on abc1234: 0 findings.   # a normal change reviewed with --base
-```
-
-A normal change may record the range pass (`touchstone review run --base
-origin/<default>`, which names the revision it reviewed) instead of the staged
-slice: it reviews the whole committed branch, so it is more evidence, and the
-gate accepts it. The reverse is not true — a serious change must record the
-revision it reviewed, never a staged slice.
-
-While the pinned gate is reviewing heads itself (the primary reviewer is out
-of quota or down), waive the local pass with that last reason: the local pass
-and the gate draw on one OpenRouter account, and a local pass that starves
-the gate delays the review that counts. The exact-head gate is the review.
-
-The row begins with `openrouter on the staged slice (review-normal): <n> findings`
-for normal, or `<reviewer> on <captured-head-sha>: <n> findings` for serious,
-where the reviewer is whichever one the command reported. Prose and
-dispositions go after the count; backticks around a SHA are fine — and
-`delivery-evidence` refuses a normal or serious PR whose row is missing, a bare
-`n/a`, a serious reviewer that is neither, a serious target without the
-reviewed revision, a normal target that is a bare revision, or a waiver without
-a reason. The target shape, not the reviewer name, keeps the tiers apart:
-serious names a revision, normal names a slice.
-When the row is present but unreadable it says so and quotes the line.
-The gate checks shape, not truth — it cannot see a terminal — but it can
-refuse silence, and silence was the failure. For normal, a waiver is only the configured check or run failing.
-Serious may waive only when Codex and the fallback are both unavailable.
-Either waiver says which concrete boundary failed, and neither may cite the
-byte ceiling: the gate refuses a waiver whose reason is the size limit.
-
-## An oversized slice
-
-`review request is N bytes; the configured limit is M bytes` means the slice
-is wrong, not that the reviewer is gone. Three vesper PRs (vesper#1154,
-vesper#1157, vesper#1160) recorded it as "both reviewers gone" and shipped
-300 to 500 added lines with no local pass; their requests were ten times the
-size of their diffs, because the slice was not the change. Diagnose in this
-order:
-
-1. **The slice is not the change.** Normal reviews the staged index: unstage
-   anything that is not this unit. A range pass reviews
-   merge-base(`<base>`, HEAD)..HEAD: fetch first, and name the branch's real
-   base. A stacked child reviews against `origin/<parent-branch>`, not the
-   default branch, or it re-reviews its parent's commits.
-2. **Deletions and vendored trees.** The command sends neither line by line:
-   a deleted file and any path marked `linguist-vendored` or
-   `linguist-generated` in `.gitattributes` appear as a one-line summary. If a
-   vendored tree is not marked, mark it; that is a repository fact, not a
-   review setting.
-3. **The change is genuinely that large.** Split it into reviewable slices
-   and run the pass on each. The ceiling is the review's attention budget;
-   a change that cannot fit it cannot be reviewed well by anyone.
+The tier governs evidence, not whether review happens. A repository's
+configured reviewers run on PR open for every tier, and their findings are
+answered under `principles/git-workflow.md` — classified against the severity
+bar, fixed or routed, threads resolved. A trivial tier is not an exemption
+from the merge gate. When the pinned gate reviews a head itself because the
+primary is at capacity, that verdict is complete review evidence, answered the
+same way.
 
 ## Stop conditions
 
-Review is complete when deterministic checks pass (or are recorded as not
-applicable), the intended validation scenario passes, valid findings are
-handled, no merge-blocking finding remains, and the tier's review obligation
-is met:
+Preparation is complete when deterministic checks pass (or are recorded as not
+applicable), the intended validation scenario passes, and the PR context is
+written. No tier owes a local review.
 
-- **trivial** — no initiated review; deterministic checks alone complete it.
-- **normal** — one local pass has run and its findings are triaged, **or**
-  the recorded waiver applies (the configured check or run fails — recorded in
-  the validation block).
-- **serious** — the pre-push local pass ran, under whichever reviewer the
-  command reached, or the waiver for both being unavailable is recorded, and
-  the PR-side review evidence covers the head that merges (the gate enforces
-  the latter). A normal-review failure never waives this pass.
-
-After a bounded pass, fix the valid findings, **re-run every applicable
+After a hosted review round, fix the valid findings, **re-run every applicable
 deterministic check and the intended validation scenario** — a valid fix can
-break what already passed — and stop. Do not run a
-confirming local pass to see whether the reviewer is satisfied. If a fix
-materially changes the risk surface — a new serialization format, ownership or
-threading change, security boundary, or public contract — stop and replan; it
-does not earn another local review loop.
+break what already passed — and stop. If a fix materially changes the risk
+surface — a new serialization format, ownership or threading change, security
+boundary, or public contract — stop and replan; it does not earn another
+review loop.
 
 **A fix commit moves the head, and exact-head review of the merged head is
-never optional.** What this document bounds is how much you *implement* and
-how many *initiated* passes you run — never whether the head that merges was
-reviewed. After a fix commit, follow `principles/git-workflow.md`: batch every
-allowed fix into one commit, push once, and take one review for that head. Do not run
-an extra initiated pass merely because the previous round found something;
-that is a different thing from the exact-head review the gate requires, and
-exact-head review does not authorize another mutation after a cascade stop.
+never optional.** What this document bounds is how much you *implement* —
+never whether the head that merges was reviewed. After a fix commit, follow
+`principles/git-workflow.md`: batch every allowed fix into one commit, push
+once, and take one review for that head. Exact-head review does not authorize
+another mutation after a cascade stop.
 
 ## Commit discipline
 
@@ -443,6 +260,5 @@ Each commit builds (or is a stated atomic sequence that builds at its end),
 has one purpose, carries no unrelated formatting or generated artifacts,
 includes tests with the behavior change when practical, and describes the
 behavioral change rather than implementation churn. Before committing,
-summarize: files changed, behavioral intent, validation completed, tier and
-rationale, and whether the local reviewer ran with the disposition of its
-findings.
+summarize: files changed, behavioral intent, validation completed, and tier
+and rationale.
