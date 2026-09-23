@@ -1475,9 +1475,10 @@ else
   fail "the gate refused a fully recorded pull request"
 fi
 
-echo "==> a size-limit refusal is not a waiver"
-# The byte ceiling refuses a slice, not a reviewer. Recording it as "both
-# reviewers gone" shipped vesper #1154, #1157 and #1160 with no local pass.
+echo "==> a Local review row is no longer part of the contract (AUT-1962)"
+# Review is the hosted review-gate's, on the exact head GitHub merges. A row
+# recording a local pass -- a run, a waiver, even a size-limit refusal the old
+# gate refused -- is ignored like any other extra row.
 for tier in normal serious; do
   body "## Intent
 Real intent.
@@ -1496,37 +1497,12 @@ $tier
 
 ## Why this tier
 Because."
-  size_waiver_out="$(bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/body.md" 2>&1 || true)"
   if accepts; then
-    fail "the gate accepted a $tier size-limit refusal recorded as a waiver"
-  elif ! grep -q 'slicing error' <<<"$size_waiver_out"; then
-    fail "the $tier size-limit refusal was not named as a slicing error: $size_waiver_out"
+    ok "a $tier body carrying a legacy Local review row passes"
   else
-    ok "a $tier size-limit refusal is refused as a waiver"
+    fail "the gate refused a $tier body over its legacy Local review row"
   fi
 done
-body '## Intent
-Real intent.
-
-## Invariants
-- Something true.
-
-## Validation
-- Build: n/a — shell
-- Automated tests: pass
-- Manual validation: n/a — none
-- Local review: n/a — codex refused: usage limit exhausted until 2026-09-06; the bounded OpenRouter fallback timed out after 120s (curl 28).
-
-## Review tier
-serious
-
-## Why this tier
-Because.'
-if accepts; then
-  ok "a waiver naming unavailable reviewers still passes"
-else
-  fail "the gate refused a legitimate both-reviewers-unavailable waiver"
-fi
 
 echo "==> a row label may carry one parenthetical qualifier (AUT-1294)"
 body '## Intent
@@ -2648,12 +2624,9 @@ if [ "$(id -u)" -ne 0 ]; then
   ok "an existing but unreadable body fails closed"
 fi
 
-echo "==> the local review pass must leave evidence on normal and serious tiers (AUT-443)"
-# An agent shipped four PRs without ever running the tier's local pass and
-# nothing could notice: every other step is gated, this one was prose. A
-# normal or serious body without the row, with a bare n/a, or naming no
-# reviewer is refused; a waiver with a reason, or a reviewer with its result,
-# passes; trivial needs nothing.
+echo "==> normal and serious tiers need no Local review row (AUT-1962)"
+# The row recorded a local pass the hosted review-gate now owns; the tier
+# still requires its Invariants.
 lr_body() {
   body "## Intent
 real
@@ -2673,126 +2646,41 @@ $2
 ## Why this tier
 contained"
 }
-lr_body '' normal
-accepts && fail "a normal PR without a Local review row was accepted" || ok "no Local review row is refused on normal"
+for tier in normal serious trivial; do
+  lr_body '' "$tier"
+  accepts && ok "a $tier body without a Local review row passes" || fail "the gate refused a $tier body without a Local review row"
+done
 lr_body '- Local review: n/a' serious
-accepts && fail "a bare n/a Local review was accepted" || ok "a bare n/a Local review is refused"
-lr_body '- Local review: ran it, looked fine' normal
-accepts && fail "a Local review naming no reviewer was accepted" || ok "a Local review naming no reviewer is refused"
-lr_body '- Local review: codex on 1234567: 3 findings, 2 fixed, 1 routed.' serious
-accepts && ok "a recorded codex pass is accepted" || fail "a recorded codex pass was refused: $(bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/body.md" 2>&1 | tail -3)"
-lr_body '- Local review: n/a — coderabbit CLI is not installed on this machine; recorded waiver.' normal
-accepts && ok "a waiver with a reason is accepted" || fail "a reasoned waiver was refused"
-lr_body '- Local review: n/a — skipped' normal
-accepts && ok "a waiver's reason is the author's words, not a keyword list" || fail "a waiver with a stated reason was refused"
-lr_body '- Local review: codex' serious
-accepts && fail "a reviewer name with no result was accepted" || ok "a reviewer name with no result is refused"
-lr_body '- Local review: codex not run' serious
-accepts && fail "'codex not run' was accepted" || ok "'codex not run' is refused"
-lr_body '- Local review: CodeRabbit on the staged slice: 0 findings.' normal
-accepts && ok "the transition still accepts a coderabbit normal pass" || fail "a coderabbit normal pass was refused during the transition"
-lr_body '- Local review: codex on the staged slice (review-normal): 0 findings.' normal
-accepts && ok "the transition accepts a codex normal pass" || fail "a codex normal pass was refused during the transition"
-lr_body '- Local review: openrouter on the staged slice (review-normal): 0 findings.' normal
-accepts && ok "a direct OpenRouter normal pass is accepted" || fail "an OpenRouter normal pass was refused"
-lr_body '- Local review: codex on    : 0 findings.' normal
-accepts && fail "a normal pass naming only whitespace as its target was accepted" || ok "a normal target contains non-whitespace text"
-# A normal row naming a bare revision is the range pass -- what `touchstone
-# review run --base` prints -- run on a normal change. It reviews the whole
-# committed branch instead of the staged slice, so it is strictly more
-# evidence. Refusing it punished the more rigorous choice and refused a row
-# the CLI itself had just produced (AUT-1250). The tier boundary that carries
-# weight is the other direction, asserted below: a serious change may not
-# record a staged slice.
-lr_body '- Local review: codex on 1234567: 0 findings.' normal
-accepts && ok "a normal pass may record the more rigorous range review" || fail "a normal range pass was refused (AUT-1250)"
-lr_body '- Local review: codex on `1234567`: 0 findings.' normal
-accepts && ok "a decorated range revision is accepted on normal" || fail "a decorated normal range pass was refused"
-lr_body '- Local review: coderabbit on 1234567: 0 findings.' normal
-accepts && ok "the normal range pass is accepted for both transition reviewers" || fail "a coderabbit normal range pass was refused"
-lr_body '- Local review: openrouter on 1234567: 0 findings.' normal
-accepts && ok "the OpenRouter range pass the CLI prints is accepted on normal" || fail "the row touchstone review run --base prints was refused on normal (AUT-1250)"
-# The direction that still matters: a serious change reviewed only as a
-# staged slice records less than its tier requires.
-lr_body '- Local review: codex on the staged slice (review-normal): 0 findings.' serious
-accepts && fail "a serious PR recording only a staged slice was accepted" || ok "a serious change may not record a staged slice"
-lr_body '- Local review: coderabbit on the staged slice: 0 findings.' serious
-accepts && fail "a serious PR recording coderabbit was accepted" || ok "the wrong reviewer for the tier is refused (serious wants codex)"
-lr_body '- Local review: openrouter on the staged slice: 0 findings.' serious
-accepts && fail "a serious PR naming a staged slice was accepted" || ok "the serious target is a revision whichever reviewer ran"
-lr_body '- Local review: openrouter on 1234567: 0 findings, codex is out of credits.' serious
-accepts && ok "the serious OpenRouter fallback is accepted (AUT-1217)" || fail "the serious OpenRouter fallback was refused"
-lr_body '- Local review: openrouter on 1234567: 2 findings, 1 fixed, 1 routed.' serious
-accepts && ok "the fallback carries the same disposition shape as codex" || fail "a fallback row with dispositions was refused"
-lr_body '- Local review: openrouter on origin/main: 0 findings.' serious
-accepts && fail "a fallback row naming its symbolic base was accepted" || ok "the fallback records the reviewed head, not the base"
-lr_body '- Local review: codex on the branch head: 0 findings.' serious
-accepts && fail "a serious codex pass naming no revision was accepted" || ok "a serious codex pass must name the revision it reviewed"
-lr_body '- Local review: codex on origin/main: 0 findings, accepted.' serious
-accepts && fail "a serious codex pass naming its symbolic base was accepted" || ok "a serious pass records the captured reviewed head, not its symbolic base"
-lr_body '- Local review: n/a — the codex executable is missing from this runner.' serious
-accepts && ok "a waiver with any stated reason is accepted" || fail "a waiver stating a reason in its own words was refused"
-lr_body '- Local review: n/a —' serious
-accepts && fail "a waiver with an empty reason was accepted" || ok "a waiver with an empty reason is refused"
-# The fixture names no reviewer at the start: the mention later in the row is
-# what must not count. (It used to open with "codex on <revision>" and was
-# refused for naming a revision on normal, never for the mention -- so it
-# asserted its own name only by accident until AUT-1250 removed that rule.)
-lr_body '- Local review: ran the pass on the staged slice: 0 findings; coderabbit CLI was unavailable.' normal
-accepts && fail "a run record mentioning coderabbit was accepted on normal" || ok "the reviewer must open the run record, a mention elsewhere does not count"
-lr_body '- Local review: coderabbit on the staged slice: 1 finding (tests not run), fixed.' normal
-accepts && ok "a finding disposition may say 'not run' without being read as a skipped pass" || fail "a real pass was refused for a finding's wording"
-lr_body '- Local review: coderabbit not run: 0 findings.' normal
-accepts && fail "a skipped pass with a count was accepted" || ok "the run record must read '<reviewer> on <target>:'"
-lr_body '- Local review: codex on the branch head: 1 finding, fixed in 9decc0c9.' serious
-accepts && fail "a serious row sourcing its SHA from a disposition was accepted" || ok "a serious revision binds to the run target, not to a later SHA"
-lr_body '- Local review: codex on 1234567 0 findings: not run' serious
-accepts && fail "a finding count inside the target was accepted" || ok "the finding count is read from the result after the target"
-lr_body '- Local review: codex on 1234567: not run; 0 findings' serious
-accepts && fail "a skip stated before the count was accepted" || ok "the finding count must open the result immediately after the target"
-lr_body '- Local review: n/a — <reason>' serious
-accepts && fail "an unedited <reason> placeholder was accepted as a waiver" || ok "an unedited waiver placeholder is refused"
-lr_body '- Local review: codex on branch-1234567-not-head: 0 findings' serious
-accepts && fail "a decorated serious target was accepted" || ok "a serious target is the bare reviewed revision"
-lr_body '```
-- Local review: codex on 1234567: 0 findings.
-```' serious
-accepts && fail "a fenced example row was accepted as evidence" || ok "a fenced example row is not a record"
-lr_body '    - Local review: codex on 1234567: 0 findings.' serious
-accepts && fail "an indented-code example row was accepted as evidence" || ok "an indented-code example row is not a record"
-lr_body '- Local review: n/approved' serious
-accepts && fail "'n/approved' was read as an n/a waiver" || ok "the n/a waiver token is bounded"
-lr_body '- Local review: codex on `0bd1b934`: 1 finding, fixed in `34973a19`.' serious
-accepts && ok "a backticked revision is the same record (AUT-468)" || fail "a backticked revision was refused"
-lr_body '- Local review: **coderabbit** on the staged slice: 0 findings.' normal
-accepts && ok "a bold reviewer name is the same record" || fail "a bold reviewer name was refused"
-lr_body '- Local review: code*x on 1234567: 0 findings.' serious
-accepts && fail "a marker inside a token was read as decoration" || ok "a marker inside a token is not a boundary: code*x is not codex"
-lr_body '- Local review: codex on dead*beef: 0 findings.' serious
-accepts && fail "a marker inside a token was read as decoration" || ok "a marker inside a token is not a boundary: dead*beef is not a revision"
-lr_body '- Local review: *codex* on `1234567`: 0 findings.' serious
-accepts && ok "emphasis and code-span decoration around a field is accepted" || fail "a balanced-wrapper row was refused"
-lr_body '- Local review: **codex **on 1234567: 0 findings.' serious
-accepts && fail "a marker run that does not bound the reviewer was accepted" || ok "a marker must bound the field: '**codex **on' names no reviewer"
-lr_body '- Local review: ** codex**on 1234567: 0 findings.' serious
-accepts && fail "a marker run that does not bound the reviewer was accepted" || ok "a marker must bound the field: '** codex**on' names no reviewer"
-# Decoration the gate deliberately accepts: a mismatched backtick run is not
-# a valid CommonMark code span, but the row still names codex and 1234567
-# unambiguously. The gate reads identity, not rendering -- refusing a legible
-# record would recreate the AUT-468 failure it exists to fix.
-lr_body '- Local review: codex on ``1234567````: 0 findings.' serious
-accepts && ok "decoration that leaves the record unambiguous is accepted" || fail "a legible record was refused over invalid Markdown"
-lr_body '- Local review: ran `codex review --base main` (serious), pre-push at 0bd1b934 — 3 findings' serious
-if accepts; then fail "a row that does not begin with the run record was accepted"; else
-  # Read the whole report first: under pipefail a -q grep that closes the
-  # pipe early would fail the evaluator with SIGPIPE.
-  unread_report="$(bash "$EVIDENCE_CHECK" "$EVIDENCE_TMP/body.md" 2>&1 || true)"
-  case "$unread_report" in
-    *"  unreadable: the Validation row '- Local review:' is present but not in the shape"*"got: 'ran "*) ok "an unreadable row is reported as present and quoted, not missing" ;;
-    *) fail "an unreadable row was not quoted back: $unread_report" ;;
-  esac
-fi
+accepts && ok "a legacy bare n/a Local review row is ignored" || fail "the gate refused a legacy Local review row"
+body "## Intent
+real
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation: n/a — none
+
+## Review tier
+normal
+
+## Why this tier
+contained"
+accepts && fail "a normal body without Invariants was accepted" || ok "a normal body still needs its Invariants"
+
 echo "==> rejected evidence is named in Actions annotations and the step summary"
+body "## Intent
+real
+
+## Validation
+- Build: n/a — shell
+- Automated tests: pass
+- Manual validation n/a — none
+
+## Review tier
+trivial
+
+## Why this tier
+contained"
 : >"$EVIDENCE_TMP/summary.md"
 set +e
 GITHUB_ACTIONS=true GITHUB_STEP_SUMMARY="$EVIDENCE_TMP/summary.md" \
@@ -2800,14 +2688,25 @@ GITHUB_ACTIONS=true GITHUB_STEP_SUMMARY="$EVIDENCE_TMP/summary.md" \
 actions_rc=$?
 set -e
 if [ "$actions_rc" -ne 0 ] \
-  && grep -qF "::error title=Delivery evidence unreadable::the Validation row '- Local review:' is present but not in the shape" "$EVIDENCE_TMP/actions.out" \
-  && grep -qF "the Validation row '- Local review:' is present but not in the shape" "$EVIDENCE_TMP/summary.md" \
-  && grep -qF "it must begin with 'codex or openrouter on &lt;revision&gt;: &lt;n&gt; findings, &lt;disposition&gt;'" "$EVIDENCE_TMP/summary.md"; then
+  && grep -qF "::error title=Delivery evidence unreadable::the Validation row '- Manual validation:' is present but not in the shape" "$EVIDENCE_TMP/actions.out" \
+  && grep -qF "the Validation row '- Manual validation:' is present but not in the shape" "$EVIDENCE_TMP/summary.md" \
+  && grep -qF "it must begin with '- Manual validation:'" "$EVIDENCE_TMP/summary.md"; then
   ok "an unreadable row names the rejected row and expected shape on GitHub"
 else
   fail "an unreadable row lacked a useful Actions diagnostic: $(cat "$EVIDENCE_TMP/actions.out") $(cat "$EVIDENCE_TMP/summary.md")"
 fi
-lr_body '' normal
+body "## Intent
+real
+
+## Validation
+- Build: n/a — shell
+- Manual validation: n/a — none
+
+## Review tier
+trivial
+
+## Why this tier
+contained"
 : >"$EVIDENCE_TMP/summary.md"
 set +e
 GITHUB_ACTIONS=true GITHUB_STEP_SUMMARY="$EVIDENCE_TMP/summary.md" \
@@ -2815,14 +2714,12 @@ GITHUB_ACTIONS=true GITHUB_STEP_SUMMARY="$EVIDENCE_TMP/summary.md" \
 actions_rc=$?
 set -e
 if [ "$actions_rc" -ne 0 ] \
-  && grep -qF "::error title=Delivery evidence missing::the Validation row '- Local review:' present" "$EVIDENCE_TMP/actions.out" \
-  && grep -qF "the Validation row '- Local review:' present" "$EVIDENCE_TMP/summary.md"; then
+  && grep -qF "::error title=Delivery evidence missing::the Validation row '- Automated tests:' present" "$EVIDENCE_TMP/actions.out" \
+  && grep -qF "the Validation row '- Automated tests:' present" "$EVIDENCE_TMP/summary.md"; then
   ok "a missing row is named in the annotation and summary"
 else
   fail "a missing row lacked a useful Actions diagnostic: $(cat "$EVIDENCE_TMP/actions.out") $(cat "$EVIDENCE_TMP/summary.md")"
 fi
-lr_body '' trivial
-accepts && ok "trivial needs no Local review row" || fail "trivial was refused without a Local review row"
 
 echo "==> Every policy file pins the required workflows at one touchstone-workflows revision"
 # The engine a consumer's required validate runs is whatever the pinned

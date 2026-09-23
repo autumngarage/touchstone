@@ -290,118 +290,16 @@ done <<<"$VALIDATION_ROWS"
 [ -z "$TIER" ] || filled "$(section "Why this tier")" \
   || report "a '## Why this tier' section justifying the '$TIER' classification"
 
-# The bar rises with the tier, because the cost of an unreviewed mistake does.
-# The local review pass is the one step of the delivery contract nothing
-# else witnesses (hooks gate commits, this gate the body, review-gate the
-# review): an agent shipped four PRs without running it and nothing could
-# notice (AUT-443). So a normal or serious PR must record it here -- the
-# reviewer the tier routes to and what it found, or an explicit waiver. Shape
-# only, like every other row: the gate cannot see a terminal, but it can
-# refuse silence.
+# The bar rises with the tier, because the cost of an unreviewed mistake does:
+# a normal or serious PR states the conditions that must stay true.
+#
+# The local review row is no longer part of the contract (AUT-1962). Review
+# is the hosted review-gate's, on the exact head GitHub merges, and a row
+# recording a local pass is ignored like any other extra row.
 case "$TIER" in
   normal | serious)
     filled "$(section "Invariants")" \
       || report "a '## Invariants' section (required for tier '$TIER')"
-    if ! local_review="$(row_text "$VALIDATION_SECTION" "Local review")"; then
-      report "the Validation row '- Local review:' present (the tier's local pass: reviewer, head, and finding count -- or n/a with the waiver reason)"
-    elif ! filled "$local_review"; then
-      report "the Validation row '- Local review:' filled in (reviewer, head, and finding count -- or n/a with the waiver reason)"
-    else
-      # Two documented shapes. A run: the reviewer, the head it saw, and a
-      # finding count ("codex on abc1234: 3 findings, 2 fixed, 1 routed").
-      # A waiver: n/a with one of the three documented reasons -- the CLI
-      # not installed, not authenticated, or out of quota. "codex" alone,
-      # "codex not run", or "n/a — skipped" is silence with a reviewer's
-      # name on it.
-      # Markdown is the input format: a revision written as `abc1234` or
-      # **codex** is the same record (AUT-468). The row is never rewritten to
-      # read it -- rewriting is what let a typo become evidence, because a
-      # substitution that deletes markers can join what they separated
-      # (`code*x` -> a reviewer, `dead*beef` -> a revision). Instead a marker
-      # run is allowed only where a field begins or ends, so a marker can
-      # never bridge into a token: what the gate reads is what the row says.
-      #
-      # The line that matters is identity, not rendering. Decoration that
-      # leaves the reviewer and the revision unambiguous is accepted however
-      # CommonMark would render it (a mismatched backtick run still names
-      # `codex` and `1234567`); decoration that would change which reviewer
-      # or which revision is named is refused. Refusing a legible record for
-      # invalid Markdown would recreate the AUT-468 failure -- an author
-      # hunting for a row that is plainly there.
-      lr_norm="$(printf '%s\n' "$local_review" | tr '[:upper:]' '[:lower:]')"
-      # A run of code/emphasis markers, permitted only at a field boundary.
-      lr_mark='[`*]*'
-      if printf '%s\n' "$lr_norm" | grep -qE "^[[:space:]]*${lr_mark}n/a([^[:alnum:]]|$)"; then
-        # A waiver needs a reason; the threat model is omission, not forgery,
-        # so any stated reason is accepted -- the words are the author's.
-        # An unedited "<reason>" is the template's words, not the author's.
-        if ! printf '%s\n' "$lr_norm" | grep -qE "^[[:space:]]*${lr_mark}n/a[^[:alnum:]<]*[[:alnum:]]" \
-          || printf '%s\n' "$lr_norm" | grep -q '<'; then
-          report "the Validation row '- Local review:' waiver stating why (reviewer CLI not installed, not authenticated, or out of quota)"
-        elif printf '%s\n' "$lr_norm" | grep -qE 'configured limit is [0-9]+ bytes|size limit|input limit'; then
-          # The one reason that is not a waiver. The byte ceiling refuses a
-          # slice, not a reviewer: the reviewer was reachable and would have
-          # reviewed a correctly sliced change. Three vesper PRs recorded it
-          # as "both reviewers gone" and shipped hundreds of lines with no
-          # local pass; the fix is to re-slice and run, so the gate says so.
-          report "the Validation row '- Local review:' recording a pass, not a waiver: a size-limit refusal is a slicing error (stage only the change, fetch and review against the branch's real base, or split), not an unavailable reviewer -- re-slice and run the tier's pass"
-        fi
-      else
-        # Normal review has had multiple documented backends; their recorded
-        # evidence stays readable as active compatibility. Serious accepts
-        # codex or the bounded OpenRouter range pass that stands in when Codex
-        # is unavailable (AUT-1217): the tier whose changes are most expensive
-        # to roll back must not lose its local pass to an exhausted quota, and
-        # a waiver recording no review at all was the only alternative.
-        # The target shape, never the reviewer name, is what preserves the
-        # tier boundary -- normal names a staged slice, serious names the bare
-        # revision it reviewed. A mention elsewhere is not the run record, and
-        # "codex not run" carries no count, so both are refused by the same
-        # check.
-        case "$TIER" in
-          normal)
-            lr_tool='openrouter, codex, or coderabbit'
-            lr_reviewer="${lr_mark}(openrouter|codex|coderabbit)${lr_mark}"
-            ;;
-          serious)
-            lr_tool='codex or openrouter'
-            lr_reviewer="${lr_mark}(codex|openrouter)${lr_mark}"
-            ;;
-        esac
-        # The run record is the documented prefix "<reviewer> on <target>:";
-        # a serious target is the bare reviewed revision, nothing decorated
-        # around it, so the SHA binds to the prefix and not to any hex string
-        # elsewhere in the row, and the
-        # finding count opens the result immediately after it -- nothing may
-        # sit between the target and the count, so "codex on abc: not run;
-        # 0 findings" is refused as neither a pass nor a waiver.
-        case "$TIER" in
-          normal)
-            lr_prefix="^[[:space:]]*${lr_reviewer} on [^:]*[^[:space:]:][[:space:]]*:"
-            # A normal row naming a bare revision is the serious tier's range
-            # pass run on a normal change: strictly more evidence than the
-            # staged slice, and what `touchstone review run --base` prints.
-            # Refusing it punished the more rigorous choice and refused a row
-            # the CLI itself produced, with a message that read like a
-            # formatting complaint (AUT-1250). The boundary that carries
-            # weight is the other direction, and serious still enforces it:
-            # a serious change may not record a staged slice.
-            lr_wrong_target=
-            ;;
-          serious)
-            lr_prefix="^[[:space:]]*${lr_reviewer} on ${lr_mark}[0-9a-f]{7,40}${lr_mark}:"
-            lr_wrong_target=
-            ;;
-        esac
-        if ! printf '%s\n' "$lr_norm" | grep -qE "${lr_prefix}[[:space:]]*[0-9]+[[:space:]]*finding" \
-          || { [ -n "$lr_wrong_target" ] && printf '%s\n' "$lr_norm" | grep -qE "$lr_wrong_target"; }; then
-          # The row is present: say that, show what was read, and name the
-          # shape it must begin with -- "missing" sends the author hunting
-          # for an absent row, or weakening a true claim (AUT-468).
-          report_unreadable "the Validation row '- Local review:' is present but not in the shape the gate reads: it must begin with '$lr_tool on <$([ "$TIER" = serious ] && echo revision || echo "staged slice, or a revision for a range pass")>: <n> findings, <disposition>' (the $TIER tier's reviewer; backticks are fine) -- got: '$local_review'$(checker_revision_note)"
-        fi
-      fi
-    fi
     ;;
 esac
 
