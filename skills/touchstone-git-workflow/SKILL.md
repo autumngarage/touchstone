@@ -8,6 +8,6 @@ description: Use when committing, branching, opening a PR, watching PR reviews/c
 Read and follow **`principles/git-workflow.md`** for the delivery procedure,
 including its scope, review, recovery, and cleanup rules.
 
-Before committing, also read **`principles/local-review.md`** for work slicing
-and the required local review. These documents own the procedures; this skill
-is their activation entry point.
+Before opening a PR, also read **`principles/local-review.md`** for work
+slicing, the review tier, and the PR's evidence. These documents own the
+procedures; this skill is their activation entry point.

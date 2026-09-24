@@ -74,13 +74,12 @@ Branch and claim before edits; ship when the user ends iteration. See `principle
 1. **Pull.** `git pull --rebase` on the default branch.
 2. **Branch.** Before any edit that might become a commit.
 3. **Claim tracked work before implementation.** GitHub: `touchstone tracker claim <ref>` (race-safe, verified by re-read). Linear: the adapter has no transport — assign yourself through the Linear MCP and re-read the assignee before editing. Claim every item in a bundle so two agents do not ship competing fixes; an unavailable transport is unverifiable, never success.
-4. **Change + commit.** Stage explicit files. Normal: `touchstone review check`, then `touchstone review run`; reviewer down: waiver, never fallback; slice too big: re-slice, never waive. Run at most one tier-required local AI pass per coherent unit, none for trivial work, and never rerun to confirm fixes. One concern per commit. Run `git show --stat --oneline HEAD`; unchanged `HEAD`: do not ship.
-5. **Local review handoff.** Normal: `openrouter on staged: <n> findings`. Serious: save `git rev-parse HEAD`; run `touchstone review run --base origin/<default>` once — Codex first, bounded fallback on any non-success; record `<reviewer> on <head-sha>: <n> findings, <disposition>`, waiving only if both are gone; never record the base. Hosted review owns exact heads.
-6. **Reconcile tracked work.** Before opening the PR, list every tracker item found, claimed, fixed, partially fixed, or made stale. Fixed items get the configured closing reference in the PR body; partial or stale items get a tracker note explaining the evidence or remaining gap. Do not leave shipped work stale silently.
-7. **Ship.** `git push -u origin HEAD`, then `touchstone pr open --expect-branch <branch> --title "<type>: <what>" --body-file <file>` — the installed CLI is the sequencer everywhere: it creates or reuses the PR, posts the review request, and confirms the exact head and base binding (re-running any declared gate). Put the configured closing reference (`Closes #123` or `Fixes AUT-123`) in the PR body, not only a commit. Re-run it for a later head (idempotent). **Never put the sequencer's marker in a comment you write yourself** — it reads that as a request for other coordinates and refuses to repair anything. A bare `@codex review` from a collaborator is valid only in recovery — bounded stalled-request recovery, or the CLI-absent raw sequence (`gh pr create`, the bare comment, then re-run any declared gate) — never the instruction.
-8. **Answer every piece of PR feedback before merging.** Answering is not implementing; classify by scope *and severity*, then answer what you are not fixing using the dispositions in `principles/git-workflow.md`. Stop widened work; allowed fixes follow the cascade and exact-head rules. Inspect GitHub's complete review surface, reply to each comment, and resolve every thread via `principles/git-workflow.md`; unresolved threads and `CHANGES_REQUESTED` block merge.
-9. **Merge.** Once the head is pushed and bound, run `touchstone pr merge <n> --head <sha>` without polling for the gate: a successful gate enters the queue, a pending one arms auto-merge, a failed one is refused. A queue entry ends mutation; never dequeue or probe admin merge. Verified queue enforcement permits raw `gh pr merge <n> --squash --match-head-commit <sha>`; otherwise stop. The merge-group gate owns later feedback. Confirm state.
-10. **Clean up before the session ends.** Remove residue this session created; leave sibling work untouched; reconcile open tasks before declaring completion. `touchstone cleanup check` is repo-wide: resolve yours, route stale residue; its nonzero exit never authorizes deleting another session's work.
+4. **Change + commit.** Stage explicit files. One concern per commit. Run `git show --stat --oneline HEAD`; unchanged `HEAD`: do not ship. No local AI review runs before the PR: review is the PR-visible reviewer's, on every pushed head.
+5. **Reconcile tracked work.** Before opening the PR, list every tracker item found, claimed, fixed, partially fixed, or made stale. Fixed items get the configured closing reference in the PR body; partial or stale items get a tracker note explaining the evidence or remaining gap. Do not leave shipped work stale silently.
+6. **Ship.** `git push -u origin HEAD`, then `touchstone pr open --expect-branch <branch> --title "<type>: <what>" --body-file <file>` — the installed CLI is the sequencer everywhere: it creates or reuses the PR, posts the review request, and confirms the exact head and base binding (re-running any declared gate). Put the configured closing reference (`Closes #123` or `Fixes AUT-123`) in the PR body, not only a commit. Re-run it for a later head (idempotent). **Never put the sequencer's marker in a comment you write yourself** — it reads that as a request for other coordinates and refuses to repair anything. A bare `@codex review` from a collaborator is valid only in recovery — bounded stalled-request recovery, or the CLI-absent raw sequence (`gh pr create`, the bare comment, then re-run any declared gate) — never the instruction.
+7. **Answer every piece of PR feedback before merging.** Answering is not implementing; classify by scope *and severity*, then answer what you are not fixing using the dispositions in `principles/git-workflow.md`. Stop widened work; allowed fixes follow the cascade and exact-head rules. Inspect GitHub's complete review surface, reply to each comment, and resolve every thread via `principles/git-workflow.md`; unresolved threads and `CHANGES_REQUESTED` block merge.
+8. **Merge.** Once the head is pushed and bound, run `touchstone pr merge <n> --head <sha>` without polling for the gate: a successful gate enters the queue, a pending one arms auto-merge, a failed one is refused. A queue entry ends mutation; never dequeue or probe admin merge. Verified queue enforcement permits raw `gh pr merge <n> --squash --match-head-commit <sha>`; otherwise stop. The merge-group gate owns later feedback. Confirm state.
+9. **Clean up before the session ends.** Remove residue this session created; leave sibling work untouched; reconcile open tasks before declaring completion. `touchstone cleanup check` is repo-wide: resolve yours, route stale residue; its nonzero exit never authorizes deleting another session's work.
 
 Raw commands are portable recovery; GitHub owns verdict and state. `principles/git-workflow.md` carries the full sequence, including thread resolution.
 
@@ -90,7 +89,7 @@ Never push directly to the default branch, even in an emergency; rewriting your 
 
 | When you're about to... | Read |
 |---|---|
-| commit — pick the review tier, run its one local pass | `principles/local-review.md` |
+| prepare a PR — slice the work, pick its review tier, write its evidence | `principles/local-review.md` |
 | branch, open a PR, answer review, merge, recover from `no-commit-to-branch`, work with stacked PRs, or fan out worktrees | `principles/git-workflow.md` |
 | understand the AI-authored change lifecycle or PR review loop architecture | `principles/ai-delivery-architecture.md` |
 | start a non-trivial code change | `principles/pre-implementation-checklist.md` |
@@ -121,35 +120,6 @@ You are maintaining the standard baseline for a solo developer directing many ag
 - Ship with `git push -u origin HEAD`, then use `bash bin/touchstone pr open` with the reviewed title and body, and `--expect-branch <the branch you created in step 2>` — write the name out, never `$(git branch --show-current)`, which reads the same checkout the command does and so agrees with a wrong worktree; merge with `bash bin/touchstone pr merge <n> --head <reviewed-sha>`. The source commands sequence GitHub and verify surviving state; `principles/git-workflow.md` carries their raw recovery equivalents.
 - The PR is the review surface. Do not treat PR creation as completion: answer every piece of PR feedback and resolve its thread — whoever left it — before merging.
 - File-writing subagents use isolated worktrees by default. Follow `principles/git-workflow.md`; use `git worktree add` and `git worktree remove` for setup and teardown.
-
-### Normal local-review pilot
-
-Henry approved a Touchstone-only trial in
-[AUT-885](https://linear.app/autumngarage/issue/AUT-885): after the PR adding
-this section merges, local AI review is optional for ten normal-tier PRs.
-This project exception overrides only the normal tier's local pass and its
-credential preflight. Serious-tier local review, deterministic checks,
-hosted exact-head review, thread resolution, and merge-queue validation remain
-required. Classify risk before choosing whether to use the exception; never
-downgrade serious work to enroll it.
-
-Before skipping a normal pass, read AUT-885 and its enrollments. Reserve the
-branch and the choice there, re-read the reservation, and attach the PR once
-created. Count reservations and every enrolled PR, including closed or replaced
-ones. If enrollment or the remaining ten-PR budget cannot be established,
-use the standing local-review procedure. A requested local review still runs
-once; no confirming passes. An omitted pass is recorded honestly:
-`- Local review: n/a — AUT-885 optional normal local-review pilot; pass omitted.`
-Keep the usual tier and validation rows; this is not a reviewer outage.
-
-After each enrolled PR finishes, append its hosted findings and dispositions,
-review requests, open-to-merge time, and any observed escaped defect to AUT-885.
-Record local findings, elapsed time, and provider cost only when observed;
-unmeasured values stay unknown. At ten enrolled slots, stop enrolling and return
-to the standing mandatory normal pass until Henry reviews the results.
-An escaped P0/P1 plausibly attributable to omission pauses enrollment earlier.
-Activation is not completion of the trial. Other repositories do not inherit
-this exception.
 
 ### Touchstone-Specific Rules
 

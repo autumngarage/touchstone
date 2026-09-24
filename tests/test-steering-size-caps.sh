@@ -299,8 +299,9 @@ steering_steps="$(sed -n '/^## Required Delivery Workflow/,/^## /p' "$TOUCHSTONE
   | sed -nE 's/^([0-9]+)\. \*\*([A-Za-z]+)[^*]*\*\*.*/\1 \2/p')"
 workflow_steps="$(sed -n '/^## The lifecycle/,/^## /p' "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
   | sed -nE 's/^([0-9]+)\. \*\*([A-Za-z]+)[^*]*\*\*.*/\1 \2/p')"
-[ "$(printf '%s\n' "$steering_steps" | wc -l | tr -d ' ')" -eq 10 ] \
-  || fail "the Required Delivery Workflow should have ten steps, parsed $(printf '%s\n' "$steering_steps" | wc -l | tr -d ' ')"
+# Nine since AUT-1962 retired the local review step.
+[ "$(printf '%s\n' "$steering_steps" | wc -l | tr -d ' ')" -eq 9 ] \
+  || fail "the Required Delivery Workflow should have nine steps, parsed $(printf '%s\n' "$steering_steps" | wc -l | tr -d ' ')"
 if [ -z "$steering_steps" ]; then
   fail "could not read the numbered steps of TOUCHSTONE.md's Required Delivery Workflow"
 elif [ "$steering_steps" != "$workflow_steps" ]; then

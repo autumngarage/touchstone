@@ -121,9 +121,7 @@ ACTION="${1:-}"
 shift
 
 HOME_DIR="${HOME:-}"
-HOME_WAS_EXPLICIT=false
 DRY_RUN=false
-NON_INTERACTIVE=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --home)
@@ -132,7 +130,6 @@ while [ "$#" -gt 0 ]; do
         exit 2
       }
       HOME_DIR="$2"
-      HOME_WAS_EXPLICIT=true
       shift 2
       ;;
     --dry-run)
@@ -140,7 +137,10 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --non-interactive)
-      NON_INTERACTIVE=true
+      # Accepted and ignored: install no longer prompts for anything (its one
+      # prompt offered the retired local-review credential, AUT-1962), but
+      # every released `touchstone upgrade` passes this flag to the CLI it
+      # just installed, so refusing it would fail those upgrades.
       shift
       ;;
     *)
@@ -157,46 +157,6 @@ die() {
   # so upgrade cannot mistake an unreadable ownership state for opt-out.
   [ "${ACTION:-}" != managed ] || exit 2
   exit 1
-}
-
-offer_review_setup() {
-  local answer review_credential_scope
-  [ "$DRY_RUN" = false ] || return 0
-  [ "${TOUCHSTONE_REVIEW_PLATFORM:-$(uname -s)}" = Darwin ] || {
-    echo "Next: configure an OpenRouter credential for this platform, or record the normal-review waiver when it is unavailable."
-    return 0
-  }
-  if [ "$HOME_WAS_EXPLICIT" = true ]; then
-    review_credential_scope="$HOME_DIR/.codex"
-  else
-    review_credential_scope="${CODEX_HOME:-$HOME_DIR/.codex}"
-  fi
-  if bash "$ROOT/scripts/touchstone-review.sh" credential-check \
-    --codex-home "$review_credential_scope" >/dev/null 2>&1; then
-    echo "==> lower-cost normal review is already configured"
-    return 0
-  fi
-  if [ "$NON_INTERACTIVE" = true ]; then
-    echo "Next: run 'touchstone review setup' once to save an OpenRouter key in macOS Keychain for lower-cost normal reviews."
-    return 0
-  fi
-  if [ -t 0 ] && [ -t 1 ]; then
-    printf '\nSet up lower-cost normal reviews through OpenRouter now? [Y/n] '
-    if ! IFS= read -r answer; then
-      answer=n
-    fi
-    case "$answer" in
-      '' | y | Y | yes | YES | Yes)
-        bash "$ROOT/scripts/touchstone-review.sh" setup \
-          --codex-home "$review_credential_scope"
-        ;;
-      *)
-        echo "Skipped. Run 'touchstone review setup' once when you are ready."
-        ;;
-    esac
-  else
-    echo "Next: run 'touchstone review setup' once to save an OpenRouter key in macOS Keychain for lower-cost normal reviews."
-  fi
 }
 
 [ -n "$HOME_DIR" ] || die "no home directory: set HOME or pass --home"
@@ -1259,7 +1219,6 @@ case "$ACTION" in
         echo "==> machine-level steering installed for every supported agent"
       fi
     fi
-    offer_review_setup
     ;;
   uninstall)
     if [ "$DRY_RUN" = true ]; then

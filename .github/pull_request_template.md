@@ -6,11 +6,10 @@
 <!-- Required for normal/serious: what must remain true. -->
 
 ## Validation
-<!-- Observed results only; use n/a with a reason where appropriate. Local-review formats: principles/local-review.md. -->
+<!-- Observed results only; use n/a with a reason where appropriate. Tier rules and the Review budget row: principles/local-review.md. -->
 - Build:
 - Automated tests:
 - Manual validation:
-- Local review:
 
 ## Review tier
 <!-- trivial | normal | serious -->

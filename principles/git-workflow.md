@@ -36,26 +36,25 @@ policy contains the Touchstone ruleset, the server rejects direct pushes.
 
 ## The lifecycle
 
-The lifecycle is the ten-step **Required Delivery Workflow** in the steering
+The lifecycle is the nine-step **Required Delivery Workflow** in the steering
 block, and this document does not enumerate a second one: the steps below
 carry the same numbers and add only the detail the steering leaves out.
 
 [Exploration and shipping](local-review.md#exploration-and-shipping) owns the
 transition into delivery. Branch and claim work before implementation;
-exploratory checkpoint commits do not trigger steps 4–9's shipping preparation.
+exploratory checkpoint commits do not trigger steps 4–8's shipping preparation.
 Once the user ends iteration, perform those steps with the required coverage,
 validation, review, and PR context. A pause alone does not authorize delivery.
 
 1. **Pull.** `git pull --rebase` on the default branch before starting work.
 2. **Branch — before any edit that might become a commit.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`. Do this as step one of the work, not as a cleanup step later. Check the tree first: run `git status --short` and `git branch --show-current`. If the tree is dirty with unrelated user changes, do not stash them and do not auto-commit on the user's behalf — ask how to proceed, or branch around the changes when the file surfaces are disjoint. `git stash` is hidden multi-agent state, not a coordination mechanism.
 3. **Claim tracked work** — see "Claiming tracked work before agent dispatch" below.
-4. **Change + commit.** Stage explicit file paths (not `git add -A`). Normal tier: first require `touchstone review check`, then run `touchstone review run` on the isolated staged slice before commit (`principles/local-review.md`). A failed check or run is an explicit normal-tier waiver, never permission to fall back to an unbounded model path. A tier-required local AI pass runs at most once per coherent review unit and is never rerun to confirm fixes; trivial work initiates none. Each meaningful sub-task gets its own concise commit. After the user ends iteration, the tier sets push cadence: normal pushes when the shipping commit is ready; serious pushes once per reviewed head. After a review round, batch every fix into one commit and push once.
-5. **Local review evidence.** Serious tier: capture `reviewed_head="$(git rev-parse HEAD)"`, then run `touchstone review run --base origin/<default>` at most once on that coherent committed branch before its first push. It runs Codex and falls back to the bounded OpenRouter pass over the same branch on any Codex non-success, including an exhausted quota. This is the one step nothing else witnesses (AUT-443), so the PR body's `- Local review:` row records normal as `openrouter on the staged slice (review-normal): <n> findings, <disposition>` or serious as `<reviewer> on <captured-head-sha>: <n> findings, <disposition>` for whichever reviewer it reported. The serious SHA is the captured current head the pass reviewed; `<default>` is only its comparison boundary. Normal may waive for a failed configured check or pass; serious may waive only when Codex and the fallback are both unavailable. A byte-ceiling refusal is neither: re-slice (unstage what is not the change, fetch and name the real base, split) and run the pass; the gate refuses a waiver that cites the size limit. After allowed local findings are fixed, rerun deterministic checks and push; the hosted PR reviewer owns exact-head review for every pushed head. Another local AI pass is neither required nor authorized. `delivery-evidence` refuses a missing, malformed, or unexplained row.
-6. **Reconcile tracked work** before opening the PR — fixed items get the closing reference in the PR body; partial or stale items get a tracker note. **Correct any claim in a closed item's body that the change invalidated**, with a dated note at the top of the description. A closed issue is not archived: it is the most detailed and most persuasive document about the thing it describes, and a reader has no signal that it is historical. AUT-1236 said "a false positive P1 has no answer-and-resolve path", `pr answer --finding` shipped hours later, the sentence was never corrected, and a session then argued a working design was broken, filed two issues on the false premise and duplicated a shipped fix. Prepend `> **Corrected <date>.** …` naming what changed; it reaches a reader before the stale paragraph does.
-7. **Ship.** Push and open the PR — see "Opening a PR" below.
-8. **Answer every piece of PR feedback before merging.** Reply to each comment and resolve its thread, whoever left it. Where effective policy requires conversation resolution, GitHub blocks unresolved threads; elsewhere resolving them remains mandatory driver procedure.
-9. **Merge**, bound to the head the review actually saw — see "Merging" below.
-10. **Clean up after merge, and before the session ends** — see "Leaving no mess" below. Remove everything this session created; `touchstone cleanup check` reports repository-wide residue, including work another session may still own.
+4. **Change + commit.** Stage explicit file paths (not `git add -A`). Each meaningful sub-task gets its own concise commit. No local AI review runs before the PR, in any tier (`principles/local-review.md`): the hosted PR reviewer owns exact-head review for every pushed head. After the user ends iteration, push once the shipping commit is ready and validated. After a review round, batch every fix into one commit and push once.
+5. **Reconcile tracked work** before opening the PR — fixed items get the closing reference in the PR body; partial or stale items get a tracker note. **Correct any claim in a closed item's body that the change invalidated**, with a dated note at the top of the description. A closed issue is not archived: it is the most detailed and most persuasive document about the thing it describes, and a reader has no signal that it is historical. AUT-1236 said "a false positive P1 has no answer-and-resolve path", `pr answer --finding` shipped hours later, the sentence was never corrected, and a session then argued a working design was broken, filed two issues on the false premise and duplicated a shipped fix. Prepend `> **Corrected <date>.** …` naming what changed; it reaches a reader before the stale paragraph does.
+6. **Ship.** Push and open the PR — see "Opening a PR" below.
+7. **Answer every piece of PR feedback before merging.** Reply to each comment and resolve its thread, whoever left it. Where effective policy requires conversation resolution, GitHub blocks unresolved threads; elsewhere resolving them remains mandatory driver procedure.
+8. **Merge**, bound to the head the review actually saw — see "Merging" below.
+9. **Clean up after merge, and before the session ends** — see "Leaving no mess" below. Remove everything this session created; `touchstone cleanup check` reports repository-wide residue, including work another session may still own.
 
 ## Before trusting any merge: what does GitHub enforce here?
 
@@ -96,7 +95,6 @@ touchstone pr open --expect-branch "<branch>" --title "<type>: <what changed>" -
 - Build: <what ran and its result, or n/a with a reason>
 - Automated tests: <what ran and its result, or n/a with a reason>
 - Manual validation: <what ran and its result, or n/a with a reason>
-- Local review: <the tier-required record or permitted waiver>
 
 ## Review tier
 <trivial | normal | serious>
@@ -170,8 +168,8 @@ anything, wedging the pull request until the comment is deleted.
 When a later head needs re-review, re-run the project's PR-open command; it is
 idempotent and confirms the request's live coordinates and any declared gate.
 
-**Before the PR exists** — work slicing, the review tier, and the bounded
-local review — is owned by `principles/local-review.md`. This document owns
+**Before the PR exists** — work slicing, the review tier, and the PR's
+evidence — is owned by `principles/local-review.md`. This document owns
 everything after: answering findings, thread resolution, the round budget,
 merge, and recovery.
 
@@ -494,7 +492,7 @@ partial, or unrelated.
 Follow [Exploration and shipping](local-review.md#exploration-and-shipping):
 preserve coherent local checkpoints while iterating, then prepare and push
 only after the user ends iteration. A checkpoint is recovery state, not a
-shipping decision; it does not require new tests or local AI review.
+shipping decision; it does not require new tests, a push, or a PR.
 
 **No checkpoint commits in review artifacts.** Local recovery commits are fine, but pushed `WIP:`, `checkpoint`, or deliberately broken commits do not belong on real review branches. Squash or fix them before opening the PR.
 
