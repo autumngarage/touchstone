@@ -546,7 +546,7 @@ jq -e '
   and any(.managedRepositoryRuleset.rules[]; .type == "merge_queue" and .parameters == {
     check_response_timeout_minutes: 120,
     grouping_strategy: "ALLGREEN",
-    max_entries_to_build: 1,
+    max_entries_to_build: 2,
     max_entries_to_merge: 1,
     merge_method: "SQUASH",
     min_entries_to_merge: 1,
@@ -559,7 +559,7 @@ jq -e '
 #     publisher evaluates that PR, so a grouped merge commit would carry one
 #     PR's verdict for several. Merge grouping is re-enabled only with a
 #     publisher that aggregates every PR in the group.
-#   max_entries_to_build: 1  -- build concurrency only. GitHub dispatches one
+#   max_entries_to_build: 2  -- build concurrency only. GitHub dispatches one
 #     merge_group webhook per entry, each with its own pr-N-<sha> branch, so
 #     every PR is still gated by a run that evaluated that PR. Groups are
 #     speculative and cumulative (entry 3 contains 1 and 2), so a failure
@@ -571,8 +571,12 @@ jq -e '
 # 120-minute check timeout, because the checks now run on self-hosted
 # capacity with one job at a time on the macOS runner: three candidates only
 # waited for the same machine, and the later ones were evicted
-# checks_timed_out before their checks started (AUT-1959). Raise it again
-# when the checks regain parallel capacity.
+# checks_timed_out before their checks started (AUT-1959). It is 2 because
+# they regained parallel capacity: the Mac runs a pool of macOS runner slots
+# beside its exclusive runner (AUT-2013), and a candidate's test shards and
+# Release bundle take free slots, so two candidates build side by side
+# (AUT-2020). Raise it with the pool, not ahead of it; grouping stays off
+# for the reason above, so every PR still gets its own verdict.
 # Every gate the queue waits on is a pinned required workflow that runs on
 # merge_group itself (asserted in touchstone-workflows); nothing in this
 # repository publishes a check, so there is no status-context rule to keep in

@@ -101,18 +101,22 @@ native rules still apply, and the merge is not queued — the combination of
 two independently green PRs is validated by the next PR's run, not before
 landing. Regenerate without the flag when the plan or visibility changes.
 
-Every queued consumer builds one candidate at a time and waits 120 minutes for
-its required checks (`max_entries_to_build: 1`,
+Every queued consumer builds two candidates at a time and waits 120 minutes
+for its required checks (`max_entries_to_build: 2`,
 `check_response_timeout_minutes: 120`). The organization's required checks
-run on self-hosted capacity -- one Mac for the macOS lanes, one job at a time,
-and a few Linux slots -- because hosted Actions are refused at the $0 budget
-(AUT-1582). With three candidates building and a 60-minute limit, the later
-candidates only waited for the machine and were evicted `checks_timed_out`
-before their checks started (nyx #1487 on 2026-09-23), then reran from
-nothing. 120 minutes covers another repository's candidate, a nightly, and a
-pull request's job ahead of a candidate plus its own run. It is one
-organization-wide value, like the rest of the contract; revisit it if the
-checks gain parallel capacity (AUT-1959).
+run on self-hosted capacity, because hosted Actions are refused at the $0
+budget (AUT-1582). With three candidates building on one serial Mac and a
+60-minute limit, the later candidates only waited for the machine and were
+evicted `checks_timed_out` before their checks started (nyx #1487 on
+2026-09-23), so the value went to 1 (AUT-1959). The Mac now runs a pool of
+macOS runner slots beside its exclusive runner (AUT-2013): a candidate's test
+shards and Release bundle take free slots, so two candidates build side by
+side (AUT-2020). Each candidate is still its own build, and grouping stays off
+(`max_entries_to_merge: 1`, `ALLGREEN`), so every pull request merges on a
+verdict about itself. 120 minutes covers another repository's candidate, a
+nightly, and a pull request's job ahead of a candidate plus its own run. It is
+one organization-wide value, like the rest of the contract; raise it with the
+pool's capacity, never ahead of it.
 
 A queue-less consumer whose own workflow publishes a merge-blocking status the
 contract does not know about keeps it required with `--require-status CONTEXT`
