@@ -332,6 +332,7 @@ case "$1 ${2:-}" in
         printf '%s\t%s\t%s\tCLEAN\n' "$GH_HEAD" "$GH_BASE_REF" "$GH_BASE_SHA"
       fi
     elif has '--json headRefOid,baseRefName,baseRefOid' "$@"; then
+      [ "${GH_MODE:-ok}" != final_base_advanced ] || touch "$GH_STATE/final-coordinates-read"
       if [ "${GH_MODE:-ok}" = binding_moved ] || [ "${GH_MODE:-ok}" = moved_during_gate ] \
         || { [ "${GH_MODE:-ok}" = delivery_moved ] && [ -f "$GH_STATE/evidence-reruns" ]; } \
         || { [ "${GH_MODE:-ok}" = candidate_files_moved ] && [ -f "$GH_STATE/candidate-files-read" ]; }; then
@@ -356,6 +357,7 @@ case "$1 ${2:-}" in
       if [ -f "$GH_STATE/pr-body" ]; then body="$(cat "$GH_STATE/pr-body")"; else body="$(printf '%s\n' 'Change summary.' '' 'Closes #42')"; fi
       jq -cn --arg t "$title" --arg b "$body" '[$t, $b]'
     elif has '--json body' "$@"; then
+      if [ "${GH_MODE:-ok}" = final_base_advanced ] && [ -f "$GH_STATE/final-coordinates-read" ]; then touch "$GH_STATE/wait-base-advanced"; fi
       if [ "${GH_MODE:-ok}" = delivery_body_moved ] && [ -f "$GH_STATE/gate-reruns" ]; then
         printf 'Concurrent body mutation.\n'
       elif [ -f "$GH_STATE/pr-body" ]; then
@@ -3214,6 +3216,14 @@ Closes #42'
   run_pr "$TMP/out" status 7 --expect-pr 7 --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" '--expect-pr applies to open only'
+  # The base advances after coordinate verification, at the final body
+  # read. The final liveness check must retain the original base binding.
+  GH_MODE=final_base_advanced run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-pr 7 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'base main advanced'
+  assert_not_has "$TMP/out" '"status":"existing"'
+  assert_not_has "$GH_CALLS" 'pr create'
+  rm -f "$TMP/state/final-coordinates-read" "$TMP/state/wait-base-advanced"
   # A mismatch refuses before any GitHub call is made.
   : >"$GH_CALLS"
   run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-branch feat/other --json

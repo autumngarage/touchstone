@@ -2993,7 +2993,7 @@ open_pr() {
     IFS="$(printf '\t')" read -r request_url existing_request_marker <<<"$existing_request"
     wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url" "$request_author" true "$existing_request_marker"
     verify_live_body "$number" "$wanted_body"
-    finish_open "$state" "$number" "$url" "$local_head" "existing:$request_url" "$branch"
+    finish_open "$state" "$number" "$url" "$local_head" "existing:$request_url" "$branch" "$pr_base_sha"
     return 0
   fi
   request_body="$(review_request_body "$request_marker")"
@@ -3016,7 +3016,7 @@ open_pr() {
       "Inspect comments before retrying; a rerun will reuse a surviving exact-binding request."
   wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url" "$request_author" false
   verify_live_body "$number" "$wanted_body"
-  finish_open "$state" "$number" "$url" "$local_head" "posted:$request_url" "$branch"
+  finish_open "$state" "$number" "$url" "$local_head" "posted:$request_url" "$branch" "$pr_base_sha"
 }
 
 # Success means every required gate was asked to evaluate this request. A
@@ -3024,7 +3024,7 @@ open_pr() {
 # request is reported bound but the command does not report success.
 finish_open() {
   if [ -n "$EXPECTED_PR" ]; then
-    assert_wait_liveness "$2" "$4" "$BASE_REF"
+    assert_wait_liveness "$2" "$4" "$BASE_REF" "$7"
   fi
   if [ -n "$OPEN_ACTIONS_REFUSALS" ]; then
     fail_operation "Actions refused required jobs for PR #$2 at $4, so no required check can pass; hosted review was still requested ($5) because the reviewer runs outside Actions. $OPEN_ACTIONS_REFUSALS" \
