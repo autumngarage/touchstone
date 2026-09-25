@@ -9,7 +9,7 @@ precondition for recovery.
 
 ```text
 touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
-                   [--expect-branch BRANCH]
+                   [--expect-branch BRANCH] [--expect-pr NUMBER]
 touchstone pr status PR
 touchstone pr merge PR --head SHA [--unguarded]
 touchstone policy status [--base BRANCH]
@@ -150,6 +150,16 @@ taking this document's word for it.
   branch the invoking directory happens to be on, and a worktree has a
   different one per directory — which opened two pull requests for the wrong
   branch. The result payload names the branch acted on for the same reason.
+
+  `--expect-pr NUMBER` restricts `open` to that existing open PR on the
+  checked-out branch. No open match, another PR number, or invalid coordinates
+  refuses without creating or editing a replacement. All subsequent mutations
+  address that number. The command checks liveness before editing, after an edit,
+  during existing waits, and before success. GitHub does not offer an atomic
+  open-state condition on body edits: concurrent closure can leave an edit on
+  the original PR, reported as a failed operation with that PR identity. It can
+  never cause creation or reopening. Retrying with the same option preserves
+  this constraint; omitting it retains ordinary create-or-reuse behavior.
 
   Why not the raw sequence: the required `review-gate` workflow derives the
   request from the driver's comment and its marker grammar; a driver that
