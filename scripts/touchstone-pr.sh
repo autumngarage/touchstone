@@ -96,6 +96,7 @@ BODY_FILE=""
 BASE_REF=""
 EXPECTED_HEAD=""
 EXPECTED_BRANCH=""
+EXPECTED_PR=""
 UNGUARDED=false
 OPERATION="${1:-}"
 # The tool's own tree: the checked-in policy there says which repository and
@@ -148,7 +149,7 @@ usage() {
   cat >&2 <<'EOF'
 Usage:
   touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
-                     [--expect-branch BRANCH] [--project DIR] [--json]
+                     [--expect-branch BRANCH] [--expect-pr NUMBER] [--project DIR] [--json]
   touchstone pr status PR [--project DIR] [--json]
   touchstone pr merge PR --head SHA [--unguarded] [--project DIR] [--json]
   touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change)
@@ -583,6 +584,12 @@ while [ "$#" -gt 0 ]; do
       EXPECTED_BRANCH="$2"
       shift 2
       ;;
+    --expect-pr)
+      require_option_value "$@"
+      EXPECTED_PR="$2"
+      case "$EXPECTED_PR" in '' | 0* | *[!0-9]*) fail_input "--expect-pr requires a positive PR number" "Pass the recorded PR number." ;; esac
+      shift 2
+      ;;
     --head)
       require_option_value "$@"
       EXPECTED_HEAD="$2"
@@ -597,10 +604,13 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+[ -z "$EXPECTED_PR" ] || [ "$OPERATION" = open ] \
+  || fail_input "--expect-pr applies to open only" "Remove --expect-pr."
+
 case "$OPERATION" in
   open)
     [ -z "$EXPECTED_HEAD" ] \
-      || fail_input "open received an option for another operation" "Use only --title, --body-file, --base, and --expect-branch."
+      || fail_input "open received an option for another operation" "Use only --title, --body-file, --base, --expect-branch, and --expect-pr."
     ;;
   status)
     [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_HEAD$EXPECTED_BRANCH" ] \
@@ -2844,6 +2854,12 @@ open_pr() {
   rows="$READ_OUTPUT"
   count="$(printf '%s\n' "$rows" | awk 'NF { count++ } END { print count + 0 }')"
   [ "$count" -le 1 ] || fail_operation "multiple open pull requests use branch '$branch'" "Close or retarget duplicates."
+  if [ -n "$EXPECTED_PR" ]; then
+    [ "$count" -eq 1 ] \
+      || fail_operation "expected open PR #$EXPECTED_PR on $branch; none found" "Inspect the recorded PR; existing-only delivery never creates a replacement."
+    [ "${rows%%$'\t'*}" = "$EXPECTED_PR" ] \
+      || fail_operation "open PR on $branch is not expected PR #$EXPECTED_PR" "Inspect the recorded PR; no other PR will be edited."
+  fi
   if [ "$count" -eq 0 ]; then
     if capture_command project_gh pr create --repo "$REPO_SPEC" --head "$branch" --base "$BASE_REF" \
       --title "$TITLE" --body-file "$BODY_FILE"; then
@@ -2884,6 +2900,9 @@ open_pr() {
   # let a PR opened before the evidence sections were written fail the
   # required delivery-evidence gate with no signal from the one command the
   # driver is told to use (AUT-437).
+  if [ -n "$EXPECTED_PR" ]; then
+    assert_wait_liveness "$number" "$local_head" "$pr_base" "$pr_base_sha"
+  fi
   if [ "$state" = existing ]; then
     BODY_APPLIED=unchanged
     read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json title,body --jq '[.title, .body] | @json' \
@@ -2901,6 +2920,9 @@ open_pr() {
       [ "$READ_OUTPUT" = "$wanted_body" ] \
         || fail_operation "PR #$number body differs from --body-file after the edit" "Inspect GitHub before retrying."
       BODY_APPLIED=updated
+      if [ -n "$EXPECTED_PR" ]; then
+        assert_wait_liveness "$number" "$local_head" "$pr_base" "$pr_base_sha"
+      fi
     fi
   fi
   # GitHub's required workflow is the sole authority for the body contract.
@@ -3001,6 +3023,9 @@ open_pr() {
 # refused job was not, and cannot be until Actions runs jobs again, so the
 # request is reported bound but the command does not report success.
 finish_open() {
+  if [ -n "$EXPECTED_PR" ]; then
+    assert_wait_liveness "$2" "$4" "$BASE_REF"
+  fi
   if [ -n "$OPEN_ACTIONS_REFUSALS" ]; then
     fail_operation "Actions refused required jobs for PR #$2 at $4, so no required check can pass; hosted review was still requested ($5) because the reviewer runs outside Actions. $OPEN_ACTIONS_REFUSALS" \
       "$(actions_refusal_remedy "$OPEN_ACTIONS_REFUSED_RUN_IDS")"

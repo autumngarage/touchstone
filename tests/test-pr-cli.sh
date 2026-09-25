@@ -275,6 +275,7 @@ case "$1 ${2:-}" in
     echo "pr edit $*" >>"$GH_STATE/edits"
     if has --body-file "$@"; then cp "$(value_after --body-file "$@")" "$GH_STATE/pr-body"; fi
     if has --title "$@"; then printf '%s' "$(value_after --title "$@")" >"$GH_STATE/pr-title"; fi
+    [ "${GH_MODE:-ok}" != close_during_edit ] || touch "$GH_STATE/wait-closed"
     ;;
   "pr create")
     case "${GH_MODE:-ok}" in
@@ -3158,6 +3159,61 @@ Closes #42'
   run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-branch feat/test --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"branch":"feat/test"'
+  # Existing-only delivery binds identity before any mutation. There is no
+  # creation fallback even when the recorded PR disappears or closes.
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-pr 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"existing"'
+  assert_not_has "$GH_CALLS" 'pr create'
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-pr 8 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'not expected PR #8'
+  assert_not_has "$GH_CALLS" 'pr create'
+  assert_not_has "$GH_CALLS" 'pr edit'
+  rm -f "$TMP/state/pr-exists"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-pr 7 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'expected open PR #7'
+  assert_not_has "$GH_CALLS" 'pr create'
+  touch "$TMP/state/pr-exists"
+  for mode in status_closed status_merged; do
+    GH_MODE="$mode" run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-pr 7 --json
+    assert_rc "$RUN_RC" 1
+    assert_not_has "$GH_CALLS" 'pr create'
+    assert_not_has "$GH_CALLS" 'pr edit'
+    assert_not_has "$GH_CALLS" 'pr comment'
+  done
+  GH_HEAD=wrong run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-pr 7 --json
+  assert_rc "$RUN_RC" 2
+  assert_not_has "$GH_CALLS" 'pr edit'
+  assert_not_has "$GH_CALLS" 'pr create'
+  GH_BASE_REF=release run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-pr 7 --json
+  assert_rc "$RUN_RC" 2
+  assert_not_has "$GH_CALLS" 'pr edit'
+  assert_not_has "$GH_CALLS" 'pr create'
+  # Closure after the precheck may leave a body edit on the same number.
+  # It must report failure, make no replacement, and be safe to retry.
+  printf 'outdated body\n' >"$TMP/state/pr-body"
+  GH_MODE=close_during_edit run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-pr 7 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'closed without merging'
+  assert_has "$TMP/out" '"pullRequest":7'
+  assert_has "$GH_CALLS" 'pr edit 7 '
+  assert_not_has "$GH_CALLS" 'pr create'
+  assert_not_has "$GH_CALLS" 'pr comment'
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-pr 7 --json
+  assert_rc "$RUN_RC" 1
+  assert_not_has "$GH_CALLS" 'pr edit'
+  assert_not_has "$GH_CALLS" 'pr create'
+  rm -f "$TMP/state/wait-closed"
+  for invalid in 0 -1 abc 07; do
+    run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-pr "$invalid" --json
+    assert_rc "$RUN_RC" 2
+    assert_not_has "$GH_CALLS" 'pr create'
+  done
+  run_pr "$TMP/out" status 7 --expect-pr 7 --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '--expect-pr applies to open only'
   # A mismatch refuses before any GitHub call is made.
   : >"$GH_CALLS"
   run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --expect-branch feat/other --json
