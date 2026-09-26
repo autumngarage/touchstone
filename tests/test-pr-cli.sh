@@ -728,8 +728,11 @@ case "$1 ${2:-}" in
         printf 'modified\tpolicy/github/touchstone-main.json\t-\n'
       fi
     elif has 'touchstone:flake-retry' "$@"; then
-      # Prior flake-retry records for this head, one count per page.
-      if [ -f "$GH_STATE/flake-retry-recorded" ]; then printf '0\n1\n'; else printf '0\n0\n'; fi
+      # Spent flake retries for this head -- records older than the head's
+      # latest eviction -- one count per page. A record the caller wrote
+      # after that eviction (flake-retry-recorded) is an attempt that never
+      # reached the queue; flake-retry-spent is one the queue evicted again.
+      if [ -f "$GH_STATE/flake-retry-spent" ]; then printf '0\n1\n'; else printf '0\n0\n'; fi
     elif has 'touchstone:unguarded-merge' "$@"; then
       # The count of prior unguarded-merge records for this head, one per
       # page as --paginate delivers it: two pages, the record (if any) on the
@@ -3453,19 +3456,31 @@ Closes #42'
   # The record precedes the merge request: nothing is re-queued unrecorded.
   [ "$(grep -n 'touchstone:flake-retry' "$GH_CALLS" | head -1 | cut -d: -f1)" -lt "$(grep -n '^pr merge' "$GH_CALLS" | head -1 | cut -d: -f1)" ] \
     || fail "the merge was requested before the flake retry was recorded: $(cat "$GH_CALLS")"
-  # A second ejection at a head already retried is the verdict: refused, and
-  # an armed request is disarmed exactly as for any eviction.
+  # The retry is spent only once it was admitted: every marker counts,
+  # whoever wrote it, but only a marker older than the latest eviction.
+  grep -q 'created_at' "$GH_CALLS" || fail "the spent-retry count does not compare the record with the eviction: $(cat "$GH_CALLS")"
+  grep 'touchstone:flake-retry' "$GH_CALLS" | grep -q 'user.login' && fail "the spent-retry count filters on one identity; a second merge-capable identity could retry again"
+  # An attempt that never reached the queue (its record is newer than the
+  # latest eviction) does not spend the retry: the next attempt proceeds.
   rm -f "$TMP/state/merged"
-  touch "$TMP/state/auto-merge-armed"
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --retry-after-flake "the first attempt's merge was refused" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'pr merge'
+  # A head retried and evicted again (a record older than this eviction) is
+  # the verdict: refused, and an armed request is disarmed as for any
+  # eviction.
+  rm -f "$TMP/state/merged"
+  touch "$TMP/state/auto-merge-armed" "$TMP/state/flake-retry-spent"
   : >"$GH_CALLS"
   run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --retry-after-flake "again" --json
   assert_rc "$RUN_RC" 2
-  assert_has "$TMP/out" 'already re-queued once after a flake'
+  assert_has "$TMP/out" 'already re-queued once after a flake and evicted again'
   assert_has "$TMP/out" 'removed from the merge queue'
   assert_has "$TMP/out" 'was disarmed so GitHub does not re-queue this head'
   assert_not_has "$GH_CALLS" '--squash'
   assert_not_has "$GH_CALLS" 'pr comment'
-  rm -f "$TMP/state/auto-merge-armed" "$TMP/state/flake-retry-recorded"
+  rm -f "$TMP/state/auto-merge-armed" "$TMP/state/flake-retry-recorded" "$TMP/state/flake-retry-spent"
   # Evidence is required, and the option is merge's alone.
   run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --retry-after-flake "  " --json
   assert_rc "$RUN_RC" 2

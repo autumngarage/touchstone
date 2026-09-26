@@ -433,11 +433,15 @@ taking this document's word for it.
   flake: `merge --head SHA --retry-after-flake EVIDENCE` re-queues the evicted
   head once. The evidence -- what failed and why it was not this head, such as
   a hang, a starved host, or a lost runner -- is recorded on the PR by marker
-  (`touchstone:flake-retry head=SHA`, written by the authenticated identity)
-  before the merge is requested, so no re-queue is unrecorded; a head already
-  retried is refused exactly as above, disarm included, so a deterministic
-  failure cannot loop. Evidence is required and may not be blank or another
-  option (AUT-2065).
+  (`touchstone:flake-retry head=SHA`) before the merge is requested, so no
+  re-queue is unrecorded. The retry is spent only once it was admitted: a
+  marker older than the head's latest eviction means the retried head was
+  queued and evicted again, and that eviction is refused exactly as above,
+  disarm included, so a deterministic failure cannot loop. A marker newer
+  than the latest eviction is an attempt that never reached the queue and
+  spends nothing. Markers count whoever wrote them -- a marker can only
+  refuse a retry -- so no second merge-capable identity gets another.
+  Evidence is required and may not be blank or another option (AUT-2065).
 
   Armed is not admitted. Under a policy that enforces a merge queue, a head
   with auto-merge armed and no queue entry — armed by this run or an earlier

@@ -3877,30 +3877,34 @@ refuse_evicted_head() {
 # One re-queue of an evicted head, when the ejection was a flake: the check
 # that removed it failed for a reason that is not this head (a hang, a
 # starved host, a lost runner), and a new head would only buy a fresh review
-# of the same change (AUT-2065). The evidence is recorded on the PR by
-# marker before anything is requested, and the marker bounds the path: a
-# second ejection at a head already retried is the verdict, refused like
-# any other eviction, so a deterministic failure cannot loop.
+# of the same change (AUT-2065). Every attempt is recorded on the PR by
+# marker before anything is requested. The retry is spent only once it was
+# admitted: a marker older than the head's latest eviction means the retried
+# head went back into the queue and was evicted again, so this eviction is
+# the verdict and is refused like any other. A marker newer than the latest
+# eviction is an attempt that never reached the queue (the base moved, a
+# read failed, GitHub refused the merge), and does not spend the retry.
+# Markers count whoever wrote them: a marker can only ever refuse a retry,
+# which is the conservative direction, while counting one identity's alone
+# would let each merge-capable identity retry a deterministic failure again.
 record_flake_retry() {
-  local number="$1" head="$2" marker author prior
+  local number="$1" head="$2" marker evicted_at spent
   marker="<!-- touchstone:flake-retry head=$head -->"
-  # Only a record this identity wrote counts; anyone can type the marker.
-  read_with_retry gh api --hostname "$REPO_HOST" user --jq '.login' \
-    || fail_operation "could not read the authenticated login: $READ_OUTPUT" "Retry after GitHub recovers."
-  author="$READ_OUTPUT"
+  evicted_at="${MERGE_QUEUE_EVICTED_AT:-}"
+  # An eviction of unknown time spends every recorded attempt.
   read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$number/comments?per_page=100" \
-    --jq "[.[] | select((.user.login // \"\") == \"$author\" and ((.body // \"\") | contains(\"$marker\")))] | length" \
+    --jq "[.[] | select(((.body // \"\") | contains(\"$marker\")) and ((\"$evicted_at\" == \"\") or ((.created_at // \"\") < \"$evicted_at\")))] | length" \
     || fail_operation "could not inspect PR #$number comments for a prior flake retry: $READ_OUTPUT" "Inspect GitHub before retrying."
   # One count per page, summed, so a PR past 100 comments cannot hide one.
-  prior="$(printf '%s\n' "$READ_OUTPUT" | awk '{ total += $1 } END { print total + 0 }')"
-  if [ "$prior" != 0 ]; then
-    printf 'PR #%s head %s was already re-queued once after a flake (recorded on the PR); this ejection is the verdict.\n' "$number" "$head" >&2
+  spent="$(printf '%s\n' "$READ_OUTPUT" | awk '{ total += $1 } END { print total + 0 }')"
+  if [ "$spent" != 0 ]; then
+    printf 'PR #%s head %s was already re-queued once after a flake and evicted again (recorded on the PR); this eviction is the verdict.\n' "$number" "$head" >&2
     refuse_evicted_head "$number" "$head"
   fi
   capture_command gh pr comment "$number" --repo "$REPO_SPEC" --body "$marker
 Re-queued once at head \`$head\` after its merge-queue ejection at ${MERGE_QUEUE_EVICTED_AT:-an unknown time} (${MERGE_QUEUE_EVICTION_REASON:-no reason recorded}), by \`touchstone pr merge --retry-after-flake\`. Evidence that the ejection was not this head: $RETRY_AFTER_FLAKE
 
-A second ejection at this head is refused; the recovery then is a new head." \
+If this head is evicted again, that eviction is refused; the recovery then is a new head." \
     || fail_operation "could not record the flake retry on PR #$number: $CAPTURE_ERROR" "Inspect GitHub before retrying."
   printf 'Re-queueing PR #%s head %s once after a flake (recorded on the PR).\n' "$number" "$head" >&2
 }
