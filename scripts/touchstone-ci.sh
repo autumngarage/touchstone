@@ -456,7 +456,7 @@ def signatures($c): jobs_of($c) as $js
     | {runnerWait: ([$js[] | secs(.created_at; .started_at)] | map(select(. != null)) | max),
        checkout: stage_secs($js; "checkout"), restore: stage_secs($js; "restore"),
        build: stage_secs($js; "build"), test: stage_secs($js; "test"), release: stage_secs($js; "release"),
-       wall: (([$js[] | .completed_at | ts] | max) // ($c.runs | map(.updatedAt | ts) | max)) - $c.createdAt,
+       wall: ((([$js[] | .completed_at | ts] | max) // ($c.runs | map(.updatedAt | ts) | max)) - $c.createdAt),
        shards: [$js[] | .steps[] | select(.name == $testStep) | secs(.started_at; .completed_at)
          | select(. != null)]}] as $clean
 | [$prs[] | select(.mergedAt | ts | inwin)] as $merged
