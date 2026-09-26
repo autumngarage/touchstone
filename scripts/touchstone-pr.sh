@@ -98,6 +98,11 @@ EXPECTED_HEAD=""
 EXPECTED_BRANCH=""
 EXPECTED_PR=""
 UNGUARDED=false
+RETRY_AFTER_FLAKE=""
+RETRY_AFTER_FLAKE_SET=false
+# The eviction a flake retry was checked against (AUT-2065).
+FLAKE_RETRY_CHECKED=false
+FLAKE_RETRY_EVICTED_AT=""
 OPERATION="${1:-}"
 # The tool's own tree: the checked-in policy there says which repository and
 # revision the pinned gates must come from for enforcement to count.
@@ -151,7 +156,8 @@ Usage:
   touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
                      [--expect-branch BRANCH] [--expect-pr NUMBER] [--project DIR] [--json]
   touchstone pr status PR [--project DIR] [--json]
-  touchstone pr merge PR --head SHA [--unguarded] [--project DIR] [--json]
+  touchstone pr merge PR --head SHA [--unguarded] [--retry-after-flake EVIDENCE]
+                      [--project DIR] [--json]
   touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change)
   touchstone pr answer PR --finding ID --body-file FILE (--fix-commit SHA | --no-code-change)
   touchstone pr answer PR --all-resolved-check
@@ -599,6 +605,14 @@ while [ "$#" -gt 0 ]; do
       UNGUARDED=true
       shift
       ;;
+    --retry-after-flake)
+      # Another option is not evidence: `--retry-after-flake --project DIR`
+      # must not record "--project" as the reason for a re-queue.
+      case "${2:---}" in --*) fail_input "--retry-after-flake requires the evidence that the ejection was a flake" "Pass what failed and why it was not this head, e.g. the run and the flake's signature." ;; esac
+      RETRY_AFTER_FLAKE="$2"
+      RETRY_AFTER_FLAKE_SET=true
+      shift 2
+      ;;
     -h | --help) usage ;;
     *) fail_input "unknown argument '$1'" "Run 'touchstone pr $OPERATION --help' for the supported interface." ;;
   esac
@@ -618,7 +632,7 @@ case "$OPERATION" in
     ;;
   merge)
     [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_BRANCH" ] \
-      || fail_input "merge received an option for another operation" "Use only --head and --unguarded."
+      || fail_input "merge received an option for another operation" "Use only --head, --unguarded, and --retry-after-flake."
     ;;
   await-review | wake-review-gate)
     [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_BRANCH" ] && [ -n "$EXPECTED_HEAD" ] \
@@ -635,6 +649,11 @@ case "$OPERATION" in
 esac
 [ "$UNGUARDED" = false ] || [ "$OPERATION" = merge ] \
   || fail_input "--unguarded applies to merge only" "Remove --unguarded."
+[ "$RETRY_AFTER_FLAKE_SET" = false ] || [ "$OPERATION" = merge ] \
+  || fail_input "--retry-after-flake applies to merge only" "Remove --retry-after-flake."
+if [ "$RETRY_AFTER_FLAKE_SET" = true ] && [ -z "$(printf '%s' "$RETRY_AFTER_FLAKE" | tr -d '[:space:]')" ]; then
+  fail_input "--retry-after-flake requires the evidence that the ejection was a flake" "Pass what failed and why it was not this head, e.g. the run and the flake's signature."
+fi
 
 # Resolve --project to the repository root, matching the implicit path and
 # `touchstone adopt`. Canonicalizing the passed directory alone made
@@ -3858,6 +3877,43 @@ refuse_evicted_head() {
     "Fix the failing check on a new head, push it, then run touchstone pr merge $number --head <new head>. touchstone pr status $number shows the eviction."
 }
 
+# One re-queue of an evicted head, when the ejection was a flake: the check
+# that removed it failed for a reason that is not this head (a hang, a
+# starved host, a lost runner), and a new head would only buy a fresh review
+# of the same change (AUT-2065). Every attempt is recorded on the PR by
+# marker before anything is requested. The retry is spent only once it was
+# admitted: a marker older than the head's latest eviction means the retried
+# head went back into the queue and was evicted again, so this eviction is
+# the verdict and is refused like any other. A marker newer than the latest
+# eviction is an attempt that never reached the queue (the base moved, a
+# read failed, GitHub refused the merge), and does not spend the retry.
+# Markers count whoever wrote them: a marker can only ever refuse a retry,
+# which is the conservative direction, while counting one identity's alone
+# would let each merge-capable identity retry a deterministic failure again.
+record_flake_retry() {
+  local number="$1" head="$2" marker evicted_at spent
+  marker="<!-- touchstone:flake-retry head=$head -->"
+  evicted_at="${MERGE_QUEUE_EVICTED_AT:-}"
+  # An eviction of unknown time spends every recorded attempt.
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$number/comments?per_page=100" \
+    --jq "[.[] | select(((.body // \"\") | contains(\"$marker\")) and ((\"$evicted_at\" == \"\") or ((.created_at // \"\") < \"$evicted_at\")))] | length" \
+    || fail_operation "could not inspect PR #$number comments for a prior flake retry: $READ_OUTPUT" "Inspect GitHub before retrying."
+  # One count per page, summed, so a PR past 100 comments cannot hide one.
+  spent="$(printf '%s\n' "$READ_OUTPUT" | awk '{ total += $1 } END { print total + 0 }')"
+  if [ "$spent" != 0 ]; then
+    printf 'PR #%s head %s was already re-queued once after a flake and evicted again (recorded on the PR); this eviction is the verdict.\n' "$number" "$head" >&2
+    refuse_evicted_head "$number" "$head"
+  fi
+  capture_command gh pr comment "$number" --repo "$REPO_SPEC" --body "$marker
+Re-queued once at head \`$head\` after its merge-queue ejection at ${MERGE_QUEUE_EVICTED_AT:-an unknown time} (${MERGE_QUEUE_EVICTION_REASON:-no reason recorded}), by \`touchstone pr merge --retry-after-flake\`. Evidence that the ejection was not this head: $RETRY_AFTER_FLAKE
+
+If this head is evicted again, that eviction is refused; the recovery then is a new head." \
+    || fail_operation "could not record the flake retry on PR #$number: $CAPTURE_ERROR" "Inspect GitHub before retrying."
+  FLAKE_RETRY_CHECKED=true
+  FLAKE_RETRY_EVICTED_AT="${MERGE_QUEUE_EVICTED_AT:-}"
+  printf 'Re-queueing PR #%s head %s once after a flake (recorded on the PR).\n' "$number" "$head" >&2
+}
+
 # The one reconciliation after a delivery mutation. Neither `gh pr merge`'s
 # exit status nor the enqueue's is the outcome; what GitHub reports for the
 # reviewed head afterwards is. Sets RECONCILED_DELIVERY_STATE to merged,
@@ -3996,7 +4052,11 @@ merge_pr() {
       if [ "$ENFORCEMENT_QUEUE_APPLIED" = true ]; then
         read_auto_merge_state "$number" "$head"
         if [ "$MERGE_QUEUE_EVICTED" = true ]; then
-          refuse_evicted_head "$number" "$head"
+          if [ "$RETRY_AFTER_FLAKE_SET" = true ]; then
+            record_flake_retry "$number" "$head"
+          else
+            refuse_evicted_head "$number" "$head"
+          fi
         fi
       fi
       if [ "$ENFORCEMENT_EXPECTS_REVIEW_GATE" = true ]; then
@@ -4060,6 +4120,16 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
     # (AUT-891). Unknown and failed queue states require inspection, never a
     # speculative mutation.
     read_accepted_delivery_state "$number" "$head"
+    # The flake retry was checked against one eviction. A newer removal read
+    # here means the head went back into the queue and was evicted again
+    # meanwhile -- an armed request or another caller re-queued it -- so the
+    # one retry is spent and that eviction is the verdict (AUT-2065).
+    if [ "$FLAKE_RETRY_CHECKED" = true ] && [ -z "$ACCEPTED_DELIVERY_STATE" ] && [ "$MERGE_QUEUE_EVICTED" = true ] \
+      && [ "${MERGE_QUEUE_EVICTED_AT:-}" != "$FLAKE_RETRY_EVICTED_AT" ]; then
+      printf 'PR #%s head %s was re-queued and evicted again at %s after the flake retry was checked; this eviction is the verdict.\n' \
+        "$number" "$head" "${MERGE_QUEUE_EVICTED_AT:-an unknown time}" >&2
+      refuse_evicted_head "$number" "$head"
+    fi
     if [ -n "$ACCEPTED_DELIVERY_STATE" ]; then
       if [ "$ENFORCEMENT_STATUS" = applied ]; then
         final_state="$ACCEPTED_DELIVERY_STATE"
