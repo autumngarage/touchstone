@@ -518,7 +518,11 @@ case "$1 ${2:-}" in
       # Shapes taken from a live read of vesper#1136 on 2026-09-02: the
       # removal's reason is GitHub's enum value and its beforeCommit is the
       # merge-queue base, not the PR head.
-      if [ -f "$GH_STATE/queue-evicted" ]; then
+      if [ -f "$GH_STATE/queue-evicted" ] && [ -f "$GH_STATE/queue-evicted-again" ] && [ -f "$GH_STATE/flake-retry-recorded" ]; then
+        # Re-queued by an armed request after the flake retry was checked,
+        # and evicted again before this command's final read (AUT-2065).
+        queue_events='[{"type":"removed","createdAt":"2026-09-02T16:51:33Z","reason":"failed_checks","queueBase":"dd69484b30f6"},{"type":"added","createdAt":"2026-09-02T17:40:00Z","reason":null,"queueBase":null},{"type":"removed","createdAt":"2026-09-02T18:30:00Z","reason":"failed_checks","queueBase":"ee70595a0000"}]'
+      elif [ -f "$GH_STATE/queue-evicted" ]; then
         queue_events='[{"type":"head_moved","createdAt":"2026-09-02T16:00:55Z","reason":null,"queueBase":null},{"type":"added","createdAt":"2026-09-02T16:13:23Z","reason":null,"queueBase":null},{"type":"removed","createdAt":"2026-09-02T16:51:33Z","reason":"failed_checks","queueBase":"dd69484b30f6"}]'
       elif [ -f "$GH_STATE/queue-evicted-then-pushed" ]; then
         queue_events='[{"type":"added","createdAt":"2026-09-02T16:13:23Z","reason":null,"queueBase":null},{"type":"removed","createdAt":"2026-09-02T16:51:33Z","reason":"failed_checks","queueBase":"dd69484b30f6"},{"type":"head_moved","createdAt":"2026-09-02T17:00:00Z","reason":null,"queueBase":null}]'
@@ -3467,6 +3471,16 @@ Closes #42'
   run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --retry-after-flake "the first attempt's merge was refused" --json
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'pr merge'
+  # Evicted again between the check and the final read (an armed request
+  # re-queued it meanwhile): the retry is spent, so no merge is requested.
+  rm -f "$TMP/state/merged" "$TMP/state/flake-retry-recorded"
+  touch "$TMP/state/queue-evicted-again"
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --retry-after-flake "a hang (AUT-2058)" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 're-queued and evicted again at 2026-09-02T18:30:00Z after the flake retry was checked'
+  assert_not_has "$GH_CALLS" '--squash'
+  rm -f "$TMP/state/queue-evicted-again" "$TMP/state/flake-retry-recorded"
   # A head retried and evicted again (a record older than this eviction) is
   # the verdict: refused, and an armed request is disarmed as for any
   # eviction.

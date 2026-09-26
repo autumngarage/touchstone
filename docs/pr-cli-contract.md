@@ -439,7 +439,10 @@ taking this document's word for it.
   queued and evicted again, and that eviction is refused exactly as above,
   disarm included, so a deterministic failure cannot loop. A marker newer
   than the latest eviction is an attempt that never reached the queue and
-  spends nothing. Markers count whoever wrote them -- a marker can only
+  spends nothing. The eviction the retry was checked against is read again
+  just before the merge request: a newer removal means an armed request or
+  another caller re-queued the head meanwhile, and it is refused. Markers
+  count whoever wrote them -- a marker can only
   refuse a retry -- so no second merge-capable identity gets another.
   Evidence is required and may not be blank or another option (AUT-2065).
 

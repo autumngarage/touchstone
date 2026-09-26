@@ -100,6 +100,9 @@ EXPECTED_PR=""
 UNGUARDED=false
 RETRY_AFTER_FLAKE=""
 RETRY_AFTER_FLAKE_SET=false
+# The eviction a flake retry was checked against (AUT-2065).
+FLAKE_RETRY_CHECKED=false
+FLAKE_RETRY_EVICTED_AT=""
 OPERATION="${1:-}"
 # The tool's own tree: the checked-in policy there says which repository and
 # revision the pinned gates must come from for enforcement to count.
@@ -3906,6 +3909,8 @@ Re-queued once at head \`$head\` after its merge-queue ejection at ${MERGE_QUEUE
 
 If this head is evicted again, that eviction is refused; the recovery then is a new head." \
     || fail_operation "could not record the flake retry on PR #$number: $CAPTURE_ERROR" "Inspect GitHub before retrying."
+  FLAKE_RETRY_CHECKED=true
+  FLAKE_RETRY_EVICTED_AT="${MERGE_QUEUE_EVICTED_AT:-}"
   printf 'Re-queueing PR #%s head %s once after a flake (recorded on the PR).\n' "$number" "$head" >&2
 }
 
@@ -4115,6 +4120,16 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
     # (AUT-891). Unknown and failed queue states require inspection, never a
     # speculative mutation.
     read_accepted_delivery_state "$number" "$head"
+    # The flake retry was checked against one eviction. A newer removal read
+    # here means the head went back into the queue and was evicted again
+    # meanwhile -- an armed request or another caller re-queued it -- so the
+    # one retry is spent and that eviction is the verdict (AUT-2065).
+    if [ "$FLAKE_RETRY_CHECKED" = true ] && [ -z "$ACCEPTED_DELIVERY_STATE" ] && [ "$MERGE_QUEUE_EVICTED" = true ] \
+      && [ "${MERGE_QUEUE_EVICTED_AT:-}" != "$FLAKE_RETRY_EVICTED_AT" ]; then
+      printf 'PR #%s head %s was re-queued and evicted again at %s after the flake retry was checked; this eviction is the verdict.\n' \
+        "$number" "$head" "${MERGE_QUEUE_EVICTED_AT:-an unknown time}" >&2
+      refuse_evicted_head "$number" "$head"
+    fi
     if [ -n "$ACCEPTED_DELIVERY_STATE" ]; then
       if [ "$ENFORCEMENT_STATUS" = applied ]; then
         final_state="$ACCEPTED_DELIVERY_STATE"
