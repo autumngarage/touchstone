@@ -444,7 +444,11 @@ not rebase because the default branch moved: a request binds the base it was
 made against or any ancestor of the current tip, and the queue owns the
 combination. If the queue ejects the PR, that is GitHub's verdict on the
 combination: fix forward on the branch, re-review the new head, re-enqueue.
-`touchstone pr merge` reports `queued`; `MERGED` arrives when the queue lands
+When the ejection was a flake -- the check failed for a reason that is not
+this head, such as a hang, a starved host, or a lost runner -- re-queue the
+same head once with `touchstone pr merge <n> --head <sha> --retry-after-flake
+"<evidence>"`, which records the evidence on the PR first; a second ejection
+at that head is the verdict. `touchstone pr merge` reports `queued`; `MERGED` arrives when the queue lands
 it.
 
 **A live exact-head queue entry ends merge mutation.** Read `mergeQueueEntry`

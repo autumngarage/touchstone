@@ -303,6 +303,12 @@ case "$1 ${2:-}" in
       printf '%s\n' https://example.test/pr/7#issuecomment-3
       exit 0
     fi
+    if has 'touchstone:flake-retry' "$@"; then
+      touch "$GH_STATE/flake-retry-recorded"
+      value_after --body "$@" >"$GH_STATE/flake-retry-body"
+      printf '%s\n' https://example.test/pr/7#issuecomment-11
+      exit 0
+    fi
     if has 'touchstone:unguarded-merge' "$@"; then
       touch "$GH_STATE/unguarded-recorded"
       printf '%s\n' https://example.test/pr/7#issuecomment-9
@@ -721,6 +727,9 @@ case "$1 ${2:-}" in
       else
         printf 'modified\tpolicy/github/touchstone-main.json\t-\n'
       fi
+    elif has 'touchstone:flake-retry' "$@"; then
+      # Prior flake-retry records for this head, one count per page.
+      if [ -f "$GH_STATE/flake-retry-recorded" ]; then printf '0\n1\n'; else printf '0\n0\n'; fi
     elif has 'touchstone:unguarded-merge' "$@"; then
       # The count of prior unguarded-merge records for this head, one per
       # page as --paginate delivers it: two pages, the record (if any) on the
@@ -3428,6 +3437,46 @@ Closes #42'
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'ERROR: PR #7 head'
   assert_has "$TMP/out" 'removed from the merge queue'
+
+  echo "==> an evicted head re-queues once with --retry-after-flake, which records the evidence (AUT-2065)"
+  # A flake ejects a head the change did not break; a new head would only
+  # buy a fresh review of the same change. One retry, recorded first.
+  rm -f "$TMP/state/merged" "$TMP/state/auto-merge-armed" "$TMP/state/flake-retry-recorded"
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --retry-after-flake "run 36263457999: KeyResolverTests took 55s against a 30s ceiling under host load 25" --json
+  assert_rc "$RUN_RC" 0
+  [ -f "$TMP/state/flake-retry-recorded" ] || fail "the flake retry was not recorded on the PR"
+  grep -q "touchstone:flake-retry head=$HEAD_SHA" "$TMP/state/flake-retry-body" || fail "the record does not name the head"
+  grep -q 'KeyResolverTests took 55s' "$TMP/state/flake-retry-body" || fail "the record does not carry the evidence"
+  grep -q '(failed_checks)' "$TMP/state/flake-retry-body" || fail "the record does not carry the eviction"
+  assert_has "$GH_CALLS" 'pr merge'
+  # The record precedes the merge request: nothing is re-queued unrecorded.
+  [ "$(grep -n 'touchstone:flake-retry' "$GH_CALLS" | head -1 | cut -d: -f1)" -lt "$(grep -n '^pr merge' "$GH_CALLS" | head -1 | cut -d: -f1)" ] \
+    || fail "the merge was requested before the flake retry was recorded: $(cat "$GH_CALLS")"
+  # A second ejection at a head already retried is the verdict: refused, and
+  # an armed request is disarmed exactly as for any eviction.
+  rm -f "$TMP/state/merged"
+  touch "$TMP/state/auto-merge-armed"
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --retry-after-flake "again" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'already re-queued once after a flake'
+  assert_has "$TMP/out" 'removed from the merge queue'
+  assert_has "$TMP/out" 'was disarmed so GitHub does not re-queue this head'
+  assert_not_has "$GH_CALLS" '--squash'
+  assert_not_has "$GH_CALLS" 'pr comment'
+  rm -f "$TMP/state/auto-merge-armed" "$TMP/state/flake-retry-recorded"
+  # Evidence is required, and the option is merge's alone.
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --retry-after-flake "  " --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'requires the evidence'
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --retry-after-flake
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'requires the evidence'
+  run_pr "$TMP/out" status 7 --retry-after-flake "x"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'applies to merge only'
+
   rm -f "$TMP/state/queue-evicted"
   # A head pushed after the removal is a different head: the eviction is
   # history and this head merges on the ordinary path.

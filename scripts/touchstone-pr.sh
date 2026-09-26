@@ -98,6 +98,8 @@ EXPECTED_HEAD=""
 EXPECTED_BRANCH=""
 EXPECTED_PR=""
 UNGUARDED=false
+RETRY_AFTER_FLAKE=""
+RETRY_AFTER_FLAKE_SET=false
 OPERATION="${1:-}"
 # The tool's own tree: the checked-in policy there says which repository and
 # revision the pinned gates must come from for enforcement to count.
@@ -151,7 +153,8 @@ Usage:
   touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
                      [--expect-branch BRANCH] [--expect-pr NUMBER] [--project DIR] [--json]
   touchstone pr status PR [--project DIR] [--json]
-  touchstone pr merge PR --head SHA [--unguarded] [--project DIR] [--json]
+  touchstone pr merge PR --head SHA [--unguarded] [--retry-after-flake EVIDENCE]
+                      [--project DIR] [--json]
   touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change)
   touchstone pr answer PR --finding ID --body-file FILE (--fix-commit SHA | --no-code-change)
   touchstone pr answer PR --all-resolved-check
@@ -599,6 +602,14 @@ while [ "$#" -gt 0 ]; do
       UNGUARDED=true
       shift
       ;;
+    --retry-after-flake)
+      # Another option is not evidence: `--retry-after-flake --project DIR`
+      # must not record "--project" as the reason for a re-queue.
+      case "${2:---}" in --*) fail_input "--retry-after-flake requires the evidence that the ejection was a flake" "Pass what failed and why it was not this head, e.g. the run and the flake's signature." ;; esac
+      RETRY_AFTER_FLAKE="$2"
+      RETRY_AFTER_FLAKE_SET=true
+      shift 2
+      ;;
     -h | --help) usage ;;
     *) fail_input "unknown argument '$1'" "Run 'touchstone pr $OPERATION --help' for the supported interface." ;;
   esac
@@ -618,7 +629,7 @@ case "$OPERATION" in
     ;;
   merge)
     [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_BRANCH" ] \
-      || fail_input "merge received an option for another operation" "Use only --head and --unguarded."
+      || fail_input "merge received an option for another operation" "Use only --head, --unguarded, and --retry-after-flake."
     ;;
   await-review | wake-review-gate)
     [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_BRANCH" ] && [ -n "$EXPECTED_HEAD" ] \
@@ -635,6 +646,11 @@ case "$OPERATION" in
 esac
 [ "$UNGUARDED" = false ] || [ "$OPERATION" = merge ] \
   || fail_input "--unguarded applies to merge only" "Remove --unguarded."
+[ "$RETRY_AFTER_FLAKE_SET" = false ] || [ "$OPERATION" = merge ] \
+  || fail_input "--retry-after-flake applies to merge only" "Remove --retry-after-flake."
+if [ "$RETRY_AFTER_FLAKE_SET" = true ] && [ -z "$(printf '%s' "$RETRY_AFTER_FLAKE" | tr -d '[:space:]')" ]; then
+  fail_input "--retry-after-flake requires the evidence that the ejection was a flake" "Pass what failed and why it was not this head, e.g. the run and the flake's signature."
+fi
 
 # Resolve --project to the repository root, matching the implicit path and
 # `touchstone adopt`. Canonicalizing the passed directory alone made
@@ -3858,6 +3874,37 @@ refuse_evicted_head() {
     "Fix the failing check on a new head, push it, then run touchstone pr merge $number --head <new head>. touchstone pr status $number shows the eviction."
 }
 
+# One re-queue of an evicted head, when the ejection was a flake: the check
+# that removed it failed for a reason that is not this head (a hang, a
+# starved host, a lost runner), and a new head would only buy a fresh review
+# of the same change (AUT-2065). The evidence is recorded on the PR by
+# marker before anything is requested, and the marker bounds the path: a
+# second ejection at a head already retried is the verdict, refused like
+# any other eviction, so a deterministic failure cannot loop.
+record_flake_retry() {
+  local number="$1" head="$2" marker author prior
+  marker="<!-- touchstone:flake-retry head=$head -->"
+  # Only a record this identity wrote counts; anyone can type the marker.
+  read_with_retry gh api --hostname "$REPO_HOST" user --jq '.login' \
+    || fail_operation "could not read the authenticated login: $READ_OUTPUT" "Retry after GitHub recovers."
+  author="$READ_OUTPUT"
+  read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$number/comments?per_page=100" \
+    --jq "[.[] | select((.user.login // \"\") == \"$author\" and ((.body // \"\") | contains(\"$marker\")))] | length" \
+    || fail_operation "could not inspect PR #$number comments for a prior flake retry: $READ_OUTPUT" "Inspect GitHub before retrying."
+  # One count per page, summed, so a PR past 100 comments cannot hide one.
+  prior="$(printf '%s\n' "$READ_OUTPUT" | awk '{ total += $1 } END { print total + 0 }')"
+  if [ "$prior" != 0 ]; then
+    printf 'PR #%s head %s was already re-queued once after a flake (recorded on the PR); this ejection is the verdict.\n' "$number" "$head" >&2
+    refuse_evicted_head "$number" "$head"
+  fi
+  capture_command gh pr comment "$number" --repo "$REPO_SPEC" --body "$marker
+Re-queued once at head \`$head\` after its merge-queue ejection at ${MERGE_QUEUE_EVICTED_AT:-an unknown time} (${MERGE_QUEUE_EVICTION_REASON:-no reason recorded}), by \`touchstone pr merge --retry-after-flake\`. Evidence that the ejection was not this head: $RETRY_AFTER_FLAKE
+
+A second ejection at this head is refused; the recovery then is a new head." \
+    || fail_operation "could not record the flake retry on PR #$number: $CAPTURE_ERROR" "Inspect GitHub before retrying."
+  printf 'Re-queueing PR #%s head %s once after a flake (recorded on the PR).\n' "$number" "$head" >&2
+}
+
 # The one reconciliation after a delivery mutation. Neither `gh pr merge`'s
 # exit status nor the enqueue's is the outcome; what GitHub reports for the
 # reviewed head afterwards is. Sets RECONCILED_DELIVERY_STATE to merged,
@@ -3996,7 +4043,11 @@ merge_pr() {
       if [ "$ENFORCEMENT_QUEUE_APPLIED" = true ]; then
         read_auto_merge_state "$number" "$head"
         if [ "$MERGE_QUEUE_EVICTED" = true ]; then
-          refuse_evicted_head "$number" "$head"
+          if [ "$RETRY_AFTER_FLAKE_SET" = true ]; then
+            record_flake_retry "$number" "$head"
+          else
+            refuse_evicted_head "$number" "$head"
+          fi
         fi
       fi
       if [ "$ENFORCEMENT_EXPECTS_REVIEW_GATE" = true ]; then

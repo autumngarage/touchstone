@@ -11,7 +11,7 @@ precondition for recovery.
 touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
                    [--expect-branch BRANCH] [--expect-pr NUMBER]
 touchstone pr status PR
-touchstone pr merge PR --head SHA [--unguarded]
+touchstone pr merge PR --head SHA [--unguarded] [--retry-after-flake EVIDENCE]
 touchstone policy status [--base BRANCH]
 touchstone policy apply --base BRANCH --authorize-admin
 touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change)
@@ -429,7 +429,15 @@ taking this document's word for it.
   new commit). A disarm GitHub refuses is an operational failure (exit 1)
   naming the raw command. The recovery is a new head: fix the failing check,
   push, then `merge --head <new head>`; a push, force-push, or retarget after
-  the removal makes the eviction history (AUT-1290).
+  the removal makes the eviction history (AUT-1290). The one exception is a
+  flake: `merge --head SHA --retry-after-flake EVIDENCE` re-queues the evicted
+  head once. The evidence -- what failed and why it was not this head, such as
+  a hang, a starved host, or a lost runner -- is recorded on the PR by marker
+  (`touchstone:flake-retry head=SHA`, written by the authenticated identity)
+  before the merge is requested, so no re-queue is unrecorded; a head already
+  retried is refused exactly as above, disarm included, so a deterministic
+  failure cannot loop. Evidence is required and may not be blank or another
+  option (AUT-2065).
 
   Armed is not admitted. Under a policy that enforces a merge queue, a head
   with auto-merge armed and no queue entry — armed by this run or an earlier
