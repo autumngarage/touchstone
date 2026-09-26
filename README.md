@@ -284,6 +284,57 @@ dollar discount at that price. Public repositories are free and are not
 counted. The agent runs the installed `touchstone`, so it spends no Actions
 minutes. `touchstone usage --help` owns the flags, defaults, and exit codes.
 
+## CI flow metrics
+
+`touchstone ci metrics` measures how changes flow through the merge queue and
+CI, so the queue and CI speed can be tuned against numbers instead of
+impressions. It is read-only and derives every number from GitHub's own
+records with the current `gh` login.
+
+```bash
+touchstone ci metrics --repo <owner/name> [--repo …] [--days N | --since DATE] [--until DATE] [--json]
+```
+
+The default window is the day before now, and the default repository is the
+current directory's. The table is for reading. `--json` prints a versioned
+report (`touchstone.ci-metrics/v1`) that a scheduled job can append and a
+dashboard can read. `touchstone ci --help` owns the flags and exit codes.
+
+The metrics are reported per repository and window. Durations are whole
+seconds, and percentiles are nearest-rank.
+
+- **Queue lead time**: from first enqueue to merge, for pull requests merged in the window through the queue (p50, p90, max). A merge that never entered the queue is counted but not timed.
+- **First pass**: the share of those merges with no ejection before the merge.
+- **Ejections**: removals from the queue in the window for any reason but `merged`. GitHub's removal reason (`failed_checks`, `checks_timed_out`, `merge_conflict`, …) is reported as given. Each ejection has one cause, checked in this order:
+  - `stacked`: its candidate was built on another entry's failed candidate, the base named by its `gh-readonly-queue` branch.
+  - `defect`: the pull request's head changed after the ejection: the head was committed after it, or the branch was force-pushed after it.
+  - `flake`: the pull request later merged at the same head.
+  - `unknown`: none of these can be derived yet, for example a pull request still open at the same head.
+
+  Each ejection also lists the signatures found in its candidate's jobs:
+  - `timed_out`: a job concluded `timed_out`.
+  - `watchdog`: a step named `Test` failed after 45 minutes or more.
+  - `runner_lost`: a job failed with no failed, cancelled, or timed-out step.
+- **Candidates**: merge-group commits first built in the window, with an outcome across all their workflow runs. The pass rate is succeeded over succeeded plus failed; cancelled and unfinished candidates are counted apart.
+- **Stage time**, for successful candidates:
+  - Runner wait is the longest job's time from created to started.
+  - Checkout, restore, build, test, and release are each the slowest job's summed steps of that stage. A step belongs to the first stage its name matches, in that order: checkout, restore (or cache), release, test, build.
+  - Wall time runs from the candidate's first run being created to its last job completing.
+- **Shard balance**: for each successful candidate with two or more `Test` steps, the slowest step minus the fastest.
+- **Nightly**: the `workflow_dispatch` runs on the default branch of `--nightly-workflow` (default `macOS`). The green streak counts consecutive successful runs back from the window end.
+- **Throughput**: merges per day, and per UTC date.
+
+Every agent on a machine shares one GitHub quota, so the collector reads
+sparingly:
+- It reads queue timelines through GraphQL.
+- It lists only `merge_group` and `workflow_dispatch` runs.
+- It reads job lists only for the candidates a metric uses. It caches each completed run attempt's jobs on disk, because a completed attempt never changes.
+
+Before each phase it checks `gh api rate_limit`, which is free. It refuses
+(exit 2) a read that would leave less than 10% of either quota for other
+agents. It also refuses a window with more `merge_group` runs than GitHub lists
+for one query (1,000). It never retries into a limit.
+
 ## Architecture
 
 ```text
