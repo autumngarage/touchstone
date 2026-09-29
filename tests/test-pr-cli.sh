@@ -4510,6 +4510,24 @@ STATUS_STUB
     rm -f "$GH_STATE/effective-behavior-v4"
   }
 
+  echo "==> caller head is checked before either answer mutation (AUT-2155)"
+  for target in --comment-id --finding; do
+    target_id=51
+    [ "$target" != --finding ] || target_id=0123456789abcdef
+    run 7 "$target" "$target_id" --body-file "$RR/body" --no-code-change --head 1111111111111111111111111111111111111111
+    [ "$RUN_RC" -ne 0 ] && grep -qF 'no answer was applied' "$RR/out" \
+      && [ ! -e "$GH_STATE/replies" ] && [ ! -e "$GH_STATE/resolved" ] && [ ! -e "$GH_STATE/pr-body" ] \
+      && ok "stale head refuses $target before effects" \
+      || fail "stale head did not refuse $target without mutation"
+  done
+  for invalid_head in short '' ABCDEF0123456789abcdef0123456789abcdef01; do
+    run 7 --comment-id 51 --body-file "$RR/body" --no-code-change --head "$invalid_head"
+    [ "$RUN_RC" -eq 2 ] && grep -qF 'full lowercase 40-character' "$RR/out" \
+      || fail "invalid expected head was not rejected"
+  done
+  run 7 --all-resolved-check --head abcdef0123456789abcdef0123456789abcdef01
+  [ "$RUN_RC" -eq 2 ] || fail "read-only check silently accepted an answer head"
+
   echo "==> --fix-commit is verified against the captured PR head before mutation"
   run 7 --comment-id 51 --body-file "$RR/body" --fix-commit missing
   [ "$RUN_RC" -ne 0 ] && grep -qF "does not resolve to a commit" "$RR/out" \
@@ -4523,7 +4541,7 @@ STATUS_STUB
     && ok "off-head fix commit refused before reply or resolution" \
     || fail "off-head fix commit mutated or lacked a useful refusal (rc=$RUN_RC): $(tail -3 "$RR/out")"
 
-  run 7 --comment-id 51 --body-file "$RR/body" --fix-commit abc123
+  run 7 --comment-id 51 --body-file "$RR/body" --fix-commit abc123 --head abcdef0123456789abcdef0123456789abcdef01
   [ "$RUN_RC" -eq 0 ] \
     && grep -qF 'Fixed in abcdef0123456789abcdef0123456789abcdef01.' "$GH_STATE/reply-body" \
     && ok "reachable short fix revision normalized to its canonical SHA" \
@@ -4595,7 +4613,7 @@ STATUS_STUB
   # 3.10.1 shipped --finding behind the thread-id guard: a valid finding
   # answer printed usage and exited 2, so no agent could refute a finding.
   rm -f "$GH_STATE/pr-body" "$GH_STATE/gate-reruns" "$GH_STATE/replies" "$GH_STATE/resolved"
-  run 7 --finding 0123456789abcdef --body-file "$RR/body" --no-code-change
+  run 7 --finding 0123456789abcdef --body-file "$RR/body" --no-code-change --head abcdef0123456789abcdef0123456789abcdef01
   [ "$RUN_RC" -eq 0 ] \
     && grep -qF '<!-- touchstone:review-dismiss id=0123456789abcdef reason=' "$GH_STATE/pr-body" \
     && grep -qF 'existing body' "$GH_STATE/pr-body" \
