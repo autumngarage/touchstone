@@ -14,7 +14,7 @@ touchstone pr status PR
 touchstone pr merge PR --head SHA [--unguarded] [--retry-after-flake EVIDENCE]
 touchstone policy status [--base BRANCH]
 touchstone policy apply --base BRANCH --authorize-admin
-touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change)
+touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change) [--head SHA]
 touchstone pr answer PR --all-resolved-check
 ```
 
@@ -684,3 +684,7 @@ reconstruct review findings, conversation state, tracker state, or the merge
 verdict. Drivers inspect GitHub's review surface directly and use
 `touchstone pr answer` for inline reply-and-resolve semantics. Repository
 rules and the required workflow remain authoritative.
+
+### Caller-bound review answers
+
+`pr answer --head SHA` optionally binds the caller’s decision to a full lowercase commit SHA. A mismatch with the captured PR head refuses before either inline reply/resolution or gate-finding body mutation. Omitting the flag preserves existing callers. The check is not an atomic GitHub compare-and-swap: the existing post-effect head check can report that replies/resolutions already occurred while the head moved. Callers must reconcile observed effects rather than treating every nonzero exit as no mutation.

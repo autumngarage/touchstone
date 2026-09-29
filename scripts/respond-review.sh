@@ -10,13 +10,16 @@
 #
 # Usage:
 #   touchstone pr answer <pr-number> --comment-id <id> --body-file <file>
-#     (--fix-commit <sha> | --no-code-change)
+#     (--fix-commit <sha> | --no-code-change) [--head <expected-sha>]
 #   touchstone pr answer <pr-number> --finding <id> --body-file <file>
-#     (--fix-commit <sha> | --no-code-change)
+#     (--fix-commit <sha> | --no-code-change) [--head <expected-sha>]
 #   touchstone pr answer <pr-number> --all-resolved-check
 #   (installed name; from a source checkout: bash scripts/respond-review.sh …)
 #
 # Modes:
+#   --head <expected-sha>       Optional full lowercase commit SHA. Refuse a
+#                                different captured head before any answer effect.
+#                                This is not an atomic GitHub compare-and-swap.
 #   --finding + --body-file      Answer a finding the gate reported itself,
 #                                which has no review thread because the gate
 #                                runs read-only. Same act, same dispositions,
@@ -98,6 +101,7 @@ case "$PR_NUMBER" in
 esac
 shift
 
+EXPECTED_HEAD=""
 COMMENT_ID=""
 FINDING_ID=""
 BODY_FILE=""
@@ -106,6 +110,11 @@ NO_CODE_CHANGE=false
 ALL_RESOLVED_CHECK=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --head)
+      shift
+      EXPECTED_HEAD="${1:-}"
+      [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || invalid_input "--head requires a full lowercase 40-character commit SHA."
+      ;;
     --comment-id)
       shift
       COMMENT_ID="${1:-}"
@@ -139,6 +148,7 @@ done
 # an answer that records neither is the AUT-800 defect, and one that records
 # both is ambiguous. Neither is a state this script may resolve a thread from.
 if [ "$ALL_RESOLVED_CHECK" = true ]; then
+  [ -z "$EXPECTED_HEAD" ] || invalid_input "--head binds an answer, not --all-resolved-check."
   { [ -z "$FIX_COMMIT" ] && [ "$NO_CODE_CHANGE" = false ]; } \
     || invalid_input "--all-resolved-check reads state; it takes no disposition."
 elif [ -n "$COMMENT_ID" ] || [ -n "$FINDING_ID" ] || [ -n "$BODY_FILE" ]; then
@@ -332,6 +342,9 @@ PR_ROW="$(gh_read pr view "$PR_NUMBER" --json headRefOid,baseRefName,baseRefOid 
   || fail "could not read the PR coordinates: $PR_ROW"
 IFS="$(printf '\t')" read -r HEAD_SHA BASE_REF BASE_SHA <<<"$PR_ROW"
 [ -n "$HEAD_SHA" ] && [ -n "$BASE_REF" ] || fail "PR $PR_NUMBER has no readable head and base."
+if [ -n "$EXPECTED_HEAD" ] && [ "$HEAD_SHA" != "$EXPECTED_HEAD" ]; then
+  fail "PR head differs from expected $EXPECTED_HEAD (observed $HEAD_SHA); no answer was applied."
+fi
 
 # A fix reference is review evidence, not caller-supplied prose. Resolve it
 # through GitHub, then prove the resulting commit is the captured PR head or
