@@ -220,12 +220,13 @@ taking this document's word for it.
   inventing an order.
 
   The additive `phase` field reduces those authoritative observations to one
-  stable enum: `reviewing`, `fix-required`, `ready-to-queue`, `queued`,
-  `evicted`, `armed-waiting-checks`, `armed-blocked`, `armed-not-queued`,
-  `merged`, `closed`, or `action-required`.
+  stable enum: `reviewing`, `fix-required`, `answer-required`,
+  `ready-to-queue`, `queued`, `evicted`, `armed-waiting-checks`,
+  `armed-blocked`, `armed-not-queued`, `merged`, `closed`, or
+  `action-required`.
   Its `nextAction` values are `wait`, `address-review`, `queue`,
   `done`, and `inspect`; both `reviewing` and `queued` intentionally use
-  `wait`. Every phase has one `nextAction` except `armed-not-queued`, which is
+  `wait`, and both `fix-required` and `answer-required` use `address-review`. Every phase has one `nextAction` except `armed-not-queued`, which is
   `queue` where GitHub reports the PR `CLEAN` and `inspect` otherwise. Human
   output prints the exact-head `touchstone pr merge PR --head SHA` command
   wherever `nextAction` is `queue` (`ready-to-queue`, and a `CLEAN`
@@ -271,8 +272,13 @@ taking this document's word for it.
   ambiguous or unbound gates, and incomplete policy bindings are
   `action-required`. After that, only the policy-owned exact-head gate decides:
   active is `reviewing`, explicit `failure` is `fix-required`, and exact-head
-  success is `ready-to-queue` only when GitHub reports the PR `CLEAN`. A
-  blocked merge state or operational conclusion is `action-required`. Status
+  success is `ready-to-queue` only when GitHub reports the PR `CLEAN`. An
+  exact-head success that is not `CLEAN` and has an unresolved review thread
+  is `answer-required` (`address-review`; `blockers` carries the count): the
+  head is reviewed and a finding nobody answered holds the merge, as after a
+  fix pushed for it, and the remedy is `touchstone pr answer` for each
+  (AUT-2280). Any other blocked merge state, or an operational conclusion, is
+  `action-required`. Status
   does not reconstruct freshness from mutable review timestamps: the protected
   merge group's prospective gate owns feedback that arrives after the PR gate
   and before that gate evaluates, which it does once, at admission.

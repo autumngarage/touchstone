@@ -413,7 +413,7 @@ case "$1 ${2:-}" in
       case "${GH_MODE:-ok}" in
         status_closed) pr_state=CLOSED ;;
         status_merged) pr_state=MERGED ;;
-        status_gate_queue_removed | status_gate_blocked_success) merge_state=BLOCKED ;;
+        status_gate_queue_removed | status_gate_blocked_success | status_gate_blocked_threads) merge_state=BLOCKED ;;
       esac
       [ ! -f "$GH_STATE/status-draft" ] || draft=true
       [ ! -f "$GH_STATE/status-conflicts" ] || merge_state=DIRTY
@@ -485,7 +485,7 @@ case "$1 ${2:-}" in
       exit 0
     fi
     if has 'reviewThreads(first:100){nodes{isResolved}}' "$@"; then
-      if [ "${GH_MODE:-ok}" = status_auto_merge_threads ]; then printf '2\n'; else printf '0\n'; fi
+      case "${GH_MODE:-ok}" in status_auto_merge_threads | status_gate_blocked_threads) printf '2\n' ;; *) printf '0\n' ;; esac
       exit 0
     fi
     if has 'autoMergeEnabledAt' "$@"; then
@@ -1694,6 +1694,26 @@ EOF
   assert_has "$TMP/out" '"mergeState":"BLOCKED"'
   assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'
   assert_not_has "$TMP/out" '"phase":"ready-to-queue"'
+
+  echo "==> a reviewed head held by an unanswered finding says so, and what to do (AUT-2280)"
+  # A fix was pushed for a finding, the new head was reviewed clean, and the
+  # finding's thread is still open. This read action-required/inspect: no
+  # step, and a driver following the phase polled it without end.
+  GH_MODE=status_gate_blocked_threads run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"mergeState":"BLOCKED"'
+  assert_has "$TMP/out" '"phase":"answer-required","nextAction":"address-review","blockers":{"failedChecks":"","pendingChecks":"","unresolvedThreads":2}'
+  assert_has "$TMP/out" '"status":"completed","conclusion":"success"'
+  assert_not_has "$TMP/out" '"phase":"action-required"'
+  # fix-required keeps its one meaning, an explicit gate failure.
+  assert_not_has "$TMP/out" '"phase":"fix-required"'
+  GH_MODE=status_gate_blocked_threads run_pr "$TMP/out" status 7
+  assert_has "$TMP/out" 'phase: answer-required'
+  assert_has "$TMP/out" 'blocked by: 2 unresolved review thread(s)'
+  assert_has "$TMP/out" 'next step: answer each open finding with touchstone pr answer 7 --comment-id'
+  # Held by something else, the same head keeps its old reading, with what was read.
+  GH_MODE=status_gate_blocked_success run_pr "$TMP/out" status 7 --json
+  assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect","blockers":{"failedChecks":"","pendingChecks":"","unresolvedThreads":0}'
   GH_MODE=status_gate_cancelled run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"completed","conclusion":"cancelled"'

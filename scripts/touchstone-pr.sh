@@ -3267,6 +3267,9 @@ PR_NEXT_COMMAND=""
 # cannot enforce it. The phase stays fix-required for compatibility, and this
 # says the failure may be a wait (AUT-1635).
 PR_GATE_FAILURE_MAY_BE_WAITING=false
+# Whether this classification read the head's blockers outside the armed
+# phases, which always do: the JSON carries them when it did.
+PR_HEAD_BLOCKERS_READ=false
 
 # A concluded review-gate failure. Under contracts 1-3 the gate waited for
 # evidence before it failed, so its failure is findings to address.
@@ -3304,6 +3307,7 @@ classify_pr_phase() {
   PR_NEXT_ACTION=inspect
   PR_NEXT_COMMAND=""
   PR_GATE_FAILURE_MAY_BE_WAITING=false
+  PR_HEAD_BLOCKERS_READ=false
 
   if [ "$state" = MERGED ]; then
     PR_PHASE=merged
@@ -3414,6 +3418,24 @@ classify_pr_phase() {
           PR_PHASE=ready-to-queue
           PR_NEXT_ACTION=queue
           PR_NEXT_COMMAND="touchstone pr merge $number --head $head"
+        else
+          # Reviewed at this head and still not mergeable. One cause has a
+          # remedy a driver can take from here: a finding nobody answered.
+          # A fix pushed for a finding leaves its thread open, the new head
+          # is reviewed clean, and GitHub holds the merge on the thread. That
+          # was reported as action-required/inspect, which names no step, and
+          # a consumer driving from the phase polled it without end
+          # (AUT-2280, lanternfall#12). It is a phase of its own, added and
+          # never a new meaning for fix-required, which stays an explicit
+          # gate failure. Its next action is the one findings already have,
+          # address-review: answer each with `pr answer`. The count is in
+          # blockers. A head held by anything else stays action-required.
+          read_head_blockers "$number" "$head"
+          PR_HEAD_BLOCKERS_READ=true
+          if [ "$HEAD_UNRESOLVED_THREADS" -gt 0 ]; then
+            PR_PHASE=answer-required
+            PR_NEXT_ACTION=address-review
+          fi
         fi
       elif [ "$gate_conclusion" = failure ]; then
         classify_review_gate_failure
@@ -3813,6 +3835,12 @@ status_pr() {
         printf ',"blockers":'
         head_blockers_json
         ;;
+      *)
+        if [ "$PR_HEAD_BLOCKERS_READ" = true ]; then
+          printf ',"blockers":'
+          head_blockers_json
+        fi
+        ;;
     esac
     printf ',"reviewGateCheck":%s' "$gate_check_json"
     [ "$REQUIRED_RUNS_REFUSED_JSON" = "[]" ] || printf ',"actionsRefusedRuns":%s' "$REQUIRED_RUNS_REFUSED_JSON"
@@ -3847,6 +3875,11 @@ status_pr() {
         [ -z "$HEAD_PENDING_CHECKS" ] || printf '  still running: %s\n' "$HEAD_PENDING_CHECKS"
         ;;
       armed-waiting-checks) printf '  waiting on: %s\n' "$HEAD_PENDING_CHECKS" ;;
+      answer-required)
+        # Reviewed here and held by a finding nobody answered (AUT-2280).
+        printf '  blocked by: %s unresolved review thread(s)\n' "$HEAD_UNRESOLVED_THREADS"
+        printf '  next step: answer each open finding with touchstone pr answer %s --comment-id <id> --body-file <file> (--fix-commit <sha> | --no-code-change) --head %s\n' "$number" "$head"
+        ;;
     esac
     if [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '(.present // false) and (.status // "") == "completed" and (.conclusion // "") == "success"')" = true ]; then
       printf '  review: this head is reviewed (review-gate passed); a reviewer quota notice on the PR is not a blocker and not a wait.\n'
