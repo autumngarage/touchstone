@@ -4,7 +4,7 @@
 # policy from the canonical Touchstone policy.
 #
 # Usage:
-#   bash scripts/derive-consumer-policy.sh REPOSITORY [--no-queue]
+#   bash scripts/derive-consumer-policy.sh REPOSITORY [--no-queue] [--build-concurrency N]
 #     [--require-status CONTEXT]...
 #     [--require-merge-group-status CONTEXT]...
 #     > policy/github/consumers/REPOSITORY.json
@@ -12,9 +12,8 @@
 # A consumer's policy is the canonical policy with the repository name
 # substituted everywhere it appears as an ownership coordinate, and without
 # Touchstone's own rollback prerequisites (the legacy local workflow no
-# consumer ever carried). Nothing else may differ: one contract, many
-# repositories. tests/test-github-policy.sh refuses a checked-in consumer
-# policy that does not equal this derivation.
+# consumer ever carried). Explicit capacity, status and path-set declarations
+# are derived below; tests/test-github-policy.sh refuses any other drift.
 #
 # --no-queue drops the companion merge-queue ruleset for a repository whose
 # current GitHub plan or visibility does not support it. The compatibility
@@ -38,7 +37,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 usage() {
-  echo "usage: derive-consumer-policy.sh REPOSITORY [--no-queue] [--require-status CONTEXT]... [--require-merge-group-status CONTEXT]... [--path-set NAME=FILE]..." >&2
+  echo "usage: derive-consumer-policy.sh REPOSITORY [--no-queue] [--build-concurrency N] [--require-status CONTEXT]... [--require-merge-group-status CONTEXT]... [--path-set NAME=FILE]..." >&2
   exit 2
 }
 REPOSITORY="${1:-}"
@@ -47,6 +46,7 @@ case "$REPOSITORY" in
 esac
 shift
 QUEUE=true
+QUEUE_BUILD_CONCURRENCY=""
 STATUS_CONTEXTS=()
 # Counted explicitly: under bash 3.2 with set -u, ${#array[@]} on an empty
 # array is an unbound-variable error.
@@ -60,6 +60,15 @@ while [ "$#" -gt 0 ]; do
     --no-queue)
       QUEUE=false
       shift
+      ;;
+    --build-concurrency)
+      [ "$#" -ge 2 ] || usage
+      [ -z "$QUEUE_BUILD_CONCURRENCY" ] || usage
+      # GitHub's native build-concurrency range is 1..100; canonical decimals
+      # avoid jq accepting non-numeric input or shell octal/overflow surprises.
+      [[ "$2" =~ ^[1-9][0-9]{0,2}$ ]] && [ "$2" -le 100 ] || usage
+      QUEUE_BUILD_CONCURRENCY="$2"
+      shift 2
       ;;
     --require-status)
       [ "$#" -ge 2 ] || usage
@@ -119,6 +128,10 @@ while [ "$#" -gt 0 ]; do
     *) usage ;;
   esac
 done
+if [ "$QUEUE" = false ] && [ -n "$QUEUE_BUILD_CONCURRENCY" ]; then
+  echo "derive-consumer-policy.sh: --build-concurrency needs the merge queue" >&2
+  exit 2
+fi
 # A pull-request status cannot gate a queued consumer: the queue commit would
 # never carry the context and every entry would be rejected. The distinct
 # merge-group flag is the explicit assertion that makes the queued case safe.
@@ -175,7 +188,7 @@ if [ "$PATH_SET_COUNT" -gt 0 ]; then
   done
 fi
 
-derived="$(jq --arg repo "$REPOSITORY" --argjson queue "$QUEUE" --argjson contexts "$contexts_json" --argjson pathSets "$path_sets_json" '
+derived="$(jq --arg repo "$REPOSITORY" --argjson queue "$QUEUE" --argjson contexts "$contexts_json" --argjson pathSets "$path_sets_json" --argjson buildConcurrency "${QUEUE_BUILD_CONCURRENCY:-null}" '
   .repository = $repo
   | .rollbackPrerequisites.repositoryFiles = []
   | .managedRuleset.name = "Touchstone policy v\(.contractVersion): \(.organization)/\($repo)@\(.branch)"
@@ -192,6 +205,9 @@ derived="$(jq --arg repo "$REPOSITORY" --argjson queue "$QUEUE" --argjson contex
     else . end
   | if $queue then
       .managedRepositoryRuleset.name = "Touchstone merge queue v\(.contractVersion): \(.organization)/\($repo)@\(.branch)"
+      | if $buildConcurrency != null then
+          .managedRepositoryRuleset.rules |= map(if .type == "merge_queue" then .parameters.max_entries_to_build = $buildConcurrency else . end)
+        else . end
     else
       .managedRepositoryRuleset = null
     end

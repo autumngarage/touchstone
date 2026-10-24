@@ -716,6 +716,27 @@ echo "==> Checked-in consumer policies equal their derivation"
 # canonical one only in the repository coordinates and the absence of
 # Touchstone's own rollback prerequisites.
 bash "$ROOT/scripts/derive-consumer-policy.sh" vesper --no-queue extra >/dev/null 2>&1 && fail "derive accepted a surplus argument" || ok "derive refuses surplus arguments"
+echo "==> Native queue build concurrency changes capacity only"
+queue_default="$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary)"
+for concurrency in 1 6 100; do
+  queue_capacity="$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --build-concurrency "$concurrency")"
+  diff -u <(jq -S --argjson n "$concurrency" '.managedRepositoryRuleset.rules |= map(if .type == "merge_queue" then .parameters.max_entries_to_build = $n else . end)' <<<"$queue_default") \
+    <(jq -S . <<<"$queue_capacity") >/dev/null \
+    || fail "concurrency $concurrency changed something besides native build capacity"
+done
+for concurrency in '' 0 101 -1 01 1.5 abc 999999999999999999999; do
+  capacity_rc=0
+  bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --build-concurrency "$concurrency" >/dev/null 2>&1 || capacity_rc=$?
+  [ "$capacity_rc" = 2 ] || fail "invalid concurrency '$concurrency' did not exit 2"
+done
+for capacity_args in '--build-concurrency' '--no-queue --build-concurrency 6' '--build-concurrency 6 --build-concurrency 2'; do
+  capacity_rc=0
+  # Deliberate splitting: these fixtures are CLI argument lists.
+  # shellcheck disable=SC2086
+  bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary $capacity_args >/dev/null 2>&1 || capacity_rc=$?
+  [ "$capacity_rc" = 2 ] || fail "invalid queue capacity combination '$capacity_args' did not exit 2"
+done
+ok "native capacity accepts 1 through 100 without changing merge/review policy and rejects invalid declarations"
 # Stock macOS /bin/bash is 3.2; the empty --require-status case must derive
 # there too (set -u and empty arrays are where 3.2 differs).
 if [ -x /bin/bash ] && /bin/bash -c '[ "${BASH_VERSINFO[0]}" -le 4 ]' 2>/dev/null; then
@@ -805,11 +826,14 @@ for consumer in "$ROOT"/policy/github/consumers/*.json; do
   # A consumer-owned required status uses the flag matching its checked-in
   # queue shape: pull_request-only when queue-less, merge_group when queued.
   derive_flags=()
+  consumer_concurrency=""
   if jq -e '.managedRepositoryRuleset == null' "$consumer" >/dev/null; then
     derive_flags+=(--no-queue)
     status_flag=--require-status
   else
     status_flag=--require-merge-group-status
+    consumer_concurrency="$(jq -r '.managedRepositoryRuleset.rules[] | select(.type == "merge_queue") | .parameters.max_entries_to_build' "$consumer")"
+    derive_flags+=(--build-concurrency "$consumer_concurrency")
   fi
   while IFS= read -r context; do
     [ -n "$context" ] && derive_flags+=("$status_flag" "$context")
@@ -823,6 +847,7 @@ for consumer in "$ROOT"/policy/github/consumers/*.json; do
   # retype. Printing the scratch paths would hand the reader a command whose
   # files are gone by the time they read it.
   derive_hint=()
+  [ -z "$consumer_concurrency" ] || derive_hint+=(--build-concurrency "$consumer_concurrency")
   while IFS= read -r set_name; do
     [ -n "$set_name" ] || continue
     [ -n "$consumer_sets_dir" ] || consumer_sets_dir="$(mktemp -d -t touchstone-consumer-pathset.XXXXXX)"
@@ -858,6 +883,7 @@ jq -e 'any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")' \
 # must also wait for that exact prospective-merge verdict.
 jq -e '
   any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")
+  and any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue" and .parameters.max_entries_to_build == 6)
   and [.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] == ["App tests, Release bundle, and daemon smoke"]
 ' \
   "$ROOT/policy/github/consumers/hesperus.json" >/dev/null \
