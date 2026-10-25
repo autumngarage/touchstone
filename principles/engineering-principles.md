@@ -8,6 +8,17 @@ Fix the root cause. If a symptom patch is the safer scoped change, document the 
 ## Extend existing systems before inventing new ones
 Before adding a system, search for the one that already owns the responsibility. Prefer extending and improving it over building a parallel mechanism. Reuse follows shared responsibility, not similar-looking code. A new system needs a concrete requirement the existing one cannot reasonably support; reuse does not authorize an unrelated migration.
 
+Reviewers must check architectural fit beyond the changed lines: read the relevant
+design decisions and trace existing owners, implementations, and callers. Check
+whether new code duplicates a responsibility, creates a competing source of truth,
+bypasses an established owner, breaks an abstraction boundary, or adds a layer
+without a current requirement. A finding names the existing owner or recorded
+invariant and the concrete consequence introduced by the change. Respect justified
+isolation and explicit migrations; similar code alone does not justify coupling
+unrelated responsibilities. Preserve the review severity bar and approved scope:
+design preferences are not blocking defects or permission for adjacent refactors.
+State unavailable repository context as a limitation, not a completed check.
+
 ## Choose the simplest design that meets the requirement
 Build for demonstrated needs. Each abstraction, option, dependency, and layer must justify its complexity by helping satisfy the current requirement or making the system easier to understand or change. Prefer clear names and direct control flow. Simplicity means fewer concepts and interactions to understand, not the fewest lines; small duplication can be cheaper than coupling unrelated responsibilities.
 

@@ -41,6 +41,7 @@ select_review_request() {
 # One hosted-review instruction for open and answer; markers remain unchanged.
 review_request_body() {
   printf '%s\n\n' '@codex review' \
-    'Report only P0/P1 defects that should block this change. Omit P2/P3 findings; do not raise their severity to include them. Keep each finding brief: trigger, consequence, and needed correction.'
+    'Report only P0/P1 defects that should block this change. Omit P2/P3 findings; do not raise their severity to include them. Keep each finding brief: trigger, consequence, and needed correction.' \
+    'Check architectural fit beyond the diff: read the relevant design decisions and search existing implementations and callers for the responsibility being added. Look for duplicate solutions, competing sources of truth, bypassed subsystem owners, broken abstraction boundaries, and new layers without a current requirement. Cite the existing owner or recorded invariant and the concrete consequence introduced by this change. Similar code alone is not duplication of responsibility; respect justified isolation and explicit migrations. Do not request speculative refactors or elevate design preferences to P0/P1. If repository context is unavailable, state that limitation rather than claiming the architecture was checked.'
   printf '%s\n' "$@"
 }

@@ -34,6 +34,17 @@ ok() {
   assert_not_has() { grep -qF -- "$2" "$1" && fail "expected $1 not to contain: $2" || true; }
   assert_rc() { [ "$1" -eq "$2" ] || fail "expected rc $2, got $1"; }
 
+  echo "==> shared open/answer requests include an evidence-based architectural check"
+  source "$ROOT/scripts/lib/touchstone-review-request.sh"
+  review_request_body '<!-- touchstone:pr-open head=test base=main base_sha=base -->' >"$TMP/review-request"
+  assert_has "$TMP/review-request" 'Check architectural fit beyond the diff'
+  assert_has "$TMP/review-request" 'search existing implementations and callers'
+  assert_has "$TMP/review-request" 'Cite the existing owner or recorded invariant'
+  assert_has "$TMP/review-request" 'do not raise their severity'
+  assert_has "$TMP/review-request" 'If repository context is unavailable, state that limitation'
+  [ "$(head -n 1 "$TMP/review-request")" = '@codex review' ] || fail 'review invocation changed'
+  [ "$(tail -n 1 "$TMP/review-request")" = '<!-- touchstone:pr-open head=test base=main base_sha=base -->' ] || fail 'review coordinates changed'
+
   mkdir -p "$TMP/bin" "$TMP/project/policy/github" "$TMP/origin.git" "$TMP/state"
   git -C "$TMP/origin.git" init -q --bare
   git -C "$TMP/project" init -q -b main
@@ -3368,7 +3379,7 @@ Closes #42'
     run_pr "$TMP/out" open --title 'Moved-base PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" "touchstone:pr-open head=$HEAD_SHA base=main base_sha=release-sha"
-  GH_BASE_SHA=base-sha
+  GH_BASE_SHA='base-sha'
 
   echo "==> review findings and responses stay on the canonical GitHub surface"
   run_pr "$TMP/out" findings 7 --json
