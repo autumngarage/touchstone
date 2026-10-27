@@ -122,7 +122,7 @@ Write the context before the shipping commit, not for exploratory checkpoints.
 
 ## Validation
 - Build: <exact command and result>
-- Automated tests: <exact command and result>
+- Automated tests: <exact command and result; distinct behavior covered, reused checks, and material build/fixture cost when changed>
 - Manual validation: <specific scenario and result>
 - Review budget: v2 capability=<tracker ref> fix_rounds=<fix rounds spent on this PR> prior_fix_rounds=<fix rounds on this capability's replaced PRs> reviewed_head=<40-character SHA or none> cascade=<true|false> exit=<continue|merge-answered|revert-simplify|split|close-replan>
 

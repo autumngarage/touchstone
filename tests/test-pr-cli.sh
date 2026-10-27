@@ -41,6 +41,8 @@ ok() {
   assert_has "$TMP/review-request" 'search existing implementations and callers'
   assert_has "$TMP/review-request" 'Cite the existing owner or recorded invariant'
   assert_has "$TMP/review-request" 'do not raise their severity'
+  assert_has "$TMP/review-request" 'existing coverage it could extend'
+  assert_has "$TMP/review-request" 'Preserve real boundary coverage'
   assert_has "$TMP/review-request" 'If repository context is unavailable, state that limitation'
   [ "$(head -n 1 "$TMP/review-request")" = '@codex review' ] || fail 'review invocation changed'
   [ "$(tail -n 1 "$TMP/review-request")" = '<!-- touchstone:pr-open head=test base=main base_sha=base -->' ] || fail 'review coordinates changed'
