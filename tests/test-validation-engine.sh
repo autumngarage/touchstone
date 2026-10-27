@@ -199,7 +199,7 @@ cmp -s "$TMP_DIR/contract-only.out" "$TMP_DIR/contract-only-readonly.out" \
 [ ! -e "$CONTRACT_ONLY/command-ran" ] || fail "contract check executed a task"
 run_capture "$CONTRACT_ONLY" "$TMP_DIR/contract-only-json.out" --check-contract --json
 [ "$RUN_STATUS" -eq 0 ] || fail "JSON contract-only validation failed"
-[ "$(cat "$TMP_DIR/contract-only-json.out")" = '{"schema":1,"verdict":"valid","runner":"ubuntu-latest"}' ] \
+[ "$(cat "$TMP_DIR/contract-only-json.out")" = '{"schema":1,"verdict":"valid","runner":"ubuntu-latest","groups":[{"name":"default","tasks":["test"]}]}' ] \
   || fail "contract-only JSON payload changed"
 [ ! -e "$CONTRACT_ONLY/setup-ran" ] || fail "JSON contract check executed setup"
 [ ! -e "$CONTRACT_ONLY/command-ran" ] || fail "JSON contract check executed a task"
@@ -210,7 +210,7 @@ write_contract "$V2_REPORT" "true"
 sed 's/^schema = 1$/schema = 2/' "$V2_REPORT/.touchstone.toml" >"$V2_REPORT/v2" && mv "$V2_REPORT/v2" "$V2_REPORT/.touchstone.toml"
 run_capture "$V2_REPORT" "$TMP_DIR/v2-report.out" --check-contract --json
 [ "$RUN_STATUS" -eq 0 ] || fail "schema-2 contract-only validation failed"
-[ "$(cat "$TMP_DIR/v2-report.out")" = '{"schema":2,"verdict":"valid","runner":"ubuntu-latest"}' ] \
+[ "$(cat "$TMP_DIR/v2-report.out")" = '{"schema":2,"verdict":"valid","runner":"ubuntu-latest","groups":[{"name":"default","tasks":["test"]}]}' ] \
   || fail "schema-2 contract-only JSON did not report schema 2: $(cat "$TMP_DIR/v2-report.out")"
 
 echo "==> a declared runner is reported for the central workflow to schedule on"
@@ -221,7 +221,7 @@ awk '{ print; if ($0 == "runtime = \"bash\"") print "runner = \"macos-15\"" }' \
 mv "$RUNNER_DECL/with-runner" "$RUNNER_DECL/.touchstone.toml"
 run_capture "$RUNNER_DECL" "$TMP_DIR/runner-decl.out" --check-contract --json
 [ "$RUN_STATUS" -eq 0 ] || fail "a declared runner was refused"
-[ "$(cat "$TMP_DIR/runner-decl.out")" = '{"schema":1,"verdict":"valid","runner":"macos-15"}' ] \
+[ "$(cat "$TMP_DIR/runner-decl.out")" = '{"schema":1,"verdict":"valid","runner":"macos-15","groups":[{"name":"default","tasks":["test"]}]}' ] \
   || fail "declared runner not reported: $(cat "$TMP_DIR/runner-decl.out")"
 run_capture "$RUNNER_DECL" "$TMP_DIR/runner-decl-run.out" --json
 [ "$RUN_STATUS" -eq 0 ] || fail "validation with a declared runner failed locally"
@@ -477,7 +477,7 @@ for fixture in unsupported duplicate escape unknown; do
   dir="$TMP_DIR/$fixture"
   write_contract "$dir" "true"
   case "$fixture" in
-    unsupported) sed 's/schema = 1/schema = 3/' "$dir/.touchstone.toml" >"$dir/new" ;;
+    unsupported) sed 's/schema = 1/schema = 4/' "$dir/.touchstone.toml" >"$dir/new" ;;
     duplicate)
       awk '{ print; if ($0 == "path = \".\"") print "name = \"root-again\"" }' \
         "$dir/.touchstone.toml" >"$dir/new"
@@ -1268,7 +1268,7 @@ assert_contains "$ADOPTION/ambiguous.json" 'competing project evidence found: np
 
 UNSUPPORTED="$ADOPTION/unsupported"
 new_adoption_repo "$UNSUPPORTED"
-printf 'schema = 3\n' >"$UNSUPPORTED/.touchstone.toml"
+printf 'schema = 4\n' >"$UNSUPPORTED/.touchstone.toml"
 git -C "$UNSUPPORTED" add .touchstone.toml
 git -C "$UNSUPPORTED" commit -qm unsupported
 run_adoption "$ADOPTION/unsupported.out" adopt --dry-run --project "$UNSUPPORTED"
@@ -2226,7 +2226,7 @@ fi
 
 echo "==> an unsupported schema still fails closed"
 V3="$STAGE_TMP/v3"
-make_stage_project "$V3" 'schema = 3
+make_stage_project "$V3" 'schema = 4
 
 [validation]
 runtime = "bash"
@@ -2241,7 +2241,7 @@ target = "root"
 command = "true"
 required = true'
 if bash "$RUN_ENGINE" validate --project "$V3" >/dev/null 2>&1; then
-  fail "schema 3 was accepted"
+  fail "schema 4 was accepted"
 else
   pass "an unsupported schema is rejected"
 fi
@@ -2424,3 +2424,202 @@ if [ "$FAILURES" -ne 0 ]; then
   exit 1
 fi
 echo "==> PASS: execution stages select tasks and schema 1 is unchanged"
+
+# ---------------------------------------------------------------------------
+# Schema-3 execution groups. A group is a scheduler shard: it narrows which
+# stage tasks one invocation executes so a workflow can fan groups out into
+# parallel jobs, and it must never change a verdict. These assertions cover
+# group selection, stage orthogonality, the contract inventory, and
+# fail-closed handling.
+echo ""
+echo "==> Schema-3 execution groups"
+GROUPS_TMP="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-groups.XXXXXX")"
+trap 'rm -rf "$TMP_DIR" "$STAGE_TMP" "$GROUPS_TMP"' EXIT
+FAILURES=0
+
+GROUPED="$GROUPS_TMP/grouped"
+make_stage_project "$GROUPED" 'schema = 3
+
+[validation]
+runtime = "bash"
+setup = "echo SETUP_SENTINEL"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "a1"
+target = "root"
+group = "alpha"
+command = "echo A1_SENTINEL"
+required = true
+
+[[validation.tasks]]
+name = "b1"
+target = "root"
+group = "beta"
+command = "echo B1_SENTINEL"
+required = true
+
+[[validation.tasks]]
+name = "guard"
+target = "root"
+stage = "commit"
+group = "beta"
+command = "echo GUARD_SENTINEL"
+required = true
+
+[[validation.tasks]]
+name = "plain"
+target = "root"
+command = "echo PLAIN_SENTINEL"
+required = true
+
+[[validation.tasks]]
+name = "g1"
+target = "root"
+stage = "commit"
+group = "gamma"
+command = "echo G1_SENTINEL"
+required = true'
+
+echo "==> an ungrouped run executes every group"
+out="$(bash "$RUN_ENGINE" validate --project "$GROUPED" 2>&1)"
+case "$out" in
+  *A1_SENTINEL*B1_SENTINEL*PLAIN_SENTINEL*) pass "all groups ran in declaration order" ;;
+  *) fail "ungrouped run missed a group: $out" ;;
+esac
+case "$out" in
+  *GUARD_SENTINEL* | *G1_SENTINEL*) fail "a commit-stage task ran at enforce" ;;
+  *) pass "commit-stage tasks still excluded at enforce" ;;
+esac
+
+echo "==> --group narrows the run to one group"
+out="$(bash "$RUN_ENGINE" validate --group alpha --project "$GROUPED" 2>&1)"
+case "$out" in
+  *A1_SENTINEL*) pass "alpha task ran" ;;
+  *) fail "alpha task missing: $out" ;;
+esac
+case "$out" in
+  *B1_SENTINEL* | *PLAIN_SENTINEL*) fail "another group's task ran under --group alpha" ;;
+  *) pass "no other group ran" ;;
+esac
+case "$out" in
+  *SETUP_SENTINEL*) pass "setup still runs for a selected group" ;;
+  *) fail "setup skipped for a selected group" ;;
+esac
+out="$(bash "$RUN_ENGINE" validate --group default --project "$GROUPED" 2>&1)"
+case "$out" in
+  *PLAIN_SENTINEL*) pass "ungrouped tasks form the default group" ;;
+  *) fail "default group missing its task: $out" ;;
+esac
+
+echo "==> group and stage select independently"
+out="$(bash "$RUN_ENGINE" validate --stage commit --group beta --project "$GROUPED" 2>&1)"
+case "$out" in
+  *GUARD_SENTINEL*) pass "beta commit guard ran at commit stage" ;;
+  *) fail "beta commit guard missing: $out" ;;
+esac
+case "$out" in
+  *B1_SENTINEL*) fail "beta enforce task ran at commit stage" ;;
+  *) pass "beta enforce task excluded at commit stage" ;;
+esac
+
+echo "==> a group with nothing at the selected stage still fails closed"
+set +e
+out="$(bash "$RUN_ENGINE" validate --group gamma --project "$GROUPED" 2>&1)"
+status=$?
+set -e
+[ "$status" -ne 0 ] || fail "an enforce run of a commit-only group passed"
+case "$out" in
+  *'NOTHING RAN'*) pass "empty enforce selection kept the nothing-ran failure" ;;
+  *) fail "empty enforce selection was not named: $out" ;;
+esac
+
+echo "==> an unknown --group is refused before anything runs"
+set +e
+out="$(bash "$RUN_ENGINE" validate --group nope --project "$GROUPED" 2>&1)"
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "unknown group did not exit 2 (got $status)"
+case "$out" in
+  *"unknown group 'nope'"*) pass "unknown group named" ;;
+  *) fail "unknown group not named: $out" ;;
+esac
+case "$out" in
+  *SENTINEL*) fail "a task ran under an unknown group" ;;
+  *) pass "nothing ran under an unknown group" ;;
+esac
+
+echo "==> contract JSON inventories groups for the selected stage"
+out="$(bash "$RUN_ENGINE" validate --check-contract --json --project "$GROUPED" 2>&1)"
+[ "$out" = '{"schema":3,"verdict":"valid","runner":"ubuntu-latest","groups":[{"name":"alpha","tasks":["a1"]},{"name":"beta","tasks":["b1"]},{"name":"default","tasks":["plain"]}]}' ] \
+  || fail "enforce group inventory changed: $out"
+[ "$out" = '{"schema":3,"verdict":"valid","runner":"ubuntu-latest","groups":[{"name":"alpha","tasks":["a1"]},{"name":"beta","tasks":["b1"]},{"name":"default","tasks":["plain"]}]}' ] \
+  && pass "enforce inventory lists groups in declaration order"
+out="$(bash "$RUN_ENGINE" validate --stage commit --check-contract --json --project "$GROUPED" 2>&1)"
+[ "$out" = '{"schema":3,"verdict":"valid","runner":"ubuntu-latest","groups":[{"name":"beta","tasks":["guard"]},{"name":"gamma","tasks":["g1"]}]}' ] \
+  || fail "commit group inventory changed: $out"
+[ "$out" = '{"schema":3,"verdict":"valid","runner":"ubuntu-latest","groups":[{"name":"beta","tasks":["guard"]},{"name":"gamma","tasks":["g1"]}]}' ] \
+  && pass "commit inventory lists only commit-stage tasks"
+
+echo "==> group before schema 3 is a contract error"
+GROUP_EARLY="$GROUPS_TMP/group-early"
+make_stage_project "$GROUP_EARLY" 'schema = 2
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "suite"
+target = "root"
+group = "alpha"
+command = "true"
+required = true'
+set +e
+out="$(bash "$RUN_ENGINE" validate --project "$GROUP_EARLY" 2>&1)"
+status=$?
+set -e
+[ "$status" -ne 0 ] || fail "a group in schema 2 was accepted"
+case "$out" in
+  *'task group requires schema = 3'*) pass "schema-2 group refused by name" ;;
+  *) fail "schema-2 group refusal not named: $out" ;;
+esac
+
+echo "==> an unusable group name is a contract error"
+GROUP_BAD="$GROUPS_TMP/group-bad"
+make_stage_project "$GROUP_BAD" 'schema = 3
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "suite"
+target = "root"
+group = "not a group"
+command = "true"
+required = true'
+set +e
+out="$(bash "$RUN_ENGINE" validate --project "$GROUP_BAD" 2>&1)"
+status=$?
+set -e
+[ "$status" -ne 0 ] || fail "an invalid group name was accepted"
+case "$out" in
+  *"invalid group name"*) pass "invalid group name refused by name" ;;
+  *) fail "invalid group name not named: $out" ;;
+esac
+
+if [ "$FAILURES" -ne 0 ]; then
+  echo "$FAILURES group check(s) failed" >&2
+  exit 1
+fi
+echo "==> PASS: execution groups select tasks, inventory is exact, and schemas 1-2 are unchanged"

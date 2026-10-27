@@ -352,7 +352,7 @@ touchstone/
 ```
 
 `scripts/touchstone-run.sh` is the declaration-only validation engine,
-accepting schema 1 and schema 2; its contract lives in [docs/validation-contract.md](docs/validation-contract.md).
+accepting schema 1, schema 2, and schema 3; its contract lives in [docs/validation-contract.md](docs/validation-contract.md).
 `scripts/touchstone-tracker.sh` owns the tracker-neutral verified claim boundary;
 its versioned outcomes live in [docs/tracker-contract.md](docs/tracker-contract.md).
 `scripts/touchstone-pr.sh` owns the `open`, `status`, and `merge` sequencing
