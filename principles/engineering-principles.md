@@ -37,7 +37,11 @@ Propagate failures or report them with enough context to diagnose them, without 
 ## Every retained fix gets a test
 Defer test authoring, fixture updates, and test scaffolding during iteration, following [Exploration and shipping](local-review.md#exploration-and-shipping). Complete required coverage before the shipping push once the user ends iteration.
 
-Retained bug fixes need a CI regression test that reproduces the failure: it must fail on the old code and pass on the new code. Test observable behavior, not implementation structure. A regression test does not justify retaining a review fix that created another defect; revert or simplify that fix before another mutation.
+Retained bug fixes need CI regression evidence that fails on the old code and passes on the new code. Reuse an already-failing check or extend an existing case before adding a test, file, fixture, or harness. Test observable behavior, not implementation structure. A regression test does not justify retaining a review fix that created another defect; revert or simplify that fix before another mutation.
+
+Each added test must catch a distinct plausible defect. Use the smallest responsible layer and fixture; explain why a subprocess, compiler, browser, database, or full-system setup is necessary. Keep integration coverage for real boundary behavior, not repetitions of lower-layer assertions. Derive expected results from the requirement, never by copying the implementation. Prefer behavior assertions over private call order or source spelling unless that structure is itself a supported contract.
+
+Test count and coverage percentage are not goals. Trivial changes with no behavior change use applicable existing checks. Before pruning, identify the retained owner of each assertion and verify equivalent defect detection; consistent passing alone is not redundancy. Separate assertion failures from compilation, resource exhaustion, and infrastructure failures. Measure compilation and execution separately before claiming savings.
 
 ## Think in invariants
 For nontrivial logic, name at least one invariant and assert it in a test or runtime boundary check. Make invalid states hard to represent: prefer explicit states and transitions over independent flags that permit contradictions, and validate external inputs at the boundary. Tests exercise an invariant over covered cases; they do not prove it for untested inputs.
