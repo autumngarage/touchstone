@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 #
-# scripts/touchstone-run.sh — execute .touchstone.toml declarations (schema 1 and 2).
+# scripts/touchstone-run.sh — execute .touchstone.toml declarations (schema 1, 2 and 3).
 #
 # Usage:
-#   bash scripts/touchstone-run.sh validate [--stage STAGE] [--check-contract] [--json] [--project DIR] [--config FILE]
+#   bash scripts/touchstone-run.sh validate [--stage STAGE] [--group GROUP] [--check-contract] [--json] [--project DIR] [--config FILE]
 #
 # --stage selects which declared tasks run. Default 'enforce' runs every task
 # a gate must see; 'commit' runs only authoring guards, which are local fast
 # feedback and never a gate. Schema 1 has no stages: all its tasks are
 # enforce-stage, so schema-1 declarations behave identically.
+#
+# --group (schema 3) narrows a run to one declared group so a scheduler can
+# run groups in parallel jobs; without it every group runs in declaration
+# order, exactly as before groups existed.
 #
 # This is the single validation engine used by the local CLI boundary and the
 # organization-required workflow. It executes declarations; it never detects a
@@ -24,6 +28,7 @@ CHECK_CONTRACT=false
 PROJECT_ARG=""
 CONFIG_ARG=".touchstone.toml"
 STAGE_ARG="enforce"
+GROUP_ARG=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -47,6 +52,20 @@ while [ "$#" -gt 0 ]; do
           exit 2
           ;;
       esac
+      shift 2
+      ;;
+    --group)
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --group requires a group name" >&2
+        exit 2
+      }
+      case "$2" in
+        "" | *[!A-Za-z0-9._-]*)
+          echo "ERROR: invalid group name '$2'" >&2
+          exit 2
+          ;;
+      esac
+      GROUP_ARG="$2"
       shift 2
       ;;
     --project)
@@ -269,6 +288,7 @@ BLOCK_TARGET=""
 BLOCK_COMMAND=""
 BLOCK_REQUIRED=""
 BLOCK_STAGE=""
+BLOCK_GROUP=""
 SEEN_KEYS=""
 
 key_seen() {
@@ -310,8 +330,12 @@ finalize_block() {
     # Schema 1 declares no stages; every task is enforce-stage, preserving
     # schema-1 meaning exactly.
     [ -n "$BLOCK_STAGE" ] || BLOCK_STAGE=enforce
+    # Schemas 1 and 2 declare no groups; every task is in the one default
+    # group, preserving their meaning exactly.
+    [ -n "$BLOCK_GROUP" ] || BLOCK_GROUP=default
+    valid_identifier "$BLOCK_GROUP" || config_error "invalid group name '$BLOCK_GROUP'"
     append_validation_record "$TASKS_FILE" \
-      "$BLOCK_NAME	$BLOCK_TARGET	$BLOCK_REQUIRED	$BLOCK_STAGE	$BLOCK_COMMAND"
+      "$BLOCK_NAME	$BLOCK_TARGET	$BLOCK_REQUIRED	$BLOCK_STAGE	$BLOCK_GROUP	$BLOCK_COMMAND"
   fi
 
   BLOCK=""
@@ -321,6 +345,7 @@ finalize_block() {
   BLOCK_COMMAND=""
   BLOCK_REQUIRED=""
   BLOCK_STAGE=""
+  BLOCK_GROUP=""
   SEEN_KEYS=""
 }
 
@@ -419,13 +444,21 @@ while IFS= read -r line || [ -n "$line" ]; do
       BLOCK_REQUIRED="$PARSED_VALUE"
       ;;
     task:stage)
-      [ "$SCHEMA_VERSION" = 2 ] \
-        || config_error "task stage requires schema = 2 at line $LINE_NUMBER"
+      case "$SCHEMA_VERSION" in
+        2 | 3) ;;
+        *) config_error "task stage requires schema = 2 or 3 at line $LINE_NUMBER" ;;
+      esac
       parse_string "$raw_value" || config_error "task stage must be a single-line basic string at line $LINE_NUMBER"
       case "$PARSED_VALUE" in
         enforce | commit) BLOCK_STAGE="$PARSED_VALUE" ;;
         *) config_error "unknown task stage '$PARSED_VALUE' at line $LINE_NUMBER; expected 'enforce' or 'commit'" ;;
       esac
+      ;;
+    task:group)
+      [ "$SCHEMA_VERSION" = 3 ] \
+        || config_error "task group requires schema = 3 at line $LINE_NUMBER"
+      parse_string "$raw_value" || config_error "task group must be a single-line basic string at line $LINE_NUMBER"
+      BLOCK_GROUP="$PARSED_VALUE"
       ;;
     *) config_error "unknown key '$key' in $SECTION at line $LINE_NUMBER" ;;
   esac
@@ -433,21 +466,32 @@ done <"$CONFIG_FILE"
 finalize_block
 
 case "$SCHEMA_VERSION" in
-  1 | 2) ;;
+  1 | 2 | 3) ;;
   "") config_error "missing schema = 1" ;;
-  *) config_error "unsupported schema '$SCHEMA_VERSION'; this runtime accepts schema 1 and 2" ;;
+  *) config_error "unsupported schema '$SCHEMA_VERSION'; this runtime accepts schema 1, 2 and 3" ;;
 esac
 [ "$VALIDATION_SEEN" = true ] || config_error "missing [validation] section"
 [ "$RUNTIME" = bash ] || config_error "schema 1 requires runtime = \"bash\""
 [ -n "$(validation_records "$TARGETS_FILE")" ] || config_error "schema 1 requires at least one explicit target"
 [ -n "$(validation_records "$TASKS_FILE")" ] || config_error "schema 1 requires at least one explicit task"
 
-while IFS="$(printf '\t')" read -r task_name task_target _task_required _task_stage _task_command; do
+while IFS="$(printf '\t')" read -r task_name task_target _task_required _task_stage _task_group _task_command; do
   if ! validation_records "$TARGETS_FILE" \
     | awk -F '\t' -v name="$task_target" '$1 == name { found=1 } END { exit !found }'; then
     config_error "task '$task_name' references unknown target '$task_target'"
   fi
 done < <(validation_records "$TASKS_FILE")
+
+# An explicitly selected group the declaration never names is a caller
+# error, not a contract error: the declaration is fine, the selection is
+# not. Failing here keeps a scheduler typo from looking like an empty pass.
+if [ -n "$GROUP_ARG" ]; then
+  if ! validation_records "$TASKS_FILE" \
+    | awk -F '\t' -v group="$GROUP_ARG" '$5 == group { found=1 } END { exit !found }'; then
+    echo "ERROR: unknown group '$GROUP_ARG'; the declaration names no such group" >&2
+    exit 2
+  fi
+fi
 
 resolve_target() {
   local target_name="$1" target_path="$2" resolved_target
@@ -482,10 +526,11 @@ while IFS="$(printf '\t')" read -r target_name target_path; do
     # always done and what an unreferenced broken path should still report.
     target_in_stage=false
     target_owned=false
-    while IFS="$(printf '\t')" read -r _tn task_target _tr task_stage _tc; do
+    while IFS="$(printf '\t')" read -r _tn task_target _tr task_stage task_group _tc; do
       [ "$task_target" = "$target_name" ] || continue
       target_owned=true
       [ "$task_stage" = "$STAGE_ARG" ] || continue
+      if [ -n "$GROUP_ARG" ] && [ "$task_group" != "$GROUP_ARG" ]; then continue; fi
       target_in_stage=true
       break
     done < <(validation_records "$TASKS_FILE")
@@ -503,7 +548,20 @@ fi
 
 if [ "$CHECK_CONTRACT" = true ]; then
   if [ "$JSON_MODE" = true ]; then
-    printf '{"schema":%s,"verdict":"valid","runner":"%s"}\n' "$SCHEMA_VERSION" "$RUNNER"
+    # The group inventory lets a scheduler fan the selected stage out into
+    # parallel jobs from contract data alone: groups in first-appearance
+    # order, tasks in declaration order. Names are validated identifiers,
+    # so interpolating them needs no JSON escaping.
+    groups_json="$(validation_records "$TASKS_FILE" | awk -F '\t' -v stage="$STAGE_ARG" '
+      $4 != stage { next }
+      !($5 in seen) { seen[$5] = 1; order[++n] = $5 }
+      { tasks[$5] = tasks[$5] (tasks[$5] ? "," : "") "\"" $1 "\"" }
+      END {
+        out = ""
+        for (i = 1; i <= n; i++) out = out (i > 1 ? "," : "") "{\"name\":\"" order[i] "\",\"tasks\":[" tasks[order[i]] "]}"
+        printf "[%s]", out
+      }')"
+    printf '{"schema":%s,"verdict":"valid","runner":"%s","groups":%s}\n' "$SCHEMA_VERSION" "$RUNNER" "$groups_json"
   else
     printf 'schema-v%s contract is valid\n' "$SCHEMA_VERSION"
   fi
@@ -554,8 +612,9 @@ run_command() {
 # nothing, so running setup there would make an empty commit stage pay the
 # project's full provisioning cost -- the opposite of fast local feedback.
 STAGE_HAS_TASKS=false
-while IFS="$(printf '\t')" read -r _n _t _r stage_field _c; do
+while IFS="$(printf '\t')" read -r _n _t _r stage_field group_field _c; do
   [ "$stage_field" = "$STAGE_ARG" ] || continue
+  if [ -n "$GROUP_ARG" ] && [ "$group_field" != "$GROUP_ARG" ]; then continue; fi
   STAGE_HAS_TASKS=true
   break
 done < <(validation_records "$TASKS_FILE")
@@ -573,10 +632,13 @@ if [ -n "$SETUP_COMMAND" ] && [ "$STAGE_HAS_TASKS" = true ]; then
   fi
 fi
 
-while IFS="$(printf '\t')" read -r task_name task_target _task_required task_stage task_command; do
+while IFS="$(printf '\t')" read -r task_name task_target _task_required task_stage task_group task_command; do
   # Stage selection. Authoring guards are local fast feedback and must never
   # execute in the enforcement run, where a staged-tree check is meaningless.
   [ "$task_stage" = "$STAGE_ARG" ] || continue
+  # Group selection. A group is a scheduler shard, never a verdict input:
+  # it only narrows which stage tasks this invocation executes.
+  if [ -n "$GROUP_ARG" ] && [ "$task_group" != "$GROUP_ARG" ]; then continue; fi
   target_path="$(validation_records "$TARGETS_FILE" \
     | awk -F '\t' -v name="$task_target" '$1 == name { print $2 }')"
   if [ -z "$task_command" ]; then

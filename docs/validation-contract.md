@@ -1,6 +1,6 @@
 # Validation Contract
 
-This document owns Touchstone's validation boundary: schema 1 and schema 2, which differ only by the optional task `stage` key. The canonical
+This document owns Touchstone's validation boundary: schema 1, schema 2 (which adds only the optional task `stage` key), and schema 3 (which adds only the optional task `group` key). The canonical
 example is [`.touchstone.toml`](../.touchstone.toml); other documentation links
 here instead of copying the shape.
 
@@ -43,6 +43,38 @@ A declaration that runs nothing at the enforcement stage fails — a gate must
 execute something. A commit stage with no tasks passes: most projects have no
 authoring guards, and that is not a broken contract.
 
+## Schema 3 — execution groups
+
+Schema 3 adds one optional key and changes nothing else. A task may declare
+`group = "name"`; the default is `"default"`, which is where every schema-1
+and schema-2 task already lives.
+
+A group is a **scheduler shard, never a verdict input**. `validate --group
+NAME` executes only the selected stage's tasks in that group, in declaration
+order, with the same setup, preflight, and verdict semantics; without
+`--group`, every group runs exactly as before groups existed. A scheduler
+(the required workflow) can therefore fan groups out into parallel jobs
+while the engine remains the only thing that decides what ran. Group and
+stage are orthogonal axes: stage says *when in the lifecycle* a task
+belongs, group says *which shard* executes it.
+
+Declaring groups is a promise that the grouped tasks are independent:
+nothing a task produces may be consumed by a task in another group, because
+another job, on another machine, may run it. Order inside a group is still
+declaration order.
+
+Fail-closed behavior is unchanged and selection cannot weaken it. An
+unknown `--group` value is refused before anything runs. A group selected
+at the enforcement stage in which nothing runs still fails — a gate must
+execute something. `group` in a schema-1 or schema-2 file is a contract
+error, not a silent default, for the same reason as `stage`: accepting it
+would let a consumer believe it sharded work the engine ran as one block.
+
+`--check-contract --json` additionally inventories the selected stage's
+groups (`groups`: names in first-appearance order, tasks in declaration
+order) so a scheduler can build its fan-out from contract data alone,
+without executing project code. Existing fields keep their meaning.
+
 ## Wiring the commit stage
 
 Declaring a commit-stage task gives the engine the capability; the project
@@ -70,7 +102,7 @@ it would let a consumer believe it declared a guard that runs nowhere.
 
 Schema 1 is a deliberately narrow TOML subset:
 
-- `schema = 1` at the root (or `schema = 2`, which adds only `stage`);
+- `schema = 1` at the root (or `schema = 2`, which adds only `stage`, or `schema = 3`, which adds only `group`);
 - one `[validation]` table with `runtime = "bash"`, an optional, non-empty
   `setup` command, and an optional `runner` — the GitHub-hosted runner label
   the central workflow executes the declaration on (`ubuntu-latest` when
@@ -130,7 +162,7 @@ Tests and adapters that need a different location pass the explicit
 `--project` or `--config` arguments.
 
 Missing, malformed, ambiguous, path-escaping, and unsupported-schema contracts
-fail closed. Schema 1 and 2 are both accepted; every schema-1 declaration means
+fail closed. Schema 1, 2, and 3 are all accepted; every schema-1 declaration means
 exactly what it meant before schema 2 existed, and `tests/test-validation-engine.sh`
 asserts that. A repository that still has `.touchstone-config` receives an
 explicit migration error; frozen consumers keep their committed legacy runner
