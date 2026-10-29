@@ -94,6 +94,13 @@ taking this document's word for it.
   run that was explicitly rerun; a newer run starts at attempt one. A new PR
   waits for the initial attempt created by GitHub rather than redundantly
   rerunning it.
+  Before requesting review, one appended Codesmith footer may converge without
+  restarting the command: GitHub must identify `blacksmith-sh` as its Bot editor,
+  the original body must remain intact, and head, base and title must still match.
+  The full surviving body goes through the same authoritative evidence check;
+  an attempt newer than its edit is reused, otherwise refreshed once. Unknown
+  provenance, substantive or repeated edits fail closed. Body checks after
+  requesting review remain strict.
   A required job that Actions failed without starting it is not an evidence
   or review verdict. The jobs API reports such a job as `failure` with no
   steps, which is how an exhausted Actions budget or a failed payment shows up.

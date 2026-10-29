@@ -2245,13 +2245,43 @@ refuse_conflicting_open_pr() {
       "Follow $TOOL_ROOT/principles/git-workflow.md: fetch $base_ref from the PR base repository $REPO_URL, refuse unless FETCH_HEAD is $base_sha, merge that verified commit, prove every feature-side edit survived against the pre-merge head, run the complete validation suite, push, and re-run this command."
 }
 
-verify_live_body() {
-  local number="$1" expected_body="$2" live_body
+read_live_body() {
+  local number="$1"
   read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json body --jq '.body' \
     || fail_operation "could not re-read PR body binding: $READ_OUTPUT" "Inspect GitHub before retrying."
-  live_body="$READ_OUTPUT"
-  [ "$live_body" = "$expected_body" ] \
+  LIVE_PR_BODY="$READ_OUTPUT"
+}
+
+verify_live_body() {
+  local number="$1" expected_body="$2"
+  read_live_body "$number"
+  [ "$LIVE_PR_BODY" = "$expected_body" ] \
     || fail_input "PR #$number body moved while delivery evidence was refreshed" "Re-run with the live title and body so evidence is bound to the surviving content."
+}
+
+# Observed on Hesperus #1857: this bot appends one bounded footer after creation.
+# Bind the full surviving body and its editor/coordinates in one GitHub read;
+# markers alone never establish provenance, and no content is stripped.
+codesmith_footer_binding() {
+  local number="$1" expected="$2" observed="$3" head="$4" base="$5" base_sha="$6"
+  printf '%s' "$observed" | jq -Rse --arg expected "$expected" '
+    ($expected | contains("<!-- codesmith:footer -->") | not)
+    and startswith($expected + "\n\n<!-- codesmith:footer -->\n---\n")
+    and endswith("\n<!-- /codesmith:footer -->")
+    and (split("<!-- codesmith:footer -->") | length) == 2
+    and (split("<!-- /codesmith:footer -->") | length) == 2
+  ' >/dev/null 2>&1 || return 1
+  read_with_retry gh api graphql --hostname "$REPO_HOST" \
+    -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F number="$number" \
+    -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){body title headRefOid baseRefName baseRefOid editor{__typename login}}}}' \
+    --jq '.data.repository.pullRequest' \
+    || fail_operation "could not verify the concurrent footer's provenance: $READ_OUTPUT" "Re-read the live title and body before retrying."
+  printf '%s' "$READ_OUTPUT" | jq -e --arg body "$observed" --arg title "$TITLE" \
+    --arg head "$head" --arg base "$base" --arg sha "$base_sha" '
+    .body == $body and .title == $title and .headRefOid == $head
+    and .baseRefName == $base and .baseRefOid == $sha
+    and .editor.__typename == "Bot" and .editor.login == "blacksmith-sh"
+  ' >/dev/null 2>&1
 }
 
 wait_for_request_binding() {
@@ -2829,11 +2859,13 @@ open_pr() {
   source "$TOOL_ROOT/scripts/lib/touchstone-review-request.sh"
   local branch local_head remote_line remote_head rows count number url pr_head pr_base pr_base_sha create_output create_status=0
   local evidence_min_attempt=0 evidence_min_attempt_run_id=""
+  local evidence_pass input_body
   local request_marker existing_request_marker comment_rows existing_request request_body request_url request_rows state request_author allow_attest select_rc
   [ -n "$TITLE" ] || fail_input "open requires --title" "Pass the PR title explicitly."
   [ -f "$BODY_FILE" ] && [ -s "$BODY_FILE" ] \
     || fail_input "open requires a non-empty --body-file" "Put the reviewed PR description in that file."
   wanted_body="$(cat "$BODY_FILE")"
+  input_body="$wanted_body"
   branch="$(project_git branch --show-current)" \
     || fail_operation "could not read the current branch" "Repair the local Git checkout."
   [ -n "$branch" ] || fail_input "detached HEAD cannot open a PR" "Create or switch to a feature branch."
@@ -2954,28 +2986,42 @@ open_pr() {
   # exact-head/body attempt succeeds, so invalid evidence cannot consume a
   # model review and then force a second review cycle.
   if delivery_evidence_required "$pr_base"; then
-    refuse_conflicting_open_pr "$number" "$local_head" "$pr_base" "$pr_base_sha"
-    REQUIRED_WORKFLOW_REFUSED=false
-    if [ "$state" = existing ]; then
-      evidence_fresh_since=""
-      if [ "$BODY_APPLIED" != updated ]; then
-        pr_body_last_changed_epoch "$number"
-        evidence_fresh_since="$PR_BODY_CHANGED_EPOCH"
+    for evidence_pass in 1 2; do
+      refuse_conflicting_open_pr "$number" "$local_head" "$pr_base" "$pr_base_sha"
+      REQUIRED_WORKFLOW_REFUSED=false
+      if [ "$state" = existing ] || [ "$evidence_pass" -eq 2 ]; then
+        evidence_fresh_since=""
+        if [ "$BODY_APPLIED" != updated ] || [ "$evidence_pass" -eq 2 ]; then
+          pr_body_last_changed_epoch "$number"
+          evidence_fresh_since="$PR_BODY_CHANGED_EPOCH"
+        fi
+        rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS" 0 true 0 "" "$pr_base" "$pr_base_sha" "$evidence_fresh_since"
+        evidence_min_attempt="$REQUIRED_WORKFLOW_MIN_ATTEMPT"
+        evidence_min_attempt_run_id="$REQUIRED_WORKFLOW_MIN_ATTEMPT_RUN_ID"
+        if [ "$REQUIRED_WORKFLOW_FRESH_RUN" = true ] && [ "$JSON_MODE" = false ]; then
+          printf 'Delivery-evidence run %s already read this body at this head; waiting on it instead of re-running.\n' "$REQUIRED_WORKFLOW_RUN_ID" >&2
+        fi
       fi
-      rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS" 0 true 0 "" "$pr_base" "$pr_base_sha" "$evidence_fresh_since"
-      evidence_min_attempt="$REQUIRED_WORKFLOW_MIN_ATTEMPT"
-      evidence_min_attempt_run_id="$REQUIRED_WORKFLOW_MIN_ATTEMPT_RUN_ID"
-      if [ "$REQUIRED_WORKFLOW_FRESH_RUN" = true ] && [ "$JSON_MODE" = false ]; then
-        printf 'Delivery-evidence run %s already read this body at this head; waiting on it instead of re-running.\n' "$REQUIRED_WORKFLOW_RUN_ID" >&2
+      # A refused run has no verdict to wait for.
+      if [ "$REQUIRED_WORKFLOW_REFUSED" = false ]; then
+        rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS" 0 false \
+          "$evidence_min_attempt" "$evidence_min_attempt_run_id" "$pr_base" "$pr_base_sha"
       fi
-    fi
-    # A refused run has no verdict to wait for.
-    if [ "$REQUIRED_WORKFLOW_REFUSED" = false ]; then
-      rerun_required_workflow "$number" "$local_head" delivery-evidence "$REQUIRED_WORKFLOW_LOCAL_IDS" 0 false \
-        "$evidence_min_attempt" "$evidence_min_attempt_run_id" "$pr_base" "$pr_base_sha"
-    fi
-    verify_live_coordinates "$number" "$local_head" "$pr_base" "$pr_base_sha"
-    verify_live_body "$number" "$wanted_body"
+      verify_live_coordinates "$number" "$local_head" "$pr_base" "$pr_base_sha"
+      read_live_body "$number"
+      if [ "$LIVE_PR_BODY" = "$wanted_body" ]; then
+        if [ "$evidence_pass" -eq 2 ]; then
+          codesmith_footer_binding "$number" "$input_body" "$LIVE_PR_BODY" "$local_head" "$pr_base" "$pr_base_sha" \
+            || fail_input "PR #$number footer binding moved during revalidation" "Re-read the live title and body before retrying."
+        fi
+        break
+      fi
+      [ "$evidence_pass" -eq 1 ] && [ "$REQUIRED_WORKFLOW_REFUSED" = false ] \
+        && codesmith_footer_binding "$number" "$input_body" "$LIVE_PR_BODY" "$local_head" "$pr_base" "$pr_base_sha" \
+        || fail_input "PR #$number body moved while delivery evidence was refreshed" "Re-run with the live title and body so evidence is bound to the surviving content."
+      wanted_body="$LIVE_PR_BODY"
+      [ "$JSON_MODE" = true ] || printf 'Observed a Codesmith footer append; revalidating the full surviving body once.\n' >&2
+    done
     if [ "$REQUIRED_WORKFLOW_REFUSED" = true ]; then
       record_actions_refusal delivery-evidence "$REQUIRED_WORKFLOW_RUN_ID"
       [ "$JSON_MODE" = true ] \
