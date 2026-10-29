@@ -377,6 +377,18 @@ case "$1 ${2:-}" in
       jq -cn --arg t "$title" --arg b "$body" '[$t, $b]'
     elif has '--json body' "$@"; then
       if [ "${GH_MODE:-ok}" = final_base_advanced ] && [ -f "$GH_STATE/final-coordinates-read" ]; then touch "$GH_STATE/wait-base-advanced"; fi
+      case "${GH_MODE:-ok}" in
+        delivery_footer*)
+          if { [ -f "$GH_STATE/evidence-reruns" ] || [ "$GH_MODE" = delivery_footer_fresh ]; } && [ ! -f "$GH_STATE/footer-appended" ]; then
+            [ "$GH_MODE" != delivery_footer_substantive ] || printf 'Different evidence.\n' >"$GH_STATE/pr-body"
+            printf '\n' >>"$GH_STATE/pr-body"
+            cat "$GH_FOOTER_FILE" >>"$GH_STATE/pr-body"
+            touch "$GH_STATE/footer-appended"
+          elif [ "$GH_MODE" = delivery_footer_repeated ] && [ -f "$GH_STATE/evidence-reruns" ] && [ "$(wc -l <"$GH_STATE/evidence-reruns")" -ge 2 ]; then
+            printf 'Another concurrent edit.\n' >>"$GH_STATE/pr-body"
+          fi
+          ;;
+      esac
       if [ "${GH_MODE:-ok}" = delivery_body_moved ] && [ -f "$GH_STATE/gate-reruns" ]; then
         printf 'Concurrent body mutation.\n'
       elif [ -f "$GH_STATE/pr-body" ]; then
@@ -466,6 +478,16 @@ case "$1 ${2:-}" in
     ;;
   "api user") printf '%s\n' alice ;;
   "api graphql")
+    if has 'editor{__typename login}' "$@"; then
+      [ "${GH_MODE:-ok}" != delivery_footer_unavailable ] || { printf 'GraphQL unavailable\n' >&2; exit 1; }
+      editor=blacksmith-sh; live_head="$GH_HEAD"
+      [ "${GH_MODE:-ok}" != delivery_footer_untrusted ] || editor=another-bot
+      [ "${GH_MODE:-ok}" != delivery_footer_head_moved ] || live_head=moved-head
+      jq -cn --arg body "$(cat "$GH_STATE/pr-body")" --arg editor "$editor" \
+        --arg head "$live_head" --arg base "$GH_BASE_REF" --arg sha "$GH_BASE_SHA" \
+        '{body:$body,title:"Test PR",headRefOid:$head,baseRefName:$base,baseRefOid:$sha,editor:{__typename:"Bot",login:$editor}}'
+      exit 0
+    fi
     # The review surface's counts (AUT-1638), taken from the very pages the
     # REST reads serve, so the two can never disagree.
     if has 'comments{totalCount}' "$@"; then
@@ -3043,7 +3065,34 @@ SLEEP
     && ok "an unchanged green result is re-run against the surviving body" \
     || fail "an unchanged green result was reused without body-version evidence"
 
-  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/gate-reruns" "$TMP/state/review-request"
+  echo "==> one observed provider footer is revalidated, never ignored (AUT-2986)"
+  for mode in delivery_footer delivery_footer_fresh delivery_footer_substantive delivery_footer_untrusted delivery_footer_head_moved delivery_footer_unavailable delivery_footer_repeated; do
+    rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/gate-reruns" "$TMP/state/review-request" "$TMP/state/footer-appended"
+    printf 'Expected evidence body.\n' >"$TMP/footer-body"
+    cp "$TMP/footer-body" "$TMP/state/pr-body"
+    : >"$GH_CALLS"
+    changed_at='"2026-08-27T17:00:00Z"'
+    [ "$mode" != delivery_footer_fresh ] || changed_at='"2026-08-26T21:00:00Z"'
+    GH_PR_LAST_EDITED_AT_JSON="$changed_at" GH_FOOTER_FILE="$ROOT/tests/fixtures/pr-codesmith-footer.md" GH_MODE="$mode" \
+      run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/footer-body"
+    if [ "$mode" = delivery_footer ] || [ "$mode" = delivery_footer_fresh ]; then
+      assert_rc "$RUN_RC" 0
+      if [ "$mode" = delivery_footer_fresh ]; then
+        [ ! -f "$TMP/state/evidence-reruns" ] || fail "fresh footer evidence was unnecessarily rerun"
+      else
+        [ "$(wc -l <"$TMP/state/evidence-reruns" | tr -d ' ')" -eq 2 ] || fail "footer body was not authoritatively revalidated once"
+      fi
+      [ "$(wc -l <"$TMP/state/review-request" | tr -d ' ')" -eq 1 ] || fail "footer recovery duplicated hosted review"
+      assert_has "$TMP/state/pr-body" '<!-- codesmith:footer -->'
+    else
+      expected_rc=2
+      [ "$mode" != delivery_footer_unavailable ] || expected_rc=1
+      assert_rc "$RUN_RC" "$expected_rc"
+      [ ! -f "$TMP/state/review-request" ] || fail "$mode requested hosted review"
+      [ "$(wc -l <"$TMP/state/evidence-reruns" | tr -d ' ')" -le 2 ] || fail "$mode looped workflow recovery"
+    fi
+  done
+  rm -f "$TMP/state/evidence-reruns" "$TMP/state/evidence-after-rerun" "$TMP/state/gate-reruns" "$TMP/state/review-request" "$TMP/state/footer-appended"
   printf 'Expected final body.\n' >"$TMP/body5"
   GH_MODE=delivery_body_moved run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body5"
   assert_rc "$RUN_RC" 2
