@@ -5,6 +5,7 @@
 #
 # Usage:
 #   bash scripts/derive-consumer-policy.sh REPOSITORY [--no-queue] [--build-concurrency N]
+#     [--validation-revision FULL_SHA]
 #     [--require-status CONTEXT]...
 #     [--require-merge-group-status CONTEXT]...
 #     > policy/github/consumers/REPOSITORY.json
@@ -37,7 +38,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 usage() {
-  echo "usage: derive-consumer-policy.sh REPOSITORY [--no-queue] [--build-concurrency N] [--require-status CONTEXT]... [--require-merge-group-status CONTEXT]... [--path-set NAME=FILE]..." >&2
+  echo "usage: derive-consumer-policy.sh REPOSITORY [--no-queue] [--build-concurrency N] [--validation-revision FULL_SHA] [--require-status CONTEXT]... [--require-merge-group-status CONTEXT]... [--path-set NAME=FILE]..." >&2
   exit 2
 }
 REPOSITORY="${1:-}"
@@ -47,6 +48,7 @@ esac
 shift
 QUEUE=true
 QUEUE_BUILD_CONCURRENCY=""
+VALIDATION_REVISION=""
 STATUS_CONTEXTS=()
 # Counted explicitly: under bash 3.2 with set -u, ${#array[@]} on an empty
 # array is an unbound-variable error.
@@ -68,6 +70,12 @@ while [ "$#" -gt 0 ]; do
       # avoid jq accepting non-numeric input or shell octal/overflow surprises.
       [[ "$2" =~ ^[1-9][0-9]{0,2}$ ]] && [ "$2" -le 100 ] || usage
       QUEUE_BUILD_CONCURRENCY="$2"
+      shift 2
+      ;;
+    --validation-revision)
+      [ "$#" -ge 2 ] && [ -z "$VALIDATION_REVISION" ] || usage
+      [[ "$2" =~ ^[0-9a-f]{40}$ ]] || usage
+      VALIDATION_REVISION="$2"
       shift 2
       ;;
     --require-status)
@@ -188,11 +196,15 @@ if [ "$PATH_SET_COUNT" -gt 0 ]; then
   done
 fi
 
-derived="$(jq --arg repo "$REPOSITORY" --argjson queue "$QUEUE" --argjson contexts "$contexts_json" --argjson pathSets "$path_sets_json" --argjson buildConcurrency "${QUEUE_BUILD_CONCURRENCY:-null}" '
+derived="$(jq --arg repo "$REPOSITORY" --arg validationRevision "$VALIDATION_REVISION" --argjson queue "$QUEUE" --argjson contexts "$contexts_json" --argjson pathSets "$path_sets_json" --argjson buildConcurrency "${QUEUE_BUILD_CONCURRENCY:-null}" '
   .repository = $repo
   | .rollbackPrerequisites.repositoryFiles = []
   | .managedRuleset.name = "Touchstone policy v\(.contractVersion): \(.organization)/\($repo)@\(.branch)"
   | .managedRuleset.conditions.repository_name.include = [$repo]
+  | if $validationRevision != "" then
+      .workflowSource.validationRevision = $validationRevision
+      | (.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | select(.path == ".github/workflows/validate.yml") | .sha) = $validationRevision
+    else . end
   | if ($contexts | length) > 0 then
       .managedRuleset.rules += [{
         type: "required_status_checks",

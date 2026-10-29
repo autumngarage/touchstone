@@ -14,7 +14,8 @@
       "required_conversation_resolution": true,
       "allow_force_pushes": false,
       "allow_deletions": false
-    }
+    },
+    "validationRevision": "5e82d83b7d0b0f9abcd5419f873bd5092bd5436d"
   },
   "branch": "main",
   "rollbackPrerequisites": {
@@ -88,7 +89,7 @@
               "path": ".github/workflows/validate.yml",
               "ref": "refs/heads/main",
               "repository_id": 1333343261,
-              "sha": "cf37a030c696ab46d026bc7a4c2fc0a9d3335f8f"
+              "sha": "5e82d83b7d0b0f9abcd5419f873bd5092bd5436d"
             }
           ]
         }

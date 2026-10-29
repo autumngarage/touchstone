@@ -75,6 +75,12 @@ GitHub excludes required workflows from running in their source repository. To
 upgrade it, land the source workflow first, then change the SHA in a separately
 reviewed policy PR. A target PR cannot weaken or replace that pinned source.
 
+For a consumer-only validation upgrade, derive with `--validation-revision
+FULL_SHA`. The policy records `workflowSource.validationRevision` and changes
+only `validate.yml`'s SHA; review and delivery retain their canonical pins.
+The existing source verification still requires the revision to be published
+on the protected workflow-source branch with a compatible source contract.
+
 The only bypass actor is `OrganizationAdmin` in `pull_request` mode. Emergency
 delivery therefore remains PR-visible and GitHub-audited; direct and force
 pushes stay rejected. Never change that actor to `exempt`, and do not hand-edit

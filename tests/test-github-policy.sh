@@ -718,6 +718,21 @@ echo "==> Checked-in consumer policies equal their derivation"
 bash "$ROOT/scripts/derive-consumer-policy.sh" vesper --no-queue extra >/dev/null 2>&1 && fail "derive accepted a surplus argument" || ok "derive refuses surplus arguments"
 echo "==> Native queue build concurrency changes capacity only"
 queue_default="$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary)"
+validation_revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+validation_override="$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --validation-revision "$validation_revision")"
+diff -u <(jq -S --arg revision "$validation_revision" '
+  .workflowSource.validationRevision = $revision
+  | (.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | select(.path == ".github/workflows/validate.yml") | .sha) = $revision
+' <<<"$queue_default") <(jq -S . <<<"$validation_override") >/dev/null \
+  || fail "validation revision changed another gate or policy field"
+for revision in '' main abc aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaG; do
+  revision_rc=0
+  bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --validation-revision "$revision" >/dev/null 2>&1 || revision_rc=$?
+  [ "$revision_rc" = 2 ] || fail "invalid validation revision did not exit 2"
+done
+if bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --validation-revision "$validation_revision" --validation-revision "$validation_revision" >/dev/null 2>&1; then
+  fail "duplicate validation revision was accepted"
+fi
 for concurrency in 1 6 100; do
   queue_capacity="$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --build-concurrency "$concurrency")"
   diff -u <(jq -S --argjson n "$concurrency" '.managedRepositoryRuleset.rules |= map(if .type == "merge_queue" then .parameters.max_entries_to_build = $n else . end)' <<<"$queue_default") \
@@ -826,6 +841,8 @@ for consumer in "$ROOT"/policy/github/consumers/*.json; do
   # A consumer-owned required status uses the flag matching its checked-in
   # queue shape: pull_request-only when queue-less, merge_group when queued.
   derive_flags=()
+  validation_revision="$(jq -r '.workflowSource.validationRevision // empty' "$consumer")"
+  [ -z "$validation_revision" ] || derive_flags+=(--validation-revision "$validation_revision")
   consumer_concurrency=""
   if jq -e '.managedRepositoryRuleset == null' "$consumer" >/dev/null; then
     derive_flags+=(--no-queue)
@@ -847,6 +864,7 @@ for consumer in "$ROOT"/policy/github/consumers/*.json; do
   # retype. Printing the scratch paths would hand the reader a command whose
   # files are gone by the time they read it.
   derive_hint=()
+  [ -z "$validation_revision" ] || derive_hint+=(--validation-revision "$validation_revision")
   [ -z "$consumer_concurrency" ] || derive_hint+=(--build-concurrency "$consumer_concurrency")
   while IFS= read -r set_name; do
     [ -n "$set_name" ] || continue
@@ -2751,22 +2769,26 @@ else
   fail "a missing row lacked a useful Actions diagnostic: $(cat "$EVIDENCE_TMP/actions.out") $(cat "$EVIDENCE_TMP/summary.md")"
 fi
 
-echo "==> Every policy file pins the required workflows at one touchstone-workflows revision"
+echo "==> Canonical gate pins and declared consumer validation upgrades"
 # The engine a consumer's required validate runs is whatever the pinned
 # validate.yml fetches; a stale pin failed every schema-2 consumer for eight
 # days (AUT-417). Offline, this suite cannot read touchstone-workflows, so
-# the invariant it can hold is: canonical and every consumer policy name the
-# same revision for all three workflows, and that revision is the one the
-# suite's own fixtures are written against -- so a revert or a partial bump
-# is a visible, reviewed change here, never a silent divergence.
+# the invariant it can hold is: review/delivery keep the canonical revision,
+# and a consumer's validation-only variation has an explicit declaration
+# reproduced by the generator. No undeclared partial bump is admitted.
 PINNED_WORKFLOWS_REVISION="cf37a030c696ab46d026bc7a4c2fc0a9d3335f8f"
 for policy_file in "$ROOT"/policy/github/touchstone-main.json "$ROOT"/policy/github/consumers/*.json; do
-  pins="$(jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[] | .sha] | unique | join(" ")' "$policy_file")"
-  [ "$pins" = "$PINNED_WORKFLOWS_REVISION" ] \
-    || fail "$(basename "$policy_file") pins required workflows at '$pins', expected $PINNED_WORKFLOWS_REVISION"
+  validation_revision="$PINNED_WORKFLOWS_REVISION"
+  if [ "$policy_file" != "$ROOT/policy/github/touchstone-main.json" ]; then
+    validation_revision="$(jq -r --arg canonical "$PINNED_WORKFLOWS_REVISION" '.workflowSource.validationRevision // $canonical' "$policy_file")"
+  fi
+  jq -e --arg canonical "$PINNED_WORKFLOWS_REVISION" --arg validation "$validation_revision" '
+    [.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]]
+    | all(.[]; .sha == (if .path == ".github/workflows/validate.yml" then $validation else $canonical end))
+  ' "$policy_file" >/dev/null || fail "$(basename "$policy_file") has an undeclared workflow revision"
   count="$(jq '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]] | length' "$policy_file")"
   [ "$count" -eq 3 ] || fail "$(basename "$policy_file") declares $count required workflows, expected 3"
 done
-ok "canonical and consumer policies agree on the required-workflow revision"
+ok "canonical gate pins and explicit consumer validation revisions are preserved"
 
 echo "==> PASS: audited GitHub policy lifecycle is safe and deterministic"
