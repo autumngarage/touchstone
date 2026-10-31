@@ -384,6 +384,8 @@ if [ -n "$FINDING_ID" ]; then
     # re-decided on its merits.
     FINDING_MARKER="<!-- touchstone:review-answer v=1 finding=$FINDING_ID disposition=fixed fix=$FIX_COMMIT -->"
   else
+    # Escape after truncating so the prefix cannot split an entity or the marker.
+    REASON="$(printf '%s' "$REASON" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
     FINDING_MARKER="<!-- touchstone:review-dismiss id=$FINDING_ID reason=$REASON -->"
   fi
 
@@ -402,15 +404,17 @@ $ANSWER_TEXT
 
 $FINDING_MARKER"
     printf '%s' "$NEW_BODY" >"$TMP_BODY_FILE"
-    gh_read api --method PATCH "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER" \
-      -F "body=@$TMP_BODY_FILE" --jq '.number' >/dev/null \
-      || fail "could not record the answer in the pull request body"
+    RECORDED_BODY="$(gh_read api --method PATCH "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER" \
+      -F "body=@$TMP_BODY_FILE" --jq '.body | if type == "string" then . else error("missing pull request body") end')" \
+      || fail "could not verify recording the answer in the pull request body; the update may have happened. Inspect the current body before retrying."
+    printf '%s' "$RECORDED_BODY" | grep -qF "$FINDING_MARKER" \
+      || fail "the pull request update returned without the answer marker; recording is unverified. Inspect the current body before retrying."
     echo "==> Recorded the answer for finding $FINDING_ID in the pull request body."
   fi
   if [ -n "$FIX_COMMIT" ]; then
     echo "    disposition: fixed in $FIX_COMMIT; the gate reviews the new head."
   else
-    echo "    disposition: no-code-change; the finding no longer blocks, and the log records the dismissal every run."
+    echo "    disposition: no-code-change; dismissal recorded; the gate reads it on its next run."
   fi
   # The gate reads the body on its next run, so ask for one: the latest
   # review-gate run for this head is re-run when it is complete, and left
