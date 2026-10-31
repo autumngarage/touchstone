@@ -869,8 +869,14 @@ delete another session's branch or worktree without its lifecycle proof.
 
 The check makes residue legible: checkout not on the default branch or behind
 origin, linked worktrees, local or remote branches whose PR is merged or
-closed, untracked and dirty files. Run it with `--project <dir>` for each
-repository the session touched, and with `--json` when a script consumes it
+closed, untracked and dirty files. It also reports local tips whose publication
+to the same-name live origin branch cannot be established, independently of
+open PRs, stack membership, or worker checkout. Exact merged-head evidence
+still proves delivery. These observations do not claim global publication or
+abandonment: preserve the branch and reconcile its destination with its owner.
+Unavailable commit objects or incomplete ancestry remain unverified; the check
+never fetches them. Run it with `--project <dir>` for each repository the
+session touched, and with `--json` when a script consumes it
 (`touchstone.cleanup/v1`).
 
 ## Periodic branch hygiene
