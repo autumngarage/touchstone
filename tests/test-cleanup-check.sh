@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/test-cleanup-check.sh — `touchstone cleanup check` reports repository
 # residue without claiming session ownership or mutating anything.
-# Offline: a fake gh answers the three PR-list reads and the repo view.
+# Offline: a fake gh answers repository identity and paginated history.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-cleanup.XXXXXX")"
@@ -18,23 +18,38 @@ mkdir -p "$TMP/bin" "$TMP/state"
 cat >"$TMP/bin/gh" <<'FAKE'
 #!/usr/bin/env bash
 state="$GH_FAKE_STATE"
+printf '%s\n' "$*" >>"$state/calls"
 case "$1 $2" in
   "repo view")
     [ -f "$state/gh-down" ] && exit 1
     printf 'autumngarage/current\tmain\n'
     ;;
-  "api --paginate")
-    [ -f "$state/api-down" ] && { echo "gh: HTTP 502" >&2; exit 1; }
-    [ -f "$state/prs" ] || exit 0
-    awk -F'\t' '$3 == "OPEN" { print $6 "\t" $2 }' "$state/prs"
-    ;;
-  "pr list")
+  "api graphql")
+    [[ " $* " == *" --paginate "* && " $* " == *" --slurp "* ]] || exit 1
+    [ ! -f "$state/response" ] || { cat "$state/response"; exit 0; }
     # Rows in $state/prs: "head<TAB>number<TAB>state<TAB>sha<TAB>owner/repo<TAB>base"
-    [ -f "$state/list-down" ] && { echo "gh: GraphQL: rate limited" >&2; exit 1; }
-    head=""; fields=""
-    while [ "$#" -gt 0 ]; do [ "$1" = --head ] && head="$2"; [ "$1" = --json ] && fields="$2"; shift; done
-    [ -f "$state/prs" ] || exit 0
-    awk -F'\t' -v h="$head" '$1 == h { print $2 "\t" $3 "\t" $4 "\t" $5 }' "$state/prs"
+    # Page shape follows the captured GitHub connection and gh's documented
+    # --paginate --slurp contract; this mock counts CLI invocations, not HTTP.
+    rows="$(cat "$state/prs" 2>/dev/null || true)"
+    pages="$(printf '%s' "$rows" | jq -Rs '
+      split("\n") | map(select(length > 0) | split("\t") | {
+        headRefName: .[0], number: (.[1] | tonumber), state: .[2], headRefOid: .[3],
+        headRepository: (if .[4] == "" then null else {nameWithOwner: .[4]} end), baseRefName: .[5]
+      }) as $nodes
+      | [range(0; ([1, (($nodes | length) / 100 | ceil)] | max)) as $page | {
+        data: {repository: {nameWithOwner: "autumngarage/current", pullRequests: {
+          nodes: $nodes[($page * 100):(($page + 1) * 100)],
+          pageInfo: {hasNextPage: (($page + 1) * 100 < ($nodes | length)),
+            endCursor: (if ($nodes | length) == 0 then null else "page-\($page)" end)}
+        }}}
+      }]
+    ')"
+    if [ -f "$state/api-down" ]; then
+      printf '%s' "$pages" | jq '.[-1].data.repository.pullRequests.pageInfo.hasNextPage = true'
+    else
+      printf '%s\n' "$pages"
+    fi
+    [ ! -f "$state/list-down" ] || { echo "gh: GraphQL: rate limited" >&2; exit 1; }
     ;;
   *) echo "unhandled fake gh call: $*" >&2; exit 1 ;;
 esac
@@ -51,6 +66,7 @@ git -C "$TMP/repo" push -q -u origin main
 git -C "$TMP/repo" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
 
 run() {
+  : >"$TMP/state/calls"
   set +e
   bash "$ROOT/bin/touchstone" cleanup check --project "$TMP/repo" "$@" >"$TMP/out" 2>&1
   RC=$?
@@ -144,6 +160,29 @@ jq -e '.schema == "touchstone.cleanup/v1" and .clean == false and (.findings | l
 jq -e 'all(.findings[] | select(.kind == "worktree"); (.remedy | test("\\bPR\\b|pull request"; "i") | not))' "$TMP/out" >/dev/null \
   && ok "worktree remedies contain no PR predicate" || fail "worktree remedy depends on repository lifecycle"
 
+echo "==> history beyond the first page and later open heads are retained"
+cp "$TMP/state/prs" "$TMP/state/prs.saved"
+awk -v sha="$DONE_SHA" 'BEGIN { for (i=1; i<=300; i++) printf "unrelated/%04d\t%d\tMERGED\t%s\tautumngarage/current\tmain\n", i, 1000+i, sha }' >"$TMP/state/prs"
+cat "$TMP/state/prs.saved" >>"$TMP/state/prs"
+run --json
+jq -e 'any(.findings[]; .kind == "local-branch" and (.subject | startswith("feat/done (#41 merged)")))' "$TMP/out" >/dev/null \
+  && ok "old matching head beyond page one is reported" || fail "complete history was truncated"
+printf 'feat/done\t1400\tOPEN\t%s\tautumngarage/current\tmain\n' "$REUSED_SHA" >>"$TMP/state/prs"
+run --json
+jq -e 'all(.findings[]; (.kind != "local-branch" and .kind != "remote-branch") or (.subject | test("^(origin/)?feat/done ") | not))' "$TMP/out" >/dev/null \
+  && ok "a later-page own open head suppresses completion despite a different SHA" || fail "later open head was lost"
+mv "$TMP/state/prs.saved" "$TMP/state/prs"
+
+echo "==> fork and deleted-head PR bases still protect their parent"
+cp "$TMP/state/prs" "$TMP/state/prs.saved"
+for head_repo in '' someone/fork; do
+  awk -F'\t' -v OFS='\t' -v repo="$head_repo" '$2 == 46 || $2 == 44 { $5 = repo } { print }' "$TMP/state/prs.saved" >"$TMP/state/prs"
+  run --json
+  jq -e 'all(.findings[]; .kind != "github") and any(.findings[]; .kind == "remote-branch" and (.subject | contains("feat/stack-parent")) and (.subject | contains("still bases open PR #46"))) and all(.findings[]; .kind != "local-branch" or (.subject | startswith("feat/fork-name ") | not))' "$TMP/out" >/dev/null \
+    && ok "nullable/fork head cannot prove completion but protects its open base" || fail "null/fork head semantics lost"
+done
+mv "$TMP/state/prs.saved" "$TMP/state/prs"
+
 echo "==> a detached HEAD and a feature-branch checkout are reported"
 git -C "$TMP/repo" checkout -q --detach
 run
@@ -163,11 +202,11 @@ grep -E '^  remote-branch.*feat/done' "$TMP/out" >/dev/null && fail "stale remot
 grep -E '^  local-branch.*feat/done \(#41 merged\)' "$TMP/out" >/dev/null && ok "the local ref at the merged SHA is still reported" || fail "local merged ref lost"
 git -C "$TMP/repo" push -q -f origin "$DONE_SHA:refs/heads/feat/done"
 
-echo "==> a failed open-PR read withholds every remote-branch finding"
+echo "==> incomplete native pagination withholds all branch findings"
 touch "$TMP/state/api-down"
-run
-grep -q 'github.*open pull-request read failed' "$TMP/out" && ! grep -qE '^  remote-branch' "$TMP/out" \
-  && ok "no remote deletion recommended without the stack-base read" || fail "remote-branch findings issued despite a failed base read: $(cat "$TMP/out")"
+run --json
+jq -e '([.findings[] | select(.kind == "github")] | length) == 1 and all(.findings[]; .kind != "local-branch" and .kind != "remote-branch") and any(.findings[]; .kind == "dirty") and any(.findings[]; .kind == "worktree")' "$TMP/out" >/dev/null \
+  && ok "one incomplete finding, local diagnostics retained, no branch suggestions" || fail "incomplete pagination was accepted: $(cat "$TMP/out")"
 rm -f "$TMP/state/api-down"
 
 echo "==> a worktree whose directory was removed by hand is reported, not a crash"
@@ -188,9 +227,31 @@ git -C "$TMP/repo" remote set-url origin "$TMP/origin.git"
 echo "==> a failed pull-request read is a finding, never an empty list"
 touch "$TMP/state/list-down"
 run
-[ "$RC" -eq 1 ] && grep -q 'github.*pull-request read failed' "$TMP/out" && ok "list failure reported" || fail "list failure not reported: $(cat "$TMP/out")"
+[ "$RC" -eq 1 ] && grep -q 'github.*pull-request inventory incomplete' "$TMP/out" && ok "list failure reported" || fail "list failure not reported: $(cat "$TMP/out")"
 grep -qE '^  (local|remote)-branch' "$TMP/out" && fail "branch findings claimed after a failed read" || ok "no branch claimed clean or finished after a failed read"
 rm -f "$TMP/state/list-down"
+
+echo "==> malformed or error-bearing history is one explicit incomplete finding"
+gh api graphql --paginate --slurp >"$TMP/state/valid-pages"
+for mutation in invalid-json '[]' '.[0].errors = [{message:"unavailable"}]' \
+  '.[0].data.repository = null' '.[0].data.repository.nameWithOwner = "someone/else"' \
+  '.[0].data.repository.pullRequests.nodes = null' \
+  '.[0].data.repository.pullRequests.nodes[0].state = "UNKNOWN"' \
+  '.[0].data.repository.pullRequests.pageInfo = {}'; do
+  if [ "$mutation" = invalid-json ]; then
+    printf 'not json\n' >"$TMP/state/response"
+  else
+    jq "$mutation" "$TMP/state/valid-pages" >"$TMP/state/response"
+  fi
+  run --json
+  if [ "$RC" -eq 1 ] && jq -e '([.findings[] | select(.kind == "github")] | length) == 1 and all(.findings[]; .kind != "local-branch" and .kind != "remote-branch") and any(.findings[]; .kind == "dirty")' "$TMP/out" >/dev/null \
+    && [ "$(grep -c '^api graphql ' "$TMP/state/calls" || true)" -eq 1 ]; then
+    ok "invalid history is reported once without retry or branch suggestions"
+  else
+    fail "invalid history was accepted or retried: $mutation: $(cat "$TMP/out")"
+  fi
+done
+rm -f "$TMP/state/response"
 
 echo "==> a failed GitHub read is a finding, never silence"
 touch "$TMP/state/gh-down"
@@ -211,6 +272,19 @@ mkdir -p "$TMP/cdtrap/repo"
 (cd "$TMP" && CDPATH="$TMP/cdtrap" bash "$ROOT/bin/touchstone" cleanup check --project repo --json >"$TMP/out2" 2>&1 || true)
 jq -e '.schema == "touchstone.cleanup/v1"' "$TMP/out2" >/dev/null 2>&1 && ! grep -q cdtrap "$TMP/out2" \
   && ok "relative --project used the invoking directory" || fail "relative --project went through CDPATH or failed: $(head -c 300 "$TMP/out2")"
+
+echo "==> a large shared branch inventory reuses one repository PR read"
+awk -v sha="$DONE_SHA" 'BEGIN { for (i=1; i<=1000; i++) printf "create refs/heads/bulk/%04d %s\n", i, sha }' \
+  | git -C "$TMP/repo" update-ref --stdin
+run --json
+[ "$(grep -c '^api graphql ' "$TMP/state/calls" || true)" -eq 1 ] \
+  && ! grep -Eq '^pr list|^api --paginate ' "$TMP/state/calls" \
+  && grep -Fq 'query($owner: String!, $name: String!, $endCursor: String)' "$TMP/state/calls" \
+  && grep -Fq 'pullRequests(first: 100, after: $endCursor, states: [OPEN, CLOSED, MERGED], orderBy: {field: CREATED_AT, direction: DESC})' "$TMP/state/calls" \
+  && ok "1,000 extra heads cause one paginated inventory invocation, no per-head calls" \
+  || fail "cleanup still queries per ref: $(grep -c '^pr list' "$TMP/state/calls" || true) head reads"
+awk 'BEGIN { for (i=1; i<=1000; i++) printf "delete refs/heads/bulk/%04d\n", i }' \
+  | git -C "$TMP/repo" update-ref --stdin
 
 echo "==> invalid input exits 2"
 set +e
