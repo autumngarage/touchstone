@@ -597,10 +597,18 @@ taking this document's word for it.
   close/reopen open PRs), or with `--unguarded` record on the PR — once per
   head, by marker — that an unguarded merge was requested and exactly what
   enforcement is missing (a partial policy may still carry the gate; other
-  checks or reviews may still have run), then request the merge. A failed rules read is an operational error
+  checks or reviews may still have run), then request the merge.
+  Without a fully applied required review gate, admission first requires an
+  already successful bound gate or the latest trusted, unedited clean
+  exact-head review receipt and complete, resolved feedback. Neither a pending
+  review nor `--unguarded` waives this prerequisite; a failed bound gate
+  cannot be replaced by a manual clean receipt. Pending-gate auto-merge is
+  allowed only where the fully applied required gate enforces completion.
+  A failed rules read is an operational error
   (exit 1), never a verdict. Rollout: repositories whose policy is not yet
-  applied receive the refusal and its remedy; nothing merges differently
-  where the policy is applied. Before this, `merge` on an unprotected
+  applied receive the refusal and its remedy. The review prerequisite also
+  applies to fully applied workflow-source policies without a required review
+  gate. Before this, `merge` on an unprotected
   repository was a push-and-merge button (vesper #928, 2026-08-21).
 
 ## Generated evidence

@@ -2600,11 +2600,10 @@ PRIMARY_REPLY_BODY=""
 PRIMARY_REPLY_KIND=""
 REVIEW_FALLBACK_RECORDED=false
 REVIEW_REQUEST_CLOCK_EPOCH=0
-read_primary_reply_to_head_request() {
-  local number="$1" head="$2" marker="$3" head_lc comments reviews observation wakes wake kind abbrev
-  PRIMARY_REPLY_BODY=""
-  PRIMARY_REPLY_KIND=""
-  head_lc="$(printf '%s' "$head" | tr 'A-F' 'a-f')"
+PRIMARY_ISSUE_COMMENTS_JSON="[]"
+PRIMARY_REVIEWS_JSON="[]"
+read_primary_review_evidence() {
+  local number="$1" comments reviews
   read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$number/comments?per_page=100" \
     || fail_operation "could not read the review request and the primary reviewer's reply on PR #$number: $READ_OUTPUT" "Retry after GitHub recovers."
   comments="$(printf '%s\n' "$READ_OUTPUT" | jq -sce '
@@ -2618,6 +2617,18 @@ read_primary_reply_to_head_request() {
   reviews="$(printf '%s\n' "$READ_OUTPUT" | jq -sce '
       if length == 0 or any(.[]; type != "array") then error("expected review arrays") else [.[][]] end')" \
     || fail_operation "GitHub returned malformed reviews for PR #$number" "Retry after GitHub returns complete review pages."
+  PRIMARY_ISSUE_COMMENTS_JSON="$comments"
+  PRIMARY_REVIEWS_JSON="$reviews"
+}
+
+read_primary_reply_to_head_request() {
+  local number="$1" head="$2" marker="$3" head_lc comments reviews observation wakes wake kind abbrev
+  PRIMARY_REPLY_BODY=""
+  PRIMARY_REPLY_KIND=""
+  head_lc="$(printf '%s' "$head" | tr 'A-F' 'a-f')"
+  read_primary_review_evidence "$number"
+  comments="$PRIMARY_ISSUE_COMMENTS_JSON"
+  reviews="$PRIMARY_REVIEWS_JSON"
   observation="$(printf '%s\n%s\n' "$comments" "$reviews" | jq -sce \
     --arg head "$head_lc" --arg primary "$PRIMARY_REVIEWER_LOGIN" \
     --arg dashboard "$PRIMARY_DASHBOARD_MARKER" --arg marker "$marker" \
@@ -2696,6 +2707,150 @@ read_primary_reply_to_head_request() {
     PRIMARY_REPLY_BODY="$(printf '%s' "$wake" | jq -r '.body')"
     return 0
   done <<<"$wakes"
+}
+
+# Driver admission observes the existing exact-head artifact contract.
+DRIVER_REVIEW_JSON='{"verdict":"waiting","reason":"review has not been observed"}'
+DRIVER_REVIEW_PROOF=""
+DRIVER_REVIEW_REQUEST=""
+read_driver_review_proof() {
+  local number="$1" head="$2" base="$3" base_sha="$4" proof
+  read_with_retry gh api graphql --hostname "$REPO_HOST" \
+    -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F number="$number" \
+    -f query='query TouchstoneDriverReview($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){state headRefOid baseRefName baseRefOid reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved}} timelineItems(last:1,itemTypes:[BASE_REF_CHANGED_EVENT]){nodes{... on BaseRefChangedEvent{createdAt}}}} pullRequests(states:OPEN,first:100){pageInfo{hasNextPage} nodes{number headRefOid}}}}' \
+    || fail_operation "could not read complete review coordinates and threads for PR #$number: $READ_OUTPUT" "Retry after GitHub returns complete evidence."
+  proof="$READ_OUTPUT"
+  DRIVER_REVIEW_PROOF="$(printf '%s' "$proof" | jq -ce --arg head "$head" --arg base "$base" --arg sha "$base_sha" --argjson number "$number" '
+    if .errors then error("GitHub rejected the evidence read") else .data.repository end
+    | .pullRequest as $pr
+    | if $pr.state != "OPEN" or $pr.headRefOid != $head or $pr.baseRefName != $base or $pr.baseRefOid != $sha
+      then error("head or base moved during review collection")
+      elif $pr.reviewThreads.pageInfo.hasNextPage != false or ($pr.reviewThreads.nodes | type) != "array"
+      then error("review threads are incomplete; inspect the complete surface")
+      elif any($pr.reviewThreads.nodes[]; (.isResolved | type) != "boolean")
+      then error("review-thread resolution is unavailable")
+      elif .pullRequests.pageInfo.hasNextPage != false or (.pullRequests.nodes | type) != "array"
+      then error("open-head scope is incomplete")
+      elif ([.pullRequests.nodes[] | select(.headRefOid == $head) | .number] != [$number])
+      then error("head is not uniquely scoped to this open pull request")
+      elif ($pr.timelineItems.nodes | type) != "array"
+        or any($pr.timelineItems.nodes[]; (.createdAt | type) != "string"
+          or (.createdAt | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") | not))
+      then error("base-retarget evidence is unavailable")
+      else {unresolved:([$pr.reviewThreads.nodes[] | select(.isResolved | not)] | length),
+            baseRetargetedAt:($pr.timelineItems.nodes[0].createdAt // "")} end')" \
+    || fail_operation "complete review binding for PR #$number could not be proven" "Inspect complete review and current coordinates; no admission was requested."
+}
+
+read_driver_review_observation() {
+  local number="$1" head="$2" base="$3" base_sha="$4" comments prefix resolved
+  read_primary_review_evidence "$number"
+  comments="$PRIMARY_ISSUE_COMMENTS_JSON"
+  while IFS= read -r prefix; do
+    [ -n "$prefix" ] || continue
+    read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/commits/$prefix" --jq '.sha' \
+      || fail_operation "could not resolve reviewed commit $prefix for PR #$number" "Inspect the exact-head receipt; no admission was requested."
+    resolved="$READ_OUTPUT"
+    printf '%s' "$resolved" | grep -Eqx '[0-9a-fA-F]{40}' \
+      || fail_operation "GitHub returned no full reviewed commit for $prefix" "Inspect the exact-head receipt."
+    comments="$(printf '%s' "$comments" | jq -c --arg prefix "$prefix" --arg resolved "$resolved" '
+      map(if (.body // "" | contains($prefix)) then . + {resolved_review_sha:$resolved} else . end)')"
+  done < <(printf '%s' "$comments" | jq -r --arg head "$head" --arg primary "$PRIMARY_REVIEWER_LOGIN" '
+    [.[] | select((.user.login // "") == $primary)
+      | (.body // "" | capture("Reviewed commit:[*]*[[:space:]]*\\x60(?<sha>[0-9a-fA-F]{7,40})\\x60")? // {sha:""})
+      | .sha | ascii_downcase | select(length >= 7 and length < 40)
+      | . as $prefix | select($head | startswith($prefix))] | unique[]')
+  read_driver_review_proof "$number" "$head" "$base" "$base_sha"
+  DRIVER_REVIEW_JSON="$(printf '%s\n%s\n%s\n' "$comments" "$PRIMARY_REVIEWS_JSON" "$DRIVER_REVIEW_PROOF" | jq -sce \
+    --arg head "$head" --arg primary "$PRIMARY_REVIEWER_LOGIN" \
+    --arg dashboard "$PRIMARY_DASHBOARD_MARKER" --arg error_reply "$PRIMARY_ERROR_REPLY_PATTERN" \
+    --arg declined "$PRIMARY_DECLINED_PATTERN" --arg provisional "$PRIMARY_PROVISIONAL_QUOTA_PATTERN" '
+      def valid_at: . as $v | type == "string"
+        and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+        and ((try (fromdateiso8601 | todateiso8601) catch null) == $v);
+      def body: .body // "";
+      def trusted: (.user.login // "") == $primary;
+      def request_at: .created_at as $c | (.updated_at // $c) as $u
+        | select(($c | valid_at) and ($u | valid_at) and $u >= $c) | $u;
+      def head_request: (body | test("^[[:space:]]*@codex[[:space:]]+review([[:space:]]|$)";"i"))
+        and (body | ascii_downcase | test("<!--[[:space:]]*touchstone:[a-z-]+[[:space:]]+head=" + $head + "([[:space:]]|-->)"));
+      .[0] as $comments | .[1] as $reviews | .[2] as $proof
+      | ([$comments[] | select(head_request) | . as $r | request_at
+          | select($proof.baseRetargetedAt == "" or . > $proof.baseRetargetedAt)
+          | {id:$r.id,at:.,body:$r.body}] | sort_by(.at,.id) | last) as $request
+      | if $request == null then {verdict:"waiting",reason:"no current exact-head review request",request:null}
+        else ([
+          ($reviews[] | select(trusted and ((.commit_id // "" | ascii_downcase) == $head))
+            | {at:(.submitted_at // ""),kind:(if (.submitted_at | valid_at) then "findings" else "invalid" end)}),
+          ($comments[] | select(trusted) | select(body | contains($dashboard) | not)
+            | (body | capture("Reviewed commit:[*]*[[:space:]]*\\x60(?<sha>[0-9a-fA-F]{7,40})\\x60")? // {sha:""}
+              | .sha | ascii_downcase) as $abbrev
+            | if (body | test($error_reply;"i")) or (body | test($declined;"i")) or (body | test($provisional;"i"))
+              then {at:(.created_at // ""),kind:"invalid"}
+              elif $abbrev != "" and ($head | startswith($abbrev)) then
+                if ($abbrev | length) < 40 and (.resolved_review_sha // "" | ascii_downcase) != $head then empty
+                else {at:(.created_at // ""),
+                  kind:(if ((.created_at | valid_at) and (.updated_at | valid_at) and .updated_at == .created_at) | not then "invalid"
+                    elif (body | contains("Didn\u0027t find any major issues")) then "clean" else "invalid" end)} end
+              else empty end)
+          ] | map(select((.at | valid_at | not) or .at > $request.at))) as $events
+          | ($events | sort_by(.at) | last) as $latest
+          | (any($events[]; (.at | valid_at | not))
+             or ($latest != null and ([$events[] | select(.at == $latest.at) | .kind] | unique | length) > 1)) as $ambiguous
+          | {verdict:(if $ambiguous then "invalid" elif $latest == null then "waiting" else $latest.kind end),
+             reason:(if $ambiguous then "review evidence is malformed or ambiguous"
+               elif $latest == null then "no completed verdict binds the latest request"
+               elif $latest.kind == "clean" then "latest trusted exact-head receipt is clean"
+               else "latest trusted review is not an unedited clean receipt" end),request:$request}
+        end')" \
+    || fail_operation "could not normalize exact-head review evidence for PR #$number" "Inspect complete review evidence; no admission was requested."
+  DRIVER_REVIEW_REQUEST="$(printf '%s' "$DRIVER_REVIEW_JSON" | jq -c .request)"
+  HEAD_UNRESOLVED_THREADS="$(printf '%s' "$DRIVER_REVIEW_PROOF" | jq -r .unresolved)"
+}
+
+require_completed_review() {
+  local number="$1" head="$2" base="$3" base_sha="$4" request verdict
+  # Only a fully applied required gate may defer completion to GitHub.
+  if [ "$ENFORCEMENT_STATUS" = applied ] && [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ]; then return 0; fi
+  if [ "$ENFORCEMENT_EXPECTS_REVIEW_GATE" = true ]; then
+    read_review_gate_check "$head" "$number"
+    [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.ambiguous // false')" = false ] \
+      || fail_input "the review-gate execution is ambiguous" "Inspect the current bound gate; no admission was requested."
+    if [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.unbound // false')" = false ] \
+      && [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.workflowStatus // ""')" = completed ]; then
+      case "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.workflowConclusion // ""')" in
+        success | "") ;;
+        *) fail_input "the bound review-gate workflow did not succeed" "Address the failed gate; --unguarded cannot waive review." ;;
+      esac
+    fi
+    if review_gate_observation_bound; then
+      if [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.status // ""')" = completed ]; then
+        case "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.conclusion // ""')" in
+          success)
+            read_driver_review_proof "$number" "$head" "$base" "$base_sha"
+            [ "$(printf '%s' "$DRIVER_REVIEW_PROOF" | jq -r .unresolved)" -eq 0 ] \
+              || fail_input "PR #$number still has unresolved review threads" "Answer and resolve every finding before admission."
+            verify_live_head_and_base "$number" "$head" "$base" "$base_sha"
+            return 0
+            ;;
+          *) fail_input "the bound review gate for $head is not successful" "Address the gate verdict; --unguarded cannot waive review." ;;
+        esac
+      fi
+    fi
+  fi
+  read_driver_review_observation "$number" "$head" "$base" "$base_sha"
+  request="$DRIVER_REVIEW_REQUEST"
+  verdict="$(printf '%s' "$DRIVER_REVIEW_JSON" | jq -r .verdict)"
+  [ "$verdict" = clean ] \
+    || fail_input "PR #$number has no completed clean exact-head review: $(printf '%s' "$DRIVER_REVIEW_JSON" | jq -r .reason)" "Complete and answer exact-head review before admission; --unguarded cannot waive it."
+  [ "$HEAD_UNRESOLVED_THREADS" -eq 0 ] \
+    || fail_input "PR #$number still has unresolved review threads" "Answer and resolve every finding before admission."
+  read_driver_review_observation "$number" "$head" "$base" "$base_sha"
+  [ "$DRIVER_REVIEW_REQUEST" = "$request" ] \
+    || fail_input "the latest review request changed during admission" "Re-read status and current review; no admission was requested."
+  [ "$(printf '%s' "$DRIVER_REVIEW_JSON" | jq -r .verdict)" = clean ] && [ "$HEAD_UNRESOLVED_THREADS" -eq 0 ] \
+    || fail_input "review evidence changed during admission" "Address the latest review before admission."
+  verify_live_head_and_base "$number" "$head" "$base" "$base_sha"
 }
 
 # How many issue comments and reviews the pull request carries, in one GraphQL
@@ -3535,7 +3690,7 @@ review_gate_observation_bound() {
 }
 
 classify_pr_phase() {
-  local state="$1" merge_state="$2" draft="$3" number="$4" head="$5"
+  local state="$1" merge_state="$2" draft="$3" number="$4" head="$5" base="$6" base_sha="$7"
   local gate_present gate_status gate_conclusion workflow_status workflow_conclusion
   PR_PHASE=action-required
   PR_NEXT_ACTION=inspect
@@ -3594,6 +3749,40 @@ classify_pr_phase() {
   # A required run Actions refused holds the head: no check can pass until it
   # is re-run, and there is no review to address (AUT-1610).
   [ "$REQUIRED_RUNS_REFUSED_JSON" = "[]" ] || return 0
+
+  if [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" != true ]; then
+    read_driver_review_observation "$number" "$head" "$base" "$base_sha"
+    case "$(printf '%s' "$DRIVER_REVIEW_JSON" | jq -r .verdict)" in
+      clean)
+        if [ "$HEAD_UNRESOLVED_THREADS" -gt 0 ]; then
+          PR_PHASE=answer-required
+          PR_NEXT_ACTION=address-review
+          PR_HEAD_BLOCKERS_READ=true
+          return 0
+        fi
+        if [ "$AUTO_MERGE_ARMED" != true ]; then
+          if [ "$merge_state" = CLEAN ]; then
+            PR_PHASE=ready-to-queue
+            PR_NEXT_ACTION=queue
+            PR_NEXT_COMMAND="touchstone pr merge $number --head $head"
+          fi
+          return 0
+        fi
+        ;;
+      waiting)
+        PR_PHASE=reviewing
+        PR_NEXT_ACTION="wait"
+        return 0
+        ;;
+      findings)
+        PR_PHASE=answer-required
+        PR_NEXT_ACTION=address-review
+        PR_HEAD_BLOCKERS_READ=true
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  fi
 
   if [ "$AUTO_MERGE_ARMED" = true ]; then
     # Armed changes who admits the head, not whether its gate observation can
@@ -4033,7 +4222,7 @@ status_pr() {
   else
     REVIEW_GATE_CHECK_JSON="$(jq -cn --arg head "$head" '{present:false, head:$head, configured:false}')"
   fi
-  classify_pr_phase "$state" "$merge_state" "$draft" "$number" "$head"
+  classify_pr_phase "$state" "$merge_state" "$draft" "$number" "$head" "$base" "$base_sha"
   local gate_check_json="$REVIEW_GATE_CHECK_JSON" next_action_text="$PR_NEXT_ACTION"
   if [ "$PR_GATE_FAILURE_MAY_BE_WAITING" = true ]; then
     gate_check_json="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -c --arg recovery "$(review_gate_failure_recovery)" \
@@ -4229,14 +4418,14 @@ reconcile_delivery() {
 # never retried, never waited on (AUT-1224).
 ENQUEUED_DELIVERY_STATE=""
 enqueue_armed_head() {
-  local number="$1" head="$2" live_state live_head merge_state draft pr_id enqueue_status=0 enqueue_diagnostic="" remedy
+  local number="$1" head="$2" base="$3" base_sha="$4" live_state live_head merge_state draft pr_id enqueue_status=0 enqueue_diagnostic="" remedy
   ENQUEUED_DELIVERY_STATE=""
   read_pr_row
   IFS="$(printf '\t')" read -r _ live_state _ live_head _ _ _ merge_state draft <<<"$PR_ROW"
   [ "$live_head" = "$head" ] \
     || fail_input "expected head $head but PR #$number is at $live_head; nothing was enqueued" "Re-review the live head."
   read_auto_merge_state "$number" "$head"
-  classify_pr_phase "$live_state" "$merge_state" "$draft" "$number" "$head"
+  classify_pr_phase "$live_state" "$merge_state" "$draft" "$number" "$head" "$base" "$base_sha"
   [ "$PR_PHASE" = armed-not-queued ] && [ "$PR_NEXT_ACTION" = queue ] || return 0
   read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json id --jq .id \
     || fail_operation "could not read the node id of PR #$number to enqueue it: $READ_OUTPUT" "Retry after GitHub recovers."
@@ -4244,6 +4433,7 @@ enqueue_armed_head() {
   [ -n "$pr_id" ] || fail_operation "GitHub returned no node id for PR #$number" "Retry after GitHub recovers."
   [ "$JSON_MODE" = true ] \
     || printf 'GitHub reports PR #%s CLEAN with auto-merge armed and no queue entry; enqueueing it at %s.\n' "$number" "$head" >&2
+  require_completed_review "$number" "$head" "$base" "$base_sha"
   capture_command gh api graphql --hostname "$REPO_HOST" -f pullRequestId="$pr_id" -f expectedHeadOid="$head" \
     -f query='mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid}){mergeQueueEntry{state}}}' \
     || {
@@ -4444,6 +4634,7 @@ merge_pr() {
       # unguarded merge of this exact head was requested. Whether the merge
       # lands is GitHub's verdict, read below, not claimed here. A rerun
       # reuses the existing marker instead of posting again.
+      require_completed_review "$number" "$head" "$base" "$base_sha"
       unguarded_marker="<!-- touchstone:unguarded-merge head=$head -->"
       # Only a record this identity wrote counts; anyone can type the marker.
       read_with_retry gh api --hostname "$REPO_HOST" user --jq '.login' \
@@ -4503,6 +4694,7 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
       # let it land when they pass (the state `auto-merge-enabled` below).
       # With a queue, a head whose gate is still evaluating is armed the same
       # way: GitHub enqueues it once the required gate succeeds.
+      require_completed_review "$number" "$head" "$base" "$base_sha"
       merge_auto=()
       [ "$ENFORCEMENT_QUEUE_APPLIED" = true ] && [ "$REVIEW_GATE_ACTION" != arm-auto-merge ] || merge_auto=(--auto)
       if capture_command project_gh pr merge "$PR_NUMBER" --repo "$REPO_SPEC" --squash ${merge_auto[@]+"${merge_auto[@]}"} \
@@ -4521,7 +4713,7 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
     # next is enqueued here rather than left for an admission GitHub may
     # never make (AUT-1224). Without a queue, auto-merge itself lands it.
     if [ -z "$STACK_NUMBER" ] && [ "$final_state" = auto-merge-enabled ] && [ "$ENFORCEMENT_QUEUE_APPLIED" = true ]; then
-      enqueue_armed_head "$PR_NUMBER" "$head"
+      enqueue_armed_head "$PR_NUMBER" "$head" "$base" "$base_sha"
       [ -z "$ENQUEUED_DELIVERY_STATE" ] || final_state="$ENQUEUED_DELIVERY_STATE"
     fi
   fi
