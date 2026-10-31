@@ -2285,7 +2285,8 @@ refuse_conflicting_open_pr() {
     --jq '.data.repository.pullRequest' \
     || fail_operation "could not read mergeability before waiting for required workflows: $READ_OUTPUT" "Retry after GitHub recovers."
   snapshot="$READ_OUTPUT"
-  live_row="$(printf '%s' "$snapshot" | jq -er '
+  # Internal records have no terminator for native jq.exe to convert to CRLF.
+  live_row="$(printf '%s' "$snapshot" | jq -ej '
     if ([.headRefOid,.baseRefName,.baseRefOid] | all(.[]; type == "string" and length > 0))
     then [.headRefOid,.baseRefName,.baseRefOid,(.mergeStateStatus // "UNKNOWN")] | @tsv
     else error("missing PR coordinates") end
@@ -2296,7 +2297,7 @@ refuse_conflicting_open_pr() {
   [ "$merge_state" = DIRTY ] || return 0
 
   # PR-associated baseRefOid can lag the named branch a fetch will resolve.
-  recovery_row="$(printf '%s' "$snapshot" | jq -er --arg base "$base_ref" --arg host "$REPO_HOST" '
+  recovery_row="$(printf '%s' "$snapshot" | jq -ej --arg base "$base_ref" --arg host "$REPO_HOST" '
     .baseRepository as $repo | .baseRef as $ref
     | select(($repo.nameWithOwner | type) == "string"
       and ($repo.nameWithOwner | test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))
