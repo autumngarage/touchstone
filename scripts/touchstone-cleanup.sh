@@ -176,47 +176,81 @@ emit_worktree
 # that head name is merged or closed AND its head SHA is the ref's current
 # SHA. Name alone is not enough: a reused branch name, or a fork's PR with
 # the same name, would otherwise recommend deleting live work. The query is
-# driven by the refs being checked (one bounded read per ref), so there is
-# no "recent N pull requests" window to fall outside of. A failed read is a
-# finding, never an empty list.
+# one complete repository inventory, reused for local/remote refs and stack
+# bases. GitHub's native pagination costs one read per history page, not per
+# ref; there is no "recent N pull requests" window or persistent cache.
 if [ "$GH_OK" = true ]; then
   REPO_FULL="${REPO_ROW%%	*}"
+  # shellcheck disable=SC2016 # GraphQL variables are interpreted by GitHub.
+  if ! PR_PAGES="$(gh api graphql --paginate --slurp \
+    -f owner="${REPO_FULL%%/*}" -f name="${REPO_FULL#*/}" -f query='
+      query($owner: String!, $name: String!, $endCursor: String) {
+        repository(owner: $owner, name: $name) {
+          nameWithOwner
+          pullRequests(first: 100, after: $endCursor, states: [OPEN, CLOSED, MERGED], orderBy: {field: CREATED_AT, direction: DESC}) {
+            nodes { headRefName number state headRefOid headRepository { nameWithOwner } baseRefName }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+      }' 2>/dev/null)" \
+    || ! PR_ROWS="$(printf '%s' "$PR_PAGES" | jq -r --arg repo "$REPO_FULL" '
+      def valid_pr:
+        has("headRepository")
+        and (.headRefName | type == "string")
+        and (.number | type == "number" and . > 0 and floor == .)
+        and (.state == "OPEN" or .state == "CLOSED" or .state == "MERGED")
+        and (.headRefOid | type == "string" and test("^[0-9a-f]{40}\\z"))
+        and (.baseRefName | type == "string")
+        and (.headRepository == null or (.headRepository.nameWithOwner | type == "string"));
+      if type == "array" and length > 0
+        and all(.[];
+          (.errors == null or .errors == [])
+          and .data.repository.nameWithOwner == $repo
+          and (.data.repository.pullRequests.nodes | type == "array" and all(.[]; valid_pr))
+          and (.data.repository.pullRequests.pageInfo.hasNextPage | type == "boolean")
+          and (.data.repository.pullRequests.pageInfo.endCursor | . == null or type == "string"))
+        and all(.[0:-1][];
+          .data.repository.pullRequests.pageInfo.hasNextPage == true
+          and (.data.repository.pullRequests.pageInfo.endCursor | type == "string" and length > 0))
+        and .[-1].data.repository.pullRequests.pageInfo.hasNextPage == false
+      then .[].data.repository.pullRequests.nodes[]
+        | [.headRefName, .number, .state, .headRefOid, (.headRepository.nameWithOwner // ""), .baseRefName] | @tsv
+      else error("incomplete pull-request inventory") end
+    ' 2>/dev/null)"; then
+    GH_OK=false
+    finding "github" "pull-request inventory incomplete for $REPO_FULL" "branch findings are withheld; retry after GitHub access or quota recovers and every history page can be read"
+  fi
+fi
+if [ "$GH_OK" = true ]; then
   finished_for() {
     # $1 branch name, $2 current sha -> prints "#N merged|closed" or nothing
-    local rows
-    rows="$(gh pr list --state all --head "$1" --limit 1000 \
-      --json number,state,headRefOid,headRepository,headRepositoryOwner \
-      --jq '.[] | [.number, .state, .headRefOid, ((.headRepositoryOwner.login // "") + "/" + (.headRepository.name // ""))] | @tsv' 2>/dev/null)" || return 2
     # Any OPEN pull request from THIS repository on this head means the
     # branch is in flight; a fork's open PR with the same name is not ours.
-    printf '%s\n' "$rows" | awk -F'\t' -v repo="$REPO_FULL" '$2 == "OPEN" && $4 == repo { found = 1 } END { exit !found }' && return 1
-    printf '%s\n' "$rows" | awk -F'\t' -v sha="$2" -v repo="$REPO_FULL" \
-      '($2 == "MERGED" || $2 == "CLOSED") && $3 == sha && $4 == repo { print "#" $1 " " tolower($2); exit }'
+    # Consume the rows before deciding: an early-exit pipeline can SIGPIPE
+    # its producer once the shared history exceeds the pipe buffer.
+    awk -F'\t' -v branch="$1" -v sha="$2" -v repo="$REPO_FULL" '
+      $1 == branch && $5 == repo {
+        if ($3 == "OPEN") open = 1
+        else if (!finished && ($3 == "MERGED" || $3 == "CLOSED") && $4 == sha)
+          finished = "#" $2 " " tolower($3)
+      }
+      END { if (open) exit 1; if (finished) print finished }
+    ' <<<"$PR_ROWS"
   }
   # A branch that is still the BASE of an open pull request is a stack's
   # parent: deleting it closes the child PR, which cannot be reopened
   # (principles/git-workflow.md, stacked PRs). Read once.
-  # Every open PR, paginated, so no child is past a window; a failed read
-  # fails closed: no remote-branch deletion is recommended without it.
-  STACK_BASES_OK=true
-  STACK_BASES="$(gh api --paginate "repos/$REPO_FULL/pulls?state=open&per_page=100" --jq '.[] | [.base.ref, .number] | @tsv' 2>/dev/null)" || {
-    STACK_BASES_OK=false
-    finding "github" "open pull-request read failed" "remote-branch findings are withheld: a merged branch may still base an open stacked PR; retry with gh authenticated"
-  }
+  # The complete inventory includes fork/null-head PRs: their bases protect
+  # parents even though they cannot establish same-repository head evidence.
   bases_open_pr() {
-    printf '%s\n' "$STACK_BASES" | awk -F'\t' -v b="$1" '$1 == b { print "#" $2; exit }'
-  }
-  # finished_for runs in a command substitution, so it cannot record a
-  # finding itself: exit 2 means the read failed and the caller records it.
-  read_failed() {
-    finding "github" "pull-request read failed for $1" "branch findings are incomplete; run with gh authenticated and retry"
+    awk -F'\t' -v b="$1" '
+      $3 == "OPEN" && $6 == b && !child { child = "#" $2 }
+      END { if (child) print child }
+    ' <<<"$PR_ROWS"
   }
   while IFS=$'\t' read -r branch sha; do
     [ -n "$branch" ] && [ "$branch" != "$DEFAULT_BRANCH" ] || continue
-    pr="$(finished_for "$branch" "$sha")" || {
-      [ $? -eq 2 ] && read_failed "$branch"
-      continue
-    }
+    pr="$(finished_for "$branch" "$sha")" || continue
     [ -n "$pr" ] || continue
     case "$pr" in
       *merged) finding "local-branch" "$branch ($pr)" "git branch -D $(q "$branch") after confirming the merged head (principles/git-workflow.md, 'Periodic branch hygiene')" ;;
@@ -227,21 +261,14 @@ if [ "$GH_OK" = true ]; then
   # never by refs/remotes/origin/*: a remote-tracking ref can hold the old
   # merged SHA while another clone has since pushed new work to that name,
   # and a recommendation built on the stale ref would delete live work.
-  if [ "$STACK_BASES_OK" = true ]; then
-    if ! REMOTE_HEADS="$(git ls-remote --quiet --heads origin 2>/dev/null)"; then
-      finding "github" "could not list origin's branches (origin unreachable?)" "remote-branch findings are withheld; retry with network access"
-      REMOTE_HEADS=""
-    fi
-  else
+  if ! REMOTE_HEADS="$(git ls-remote --quiet --heads origin 2>/dev/null)"; then
+    finding "github" "could not list origin's branches (origin unreachable?)" "remote-branch findings are withheld; retry with network access"
     REMOTE_HEADS=""
   fi
   while IFS=$'\t' read -r sha ref; do
     branch="${ref#refs/heads/}"
     [ -n "$branch" ] && [ "$branch" != "$DEFAULT_BRANCH" ] || continue
-    pr="$(finished_for "$branch" "$sha")" || {
-      [ $? -eq 2 ] && read_failed "origin/$branch"
-      continue
-    }
+    pr="$(finished_for "$branch" "$sha")" || continue
     [ -n "$pr" ] || continue
     child="$(bases_open_pr "$branch")"
     if [ -n "$child" ]; then
