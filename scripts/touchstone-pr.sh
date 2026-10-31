@@ -1957,7 +1957,7 @@ record_actions_refusal() {
 # re-run and every read-only refusal check share.
 REQUIRED_RUN_ROW=""
 select_required_workflow_run() {
-  local run_pages="$1" workflow_name="$2" local_workflow_ids="$3" number="$4" head="$5" workflow_ids workflow_id_count
+  local run_pages="$1" workflow_name="$2" local_workflow_ids="$3" number="$4" head="$5" workflow_ids workflow_id_count selection candidates shared_start
   REQUIRED_RUN_ROW=""
   workflow_ids="$(printf '%s\n' "$run_pages" | jq -sec \
     --arg workflow "$workflow_name" --argjson local_ids "$local_workflow_ids" --argjson number "$number" \
@@ -1966,10 +1966,10 @@ select_required_workflow_run() {
   workflow_id_count="$(printf '%s' "$workflow_ids" | jq 'length')"
   [ "$workflow_id_count" -le 1 ] \
     || fail_operation "multiple external $workflow_name workflow identities ran for PR #$number at $head" "Remove the same-named required-workflow ambiguity, then retry."
-  REQUIRED_RUN_ROW="$(printf '%s\n' "$run_pages" | jq -ser \
+  selection="$(printf '%s\n' "$run_pages" | jq -sec \
     --arg workflow "$workflow_name" --argjson workflow_ids "$workflow_ids" --argjson number "$number" \
     '[.[].workflow_runs[]? | select(.name == $workflow and (.workflow_id as $id | $workflow_ids | index($id)) != null and (.event == "pull_request" or .event == "merge_group") and any(.pull_requests[]?; .number == $number))]
-    | if length == 0 then ""
+    | if length == 0 then {row:""}
       elif any(.[]; (.id | type) != "number" or (.node_id | type) != "string" or .node_id == ""
         or (.run_attempt | type) != "number"
         or (.run_started_at | type) != "string" or .run_started_at == ""
@@ -1978,11 +1978,18 @@ select_required_workflow_run() {
       else (map(.run_started_at) | max) as $latest_start
         | [.[] | select(.run_started_at == $latest_start)] as $latest_runs
         | if ($latest_runs | length) > 1 then
-            error("multiple workflow runs share the newest execution timestamp")
-          else $latest_runs[0] | "\(.id) \(.node_id) \(.status) \(.run_started_at) \(.run_attempt) \(.conclusion // "-")"
+            {ambiguous:true, runStartedAt:$latest_start, candidates:$latest_runs}
+          else $latest_runs[0] | {row:"\(.id) \(.node_id) \(.status) \(.run_started_at) \(.run_attempt) \(.conclusion // "-")"}
           end
       end')" \
     || fail_operation "GitHub returned malformed $workflow_name run pages for $head" "Retry after GitHub returns complete workflow-run pages."
+  if [ "$(jq -r '.ambiguous // false' <<<"$selection")" = true ]; then
+    shared_start="$(jq -r '.runStartedAt' <<<"$selection")"
+    candidates="$(jq -r '.candidates | sort_by(.id) | map("\(.id) attempt=\(.run_attempt) status=\(.status) conclusion=\(.conclusion // "-")") | join("; ")' <<<"$selection")"
+    fail_operation "GitHub returned ambiguous $workflow_name runs for PR #$number at $head: candidate runs $candidates share newest execution timestamp $shared_start" \
+      "These fixed timestamps cannot be ordered by waiting or retrying alone. Verify the live PR head/base and queue state, then a candidate's policy-bound source repository/file/revision, head/PR/event, current attempt and result, including body/review binding. Address substantive failures; preserve queued work. If requalification is appropriate, rerun one completed gate once and resume touchstone pr open; if still ambiguous, stop and report it. Do not rerun author validation or bypass review. The bounded raw recovery is in $TOOL_ROOT/docs/pr-cli-contract.md, 'Safety and recovery'."
+  fi
+  REQUIRED_RUN_ROW="$(jq -r '.row' <<<"$selection")"
 }
 
 # A required run Actions refused, read without mutating anything: the newest

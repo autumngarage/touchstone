@@ -1460,6 +1460,26 @@ case "$1 ${2:-}" in
             pull_requests:[{number:7}]
           }]')"
         fi
+        # Captured Hesperus PR1991 attempt1 responses (AUT-3272) have
+        # distinct IDs with exactly equal run_started_at, including cancelled
+        # vs success/failure. Conclusions do not order those executions.
+        if [ -f "$GH_STATE/required-tie" ]; then
+          read -r tie_workflow tie_first tie_second <"$GH_STATE/required-tie"
+          runs="$(jq -c --arg workflow "$tie_workflow" --arg first "$tie_first" --arg second "$tie_second" '
+            (.workflow_runs[] | select(.name == $workflow and (.id == 77 or .id == 80))) as $run
+            | (.workflow_runs[] | select(.id == $run.id) | .conclusion) = $first
+            | .workflow_runs += [$run | .id += 10 | .node_id = "TIED_RUN" | .run_attempt = 1 | .conclusion = $second]
+          ' <<<"$runs")"
+          if [ -f "$GH_STATE/tie-recovered" ]; then
+            runs="$(jq -c --arg workflow "$tie_workflow" '
+              (.workflow_runs[] | select(.name == $workflow and (.id == 77 or .id == 80)))
+                |= (.run_attempt += 1 | .run_started_at = "2099-01-01T00:00:00Z" | .conclusion = "success")
+            ' <<<"$runs")"
+          fi
+          if [ -f "$GH_STATE/tie-malformed" ]; then
+            runs="$(jq -c 'del(.workflow_runs[] | select(.id == 77 or .id == 80) | .run_started_at)' <<<"$runs")"
+          fi
+        fi
         if [ -f "$GH_STATE/same-name-external-decoy-only" ]; then
           runs="$(printf '%s' "$runs" | jq -c '{workflow_runs: [.workflow_runs[] | select(.id != 80)]}')"
         fi
@@ -2200,6 +2220,73 @@ EOF
   assert_has "$TMP/out" 'actions/runs/80/rerun; gh api --hostname github.com -X POST repos/autumngarage/current/actions/runs/77/rerun)'
   assert_not_has "$GH_CALLS" 'actions/runs/77/rerun'
   rm -f "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request" "$TMP/state/gate-reruns"
+
+  echo "==> tied required-workflow timestamps have truthful bounded recovery (AUT-3272)"
+  touch "$TMP/state/review-gate"
+  for tie_workflow in delivery-evidence review-gate; do
+    for tie_output in human json; do
+      rm -f "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request" "$TMP/state/gate-reruns" "$TMP/state/evidence-reruns"
+      printf '%s cancelled %s\n' "$tie_workflow" "$([ "$tie_workflow" = delivery-evidence ] && echo success || echo failure)" >"$TMP/state/required-tie"
+      if [ "$tie_output" = json ]; then
+        run_pr "$TMP/out" open --title 'Tied gates' --body-file "$TMP/body" --json
+        tail -n 1 "$TMP/out" | jq -e --arg workflow "$tie_workflow" --arg head "$HEAD_SHA" '
+          .status == "failed" and .pullRequest == 7 and .head == $head
+          and (.reason | contains("ambiguous " + $workflow) and contains("candidate runs") and (contains("malformed") | not))
+          and (.remedy | contains("one completed gate once") and contains("policy-bound") and contains("waiting") and contains("stop"))
+        ' >/dev/null || fail "JSON ambiguity lacks truthful coordinates/recovery: $(cat "$TMP/out")"
+      else
+        run_pr "$TMP/out" open --title 'Tied gates' --body-file "$TMP/body"
+        assert_has "$TMP/out" "ambiguous $tie_workflow"
+        assert_has "$TMP/out" 'candidate runs'
+        assert_has "$TMP/out" 'one completed gate once'
+        assert_has "$TMP/out" 'policy-bound'
+        assert_has "$TMP/out" 'PR #7 exists'
+        assert_not_has "$TMP/out" 'malformed'
+      fi
+      assert_rc "$RUN_RC" 1
+      assert_has "$TMP/out" 'attempt=2'
+      assert_has "$TMP/out" 'attempt=1'
+      assert_has "$TMP/out" 'status=completed'
+      assert_has "$TMP/out" 'conclusion=cancelled'
+      assert_not_has "$GH_CALLS" '/rerun'
+      if [ "$tie_workflow" = delivery-evidence ]; then
+        assert_has "$TMP/out" '80 '
+        assert_has "$TMP/out" '90 '
+        [ ! -f "$TMP/state/review-request" ] || fail "evidence tie requested hosted review"
+      else
+        assert_has "$TMP/out" '77 '
+        assert_has "$TMP/out" '87 '
+        [ -f "$TMP/state/review-request" ] || fail "review tie lost its existing request"
+      fi
+    done
+  done
+  for tie_conclusion in success failure; do
+    rm -f "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request" "$TMP/state/gate-reruns" "$TMP/state/evidence-reruns"
+    printf 'review-gate %s %s\n' "$tie_conclusion" "$tie_conclusion" >"$TMP/state/required-tie"
+    run_pr "$TMP/out" open --title 'Tied gates' --body-file "$TMP/body" --json
+    assert_rc "$RUN_RC" 1
+    assert_has "$TMP/out" 'ambiguous review-gate'
+    assert_not_has "$GH_CALLS" '/rerun'
+  done
+  touch "$TMP/state/tie-recovered"
+  run_pr "$TMP/out" open --title 'Tied gates' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewRequest":"existing:'
+  assert_not_has "$GH_CALLS" 'pr comment'
+  assert_not_has "$GH_CALLS" 'actions/runs/87/rerun'
+  rm "$TMP/state/tie-recovered"
+  printf 'delivery-evidence cancelled success\n' >"$TMP/state/required-tie"
+  touch "$TMP/state/tie-malformed"
+  run_pr "$TMP/out" open --title 'Tied gates' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'malformed delivery-evidence run pages'
+  assert_not_has "$TMP/out" 'candidate runs'
+  rm -f "$TMP/state/required-tie" "$TMP/state/tie-malformed" "$TMP/state/gate-reruns" "$TMP/state/evidence-reruns" "$TMP/state/review-request" "$TMP/state/pr-exists" "$TMP/state/pr-body"
+  GH_MODE=required_run_recency run_pr "$TMP/out" open --title 'Newer execution' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/state/gate-reruns" 'rerun 77'
+  assert_not_has "$TMP/state/gate-reruns" 'rerun 88'
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/evidence-reruns" "$TMP/state/review-request" "$TMP/state/pr-exists" "$TMP/state/pr-body"
 
   echo "==> open re-runs the pinned review gate where the repository has one"
   touch "$TMP/state/review-gate" "$TMP/state/behavior-version-legacy"

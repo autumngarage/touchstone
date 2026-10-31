@@ -661,6 +661,24 @@ other mutation. A moved head, unknown or changed review base, ambiguous
 branch-to-PR mapping, GitHub rejection, or unverified final state fails closed
 with a concrete remedy.
 
+When valid required-workflow runs share the newest attempt-start timestamp,
+`open` refuses with an ambiguity diagnostic naming the workflow, PR/head,
+shared timestamp and candidate run IDs, attempts, statuses and conclusions.
+Waiting or repeating the command alone cannot order these fixed timestamps;
+creation ID, cancellation and success are not execution precedence. Candidates
+have not yet been verified against the policy-bound source. Inspect the live
+PR head/base and queue state, then verify the chosen run's policy-declared
+source repository/file/revision, head, PR/event, current attempt and result,
+including the body/review binding it evaluated. Address a substantive failure
+rather than rerunning it. Preserve any existing queue entry. When requalification
+is appropriate, rerun **one completed gate once** with
+`gh api --hostname HOST -X POST repos/OWNER/REPO/actions/runs/RUN_ID/rerun`,
+using only the independently verified candidate, then resume canonical
+`touchstone pr open`. If that leaves ambiguity, stop and report it; do not loop,
+rerun author validation, change the body cosmetically or bypass review. The
+failed invocation may already have created/edited the PR or posted its review
+request; its reported PR coordinates identify the state to resume.
+
 A request GitHub refuses for the token's rate limit is never retried and never
 read as a verdict on the change: it is an unavailable provider, the class of a
 job Actions refused. Every session on a machine shares one token's quota; on
