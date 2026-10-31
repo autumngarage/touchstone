@@ -624,7 +624,11 @@ uri_encode() {
   done
   printf '%s' "$out"
 }
-BASE_REF_ENCODED="$(uri_encode "$BASE_REF")"
+# The shared observer verifies native membership; review markers still use
+# the immediate base, while inherited rules belong to the verified trunk.
+ENFORCEMENT_BASE="$(printf '%s' "$PR_STATUS" | jq -er --arg base "$BASE_REF" '.stack.trunk // $base')" \
+  || fail "could not read the enforcement base from the shared PR observer."
+BASE_REF_ENCODED="$(uri_encode "$ENFORCEMENT_BASE")"
 GATE_REQUIRED="$(gh_read api "repos/$REPO_OWNER/$REPO_NAME/rules/branches/$BASE_REF_ENCODED" \
   --jq '[.[] | select(.type == "workflows") | .parameters.workflows[]?.path] | any(. == ".github/workflows/review-gate.yml")')" \
   || fail "could not read the effective rules for $BASE_REF: $GATE_REQUIRED"

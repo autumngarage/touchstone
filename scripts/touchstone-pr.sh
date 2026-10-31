@@ -97,6 +97,16 @@ BASE_REF=""
 EXPECTED_HEAD=""
 EXPECTED_BRANCH=""
 EXPECTED_PR=""
+STACK_PARENT=""
+STACK_NUMBER=""
+STACK_TRUNK=""
+STACK_TRUNK_SHA=""
+STACK_ROWS=""
+STACK_BASE=""
+STACK_BASE_SHA=""
+STACK_HEAD=""
+STACK_PR=""
+MERGE_REQUEST=""
 UNGUARDED=false
 RETRY_AFTER_FLAKE=""
 RETRY_AFTER_FLAKE_SET=false
@@ -153,11 +163,11 @@ esac
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
+  touchstone pr open --title TITLE --body-file FILE [--base BRANCH] [--stack-parent PR]
                      [--expect-branch BRANCH] [--expect-pr NUMBER] [--project DIR] [--json]
   touchstone pr status PR [--project DIR] [--json]
   touchstone pr merge PR --head SHA [--unguarded] [--retry-after-flake EVIDENCE]
-                      [--project DIR] [--json]
+                      [--merge-request UUID] [--project DIR] [--json]
   touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change)
   touchstone pr answer PR --finding ID --body-file FILE (--fix-commit SHA | --no-code-change)
   touchstone pr answer PR --all-resolved-check
@@ -596,6 +606,19 @@ while [ "$#" -gt 0 ]; do
       case "$EXPECTED_PR" in '' | 0* | *[!0-9]*) fail_input "--expect-pr requires a positive PR number" "Pass the recorded PR number." ;; esac
       shift 2
       ;;
+    --stack-parent)
+      require_option_value "$@"
+      STACK_PARENT="$2"
+      case "$STACK_PARENT" in '' | 0* | *[!0-9]*) fail_input "--stack-parent requires a positive PR number" "Pass the immediate parent PR number." ;; esac
+      shift 2
+      ;;
+    --merge-request)
+      require_option_value "$@"
+      MERGE_REQUEST="$2"
+      [[ "$MERGE_REQUEST" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] \
+        || fail_input "--merge-request requires the asynchronous request UUID" "Use the UUID returned by GitHub."
+      shift 2
+      ;;
     --head)
       require_option_value "$@"
       EXPECTED_HEAD="$2"
@@ -620,6 +643,10 @@ done
 
 [ -z "$EXPECTED_PR" ] || [ "$OPERATION" = open ] \
   || fail_input "--expect-pr applies to open only" "Remove --expect-pr."
+[ -z "$STACK_PARENT" ] || [ "$OPERATION" = open ] \
+  || fail_input "--stack-parent applies to open only" "Remove --stack-parent."
+[ -z "$MERGE_REQUEST" ] || [ "$OPERATION" = merge ] \
+  || fail_input "--merge-request applies to merge only" "Remove --merge-request."
 
 case "$OPERATION" in
   open)
@@ -856,6 +883,7 @@ REQUIRED_WORKFLOW_REVISIONS="[]"
 required_workflow_declared() {
   local base_ref="$1" workflow_path="$2" encoded pages declared expected workflow_pages
   local actual_shas
+  if [ -n "$STACK_NUMBER" ] && [ "$base_ref" = "$STACK_BASE" ]; then base_ref="$STACK_TRUNK"; fi
   REQUIRED_WORKFLOW_LOCAL_IDS="[]"
   REQUIRED_WORKFLOW_SOURCE_REPOSITORY=""
   REQUIRED_WORKFLOW_PATH=""
@@ -1229,7 +1257,7 @@ select_enforcement_policy() {
     policy_branch="$(jq -er '.branch' "$ENFORCEMENT_POLICY_FILE")" \
       || fail_operation "could not read the protected branch from $ENFORCEMENT_POLICY_FILE" "Reinstall touchstone; the policy file is corrupt or incomplete."
     [ "$policy_branch" = "$base_ref" ] \
-      || fail_operation "$ENFORCEMENT_POLICY_FILE protects $policy_branch, not PR base $base_ref" "Use a checked-in policy for $REPO@$base_ref; enforcement cannot be inferred from another branch."
+      || fail_operation "$ENFORCEMENT_POLICY_FILE protects $policy_branch, not PR base $base_ref" "For a native stack, use 'touchstone pr open --stack-parent <parent PR>' to verify membership and inherited trunk enforcement. Otherwise use a checked-in policy for $REPO@$base_ref; enforcement cannot be inferred from another branch. Arbitrary feature bases remain refused."
   fi
 }
 
@@ -1286,7 +1314,7 @@ bind_enforcement_policy() {
       # The file list is live PR state, unlike the content reads below which
       # address immutable commits. Bind it back to the coordinates captured by
       # read_pr_row before interpreting it as this head's candidate intent.
-      verify_live_head_and_base "$pr_number" "$candidate_revision" "$base_ref" "$policy_revision"
+      verify_live_head_and_base "$pr_number" "$candidate_revision" "${STACK_BASE:-$base_ref}" "${STACK_BASE_SHA:-$policy_revision}"
       if [ -n "$changed_rows" ]; then
         [ "$(printf '%s\n' "$changed_rows" | awk 'NF { count++ } END { print count + 0 }')" -eq 1 ] \
           || fail_operation "PR #$pr_number reports multiple changes for $ENFORCEMENT_POLICY_SOURCE" "Inspect the pull request file list."
@@ -1356,6 +1384,10 @@ read_enforcement() {
   local base_ref="$1" policy_revision="${2:-}" candidate_revision="${3:-}" candidate_repo="${4:-}" pr_number="${5:-}"
   local encoded expected expected_statuses expected_count policy_file policy_type policy_branch
   local source_manifest_path="" gate_behavior_version=""
+  if [ -n "$STACK_NUMBER" ] && [ "$base_ref" = "$STACK_BASE" ]; then
+    base_ref="$STACK_TRUNK"
+    policy_revision="$STACK_TRUNK_SHA"
+  fi
   ENFORCEMENT_REVIEW_GATE_APPLIED=false
   ENFORCEMENT_REVIEW_GATE_SOURCE_REPOSITORY=""
   ENFORCEMENT_REVIEW_GATE_REF=""
@@ -1620,6 +1652,13 @@ policy_binding_json_fields() {
   printf ',"revision":'
   json_string "$ENFORCEMENT_POLICY_REVISION"
   printf '}'
+  if [ -n "$STACK_NUMBER" ]; then
+    printf ',"stack":{"number":%s,"trunk":' "$STACK_NUMBER"
+    json_string "$STACK_TRUNK"
+    printf ',"trunkSha":'
+    json_string "$STACK_TRUNK_SHA"
+    printf '}'
+  fi
   if [ -n "$ENFORCEMENT_CANDIDATE_REVISION" ]; then
     printf ',"candidatePolicy":{"source":'
     json_string "$ENFORCEMENT_CANDIDATE_SOURCE"
@@ -2860,6 +2899,7 @@ open_pr() {
   local branch local_head remote_line remote_head rows count number url pr_head pr_base pr_base_sha create_output create_status=0
   local evidence_min_attempt=0 evidence_min_attempt_run_id=""
   local evidence_pass input_body
+  local parent_stack="" parent_top="" parent_head="" parent_ref="" parent_json draft_args=()
   local request_marker existing_request_marker comment_rows existing_request request_body request_url request_rows state request_author allow_attest select_rc
   [ -n "$TITLE" ] || fail_input "open requires --title" "Pass the PR title explicitly."
   [ -f "$BODY_FILE" ] && [ -s "$BODY_FILE" ] \
@@ -2886,13 +2926,38 @@ open_pr() {
   [ "$branch" != "$DEFAULT_REF" ] \
     || fail_input "cannot open a pull request from the default branch '$branch'" \
       "Create and push a feature branch first."
-  if [ -z "$BASE_REF" ]; then
+  if [ -n "$STACK_PARENT" ]; then
+    read_with_retry gh api --hostname "$REPO_HOST" -H 'X-GitHub-Api-Version: 2026-03-10' "repos/$REPO/pulls/$STACK_PARENT" \
+      || fail_operation "could not read stack parent #$STACK_PARENT: $READ_OUTPUT" "Verify the parent PR."
+    parent_json="$READ_OUTPUT"
+    jq -e --arg repo "$REPO" --argjson number "$STACK_PARENT" '
+      .number == $number and .state == "open" and .head.repo.full_name == $repo and .base.repo.full_name == $repo
+    ' <<<"$parent_json" >/dev/null \
+      || fail_input "stack parent must be an open pull request in the same repository" "Use an existing same-repository parent."
+    parent_head="$(jq -r .head.sha <<<"$parent_json")"
+    parent_ref="$(jq -r .head.ref <<<"$parent_json")"
+    [ -z "$BASE_REF" ] || [ "$BASE_REF" = "$parent_ref" ] \
+      || fail_input "--base differs from stack parent branch $parent_ref" "Use the immediate parent branch."
+    BASE_REF="$parent_ref"
+    read_native_stack "$STACK_PARENT" "$parent_head" "$(jq -r .base.ref <<<"$parent_json")" "$(jq -r .base.sha <<<"$parent_json")"
+    parent_stack="$STACK_NUMBER"
+    if [ -n "$parent_stack" ]; then
+      parent_top="$(jq -r '.[-1].number' <<<"$STACK_ROWS")"
+    fi
+    read_enforcement "$(jq -r .base.ref <<<"$parent_json")" "$(jq -r .base.sha <<<"$parent_json")"
+    [ "$ENFORCEMENT_STATUS" = applied ] && [ "$ENFORCEMENT_QUEUE_APPLIED" = true ] && [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ] \
+      || fail_input "stack trunk enforcement is not fully applied" "$(enforcement_remedy)"
+    read_accepted_delivery_state "$STACK_PARENT" "$parent_head"
+    [ -z "$ACCEPTED_DELIVERY_STATE" ] \
+      || fail_input "stack parent #$STACK_PARENT is already accepted for delivery" "Leave the queue unchanged; wait for the parent to merge."
+    draft_args=(--draft)
+  elif [ -z "$BASE_REF" ]; then
     BASE_REF="$DEFAULT_REF"
   fi
   # Policy is branch-specific. Refuse an unmodelled base before creating,
   # editing, or commenting on a pull request; another branch's rules cannot
   # establish what GitHub will enforce here.
-  select_enforcement_policy "$BASE_REF"
+  if [ -z "$STACK_PARENT" ]; then select_enforcement_policy "$BASE_REF"; fi
   # Checked before anything is pushed or posted: with Actions disabled the
   # request would be accepted and then bind to a gate run that can never
   # exist, and the later timeout would read as a dispatch delay.
@@ -2912,7 +2977,7 @@ open_pr() {
       || fail_operation "open PR on $branch is not expected PR #$EXPECTED_PR" "Inspect the recorded PR; no other PR will be edited."
   fi
   if [ "$count" -eq 0 ]; then
-    if capture_command project_gh pr create --repo "$REPO_SPEC" --head "$branch" --base "$BASE_REF" \
+    if capture_command project_gh pr create --repo "$REPO_SPEC" --head "$branch" --base "$BASE_REF" ${draft_args[@]+"${draft_args[@]}"} \
       --title "$TITLE" --body-file "$BODY_FILE"; then
       create_output="$CAPTURE_OUTPUT"
     else
@@ -2942,7 +3007,44 @@ open_pr() {
     || fail_operation "GitHub returned no base SHA for PR #$number" "Retry after GitHub returns the complete PR binding."
   # Required-workflow identity comes from the immutable base policy, not a
   # same-path repository-local workflow or policy bytes changed by this PR.
-  bind_enforcement_policy "$pr_base_sha"
+  if [ -n "$STACK_PARENT" ]; then
+    [ "$number" != "$STACK_PARENT" ] && [ "$pr_base_sha" = "$parent_head" ] \
+      || fail_input "stack parent moved before child attachment" "Reconcile the draft against the current parent head."
+    read_native_stack "$number" "$pr_head" "$pr_base" "$pr_base_sha"
+    if [ -z "$STACK_NUMBER" ]; then
+      read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json isDraft --jq .isDraft \
+        || fail_operation "could not verify draft child #$number" "Leave the child draft and retry."
+      [ "$READ_OUTPUT" = true ] \
+        || fail_input "unattached child #$number must be a draft" "Mark it draft explicitly before retrying attachment."
+      local attach_endpoint="repos/$REPO/stacks" attach_args=(-F "pull_requests[]=$STACK_PARENT" -F "pull_requests[]=$number")
+      if [ -n "$parent_stack" ]; then
+        [ "$parent_top" = "$STACK_PARENT" ] \
+          || fail_input "PR #$STACK_PARENT is not the top of its native stack" "Append only to the current stack top; child remains draft."
+        attach_endpoint="$attach_endpoint/$parent_stack/add"
+        attach_args=(-F "pull_requests[]=$number")
+      fi
+      capture_command gh api --hostname "$REPO_HOST" -H 'X-GitHub-Api-Version: 2026-03-10' -X POST "$attach_endpoint" "${attach_args[@]}" \
+        || fail_operation "native attachment of draft child #$number was not confirmed: $CAPTURE_ERROR" "Child remains draft; re-run open with --stack-parent $STACK_PARENT to reconcile before any review."
+      read_native_stack "$number" "$pr_head" "$pr_base" "$pr_base_sha"
+    fi
+    [ -n "$STACK_NUMBER" ] && jq -e --argjson parent "$STACK_PARENT" --argjson child "$number" \
+      'map(.number) | index($child) as $i | $i > 0 and .[$i-1] == $parent' <<<"$STACK_ROWS" >/dev/null \
+      || fail_operation "child #$number is not attached immediately above parent #$STACK_PARENT" "Leave the child draft and reconcile its native membership."
+    read_enforcement "$pr_base" "$pr_base_sha"
+    [ "$ENFORCEMENT_STATUS" = applied ] && [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ] && [ "$ENFORCEMENT_QUEUE_APPLIED" = true ] \
+      || fail_operation "native child #$number has no verified trunk enforcement" "Leave the child draft; $(enforcement_remedy)"
+    verify_native_stack
+    if [ "$(jq -r --argjson number "$number" '.[] | select(.number == $number) | .draft' <<<"$STACK_ROWS")" = true ]; then
+      capture_command gh pr ready "$number" --repo "$REPO_SPEC" \
+        || fail_operation "could not ready verified child #$number: $CAPTURE_ERROR" "Inspect the child; retry open to reconcile."
+      read_native_stack "$number" "$pr_head" "$pr_base" "$pr_base_sha"
+      [ "$(jq -r --argjson number "$number" '.[] | select(.number == $number) | .draft' <<<"$STACK_ROWS")" = false ] \
+        || fail_operation "child #$number is still draft after ready" "Inspect GitHub before retrying."
+    fi
+  else
+    read_native_stack "$number" "$pr_head" "$pr_base" "$pr_base_sha"
+    bind_enforcement_policy "${STACK_TRUNK_SHA:-$pr_base_sha}"
+  fi
   # Only after the head and base checks above: a PR that would be refused for
   # drift is not edited first. Idempotent means "converges on the arguments
   # given", not "no-ops": on a
@@ -3065,6 +3167,7 @@ open_pr() {
   # A conflicting head must be replaced before it can merge. Do not consume a
   # hosted review on a head whose only valid recovery creates a new head.
   refuse_conflicting_open_pr "$number" "$local_head" "$pr_base" "$pr_base_sha"
+  verify_native_stack
   if capture_command gh pr comment "$number" --repo "$REPO_SPEC" --body "$request_body"; then
     request_url="$CAPTURE_OUTPUT"
   else
@@ -3088,6 +3191,7 @@ open_pr() {
 # refused job was not, and cannot be until Actions runs jobs again, so the
 # request is reported bound but the command does not report success.
 finish_open() {
+  verify_native_stack
   if [ -n "$EXPECTED_PR" ]; then
     assert_wait_liveness "$2" "$4" "$BASE_REF" "$7"
   fi
@@ -3098,12 +3202,96 @@ finish_open() {
   emit_open_result "$@"
 }
 
+# GitHub REST API 2026-03-10: pull-request.stack and /stacks/{number}.
+# A marker or a feature-branch name never proves inherited trunk enforcement.
+read_native_stack() {
+  local number="$1" head="$2" base="$3" base_sha="$4"
+  local pull stack stack_number rows row layer live position=0 previous_ref previous_sha normalized=""
+  STACK_NUMBER="" STACK_TRUNK="" STACK_TRUNK_SHA="" STACK_ROWS=""
+  STACK_PR="$number" STACK_HEAD="$head" STACK_BASE="$base" STACK_BASE_SHA="$base_sha"
+  read_with_retry gh api --hostname "$REPO_HOST" -H 'X-GitHub-Api-Version: 2026-03-10' "repos/$REPO/pulls/$number" \
+    || fail_operation "could not read native stack membership for PR #$number: $READ_OUTPUT" "Retry after GitHub recovers."
+  pull="$READ_OUTPUT"
+  jq -e --argjson number "$number" 'type == "object" and .number == $number' <<<"$pull" >/dev/null \
+    || fail_operation "GitHub returned malformed native stack membership for PR #$number" "Inspect the pull request resource."
+  [ "$(jq -r '.stack == null' <<<"$pull")" != true ] || return 0
+  stack_number="$(jq -er '.stack.number | select(type == "number" and . > 0 and . == floor)' <<<"$pull")" \
+    || fail_operation "PR #$number has incomplete native stack membership" "GitHub must return a numbered native stack."
+  read_with_retry gh api --hostname "$REPO_HOST" -H 'X-GitHub-Api-Version: 2026-03-10' "repos/$REPO/stacks/$stack_number" \
+    || fail_operation "could not read native stack #$stack_number: $READ_OUTPUT" "Retry without editing or readying the child."
+  stack="$READ_OUTPUT"
+  jq -e --argjson number "$stack_number" --argjson pr "$number" '
+    .number == $number and .open == true
+    and (.base.ref | type == "string" and length > 0)
+    and (.pull_requests | type == "array" and length > 0)
+    and ([.pull_requests[].number] | length == (unique | length))
+    and ([.pull_requests[] | select(.number == $pr)] | length == 1)
+    and all(.pull_requests[]; (.number | type == "number" and . > 0 and . == floor)
+      and (.state == "open" or (.state == "closed" and .merged_at != null)))
+  ' <<<"$stack" >/dev/null \
+    || fail_operation "native stack #$stack_number is malformed or does not include PR #$number" "Inspect GitHub stack membership before retrying."
+  STACK_TRUNK="$(jq -r '.base.ref' <<<"$stack")"
+  STACK_TRUNK_SHA="$(jq -er '.stack.base.sha | select(test("^[0-9a-f]{40}$"))' <<<"$pull")" \
+    || fail_operation "native stack #$stack_number has no immutable trunk SHA" "Retry after GitHub returns complete stack coordinates."
+  rows="$(jq -c '.pull_requests[] | select(.state == "open")' <<<"$stack")"
+  previous_ref="$STACK_TRUNK" previous_sha="$STACK_TRUNK_SHA"
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    layer="$(jq -r .number <<<"$row")"
+    position=$((position + 1))
+    read_with_retry gh api --hostname "$REPO_HOST" -H 'X-GitHub-Api-Version: 2026-03-10' "repos/$REPO/pulls/$layer" \
+      || fail_operation "could not verify layer PR #$layer: $READ_OUTPUT" "Leave the native stack unchanged and retry."
+    live="$READ_OUTPUT"
+    jq -e --arg repo "$REPO" --argjson layer "$layer" --argjson stack "$stack_number" \
+      --arg trunk "$STACK_TRUNK" --arg trunk_sha "$STACK_TRUNK_SHA" \
+      --arg parent "$previous_ref" --arg parent_sha "$previous_sha" --argjson listed "$row" '
+      .number == $layer and .state == "open"
+      and .stack.number == $stack and .stack.base.ref == $trunk and .stack.base.sha == $trunk_sha
+      and .head.repo.full_name == $repo and .base.repo.full_name == $repo
+      and .head.ref == $listed.head.ref and .head.sha == $listed.head.sha
+      and (.head.sha | test("^[0-9a-f]{40}$"))
+      and .base.ref == $parent and .base.sha == $parent_sha
+    ' <<<"$live" >/dev/null \
+      || fail_operation "native stack #$stack_number moved or PR #$layer is not a same-repository linear layer" "Reconcile the stack and request exact-head review after any rewritten head."
+    read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/compare/$previous_sha...$(jq -r .head.sha <<<"$live")" --jq .status \
+      || fail_operation "could not verify ancestry of stack layer #$layer: $READ_OUTPUT" "Retry after GitHub can compare the immutable commits."
+    case "$READ_OUTPUT" in ahead | identical) ;; *)
+      fail_input "stack layer #$layer does not contain its current parent commit" "Rebase the stack, then request exact-head review of every rewritten layer."
+      ;;
+    esac
+    if [ "$layer" = "$number" ]; then
+      jq -e --arg head "$head" --arg base "$base" --arg sha "$base_sha" \
+        '.head.sha == $head and .base.ref == $base and .base.sha == $sha' <<<"$live" >/dev/null \
+        || fail_input "PR #$number moved while native stack membership was read" "Re-read the live head and immediate base."
+    fi
+    normalized="$normalized$(jq -c '{number,head:{ref:.head.ref,sha:.head.sha},base:{ref:.base.ref,sha:.base.sha},draft}' <<<"$live")"$'\n'
+    previous_ref="$(jq -r .head.ref <<<"$live")"
+    previous_sha="$(jq -r .head.sha <<<"$live")"
+  done <<<"$rows"
+  [ "$position" -gt 0 ] || fail_operation "native stack #$stack_number has no open layers" "Inspect its current state."
+  STACK_NUMBER="$stack_number"
+  STACK_ROWS="$(jq -sc . <<<"$normalized")"
+}
+
+verify_native_stack() {
+  [ -n "$STACK_NUMBER" ] || return 0
+  local snapshot="$STACK_NUMBER|$STACK_TRUNK|$STACK_TRUNK_SHA|$STACK_ROWS"
+  read_native_stack "$STACK_PR" "$STACK_HEAD" "$STACK_BASE" "$STACK_BASE_SHA"
+  [ "$snapshot" = "$STACK_NUMBER|$STACK_TRUNK|$STACK_TRUNK_SHA|$STACK_ROWS" ] \
+    || fail_input "native stack membership or coordinates moved during this command" "Re-run against the surviving stack; no delivery mutation was made."
+}
+
 read_pr_row() {
   read_with_retry gh pr view "$PR_NUMBER" --repo "$REPO_SPEC" \
     --json number,state,url,headRefOid,headRepository,baseRefName,baseRefOid,mergeStateStatus,isDraft \
     --jq '[.number,.state,.url,.headRefOid,(.headRepository.nameWithOwner // "-"),.baseRefName,.baseRefOid,.mergeStateStatus,.isDraft] | @tsv' \
     || fail_operation "could not read PR #$PR_NUMBER: $READ_OUTPUT" "Verify the PR and GitHub access."
   PR_ROW="$READ_OUTPUT"
+  local number state url head head_repo base base_sha
+  IFS=$'\t' read -r number state url head head_repo base base_sha _ <<<"$PR_ROW"
+  if [ "$state" = OPEN ] && [ "${1:-true}" = true ]; then
+    read_native_stack "$number" "$head" "$base" "$base_sha"
+  fi
 }
 
 # The queue surface is the live entry AND its history for this head. A head
@@ -4083,18 +4271,97 @@ enqueue_armed_head() {
   esac
 }
 
+# Each included layer keeps its own exact-head gate and eviction history.
+# GitHub evaluates all inherited rules atomically when the async request runs.
+qualify_stack_prefix() {
+  local rows="$STACK_ROWS" target="$PR_NUMBER" layer layer_head
+  while IFS=$'\t' read -r layer layer_head; do
+    (
+      PR_NUMBER="$layer"
+      # Membership and trunk policy were read for the whole stack once;
+      # re-read them together at the final boundary, not once per layer.
+      read_pr_row false
+      local number state url head base sha merge_state draft
+      IFS=$'\t' read -r number state url head _ base sha merge_state draft <<<"$PR_ROW"
+      [ "$head" = "$layer_head" ] && [ "$draft" = false ] \
+        || fail_input "stack layer #$layer moved or is draft" "Reconcile and review that layer before queue admission."
+      read_auto_merge_state "$number" "$head"
+      if [ "$MERGE_QUEUE_EVICTED" = true ]; then
+        # A retry acknowledgement applies to its named PR, not every ancestor.
+        [ "$number" = "$target" ] && [ "$RETRY_AFTER_FLAKE_SET" = true ] \
+          || fail_input "stack layer #$layer was evicted at this head" "Resolve that layer's eviction before retrying the stack."
+      fi
+      require_review_gate_success "$head" "$number"
+      [ "$REVIEW_GATE_ACTION" = verified-success ] \
+        || fail_input "stack layer #$layer is still awaiting exact-head review" "GitHub stacks do not support auto-merge; retry after the gate succeeds."
+      verify_live_head_and_base "$number" "$head" "$base" "$sha"
+    ) || return $?
+    [ "$layer" != "$target" ] || break
+  done < <(jq -r '.[] | [.number,.head.sha] | @tsv' <<<"$rows")
+  verify_native_stack
+}
+
+merge_native_stack() {
+  local response status uuid="$MERGE_REQUEST" http_code="" diagnostic="" request_rc=0
+  if [ -z "$uuid" ]; then
+    capture_command gh api --hostname "$REPO_HOST" -H 'X-GitHub-Api-Version: 2026-03-10' --include \
+      -X PUT "repos/$REPO/pulls/$PR_NUMBER/merge-async" -f sha="$EXPECTED_HEAD" -f merge_action=merge_queue -F bypass_rules=false \
+      || request_rc=$?
+    diagnostic="$CAPTURE_ERROR"
+    http_code="$(printf '%s\n' "$CAPTURE_OUTPUT" | awk '/^HTTP\// {gsub(/\r/, ""); print $2; exit}')"
+    response="$(printf '%s\n' "$CAPTURE_OUTPUT" | sed '1,/^[[:space:]]*$/d')"
+    case "$http_code" in
+      200 | 202 | 409) ;;
+      *) fail_operation "native stack admission was not confirmed (HTTP ${http_code:-unknown}, exit $request_rc): $diagnostic" "Inspect GitHub before retrying; no legacy merge or bypass was attempted." ;;
+    esac
+  else
+    read_with_retry gh api --hostname "$REPO_HOST" -H 'X-GitHub-Api-Version: 2026-03-10' "repos/$REPO/pulls/$PR_NUMBER/merge-async/$uuid" \
+      || fail_operation "could not read asynchronous merge request $uuid: $READ_OUTPUT" "Inspect GitHub; an expired request is not permission to resubmit."
+    response="$READ_OUTPUT"
+  fi
+  status="$(jq -er '.status | select(IN("pending","failed","merged","enqueued"))' <<<"$response")" \
+    || fail_operation "GitHub returned malformed asynchronous merge state" "Inspect GitHub before retrying."
+  case "$http_code:$status" in
+    :* | 200:merged | 200:enqueued | 202:pending | 409:pending) ;;
+    *) fail_operation "GitHub returned inconsistent asynchronous merge status $http_code/$status" "Inspect GitHub before retrying." ;;
+  esac
+  if [ "$status" = pending ]; then
+    jq -e --arg head "$EXPECTED_HEAD" --arg uuid "$uuid" '
+      .details.expected_head_sha == $head and .details.merge_action == "merge_queue"
+      and (.details.bypass_rules // false) == false
+      and (.details.uuid | type == "string" and test("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"))
+      and ($uuid == "" or .details.uuid == $uuid)
+    ' <<<"$response" >/dev/null \
+      || fail_operation "existing asynchronous merge request does not match this head and guarded queue action" "Inspect the existing operation; do not submit another merge."
+    MERGE_REQUEST="$(jq -r .details.uuid <<<"$response")"
+    RECONCILED_DELIVERY_STATE=merge-request-pending
+  elif [ "$status" = failed ]; then
+    fail_operation "native stack admission failed: $(jq -r '.details.message // "no diagnostic"' <<<"$response")" \
+      "Inspect the failed rule and current stack; the request did not establish queue admission."
+  else
+    reconcile_delivery native-stack-merge "$request_rc" "$diagnostic" \
+      "asynchronous request reports $status but GitHub has no current queue entry or merge for this head" \
+      "Inspect current GitHub state; an enqueued result is historical and is not proof of a merge."
+  fi
+}
+
 merge_pr() {
   local number state url head head_repo base base_sha merge_state draft merge_status=0
   local merge_diagnostic final_state="" unguarded_marker prior_records record_author merge_auto
   [ -n "$EXPECTED_HEAD" ] \
     || fail_input "merge requires --head SHA" "Pass the exact reviewed head from GitHub."
-  read_pr_row
+  if [ -n "$MERGE_REQUEST" ]; then read_pr_row false; else read_pr_row; fi
   IFS="$(printf '\t')" read -r number state url head head_repo base base_sha merge_state draft <<<"$PR_ROW"
   [ "$head_repo" != - ] || head_repo=""
   [ "$EXPECTED_HEAD" = "$head" ] \
     || fail_input "expected head $EXPECTED_HEAD but PR #$PR_NUMBER is at $head" "Re-review the live head."
   if [ "$state" = MERGED ]; then
     final_state=already-merged
+  elif [ -n "$MERGE_REQUEST" ]; then
+    # Observing an accepted request remains useful after a gate turns red.
+    # This path only reads; it never requalifies or resubmits the operation.
+    merge_native_stack
+    final_state="$RECONCILED_DELIVERY_STATE"
   else
     [ "$state" = OPEN ] || fail_input "PR #$PR_NUMBER is $state" "Only an open or merged PR is supported."
     # Queue admission is the final delivery mutation, not a way to wait for
@@ -4109,6 +4376,8 @@ merge_pr() {
     # behind or off that lineage, and a lineage that cannot be resolved are
     # all not the gate.
     read_enforcement "$base" "$base_sha" "$head" "$head_repo" "$number"
+    [ -z "$STACK_NUMBER" ] || [ "$UNGUARDED" = false ] \
+      || fail_input "native stacks cannot use --unguarded" "Keep inherited trunk rules and the merge queue enabled."
     if [ "$JSON_MODE" = false ]; then
       printf 'Enforcement assessed with %s at %s.\n' "$ENFORCEMENT_POLICY_SOURCE" "$ENFORCEMENT_POLICY_REVISION" >&2
       [ -z "$ENFORCEMENT_CANDIDATE_REVISION" ] \
@@ -4140,6 +4409,8 @@ merge_pr() {
       fi
       if [ "$ENFORCEMENT_EXPECTS_REVIEW_GATE" = true ]; then
         require_review_gate_success "$head" "$number"
+        [ -z "$STACK_NUMBER" ] || [ "$REVIEW_GATE_ACTION" = verified-success ] \
+          || fail_input "native stack review is pending; auto-merge is unsupported" "Retry after every included layer has a successful exact-head gate."
         if [ "$JSON_MODE" = false ]; then
           if [ "$REVIEW_GATE_ACTION" = arm-auto-merge ]; then
             printf 'Review gate run %s is still evaluating this exact head; arming auto-merge so GitHub admits it on success.\n' "$REVIEW_GATE_RUN_ID" >&2
@@ -4219,6 +4490,13 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
           "Wait for GitHub and leave the live delivery state unchanged."
       fi
     fi
+    if [ -z "$final_state" ] && [ -n "$STACK_NUMBER" ]; then
+      [ "$ENFORCEMENT_STATUS" = applied ] && [ "$ENFORCEMENT_QUEUE_APPLIED" = true ] && [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ] \
+        || fail_input "native stack admission requires full trunk enforcement" "$(enforcement_remedy)"
+      qualify_stack_prefix
+      merge_native_stack
+      final_state="$RECONCILED_DELIVERY_STATE"
+    fi
     if [ -z "$final_state" ]; then
       # Without a merge queue there is nothing to enter: GitHub refuses a plain
       # merge while required checks are still running, so arm auto-merge and
@@ -4242,7 +4520,7 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
     # an earlier one did, a head status reads as armed-not-queued with `queue`
     # next is enqueued here rather than left for an admission GitHub may
     # never make (AUT-1224). Without a queue, auto-merge itself lands it.
-    if [ "$final_state" = auto-merge-enabled ] && [ "$ENFORCEMENT_QUEUE_APPLIED" = true ]; then
+    if [ -z "$STACK_NUMBER" ] && [ "$final_state" = auto-merge-enabled ] && [ "$ENFORCEMENT_QUEUE_APPLIED" = true ]; then
       enqueue_armed_head "$PR_NUMBER" "$head"
       [ -z "$ENQUEUED_DELIVERY_STATE" ] || final_state="$ENQUEUED_DELIVERY_STATE"
     fi
@@ -4251,6 +4529,10 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
     printf '{"schema":"%s","operation":"merge","status":"%s","pullRequest":%s,"head":' \
       "$OUTPUT_SCHEMA" "$final_state" "$PR_NUMBER"
     json_string "$EXPECTED_HEAD"
+    if [ -n "$MERGE_REQUEST" ]; then
+      printf ',"mergeRequest":'
+      json_string "$MERGE_REQUEST"
+    fi
     if [ -n "$ENFORCEMENT_POLICY_REVISION" ]; then
       policy_binding_json_fields
     fi
@@ -4264,6 +4546,7 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
     printf '}\n'
   else
     printf 'PR #%s: %s at %s\n' "$PR_NUMBER" "$final_state" "$EXPECTED_HEAD"
+    [ -z "$MERGE_REQUEST" ] || printf 'Observe after two minutes: touchstone pr merge %s --head %s --merge-request %s\n' "$PR_NUMBER" "$EXPECTED_HEAD" "$MERGE_REQUEST"
   fi
 }
 
