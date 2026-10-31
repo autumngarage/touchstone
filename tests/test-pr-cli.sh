@@ -17,6 +17,65 @@ ok() {
 }
 
 (
+  echo "==> recovery records survive native jq.exe newline conversion (AUT-1786)"
+  ERRORS=0
+  native_dir="$TMP_DIR/native-jq"
+  mkdir -p "$native_dir"
+  sed -n '/^refuse_conflicting_open_pr() {/,/^}/p' \
+    "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" >"$native_dir/helper.sh"
+  # GitHub PR1281 field shape captured 2026-10-31, with a controlled DIRTY
+  # state. This is transport emulation, not a live Windows qualification.
+  native_json='{"headRefOid":"d134400392fd89a0901b80ae79b163f6686c0fd7","baseRefName":"main","baseRefOid":"83459c49a32642963d0443bfcf5802753cc7a858","mergeStateStatus":"DIRTY","baseRepository":{"nameWithOwner":"autumngarage/touchstone","url":"https://github.com/autumngarage/touchstone"},"baseRef":{"name":"main","prefix":"refs/heads/","target":{"__typename":"Commit","oid":"d50102f29d2b0f1c6fa5f2a28cf32e0b1491ce57"}}}'
+  # Variables/callbacks belong to the actual production fragment sourced below.
+  # shellcheck disable=SC2034,SC2329
+  run_native_recovery() (
+    native_mutation="$1"
+    TOOL_ROOT="$TOUCHSTONE_ROOT" REPO_HOST=github.com REPO=autumngarage/touchstone
+    read_with_retry() { READ_OUTPUT="$(printf '%s' "$native_json" | command jq -c "$native_mutation")"; }
+    fail_input() {
+      printf '%s\n' "$@"
+      exit 2
+    }
+    fail_operation() {
+      printf '%s\n' "$@"
+      exit 1
+    }
+    # jq documents LF-to-CRLF conversion for native jq.exe in MSYS/WSL:
+    # https://jqlang.org/manual/#invoking-jq . Preserve an unterminated last
+    # record, and pipefail, so the emulator cannot hide a failed jq filter.
+    jq() {
+      local line=""
+      command jq "$@" | {
+        while IFS= read -r line; do printf '%s\r\n' "$line"; done
+        printf '%s' "$line"
+      }
+    }
+    # shellcheck source=/dev/null
+    . "$native_dir/helper.sh"
+    refuse_conflicting_open_pr 1281 d134400392fd89a0901b80ae79b163f6686c0fd7 main 83459c49a32642963d0443bfcf5802753cc7a858
+  )
+  native_status=0
+  run_native_recovery . >"$native_dir/out" 2>&1 || native_status=$?
+  if [ "$native_status" -ne 2 ] \
+    || ! grep -qF 'refuse unless FETCH_HEAD is d50102f29d2b0f1c6fa5f2a28cf32e0b1491ce57' "$native_dir/out" \
+    || grep -q $'\r' "$native_dir/out"; then
+    fail "native jq conversion bypassed DIRTY or corrupted its exact recovery target (rc=$native_status)"
+  fi
+  native_status=0
+  run_native_recovery '.baseRef.target=null' >"$native_dir/out" 2>&1 || native_status=$?
+  if [ "$native_status" -ne 2 ] || ! grep -qF 'live recovery target is unavailable' "$native_dir/out"; then
+    fail "native jq conversion hid a missing recovery target (rc=$native_status)"
+  fi
+  native_status=0
+  run_native_recovery null >"$native_dir/out" 2>&1 || native_status=$?
+  if [ "$native_status" -ne 1 ] || ! grep -qF 'could not read PR coordinates' "$native_dir/out"; then
+    fail "native jq emulation masked a failed coordinate filter (rc=$native_status)"
+  fi
+  if [ "$ERRORS" -gt 0 ]; then exit 1; fi
+  ok "native jq output keeps DIRTY refusal, exact live SHA, and explicit failures"
+)
+
+(
   # tests/test-pr-cli.sh — deterministic PR lifecycle boundary tests.
 
   set -euo pipefail
