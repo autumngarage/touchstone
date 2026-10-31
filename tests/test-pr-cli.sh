@@ -5358,9 +5358,10 @@ STATUS_STUB
   saved_state="$GH_STATE"
   export GH_STATE="$RR/native-answer"
   mkdir -p "$GH_STATE"
+  jq -nr '["https://example.test/pr/7#issuecomment-98", "alice", "@codex review\n\n<!-- touchstone:pr-open head=abcdef0123456789abcdef0123456789abcdef01 base=feat/parent base_sha=base-sha -->", "2026-09-16T05:00:00Z"] | @tsv' >"$GH_STATE/open-request-rows"
   GH_REPLY_BASE=feat/parent run_v4 7 --comment-id 51 --body-file "$RR/body" --no-code-change
   [ "$RUN_RC" -eq 0 ] && [ -f "$GH_STATE/rules-main" ] \
-    && grep -qF 'base=feat/parent base_sha=base-sha' "$GH_STATE/fresh-request" \
+    && [ ! -f "$GH_STATE/fresh-request" ] \
     && [ -f "$GH_STATE/await-calls" ] \
     || fail "native answer lost its trunk rules or immediate-base binding (rc=$RUN_RC): $(tail -3 "$RR/out")"
   export GH_STATE="$saved_state"

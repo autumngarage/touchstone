@@ -1257,7 +1257,7 @@ select_enforcement_policy() {
     policy_branch="$(jq -er '.branch' "$ENFORCEMENT_POLICY_FILE")" \
       || fail_operation "could not read the protected branch from $ENFORCEMENT_POLICY_FILE" "Reinstall touchstone; the policy file is corrupt or incomplete."
     [ "$policy_branch" = "$base_ref" ] \
-      || fail_operation "$ENFORCEMENT_POLICY_FILE protects $policy_branch, not PR base $base_ref" "Use a checked-in policy for $REPO@$base_ref; enforcement cannot be inferred from another branch."
+      || fail_operation "$ENFORCEMENT_POLICY_FILE protects $policy_branch, not PR base $base_ref" "For a native stack, use 'touchstone pr open --stack-parent <parent PR>' to verify membership and inherited trunk enforcement. Otherwise use a checked-in policy for $REPO@$base_ref; enforcement cannot be inferred from another branch. Arbitrary feature bases remain refused."
   fi
 }
 
