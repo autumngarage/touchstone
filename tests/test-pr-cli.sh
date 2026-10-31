@@ -4817,13 +4817,20 @@ if [ -f "$GH_STATE/rate-limited-repo-view" ] && [ "${1:-}" = repo ] && [ "${2:-}
 fi
 case "$1 $2" in
   "api repos/autumngarage/current/pulls/7")
-    printf '%s\n' "${GH_EXISTING_PR_BODY:-existing body}"
+    if [ -f "$GH_STATE/pr-body" ]; then cat "$GH_STATE/pr-body"; else printf '%s\n' "${GH_EXISTING_PR_BODY:-existing body}"; fi
     ;;
   "api --method")
     if has PATCH "$@" && has repos/autumngarage/current/pulls/7 "$@"; then
       body_arg="$(field_value body "$@")"
+      printf 'patch\n' >>"$GH_STATE/body-patches"
+      [ "${GH_MODE:-}" != patch_failed ] || exit 1
       cp "${body_arg#@}" "$GH_STATE/pr-body"
-      printf '7\n'
+      case "${GH_MODE:-}" in
+        patch_missing_marker) printf 'body without the requested marker\n' ;;
+        patch_malformed) echo 'invalid response body' >&2; exit 1 ;;
+        patch_null) printf '\n' ;;
+        *) cat "$GH_STATE/pr-body" ;;
+      esac
     fi
     ;;
   "repo view")
@@ -5186,6 +5193,64 @@ STATUS_STUB
     && [ ! -e "$GH_STATE/replies" ] && [ ! -e "$GH_STATE/resolved" ] \
     && ok "a refuted finding is recorded in the PR body and the gate is re-run; no thread is touched" \
     || fail "the finding answer did not land (rc=$RUN_RC): $(tail -3 "$RR/out")"
+  echo "==> dismissal reasons survive the actual pinned gate's marker extractor (AUT-2812)"
+  # Exact extraction expression from touchstone-workflows review-gate.yml at
+  # cf37a030c696ab46d026bc7a4c2fc0a9d3335f8f; this is the consumer contract,
+  # not a second production parser. Compare the complete extracted marker.
+  cp "$RR/body" "$RR/body-before-escaping"
+  for reason_case in short markup boundary200 boundary201; do
+    case "$reason_case" in
+      short)
+        printf '<>&\n' >"$RR/body"
+        expected_reason='&lt;&gt;&amp;'
+        ;;
+      markup)
+        printf '%s\n' 'See `decisions/<record>.md`, <a href="x&y">link</a>, &lt;existing&gt; and -->.' 'Full explanation stays here.' >"$RR/body"
+        expected_reason='See `decisions/&lt;record&gt;.md`, &lt;a href="x&amp;y"&gt;link&lt;/a&gt;, &amp;lt;existing&amp;gt; and --&gt;. Full explanation stays here.'
+        ;;
+      boundary200 | boundary201)
+        prefix="$(printf '%0199d' 0)"
+        if [ "$reason_case" = boundary201 ]; then prefix="${prefix}x"; fi
+        printf '%s%s\n' "$prefix" '<>& tail beyond the prefix' >"$RR/body"
+        expected_reason="$prefix"
+        [ "$reason_case" != boundary200 ] || expected_reason="${prefix}&lt;"
+        ;;
+    esac
+    rm -f "$GH_STATE/pr-body" "$GH_STATE/gate-reruns" "$GH_STATE/body-patches"
+    run 7 --finding 0123456789abcdef --body-file "$RR/body" --no-code-change
+    expected_marker="<!-- touchstone:review-dismiss id=0123456789abcdef reason=$expected_reason -->"
+    extracted_marker="$(grep -oE '<!--[[:space:]]*touchstone:review-dismiss[[:space:]]+id=[0-9a-f]{16}[^>]*-->' "$GH_STATE/pr-body" || true)"
+    [ "$RUN_RC" -eq 0 ] && [ "$extracted_marker" = "$expected_marker" ] \
+      && [[ "$(cat "$GH_STATE/pr-body")" == *"$(cat "$RR/body")"* ]] \
+      && grep -qF 'dismissal recorded; the gate reads it on its next run' "$RR/out" \
+      && ! grep -qF 'finding no longer blocks' "$RR/out" \
+      && ok "$reason_case: complete gate-readable marker and unchanged prose" \
+      || fail "$reason_case: dismissal serialization/recording failed (rc=$RUN_RC): $(tail -3 "$RR/out")"
+    run 7 --finding 0123456789abcdef --body-file "$RR/body" --no-code-change
+    [ "$RUN_RC" -eq 0 ] && [ "$(wc -l <"$GH_STATE/body-patches" | tr -d ' ')" -eq 1 ] \
+      && grep -qF 'already answered' "$RR/out" \
+      && ok "$reason_case: a verified existing answer is not patched again" \
+      || fail "$reason_case: repeat answer was not idempotent"
+  done
+  printf 'A different answer.\n' >"$RR/body"
+  rm -f "$GH_STATE/gate-reruns"
+  run 7 --finding 0123456789abcdef --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -ne 0 ] && grep -qF 'already carries a different answer' "$RR/out" \
+    && [ "$(wc -l <"$GH_STATE/body-patches" | tr -d ' ')" -eq 1 ] \
+    && [ ! -e "$GH_STATE/gate-reruns" ] \
+    && ok "a different disposition remains refused without mutation or gate wake" \
+    || fail "a different finding answer was not refused"
+  for write_failure in patch_failed patch_missing_marker patch_null patch_malformed; do
+    rm -f "$GH_STATE/pr-body" "$GH_STATE/gate-reruns" "$GH_STATE/body-patches"
+    GH_MODE="$write_failure" run 7 --finding 0123456789abcdef --body-file "$RR/body" --no-code-change
+    [ "$RUN_RC" -ne 0 ] && [ ! -e "$GH_STATE/gate-reruns" ] \
+      && [ "$(wc -l <"$GH_STATE/body-patches" | tr -d ' ')" -eq 1 ] \
+      && ! grep -qF '==> Recorded the answer' "$RR/out" \
+      && ! grep -qF 'disposition: no-code-change' "$RR/out" \
+      && ok "$write_failure: no success claim, retry or gate wake after an unverified write" \
+      || fail "$write_failure: unverified recording was reported successful (rc=$RUN_RC)"
+  done
+  mv "$RR/body-before-escaping" "$RR/body"
   rm -f "$GH_STATE/pr-body" "$GH_STATE/gate-reruns"
   run 7 --finding 0123456789abcdef --body-file "$RR/body" --fix-commit abc123
   [ "$RUN_RC" -eq 0 ] \
