@@ -4623,16 +4623,16 @@ case "$1 $2" in
     if value_after --json "$@" | grep -q 'state,headRefOid,baseRefName'; then
       rr_state=OPEN
       rr_head=abcdef0123456789abcdef0123456789abcdef01
-      rr_base=main
+      rr_base="${GH_REPLY_BASE:-main}"
       [ ! -f "$GH_STATE/wait-retargeted" ] || rr_base=release
       [ ! -f "$GH_STATE/merged" ] || rr_state=MERGED
       [ ! -f "$GH_STATE/closed" ] || rr_state=CLOSED
       [ ! -f "$GH_STATE/wait-moved-head" ] || rr_head=feedfacefeedfacefeedfacefeedfacefeedface
       printf '%s\t%s\t%s\n' "$rr_state" "$rr_head" "$rr_base"
     elif value_after --json "$@" | grep -q baseRefOid; then
-      printf 'abcdef0123456789abcdef0123456789abcdef01\tmain\tbase-sha\n'
+      printf 'abcdef0123456789abcdef0123456789abcdef01\t%s\tbase-sha\n' "${GH_REPLY_BASE:-main}"
     elif value_after --json "$@" | grep -q baseRefName; then
-      printf 'abcdef0123456789abcdef0123456789abcdef01\tmain\n'
+      printf 'abcdef0123456789abcdef0123456789abcdef01\t%s\n' "${GH_REPLY_BASE:-main}"
     elif [ -f "$GH_STATE/moved-head" ]; then
       printf 'feedfacefeedfacefeedfacefeedfacefeedface\n'
     else
@@ -4655,6 +4655,7 @@ case "$1 $2" in
     fi
     ;;
   "api repos/autumngarage/current/rules/branches/main")
+    touch "$GH_STATE/rules-main"
     if [ -f "$GH_STATE/review-gate" ]; then echo true; else echo false; fi
     ;;
   "api repos/autumngarage/current/actions/runs?head_sha=abcdef0123456789abcdef0123456789abcdef01&per_page=30")
@@ -4749,7 +4750,9 @@ fi
 [ ! -f "$GH_STATE/effective-behavior-v4" ] || version=4
 gate_check='{"present":true,"workflowRunId":77}'
 [ ! -f "$GH_STATE/status-run-unbound" ] || gate_check='{"present":false,"unbound":true,"workflowRunId":77}'
-printf '{"schema":"touchstone.pr/v1","operation":"status","reviewGateBehaviorContractVersion":%s,"reviewGateCheck":%s}\n' "$version" "$gate_check"
+stack=null
+[ -z "${GH_REPLY_BASE:-}" ] || stack='{"number":42,"trunk":"main"}'
+printf '{"schema":"touchstone.pr/v2","operation":"status","stack":%s,"reviewGateBehaviorContractVersion":%s,"reviewGateCheck":%s}\n' "$stack" "$version" "$gate_check"
 STATUS_STUB
 
   printf 'Fixed.\n' >"$RR/body"
@@ -5350,6 +5353,17 @@ STATUS_STUB
   [ "$RUN_RC" -ne 0 ] || fail "a rate-limited repository read reported the PR clean"
   grep -qF "GitHub's GraphQL rate limit for this token is exhausted until 2026-09-11T00:26:40Z" "$RR/out" \
     || fail "the first read did not name the quota and its reset: $(tail -3 "$RR/out")"
+
+  echo "==> native stack answers look up trunk rules and retain immediate-base request coordinates"
+  saved_state="$GH_STATE"
+  export GH_STATE="$RR/native-answer"
+  mkdir -p "$GH_STATE"
+  GH_REPLY_BASE=feat/parent run_v4 7 --comment-id 51 --body-file "$RR/body" --no-code-change
+  [ "$RUN_RC" -eq 0 ] && [ -f "$GH_STATE/rules-main" ] \
+    && grep -qF 'base=feat/parent base_sha=base-sha' "$GH_STATE/fresh-request" \
+    && [ -f "$GH_STATE/await-calls" ] \
+    || fail "native answer lost its trunk rules or immediate-base binding (rc=$RUN_RC): $(tail -3 "$RR/out")"
+  export GH_STATE="$saved_state"
 
   echo "==> no production script captures a gh response with stderr merged in"
   # The guardrail for the class: a $(gh ... 2>&1) capture parses diagnostics
