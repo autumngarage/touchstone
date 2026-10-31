@@ -16,6 +16,7 @@
 #   checkout      the working tree is not on the default branch at origin's
 #                 tip (detached HEAD, a feature branch, or behind/ahead)
 #   worktree      a linked worktree other than the main checkout exists
+#   local-publication a local tip not established in its same-name origin branch
 #   local-branch  a local branch whose pull request (from this repository,
 #                 at the branch's current SHA) is merged or closed
 #   remote-branch the same for a branch on origin
@@ -248,23 +249,53 @@ if [ "$GH_OK" = true ]; then
       END { if (child) print child }
     ' <<<"$PR_ROWS"
   }
+  # Share one live origin inventory; stale tracking refs cannot establish
+  # publication or justify a remote deletion recommendation.
+  REMOTE_OK=true
+  if ! REMOTE_HEADS="$(git ls-remote --quiet --heads origin 2>/dev/null)"; then
+    finding "github" "could not list origin's branches (origin unreachable?)" "local-publication and remote-branch findings are withheld; retry with network access"
+    REMOTE_OK=false
+    REMOTE_HEADS=""
+  fi
+  SHALLOW="$(git rev-parse --is-shallow-repository 2>/dev/null)" || SHALLOW=unknown
+  publication_gap() {
+    local branch="$1" tip="$2" remote relation
+    remote="$(awk -v ref="refs/heads/$branch" '$2 == ref { print $1 }' <<<"$REMOTE_HEADS")"
+    if [ -z "$remote" ]; then
+      printf '%s' "origin has no branch named $branch"
+    elif [ "$tip" != "$remote" ]; then
+      # Probe raw commit ancestry without graph overlays or promisor fetches.
+      if ! GIT_GRAFT_FILE=/dev/null git --no-lazy-fetch --no-replace-objects cat-file -e "$remote^{commit}" >/dev/null 2>&1; then
+        printf '%s' "publication to live origin/$branch at ${remote:0:8} is unverified (read-only commit probe unavailable)"
+      elif GIT_GRAFT_FILE=/dev/null git --no-lazy-fetch --no-replace-objects merge-base --is-ancestor "$tip" "$remote" >/dev/null 2>&1; then
+        return 0
+      else
+        relation=$?
+        if [ "$relation" -eq 1 ] && [ "$SHALLOW" = false ]; then
+          printf '%s' "not contained in live origin/$branch at ${remote:0:8}"
+        else
+          printf '%s' "publication to live origin/$branch at ${remote:0:8} is unverified (incomplete history or ancestry probe failed)"
+        fi
+      fi
+    fi
+  }
   while IFS=$'\t' read -r branch sha; do
-    [ -n "$branch" ] && [ "$branch" != "$DEFAULT_BRANCH" ] || continue
-    pr="$(finished_for "$branch" "$sha")" || continue
-    [ -n "$pr" ] || continue
+    [ -n "$branch" ] || continue
+    pr="$(finished_for "$branch" "$sha")" || pr=""
+    # Exact merged-head evidence survives squash merges and remote deletion.
+    # All other publication observations precede lifecycle/default exclusions.
+    if [ "$REMOTE_OK" = true ] && [[ "$pr" != *merged ]]; then
+      gap="$(publication_gap "$branch" "$sha")"
+      if [ -n "$gap" ]; then
+        finding "local-publication" "$branch at ${sha:0:8}: $gap" "preserve this branch; reconcile its intended publication destination with its owner before publishing or explicitly recording abandonment"
+      fi
+    fi
+    [ "$branch" != "$DEFAULT_BRANCH" ] && [ -n "$pr" ] || continue
     case "$pr" in
       *merged) finding "local-branch" "$branch ($pr)" "git branch -D $(q "$branch") after confirming the merged head (principles/git-workflow.md, 'Periodic branch hygiene')" ;;
       *) finding "local-branch" "$branch ($pr)" "its PR was closed without merging: delete the branch if the work is abandoned, or reopen a PR for it" ;;
     esac
   done < <(git for-each-ref --format='%(refname:short)	%(objectname)' refs/heads/)
-  # Remote branches are judged by their LIVE SHA from one `git ls-remote`,
-  # never by refs/remotes/origin/*: a remote-tracking ref can hold the old
-  # merged SHA while another clone has since pushed new work to that name,
-  # and a recommendation built on the stale ref would delete live work.
-  if ! REMOTE_HEADS="$(git ls-remote --quiet --heads origin 2>/dev/null)"; then
-    finding "github" "could not list origin's branches (origin unreachable?)" "remote-branch findings are withheld; retry with network access"
-    REMOTE_HEADS=""
-  fi
   while IFS=$'\t' read -r sha ref; do
     branch="${ref#refs/heads/}"
     [ -n "$branch" ] && [ "$branch" != "$DEFAULT_BRANCH" ] || continue
@@ -296,7 +327,7 @@ if [ "$JSON" = true ]; then
   printf '],"clean":%s}\n' "$([ "$FINDING_COUNT" -eq 0 ] && echo true || echo false)"
 else
   if [ "$FINDING_COUNT" -eq 0 ]; then
-    echo "clean: on $DEFAULT_BRANCH at origin, no worktrees, no finished branches, nothing untracked"
+    echo "clean: on $DEFAULT_BRANCH at origin, no worktrees, no publication gaps or finished branches, nothing untracked"
   else
     echo "$FINDING_COUNT repository cleanup finding(s):"
     echo "Resolve only findings this session owns; leave active sibling work untouched and route stale residue."

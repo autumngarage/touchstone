@@ -14,6 +14,18 @@ fail() {
 }
 
 mkdir -p "$TMP/bin" "$TMP/state"
+REAL_GIT="$(command -v git)"
+export REAL_GIT
+cat >"$TMP/bin/git" <<'GIT'
+#!/usr/bin/env bash
+if [ "${1:-}" = --no-lazy-fetch ]; then
+  [ ! -f "$GH_FAKE_STATE/probe-unsupported" ] || exit 129
+  if [ "${3:-}" = merge-base ] && [ -f "$GH_FAKE_STATE/ancestry-error" ]; then exit 2; fi
+fi
+if [ "${1:-}" = ls-remote ] && [ "${3:-}" = --heads ] && [ -f "$GH_FAKE_STATE/heads-down" ]; then exit 1; fi
+exec "$REAL_GIT" "$@"
+GIT
+chmod +x "$TMP/bin/git"
 # Fake gh: default branch main; merged/closed/open PR heads from state files.
 cat >"$TMP/bin/gh" <<'FAKE'
 #!/usr/bin/env bash
@@ -77,6 +89,23 @@ kinds() { grep -E '^  [a-z-]+ ' "$TMP/out" | awk '{print $1}' | sort -u | tr '\n
 echo "==> a clean checkout reports nothing and exits 0"
 run
 [ "$RC" -eq 0 ] && grep -q '^clean:' "$TMP/out" && ok "clean checkout" || fail "clean checkout reported: $(cat "$TMP/out")"
+
+echo "==> an otherwise clean repository cannot hide an open head's local commit"
+EARLY_BASE="$(git -C "$TMP/repo" rev-parse HEAD)"
+EARLY_TREE="$(git -C "$TMP/repo" rev-parse 'HEAD^{tree}')"
+EARLY_LOCAL="$(git -C "$TMP/repo" -c user.email=t@example.com -c user.name=t commit-tree "$EARLY_TREE" -p "$EARLY_BASE" -m retained-local-work)"
+git -C "$TMP/repo" branch feat/publication-early "$EARLY_LOCAL"
+git -C "$TMP/repo" push -q origin "$EARLY_BASE:refs/heads/feat/publication-early"
+printf 'feat/publication-early\t69\tOPEN\t%s\tautumngarage/current\tmain\n' "$EARLY_BASE" >"$TMP/state/prs"
+run --json
+if [ "$RC" -eq 1 ] && jq -e '.clean == false and any(.findings[]; .kind == "local-publication" and (.subject | startswith("feat/publication-early ")))' "$TMP/out" >/dev/null; then
+  ok "open lifecycle cannot turn unpublished same-branch evidence into clean"
+else
+  fail "local commit was omitted from an otherwise clean report: $(cat "$TMP/out")"
+fi
+git -C "$TMP/repo" push -q origin :refs/heads/feat/publication-early
+git -C "$TMP/repo" branch -D feat/publication-early >/dev/null
+rm "$TMP/state/prs"
 
 echo "==> each kind of leftover is reported once, with a remedy, and nothing is mutated"
 # untracked residue + a dirty tracked file
@@ -160,6 +189,127 @@ jq -e '.schema == "touchstone.cleanup/v1" and .clean == false and (.findings | l
 jq -e 'all(.findings[] | select(.kind == "worktree"); (.remedy | test("\\bPR\\b|pull request"; "i") | not))' "$TMP/out" >/dev/null \
   && ok "worktree remedies contain no PR predicate" || fail "worktree remedy depends on repository lifecycle"
 
+echo "==> publication evidence is independent of lifecycle and worker checkout"
+cp "$TMP/state/prs" "$TMP/state/prs.publication"
+PUB_BRANCH=feat/publication
+PUB_TREE="$(git -C "$TMP/repo" rev-parse "$DONE_SHA^{tree}")"
+PUB_AHEAD="$(git -C "$TMP/repo" -c user.email=t@example.com -c user.name=t commit-tree "$PUB_TREE" -p "$DONE_SHA" -m local-publication)"
+PUB_DIVERGED="$(git -C "$TMP/repo" -c user.email=t@example.com -c user.name=t commit-tree "$PUB_TREE" -p "$DONE_SHA" -m diverged-publication)"
+PUB_NEXT="$(git -C "$TMP/repo" -c user.email=t@example.com -c user.name=t commit-tree "$PUB_TREE" -p "$PUB_AHEAD" -m next-publication)"
+git -C "$TMP/repo" branch "$PUB_BRANCH" "$PUB_AHEAD"
+check_publication() {
+  local rows
+  rows="$(jq -c --arg branch "$1 " '[.findings[] | select(.kind == "local-publication" and (.subject | startswith($branch)))]' "$TMP/out")"
+  if [ "$2" = none ]; then
+    if [ "$rows" = '[]' ]; then ok "$1 publication established or delivered"; else fail "$1 received an unexpected observation: $rows"; fi
+  elif printf '%s' "$rows" | jq -e --arg pattern "$2" '
+    length == 1 and (.[0].subject | test($pattern))
+    and (.[0].subject | test("unpublished|unshipped|abandoned|local-only"; "i") | not)
+    and (.[0].remedy | test("git push|delete|retarget|rebase"; "i") | not)
+    and (.[0].remedy | contains("preserve") and contains("owner"))
+  ' >/dev/null; then
+    ok "$1 has scoped preserve/reconcile publication evidence"
+  else
+    fail "$1 publication evidence missing or unsafe: $rows"
+  fi
+}
+for pub_remote in "$DONE_SHA" "$PUB_DIVERGED"; do
+  git -C "$TMP/repo" push -q -f origin "$pub_remote:refs/heads/$PUB_BRANCH"
+  for checkout_state in present removed; do
+    git -C "$TMP/repo" worktree add -q "$TMP/publication wt" "$PUB_BRANCH"
+    if [ "$checkout_state" = removed ]; then git -C "$TMP/repo" worktree remove "$TMP/publication wt"; fi
+    for pr_state in OPEN CLOSED none; do
+      cp "$TMP/state/prs.publication" "$TMP/state/prs"
+      case "$pr_state" in
+        OPEN) printf '%s\t70\tOPEN\t%s\tautumngarage/current\tmain\n' "$PUB_BRANCH" "$DONE_SHA" >>"$TMP/state/prs" ;;
+        CLOSED) printf '%s\t70\tCLOSED\t%s\tautumngarage/current\tmain\n' "$PUB_BRANCH" "$PUB_AHEAD" >>"$TMP/state/prs" ;;
+        none) printf 'feat/publication-child\t71\tOPEN\t%s\tautumngarage/current\t%s\n' "$DONE_SHA" "$PUB_BRANCH" >>"$TMP/state/prs" ;;
+      esac
+      run --json
+      check_publication "$PUB_BRANCH" 'not contained'
+    done
+    if [ "$checkout_state" = present ]; then git -C "$TMP/repo" worktree remove "$TMP/publication wt"; fi
+  done
+done
+cp "$TMP/state/prs.publication" "$TMP/state/prs"
+git -C "$TMP/repo" push -q -f origin "$PUB_AHEAD:refs/heads/$PUB_BRANCH"
+run --json
+check_publication "$PUB_BRANCH" none
+git -C "$TMP/repo" update-ref "refs/heads/$PUB_BRANCH" "$DONE_SHA"
+run --json
+check_publication "$PUB_BRANCH" none
+git -C "$TMP/repo" update-ref "refs/heads/$PUB_BRANCH" "$PUB_AHEAD"
+git -C "$TMP/repo" push -q origin ":refs/heads/$PUB_BRANCH"
+printf '%s\t70\tMERGED\t%s\tautumngarage/current\tmain\n' "$PUB_BRANCH" "$PUB_AHEAD" >>"$TMP/state/prs"
+run --json
+check_publication "$PUB_BRANCH" none
+git -C "$TMP/repo" update-ref "refs/heads/$PUB_BRANCH" "$PUB_NEXT"
+git -C "$TMP/repo" push -q origin "$PUB_NEXT:refs/heads/feat/published-elsewhere"
+run --json
+check_publication "$PUB_BRANCH" 'has no branch named'
+
+# The local default branch must not disappear from evidence while a feature
+# branch is checked out. Identical trees keep the existing dirty fixture intact.
+git -C "$TMP/repo" checkout -q "$PUB_BRANCH"
+git -C "$TMP/repo" update-ref refs/heads/main "$PUB_AHEAD"
+run --json
+check_publication main 'not contained'
+git -C "$TMP/repo" update-ref refs/heads/main "$DONE_SHA"
+git -C "$TMP/repo" checkout -q main
+
+echo "==> an unavailable live-head inventory withholds publication observations"
+touch "$TMP/state/heads-down"
+run --json
+jq -e '([.findings[] | select(.kind == "github")] | length) == 1 and all(.findings[]; .kind != "local-publication" and .kind != "remote-branch") and any(.findings[]; .kind == "local-branch")' "$TMP/out" >/dev/null \
+  && ok "failed live-head read is not an empty publication inventory" || fail "failed live-head read became publication evidence: $(cat "$TMP/out")"
+rm "$TMP/state/heads-down"
+
+echo "==> graph overlays cannot establish publication of raw commits"
+git -C "$TMP/repo" push -q -f origin "$PUB_DIVERGED:refs/heads/$PUB_BRANCH"
+git -C "$TMP/repo" -c user.email=t@example.com -c user.name=t replace --graft "$PUB_DIVERGED" "$PUB_NEXT"
+git -C "$TMP/repo" merge-base --is-ancestor "$PUB_NEXT" "$PUB_DIVERGED" \
+  && ok "replacement fixture changes apparent ancestry" || fail "replacement fixture did not alter ancestry"
+run --json
+check_publication "$PUB_BRANCH" 'not contained'
+git -C "$TMP/repo" replace -d "$PUB_DIVERGED" >/dev/null
+printf '%s %s\n' "$PUB_DIVERGED" "$PUB_NEXT" >"$TMP/repo/.git/info/grafts"
+git -C "$TMP/repo" merge-base --is-ancestor "$PUB_NEXT" "$PUB_DIVERGED" 2>/dev/null \
+  && ok "legacy graft fixture changes apparent ancestry" || fail "graft fixture did not alter ancestry"
+run --json
+check_publication "$PUB_BRANCH" 'not contained'
+rm "$TMP/repo/.git/info/grafts"
+
+echo "==> incomplete local graph probes remain unverified and never fetch"
+printf '%s\n' "$DONE_SHA" >"$TMP/repo/.git/shallow"
+run --json
+check_publication "$PUB_BRANCH" unverified
+rm "$TMP/repo/.git/shallow"
+for probe_failure in ancestry-error probe-unsupported; do
+  touch "$TMP/state/$probe_failure"
+  run --json
+  check_publication "$PUB_BRANCH" unverified
+  rm "$TMP/state/$probe_failure"
+done
+PUB_REMOTE_ONLY="$(git -C "$TMP/origin.git" -c user.email=t@example.com -c user.name=t commit-tree "$PUB_TREE" -p "$DONE_SHA" -m remote-only-publication)"
+git -C "$TMP/origin.git" update-ref "refs/heads/$PUB_BRANCH" "$PUB_REMOTE_ONLY"
+git -C "$TMP/repo" config core.repositoryformatversion 1
+git -C "$TMP/repo" config extensions.partialClone origin
+git -C "$TMP/repo" config remote.origin.promisor true
+rm -f "$TMP/repo/.git/FETCH_HEAD"
+run --json
+check_publication "$PUB_BRANCH" unverified
+if [ ! -f "$TMP/repo/.git/FETCH_HEAD" ] && ! git -C "$TMP/repo" --no-lazy-fetch cat-file -e "$PUB_REMOTE_ONLY^{commit}" 2>/dev/null; then
+  ok "the missing promisor commit was not fetched or materialized"
+else
+  fail "publication probing fetched an object or wrote FETCH_HEAD"
+fi
+git -C "$TMP/repo" config --unset extensions.partialClone
+git -C "$TMP/repo" config --unset remote.origin.promisor
+git -C "$TMP/repo" config core.repositoryformatversion 0
+git -C "$TMP/repo" push -q origin ":refs/heads/$PUB_BRANCH" :refs/heads/feat/published-elsewhere
+git -C "$TMP/repo" branch -D "$PUB_BRANCH" >/dev/null
+mv "$TMP/state/prs.publication" "$TMP/state/prs"
+
 echo "==> history beyond the first page and later open heads are retained"
 cp "$TMP/state/prs" "$TMP/state/prs.saved"
 awk -v sha="$DONE_SHA" 'BEGIN { for (i=1; i<=300; i++) printf "unrelated/%04d\t%d\tMERGED\t%s\tautumngarage/current\tmain\n", i, 1000+i, sha }' >"$TMP/state/prs"
@@ -205,7 +355,7 @@ git -C "$TMP/repo" push -q -f origin "$DONE_SHA:refs/heads/feat/done"
 echo "==> incomplete native pagination withholds all branch findings"
 touch "$TMP/state/api-down"
 run --json
-jq -e '([.findings[] | select(.kind == "github")] | length) == 1 and all(.findings[]; .kind != "local-branch" and .kind != "remote-branch") and any(.findings[]; .kind == "dirty") and any(.findings[]; .kind == "worktree")' "$TMP/out" >/dev/null \
+jq -e '([.findings[] | select(.kind == "github")] | length) == 1 and all(.findings[]; .kind != "local-branch" and .kind != "remote-branch" and .kind != "local-publication") and any(.findings[]; .kind == "dirty") and any(.findings[]; .kind == "worktree")' "$TMP/out" >/dev/null \
   && ok "one incomplete finding, local diagnostics retained, no branch suggestions" || fail "incomplete pagination was accepted: $(cat "$TMP/out")"
 rm -f "$TMP/state/api-down"
 
@@ -228,7 +378,7 @@ echo "==> a failed pull-request read is a finding, never an empty list"
 touch "$TMP/state/list-down"
 run
 [ "$RC" -eq 1 ] && grep -q 'github.*pull-request inventory incomplete' "$TMP/out" && ok "list failure reported" || fail "list failure not reported: $(cat "$TMP/out")"
-grep -qE '^  (local|remote)-branch' "$TMP/out" && fail "branch findings claimed after a failed read" || ok "no branch claimed clean or finished after a failed read"
+grep -qE '^  ((local|remote)-branch|local-publication)' "$TMP/out" && fail "branch findings claimed after a failed read" || ok "no branch claimed clean or finished after a failed read"
 rm -f "$TMP/state/list-down"
 
 echo "==> malformed or error-bearing history is one explicit incomplete finding"
@@ -245,7 +395,7 @@ for mutation in invalid-json '[]' '.[0].errors = [{message:"unavailable"}]' \
     jq "$mutation" "$TMP/state/valid-pages" >"$TMP/state/response"
   fi
   run --json
-  if [ "$RC" -eq 1 ] && jq -e '([.findings[] | select(.kind == "github")] | length) == 1 and all(.findings[]; .kind != "local-branch" and .kind != "remote-branch") and any(.findings[]; .kind == "dirty")' "$TMP/out" >/dev/null \
+  if [ "$RC" -eq 1 ] && jq -e '([.findings[] | select(.kind == "github")] | length) == 1 and all(.findings[]; .kind != "local-branch" and .kind != "remote-branch" and .kind != "local-publication") and any(.findings[]; .kind == "dirty")' "$TMP/out" >/dev/null \
     && [ "$(grep -c '^api graphql ' "$TMP/state/calls" || true)" -eq 1 ]; then
     ok "invalid history is reported once without retry or branch suggestions"
   else
@@ -258,7 +408,7 @@ echo "==> a failed GitHub read is a finding, never silence"
 touch "$TMP/state/gh-down"
 run
 [ "$RC" -eq 1 ] && grep -q 'github.*repository read failed' "$TMP/out" && ok "gh failure reported" || fail "gh failure not reported: $(cat "$TMP/out")"
-grep -qE '^  (local|remote)-branch' "$TMP/out" && fail "branch findings claimed without GitHub" || ok "branch findings withheld without GitHub"
+grep -qE '^  ((local|remote)-branch|local-publication)' "$TMP/out" && fail "branch findings claimed without GitHub" || ok "branch findings withheld without GitHub"
 rm -f "$TMP/state/gh-down"
 
 echo "==> a branch name with shell metacharacters is quoted in its remedy"
@@ -277,6 +427,8 @@ jq -e '.schema == "touchstone.cleanup/v1"' "$TMP/out2" >/dev/null 2>&1 && ! grep
 echo "==> a large shared branch inventory reuses one repository PR read"
 awk -v sha="$DONE_SHA" 'BEGIN { for (i=1; i<=1000; i++) printf "create refs/heads/bulk/%04d %s\n", i, sha }' \
   | git -C "$TMP/repo" update-ref --stdin
+awk -v sha="$DONE_SHA" 'BEGIN { for (i=1; i<=1000; i++) printf "create refs/heads/bulk/%04d %s\n", i, sha }' \
+  | git -C "$TMP/origin.git" update-ref --stdin
 run --json
 [ "$(grep -c '^api graphql ' "$TMP/state/calls" || true)" -eq 1 ] \
   && ! grep -Eq '^pr list|^api --paginate ' "$TMP/state/calls" \
@@ -286,6 +438,8 @@ run --json
   || fail "cleanup still queries per ref: $(grep -c '^pr list' "$TMP/state/calls" || true) head reads"
 awk 'BEGIN { for (i=1; i<=1000; i++) printf "delete refs/heads/bulk/%04d\n", i }' \
   | git -C "$TMP/repo" update-ref --stdin
+awk 'BEGIN { for (i=1; i<=1000; i++) printf "delete refs/heads/bulk/%04d\n", i }' \
+  | git -C "$TMP/origin.git" update-ref --stdin
 
 echo "==> invalid input exits 2"
 set +e
