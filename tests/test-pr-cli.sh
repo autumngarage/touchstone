@@ -247,6 +247,72 @@ if [ -n "${GH_RATE_LIMITED:-}" ] && has "$GH_RATE_LIMITED" "$@"; then
   exit 1
 fi
 
+# Stack payload shapes follow github/rest-api-description, API 2026-03-10:
+# pull-request-stack, stack and pull-request-merge-async-result schemas.
+native_endpoint=""
+for arg in "$@"; do
+  case "$arg" in repos/*/pulls/[0-9]* | repos/*/stacks*) native_endpoint="$arg" ;; esac
+done
+if [ "$1" = api ] && [[ "$native_endpoint" =~ /pulls/[0-9]+$ ]]; then
+  number="${native_endpoint##*/}"
+  if [ -n "${GH_STACK:-}" ] && [ "$number" = 6 ] && [ -f "$GH_STATE/move-parent-after" ] && fake_after_reads move-parent-after; then
+    jq '.head.sha="cccccccccccccccccccccccccccccccccccccccc"' "$GH_STATE/native-6.json"
+    exit 0
+  fi
+  if [ -n "${GH_STACK:-}" ]; then cat "$GH_STATE/native-$number.json"; else printf '{"number":%s,"stack":null}\n' "$number"; fi
+  exit 0
+fi
+if [ -n "${GH_STACK:-}" ]; then
+  if has '/compare/' "$@"; then
+    if [ -f "$GH_STATE/stale-stack" ]; then printf 'diverged\n'; else printf 'ahead\n'; fi
+    exit 0
+  fi
+  if [[ "$native_endpoint" == */stacks* ]]; then
+    if has '-X POST' "$@"; then
+      if [ -f "$GH_STATE/attach-fails" ]; then echo 'attachment unavailable' >&2; exit 1; fi
+      for number in 6 7; do
+        jq --slurpfile stack "$GH_STATE/native-membership.json" '.stack = $stack[0]' "$GH_STATE/native-$number.json" >"$GH_STATE/next.json"
+        mv "$GH_STATE/next.json" "$GH_STATE/native-$number.json"
+      done
+      jq -n --slurpfile parent "$GH_STATE/native-6.json" --slurpfile child "$GH_STATE/native-7.json" \
+        '{number:42,id:9876543,open:true,base:{ref:"main"},pull_requests:[$parent[0],$child[0]]}' >"$GH_STATE/native-stack.json"
+      touch "$GH_STATE/attached"
+    fi
+    cat "$GH_STATE/native-stack.json"
+    exit 0
+  fi
+  if [[ "$native_endpoint" == */merge-async* ]]; then
+    if has '-X PUT' "$@"; then
+      printf 'HTTP/2 %s\r\nContent-Type: application/json\r\n\r\n' "${GH_ASYNC_HTTP:-202}"
+      touch "$GH_STATE/async-submitted"
+    fi
+    cat "$GH_STATE/native-async.json"
+    [ ! -f "$GH_STATE/async-enqueue" ] || touch "$GH_STATE/queued"
+    [ ! -f "$GH_STATE/async-merge" ] || touch "$GH_STATE/merged"
+    [ "${GH_ASYNC_HTTP:-202}" != 409 ] || exit 1
+    exit 0
+  fi
+  if [ "$1 ${2:-}" = 'pr ready' ]; then
+    jq '.draft=false' "$GH_STATE/native-7.json" >"$GH_STATE/next.json"
+    mv "$GH_STATE/next.json" "$GH_STATE/native-7.json"
+    touch "$GH_STATE/readied"
+    exit 0
+  fi
+  if [ "$1 ${2:-}" = 'pr view' ] && [ "${3:-}" = 7 ] && has '--json isDraft' "$@"; then
+    jq -r .draft "$GH_STATE/native-7.json"
+    exit 0
+  fi
+  if { [ "$1 ${2:-}" = 'pr view' ] && [ "${3:-}" = 6 ]; } || has 'number=6' "$@" || has 'pr=6' "$@" || has "head_sha=$GH_PARENT_HEAD" "$@" || has "/commits/$GH_PARENT_HEAD/" "$@"; then
+    export GH_HEAD="$GH_PARENT_HEAD" GH_BASE_REF=main GH_BASE_SHA="$GH_TRUNK_SHA" GH_LAYER_NUMBER=6
+    [ ! -f "$GH_STATE/parent-gate-fails" ] || export GH_MODE=status_gate_failure
+    if [ "$1 ${2:-}" = 'pr view' ]; then
+      shift 3
+      GH_UNLOGGED=1 "$0" pr view 7 "$@" | sed $'s/^7\t/6\t/'
+      exit 0
+    fi
+  fi
+fi
+
 case "$1 ${2:-}" in
   "auth status")
     [ "${GH_MODE:-ok}" != auth_fail ]
@@ -446,8 +512,8 @@ case "$1 ${2:-}" in
       # a push landing between merge's first read and its enqueue decision.
       row_head="$GH_HEAD"
       if [ -f "$GH_STATE/head-moves-after-reads" ] && fake_after_reads head-moves-after-reads; then row_head=moved-head; fi
-      printf '7\t%s\thttps://example.test/pr/7\t%s\t%s\tmain\t%s\t%s\t%s\n' \
-        "$pr_state" "$row_head" "$head_repo" "${GH_BASE_SHA:-base-sha}" "$merge_state" "$draft"
+      printf '7\t%s\thttps://example.test/pr/7\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$pr_state" "$row_head" "$head_repo" "${GH_BASE_REF:-main}" "${GH_BASE_SHA:-base-sha}" "$merge_state" "$draft"
     fi
     ;;
   "pr merge")
@@ -1316,6 +1382,9 @@ case "$1 ${2:-}" in
       fi
       if [ -f "$GH_STATE/local-evidence-rule" ]; then
         runs="$(printf '%s' "$runs" | jq -c '{workflow_runs: [.workflow_runs[] | select(.id != 80)]}')"
+      fi
+      if [ "${GH_LAYER_NUMBER:-7}" = 6 ]; then
+        runs="$(jq -c '(.workflow_runs[].pull_requests[] | select(.number == 7) | .number) = 6' <<<"$runs")"
       fi
       if [ -f "$GH_STATE/required-run-later-page" ]; then
         first_page="$(printf '%s' "$runs" | jq -c '{workflow_runs: [.workflow_runs[] | select(.id != 77 and .id != 80)]}')"
@@ -4288,6 +4357,135 @@ STUB
   assert_has "$TMP/out" 'merge rejected by rules'
   assert_has "$TMP/out" 'GraphQL unavailable'
   assert_not_has "$TMP/out" '"status":"merged"'
+
+  echo "==> native stacks bind trunk enforcement while preserving each layer's review coordinates"
+  export GH_STACK=1 GH_PARENT_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa GH_TRUNK_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  export GH_BASE_REF=feat/parent GH_BASE_SHA="$GH_PARENT_HEAD"
+  native_fixture() {
+    rm -f "$TMP/state/merged" "$TMP/state/queued" "$TMP/state/review-request" "$TMP/state/auto-merge-armed" \
+      "$TMP/state/queue-evicted" "$TMP/state/async-enqueue" "$TMP/state/async-merge" "$TMP/state/parent-gate-fails" \
+      "$TMP/state/attach-fails" "$TMP/state/readied" "$TMP/state/attached" "$TMP/state/stale-stack" "$TMP/state/move-parent-after"
+    touch "$TMP/state/review-gate" "$TMP/state/pr-exists"
+    jq -n --arg sha "$GH_TRUNK_SHA" '{number:42,id:9876543,size:2,position:2,base:{ref:"main",sha:$sha}}' >"$TMP/state/native-membership.json"
+    jq -n --arg head "$GH_PARENT_HEAD" --arg sha "$GH_TRUNK_SHA" --slurpfile stack "$TMP/state/native-membership.json" \
+      '{number:6,state:"open",draft:false,merged_at:null,head:{ref:"feat/parent",sha:$head,repo:{full_name:"autumngarage/current"}},base:{ref:"main",sha:$sha,repo:{full_name:"autumngarage/current"}},stack:($stack[0] + {position:1})}' >"$TMP/state/native-6.json"
+    jq -n --arg head "$HEAD_SHA" --arg sha "$GH_PARENT_HEAD" --slurpfile stack "$TMP/state/native-membership.json" \
+      '{number:7,state:"open",draft:false,merged_at:null,head:{ref:"feat/test",sha:$head,repo:{full_name:"autumngarage/current"}},base:{ref:"feat/parent",sha:$sha,repo:{full_name:"autumngarage/current"}},stack:$stack[0]}' >"$TMP/state/native-7.json"
+    jq -n --slurpfile parent "$TMP/state/native-6.json" --slurpfile child "$TMP/state/native-7.json" \
+      '{number:42,id:9876543,open:true,base:{ref:"main"},pull_requests:[$parent[0],$child[0]]}' >"$TMP/state/native-stack.json"
+    jq -n --arg head "$HEAD_SHA" '{status:"pending",details:{message:"Merge request enqueued.",uuid:"630b9d5e-3f2a-4f7e-8b0c-2d5f9a8c1e42",merge_method:"default",merge_action:"merge_queue",expected_head_sha:$head,bypass_rules:false}}' >"$TMP/state/native-async.json"
+  }
+  native_fixture
+  run_pr "$TMP/out" open --title 'Native child' --body-file "$TMP/body" --stack-parent 6 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'rules/branches/main'
+  assert_not_has "$GH_CALLS" 'rules/branches/feat'
+  assert_has "$TMP/state/review-request" "$HEAD_SHA feat/parent $GH_PARENT_HEAD"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"merge-request-pending"'
+  assert_has "$GH_CALLS" '-f merge_action=merge_queue -F bypass_rules=false'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  assert_not_has "$GH_CALLS" 'enqueuePullRequest'
+
+  echo "==> native async receipts distinguish existing, pending, failed, queued and merged"
+  GH_ASYNC_HTTP=409 run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"merge-request-pending"'
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --merge-request 630b9d5e-3f2a-4f7e-8b0c-2d5f9a8c1e42 --json
+  assert_rc "$RUN_RC" 0
+  assert_not_has "$GH_CALLS" '-X PUT'
+  printf '%s\n' '{"status":"failed","details":{"message":"Unresolved finding in included layer"}}' >"$TMP/state/native-async.json"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --merge-request 630b9d5e-3f2a-4f7e-8b0c-2d5f9a8c1e42 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'Unresolved finding in included layer'
+  assert_not_has "$GH_CALLS" '-X PUT'
+  printf '%s\n' '{"status":"enqueued","details":{"message":"Pull request is in the merge queue."}}' >"$TMP/state/native-async.json"
+  touch "$TMP/state/async-enqueue"
+  GH_ASYNC_HTTP=200 run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"queued"'
+  assert_not_has "$TMP/out" '"status":"merged"'
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_not_has "$GH_CALLS" '-X PUT'
+  native_fixture
+  printf '%s\n' '{"status":"merged","details":{"message":"Pull request was merged.","sha":"cccccccccccccccccccccccccccccccccccccccc"}}' >"$TMP/state/native-async.json"
+  touch "$TMP/state/async-merge"
+  GH_ASYNC_HTTP=200 run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"merged"'
+
+  echo "==> missing, forged, malformed and moved stack coordinates never authorize admission"
+  for defect in '.stack=null' '.stack.number="42"' '.head.repo.full_name="attacker/fork"' '.head.sha="cccccccccccccccccccccccccccccccccccccccc"' '.base.sha="cccccccccccccccccccccccccccccccccccccccc"' '.stack.base.ref="release"'; do
+    native_fixture
+    jq "$defect" "$TMP/state/native-7.json" >"$TMP/state/next.json"
+    mv "$TMP/state/next.json" "$TMP/state/native-7.json"
+    run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+    [ "$RUN_RC" -ne 0 ] || fail "native stack accepted $defect"
+    assert_not_has "$GH_CALLS" '-X PUT'
+    assert_not_has "$GH_CALLS" 'pr merge'
+  done
+  native_fixture
+  touch "$TMP/state/parent-gate-fails"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_not_has "$GH_CALLS" '-X PUT'
+  native_fixture
+  touch "$TMP/state/stale-stack"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'does not contain its current parent commit'
+  assert_not_has "$GH_CALLS" '-X PUT'
+  native_fixture
+  printf '1\n' >"$TMP/state/move-parent-after"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  [ "$RUN_RC" -ne 0 ] || fail 'native stack accepted a parent move during qualification'
+  assert_not_has "$GH_CALLS" '-X PUT'
+  for defect in '.details.expected_head_sha="cccccccccccccccccccccccccccccccccccccccc"' '.details.merge_action="direct_merge"' '.details.bypass_rules=true'; do
+    native_fixture
+    jq "$defect" "$TMP/state/native-async.json" >"$TMP/state/next.json"
+    mv "$TMP/state/next.json" "$TMP/state/native-async.json"
+    GH_ASYNC_HTTP=409 run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+    assert_rc "$RUN_RC" 1
+    assert_has "$TMP/out" 'does not match this head and guarded queue action'
+    assert_not_has "$TMP/out" '"status":"queued"'
+  done
+  native_fixture
+  GH_MODE=status_gate_pending run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'auto-merge is unsupported'
+  assert_not_has "$GH_CALLS" 'pr merge'
+
+  echo "==> interrupted native attachment leaves a recoverable draft"
+  native_fixture
+  for number in 6 7; do
+    jq '.stack=null | if .number == 7 then .draft=true else . end' "$TMP/state/native-$number.json" >"$TMP/state/next.json"
+    mv "$TMP/state/next.json" "$TMP/state/native-$number.json"
+  done
+  touch "$TMP/state/attach-fails"
+  rm -f "$TMP/state/pr-exists"
+  run_pr "$TMP/out" open --title 'Native child' --body-file "$TMP/body" --stack-parent 6 --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'Child remains draft'
+  assert_not_has "$GH_CALLS" 'pr ready'
+  assert_not_has "$GH_CALLS" 'pr comment'
+  assert_has "$GH_CALLS" '--base feat/parent --draft'
+  rm "$TMP/state/attach-fails"
+  run_pr "$TMP/out" open --title 'Native child' --body-file "$TMP/body" --stack-parent 6 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'pr ready 7'
+  assert_has "$GH_CALLS" '-F pull_requests[]=6 -F pull_requests[]=7'
+  native_fixture
+  jq '.pull_requests = [.pull_requests[0]]' "$TMP/state/native-stack.json" >"$TMP/state/next.json"
+  mv "$TMP/state/next.json" "$TMP/state/native-stack.json"
+  jq '.stack=null | .draft=true' "$TMP/state/native-7.json" >"$TMP/state/next.json"
+  mv "$TMP/state/next.json" "$TMP/state/native-7.json"
+  run_pr "$TMP/out" open --title 'Native child' --body-file "$TMP/body" --stack-parent 6 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'stacks/42/add -F pull_requests[]=7'
+  unset GH_STACK
+  export GH_BASE_REF=main GH_BASE_SHA=base-sha
 
   if [ "$ERRORS" -gt 0 ]; then
     echo "==> FAIL: $ERRORS PR CLI assertion(s) failed" >&2

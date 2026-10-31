@@ -978,28 +978,43 @@ a `--force` that clobbered someone else's push may not be.
 ## Stacked PRs (and how they merge)
 
 A stacked change is a dependent chain prepared as separate branches so each
-step remains reviewable. The supported default publication path keeps each
-child local until its parent merges, rebases the child onto the protected
-default branch, then opens it with `touchstone pr open`. Do not bypass a
-refusal by opening the child against an unmodeled parent with raw `gh`.
+step remains reviewable. Where GitHub native stacks and the protected trunk's
+required workflows and queue are available, push each branch and open the
+child with `touchstone pr open --stack-parent <parent PR>` plus the ordinary
+title, body, and expected-branch arguments. The sequencer creates a draft,
+attaches it through GitHub's native stack API, verifies same-repository linear
+membership and trunk enforcement, then makes it ready and requests review.
+An interrupted attachment remains a named draft; repeat the same command to
+reconcile it. Do not bypass a refusal by opening an unmodeled feature base
+with raw `gh`.
 
-**Exact-head review makes moving stacks multiply work.** Every parent update
-changes or invalidates each descendant's reviewed head. Do not open dependent
-descendants while a parent is still finding-bearing. Prepare them locally, then
-merge the parent and open the rebased child; use parallel PRs only for changes
-that are independently based on the default branch. An open stack is not a
-parallelization mechanism when exact-head evidence is required.
+**Review layers concurrently; refresh evidence after rewritten heads.** Each
+layer's review remains bound to its head and immediate base coordinates.
+A parent update can invalidate descendants, even where GitHub retains an
+approval because the diff did not change. Rebase and request exact-head
+review for every rewritten layer. A native stack can enter the protected
+queue once every included layer qualifies. Auto-merge is unsupported for
+native stacks, so pending review is not queue admission. The
+[PR CLI contract](../docs/pr-cli-contract.md#native-github-stacks) owns async
+request receipts, failure recovery, and the distinction between accepted,
+queued, and actually merged.
 
-**Recover an inherited open stack; do not create another one.** A stack created
-outside this contract may still exist. Do not enable `deleteBranchOnMerge`, and
-do not delete a parent branch that children are based on. If a head branch is
-deleted while open PRs are based on it, those PRs can be closed-without-merge
-with their review discussion abandoned. This fired on sentinel PRs #49/#50/#51
-(2026-04-16) and is the reason the merge path retains branches (issue #713).
+**Keep a serial fallback where native stacks are unavailable.** Prepare the
+child locally, merge its parent, rebase onto the protected default branch,
+and open it normally. An arbitrary feature-base PR does not inherit trunk
+policy merely because its body calls it a stack.
 
-**An inherited open child still needs retargeting after the parent lands.**
-Nothing rebases a child automatically. After the parent merges (resolve the
-default branch once — downstream repositories are not all `main`):
+**Preserve branches used by open children.** Do not enable
+`deleteBranchOnMerge` or delete a parent branch while children depend on it.
+Deleting such a branch can close children without merging and abandon their
+review discussions (sentinel PRs #49/#50/#51, issue #713).
+
+**Native and legacy stacks have different retargeting behavior.** GitHub
+[automatically rebases the next native layer after merge](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/merging-stacked-pull-requests).
+Re-read those coordinates and obtain review for the rewritten head. An
+inherited feature-base chain that is not a verified native stack still needs
+manual retargeting after its parent lands (resolve the default branch once;
+downstream repositories are not all `main`):
 
 ```bash
 DEFAULT=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
@@ -1171,7 +1186,7 @@ The default for a single driver is one branch at a time in the main checkout. Wh
 **Rules that make it actually parallel.**
 
 - **Disjoint file sets.** If two concurrent tasks touch the same file, they're not parallel — they're a merge conflict delivered on two branches. Name the file surface each task owns before launching; if they overlap, sequence them.
-- **No coordination in flight.** Each independently shippable worktree ships its own PR. If task B needs something from task A's PR before it can merge, that's stacked work — run them sequentially instead.
+- **No coordination in flight.** Each independently shippable worktree ships its own PR. If task B depends on task A, use the native stacked-PR path above when supported; otherwise publish them sequentially.
 - **Each agent burns its own budget.** Five parallel agents use roughly 5× the tokens and CPU of one. Start with 2–3 concurrent worktrees, observe, and scale from there.
 
 **Gotchas.**

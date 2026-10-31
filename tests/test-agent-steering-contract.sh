@@ -559,9 +559,9 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "**\`close-replan\`**"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   "exit=<continue|merge-answered|revert-simplify|split|close-replan>"
 assert_contains "$GIT_WORKFLOW_GUIDE" "gets one validation round"
-assert_contains "$GIT_WORKFLOW_GUIDE" "Exact-head review makes moving stacks multiply work"
-assert_contains "$GIT_WORKFLOW_GUIDE" "Do not open dependent"
-assert_contains "$GIT_WORKFLOW_GUIDE" "while a parent is still finding-bearing"
+assert_contains "$GIT_WORKFLOW_GUIDE" "Review layers concurrently; refresh evidence after rewritten heads."
+assert_contains "$GIT_WORKFLOW_GUIDE" "A parent update can invalidate descendants"
+assert_contains "$GIT_WORKFLOW_GUIDE" "Auto-merge is unsupported for"
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
   "- Review budget: v2 capability="
 assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" \
@@ -771,11 +771,13 @@ if ! grep -q 'jq is not installed' "$TEST_DIR/branch-guard-nojq.err"; then
   fail "guarded commit without jq must name the missing dependency"
 fi
 
-echo "==> stacked-PR recovery uses the retained remote parent ref"
+echo "==> native stacks preserve exact-head review and legacy recovery retains the remote parent"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
-  'child local until its parent merges'
+  'touchstone pr open --stack-parent <parent PR>'
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
-  'Recover an inherited open stack; do not create another one.'
+  'Keep a serial fallback where native stacks are unavailable.'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  'Rebase and request exact-head'
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
   'touchstone pr open --base <parent-branch>'
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \

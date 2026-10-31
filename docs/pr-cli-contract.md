@@ -9,9 +9,9 @@ precondition for recovery.
 
 ```text
 touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
-                   [--expect-branch BRANCH] [--expect-pr NUMBER]
+                   [--expect-branch BRANCH] [--expect-pr NUMBER] [--stack-parent PR]
 touchstone pr status PR
-touchstone pr merge PR --head SHA [--unguarded] [--retry-after-flake EVIDENCE]
+touchstone pr merge PR --head SHA [--unguarded] [--retry-after-flake EVIDENCE] [--merge-request UUID]
 touchstone policy status [--base BRANCH]
 touchstone policy apply --base BRANCH --authorize-admin
 touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change) [--head SHA]
@@ -62,6 +62,49 @@ restore the review-surface polling this boundary removed. Review history lives
 in the PR body for agent handoff and is not a CLI verdict.
 
 ## Operations and raw equivalents
+
+### Native GitHub stacks
+
+`open --stack-parent PR` creates or reuses a draft child whose immediate base
+is the parent's branch. It attaches the child with GitHub's native Stacks API,
+then independently reads the stack and its live PRs before making the child
+ready. An existing native child can be reopened with the same parent option.
+Unconfirmed attachment leaves a draft and an error naming the child; rerunning
+the same command reconciles membership before continuing. Only the current
+top can accept another layer. Cross-repository and arbitrary feature bases
+remain refused.
+
+Enforcement comes from the verified stack trunk. Review requests retain each
+layer's exact head, immediate base branch, and base SHA. The API's stack
+membership, live PR coordinates, and immutable commit ancestry must agree;
+a moved parent or stale rebase requires reconciliation and fresh exact-head
+review. GitHub retaining an approval after an unchanged-diff rebase does not
+replace Touchstone's exact-head evidence. JSON's additive `stack` field names
+the stack number, trunk, and trunk SHA alongside the policy binding.
+
+Stack admission requires successful exact-head gates for every included open
+layer and preserves each layer's queue-eviction guard. GitHub does not support
+auto-merge for stacks: a pending gate returns not-ready. The command uses
+`PUT repos/O/R/pulls/N/merge-async` with `sha`, `merge_action=merge_queue`, and
+`bypass_rules=false`; it never uses the legacy merge or enqueue mutation for
+a native stack. Native stacks refuse `--unguarded`.
+
+HTTP 202 means only that GitHub accepted an asynchronous request. The result
+`merge-request-pending` includes `mergeRequest`, its UUID; HTTP 409 reconciles
+the existing UUID only if the head and guarded queue action agree. After at
+least two minutes, `merge PR --head SHA --merge-request UUID` reads the same
+operation without resubmitting it, including after a gate fails. Failed
+operations report GitHub's diagnostic. An `enqueued` operation is historical:
+the CLI independently reads the current queue or merged state, and never
+reports a merge from an admission receipt. Repeating merge against an already
+queued head leaves the queue unchanged.
+
+These are the [GitHub Stacks API](https://docs.github.com/en/rest/pulls/stacks)
+and [asynchronous merge API](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request-asynchronously)
+contracts (API version `2026-03-10`). GitHub owns inherited rules and atomic
+admission of the included stack prefix. Standalone PR behavior is unchanged.
+
+### Shared delivery operations
 
 The strip's acceptance test was that a change ships end-to-end on bare `git`
 and `gh`, and that whatever proves awkward specifies the CLI replacing them.
