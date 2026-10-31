@@ -215,6 +215,14 @@ fake_tick() {
 }
 fake_visible() { [ ! -f "$GH_STATE/$1" ] || [ "$(cat "$GH_STATE/$1")" -le 0 ]; }
 
+
+if [ -f "$GH_STATE/driver-review-mode" ] && has "/commits/$(printf '%s' "$GH_HEAD" | cut -c1-7) --jq .sha" "$@"; then
+  if [ "$(cat "$GH_STATE/driver-review-mode")" = unresolved_prefix ]; then
+    printf 'gh: commit not found (HTTP 404)\n' >&2; exit 1
+  fi
+  printf '%s\n' "$GH_HEAD"; exit 0
+fi
+
 fake_comments='[]'
 # id, login, created_at, body, and optionally an updated_at after creation.
 fake_add_comment() {
@@ -585,6 +593,27 @@ case "$1 ${2:-}" in
       printf '%s\n' '{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"state":"QUEUED"}}}}'
       exit 0
     fi
+
+    if has 'TouchstoneDriverReview' "$@"; then
+      mode=clean
+      [ ! -f "$GH_STATE/driver-review-mode" ] || mode="$(cat "$GH_STATE/driver-review-mode")"
+      extra=false; unresolved=false; head="$GH_HEAD"; base="$GH_BASE_REF"; sha="$GH_BASE_SHA"; retarget=""
+      case "$mode" in
+        threads_more) extra=true ;;
+        threads_unavailable) printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":null}}}}'; exit 0 ;;
+        threads_error) printf 'GraphQL unavailable\n' >&2; exit 1 ;;
+        unresolved_threads) unresolved=true ;;
+        moved_head) head=moved-head ;;
+        moved_base) sha=moved-base ;;
+        retargeted) retarget="$(fake_after_request 30)" ;;
+      esac
+      jq -cn --arg head "$head" --arg base "$base" --arg sha "$sha" --argjson more "$extra" --argjson unresolved "$unresolved" --arg retarget "$retarget" '
+        {data:{repository:{pullRequest:{state:"OPEN",headRefOid:$head,baseRefName:$base,baseRefOid:$sha,
+          reviewThreads:{pageInfo:{hasNextPage:$more},nodes:(if $more then [range(0;100) | {isResolved:true}] elif $unresolved then [{isResolved:false}] else [] end)},
+          timelineItems:{nodes:(if $retarget == "" then [] else [{createdAt:$retarget}] end)}},
+          pullRequests:{pageInfo:{hasNextPage:false},nodes:[{number:7,headRefOid:$head}]}}}}'
+      exit 0
+    fi
     if has 'reviewThreads(first:100){nodes{isResolved}}' "$@"; then
       case "${GH_MODE:-ok}" in status_auto_merge_threads | status_gate_blocked_threads) printf '2\n' ;; *) printf '0\n' ;; esac
       exit 0
@@ -853,6 +882,48 @@ case "$1 ${2:-}" in
       # The primary replies a minute after the request, as it does.
       reply_at="$(fake_after_request 60)"
       primary='chatgpt-codex-connector[bot]'
+
+      driver_mode=""
+      if [ -f "$GH_STATE/driver-review-mode" ]; then driver_mode="$(cat "$GH_STATE/driver-review-mode")"
+      elif [ "${GH_FAKE_REPO:-${GH_REPO:-autumngarage/current}}" = autumngarage/touchstone-workflows ]; then driver_mode=clean; fi
+      if [ -n "$driver_mode" ]; then
+        fake_comments='[]'
+        [ "$driver_mode" = no_request ] || fake_add_comment 1 alice "$request_at" "@codex review
+
+<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
+        reviewed="$GH_HEAD"; author="$primary"; updated="$reply_at"
+        case "$driver_mode" in
+          pending) printf '%s\n' "$fake_comments"; exit 0 ;;
+          stale) reviewed=1111111111111111111111111111111111111111 ;;
+          untrusted) author=mallory ;;
+          edited) updated="$(fake_after_request 61)" ;;
+          malformed) updated=invalid-time ;;
+          abbreviated | unresolved_prefix) reviewed="$(printf '%s' "$GH_HEAD" | cut -c1-7)" ;;
+        esac
+        fake_add_comment 102 "$author" "$reply_at" "Codex Review: Didn't find any major issues.
+
+**Reviewed commit:** $(printf '\140')$reviewed$(printf '\140')" "$updated"
+        case "$driver_mode" in
+          newer_error) fake_add_comment 103 "$primary" "$(fake_after_request 120)" 'Codex Review: Something went wrong. Try again later.' ;;
+          newer_quota) fake_add_comment 103 "$primary" "$(fake_after_request 120)" 'You have reached your Codex usage limits for code reviews.' ;;
+          dashboard)
+            fake_comments='[]'
+            fake_add_comment 1 alice "$request_at" "@codex review
+
+<!-- touchstone:pr-open head=$GH_HEAD base=$GH_BASE_REF base_sha=$GH_BASE_SHA -->"
+            fake_add_comment 102 "$primary" "$reply_at" '<!-- codex-pull-request-review-summary --> completed'
+            ;;
+          request_moved)
+            count=0; [ ! -f "$GH_STATE/driver-comment-reads" ] || count="$(cat "$GH_STATE/driver-comment-reads")"
+            echo $((count + 1)) >"$GH_STATE/driver-comment-reads"
+            [ "$count" -eq 0 ] || fake_add_comment 104 alice "$(fake_after_request 120)" "@codex review
+
+<!-- touchstone:attest-request head=$GH_HEAD -->"
+            ;;
+        esac
+        printf '%s\n' "$fake_comments"
+        exit 0
+      fi
       if [ -f "$GH_STATE/review-request" ]; then
         read -r saved_head saved_base saved_base_sha <"$GH_STATE/review-request"
         fake_add_comment 1 alice "$request_at" "@codex review
@@ -969,6 +1040,21 @@ case "$1 ${2:-}" in
       # must never wake the wait, and one of this head submitted after it when
       # a case asks -- a minute after, unless primary-review-offset says. A
       # stale review is the previous head's, landing late (AUT-1636).
+
+      driver_mode=""
+      if [ -f "$GH_STATE/driver-review-mode" ]; then driver_mode="$(cat "$GH_STATE/driver-review-mode")"
+      elif [ "${GH_FAKE_REPO:-${GH_REPO:-autumngarage/current}}" = autumngarage/touchstone-workflows ]; then driver_mode=clean; fi
+      if [ -n "$driver_mode" ]; then
+        case "$driver_mode" in
+          newer_findings | mixed)
+            offset=120; [ "$driver_mode" != mixed ] || offset=60
+            jq -cn --arg head "$GH_HEAD" --arg at "$(fake_after_request "$offset")" '
+              [{id:61,user:{login:"chatgpt-codex-connector[bot]"},state:"COMMENTED",commit_id:$head,submitted_at:$at,body:"[P1] A blocking defect"}]'
+            ;;
+          *) printf '%s\n' '[]' ;;
+        esac
+        exit 0
+      fi
       reviews='[{"id":60,"user":{"login":"chatgpt-codex-connector[bot]"},"state":"COMMENTED","commit_id":"2222222222222222222222222222222222222222","submitted_at":"2026-08-01T00:00:00Z","body":"An earlier head."}]'
       if [ -f "$GH_STATE/primary-review-stale" ]; then
         reviews="$(printf '%s' "$reviews" | jq -c --arg at "$(fake_after_request 60)" \
@@ -3788,6 +3874,7 @@ Closes #42'
   rm -f "$TMP/state/review-gate" "$TMP/state/merged"
 
   echo "==> without a pinned gate, merge fails closed unless --unguarded, which records the gap"
+  echo clean >"$TMP/state/driver-review-mode"
   rm -f "$TMP/state/review-gate" "$TMP/state/merged"
   : >"$GH_CALLS"
   run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
@@ -4204,6 +4291,114 @@ EOF
   assert_has "$TMP/out" 'exact-head review remains mandatory driver procedure'
   assert_not_has "$TMP/out" 'Track the policy gap'
   assert_not_has "$GH_CALLS" 'actions/runs?head_sha='
+  echo "==> workflow-source admission waits for completed exact-head review (AUT-2830)"
+  echo pending >"$TMP/state/driver-review-mode"
+  rm -f "$TMP/state/primary-comment" "$TMP/state/primary-review" "$TMP/state/auto-merge-armed" "$TMP/state/queued"
+  GH_FAKE_REPO=autumngarage/touchstone-workflows run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'no completed clean exact-head review'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  assert_not_has "$GH_CALLS" 'enqueuePullRequest'
+  rm -f "$TMP/state/auto-merge-armed" "$TMP/state/queued" "$TMP/state/merged" "$TMP/state/driver-review-mode"
+
+  echo "==> exact-head driver review refuses stale, incomplete and changed evidence"
+  for mode in stale untrusted edited malformed dashboard no_request unresolved_prefix newer_findings mixed newer_error newer_quota request_moved unresolved_threads threads_more threads_unavailable threads_error moved_head moved_base retargeted; do
+    echo "$mode" >"$TMP/state/driver-review-mode"
+    rm -f "$TMP/state/auto-merge-armed" "$TMP/state/queued" "$TMP/state/merged" "$TMP/state/driver-comment-reads"
+    GH_FAKE_REPO=autumngarage/touchstone-workflows run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+    expected_rc=2
+    case "$mode" in unresolved_prefix | threads_more | threads_unavailable | threads_error | moved_head | moved_base) expected_rc=1 ;; esac
+    assert_rc "$RUN_RC" "$expected_rc"
+    assert_not_has "$GH_CALLS" 'pr merge'
+    assert_not_has "$GH_CALLS" 'enqueuePullRequest'
+  done
+  echo pending >"$TMP/state/driver-review-mode"
+  GH_FAKE_REPO=autumngarage/touchstone-workflows run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"phase":"reviewing","nextAction":"wait"'
+  for mode in clean abbreviated; do
+    echo "$mode" >"$TMP/state/driver-review-mode"
+    rm -f "$TMP/state/auto-merge-armed" "$TMP/state/queued" "$TMP/state/merged" "$TMP/state/driver-comment-reads"
+    GH_FAKE_REPO=autumngarage/touchstone-workflows run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+    assert_rc "$RUN_RC" 0
+    assert_has "$GH_CALLS" 'pr merge'
+    assert_has "$GH_CALLS" "--match-head-commit $HEAD_SHA"
+  done
+  echo "==> an armed clean source head uses the same review observation to enqueue"
+  echo clean >"$TMP/state/driver-review-mode"
+  rm -f "$TMP/state/merged" "$TMP/state/queued"
+  touch "$TMP/state/auto-merge-armed"
+  GH_FAKE_REPO=autumngarage/touchstone-workflows run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"queued"'
+  assert_has "$GH_CALLS" 'enqueuePullRequest'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  rm -f "$TMP/state/queued" "$TMP/state/auto-merge-armed"
+  echo "==> already queued and merged source heads stay observational"
+  echo pending >"$TMP/state/driver-review-mode"
+  rm -f "$TMP/state/merged"
+  touch "$TMP/state/queued"
+  GH_FAKE_REPO=autumngarage/touchstone-workflows run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"queued"'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  assert_not_has "$GH_CALLS" 'enqueuePullRequest'
+  touch "$TMP/state/merged"
+  GH_FAKE_REPO=autumngarage/touchstone-workflows run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"status":"already-merged"'
+  assert_not_has "$GH_CALLS" 'TouchstoneDriverReview'
+  rm -f "$TMP/state/queued" "$TMP/state/merged"
+
+  echo "==> partial enforcement never lets --unguarded waive completed review"
+  touch "$TMP/state/review-gate" "$TMP/state/pr-rule-no-threads"
+  for gate in pending missing failure workflow_failure; do
+    rm -f "$TMP/state/gate-never-runs" "$TMP/state/merged" "$TMP/state/queued" "$TMP/state/auto-merge-armed"
+    echo pending >"$TMP/state/driver-review-mode"
+    mode=status_gate_pending
+    case "$gate" in
+      missing)
+        touch "$TMP/state/gate-never-runs"
+        mode=ok
+        ;;
+      failure)
+        mode=status_gate_failure
+        echo clean >"$TMP/state/driver-review-mode"
+        ;;
+      workflow_failure)
+        mode=status_gate_workflow_failure
+        echo clean >"$TMP/state/driver-review-mode"
+        ;;
+    esac
+    GH_MODE="$mode" run_pr "$TMP/out" status 7 --json
+    assert_rc "$RUN_RC" 0
+    assert_has "$TMP/out" '"phase":"action-required"'
+    GH_MODE="$mode" run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
+    assert_rc "$RUN_RC" 2
+    assert_not_has "$GH_CALLS" 'pr merge'
+    assert_not_has "$GH_CALLS" 'enqueuePullRequest'
+    assert_not_has "$GH_CALLS" 'touchstone:unguarded-merge'
+  done
+  for gate in pending missing; do
+    rm -f "$TMP/state/gate-never-runs" "$TMP/state/merged" "$TMP/state/queued" "$TMP/state/auto-merge-armed"
+    echo clean >"$TMP/state/driver-review-mode"
+    mode=status_gate_pending
+    if [ "$gate" = missing ]; then
+      touch "$TMP/state/gate-never-runs"
+      mode=ok
+    fi
+    GH_MODE="$mode" run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
+    assert_rc "$RUN_RC" 0
+    assert_has "$GH_CALLS" 'pr merge'
+  done
+  rm -f "$TMP/state/gate-never-runs" "$TMP/state/merged" "$TMP/state/queued" "$TMP/state/auto-merge-armed"
+  echo pending >"$TMP/state/driver-review-mode"
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --unguarded --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'pr merge'
+  rm -f "$TMP/state/merged" "$TMP/state/queued" "$TMP/state/auto-merge-armed" "$TMP/state/pr-rule-no-threads"
+  echo "==> completed exact-head source review can enter delivery"
+  echo clean >"$TMP/state/driver-review-mode"
   GH_FAKE_REPO=autumngarage/touchstone-workflows run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'pr merge 7 --repo github.com/autumngarage/touchstone-workflows --squash'
