@@ -1954,7 +1954,9 @@ case "${1:-} ${2:-}" in
   'pr view') printf '%s\n' $'1\tOPEN\thttps://example.invalid/pr/1\t1111111111111111111111111111111111111111\tautumngarage/consumer\tmain\t2222222222222222222222222222222222222222\tCLEAN\tfalse' ;;
   'api graphql') printf '%s\n' '{"head":"1111111111111111111111111111111111111111","autoMergeEnabledAt":null,"mergeQueueState":null}' ;;
   'api --hostname')
-    if [[ "$*" == *'actions/workflows?per_page=100'* ]]; then
+    if [[ "$*" == *'repos/autumngarage/consumer/pulls/1'* ]]; then
+      printf '%s\n' '{"number":1,"stack":null}'
+    elif [[ "$*" == *'actions/workflows?per_page=100'* ]]; then
       printf '%s\n' '{"workflows":[]}'
     elif [[ "$*" == *'actions/runs?head_sha='* ]]; then
       printf '%s\n' '{"workflow_runs":[]}'
