@@ -552,6 +552,26 @@ case "$1 ${2:-}" in
     ;;
   "api user") printf '%s\n' alice ;;
   "api graphql")
+    # Native field shape: GitHub GraphQL PullRequest/Ref documentation and the
+    # captured AUT-1786 PR1281 response; transport is mocked, not ref semantics.
+    if has 'query TouchstoneConflictRecovery(' "$@"; then
+      [ "${GH_MODE:-ok}" != conflicting_pr_unavailable ] || { printf 'GraphQL unavailable\n' >&2; exit 1; }
+      recovery_state=CLEAN; recovery_head="$GH_HEAD"
+      case "${GH_MODE:-ok}" in
+        conflicting_pr|conflicting_pr_moved) recovery_state=DIRTY ;;
+        unknown_mergeability) recovery_state=UNKNOWN ;;
+      esac
+      [ "${GH_MODE:-ok}" != conflicting_pr_moved ] || recovery_head=moved-head
+      recovery_repo="${GH_FAKE_REPO:-autumngarage/current}"
+      jq -cn --arg head "$recovery_head" --arg base "$GH_BASE_REF" --arg recorded "$GH_BASE_SHA" \
+        --arg state "$recovery_state" --arg repo "$recovery_repo" --arg host "${GH_REPO_HOST:-github.com}" \
+        --arg tip "${GH_LIVE_BASE_SHA:-$GH_RECOVERY_DEFAULT_SHA}" '
+        {headRefOid:$head,baseRefName:$base,baseRefOid:$recorded,mergeStateStatus:$state,
+          baseRepository:{nameWithOwner:$repo,url:("https://"+$host+"/"+$repo)},
+          baseRef:{name:$base,prefix:"refs/heads/",target:{__typename:"Commit",oid:$tip}}}' \
+        | jq -c "${GH_RECOVERY_MUTATION:-.}"
+      exit 0
+    fi
     if has 'editor{__typename login}' "$@"; then
       [ "${GH_MODE:-ok}" != delivery_footer_unavailable ] || { printf 'GraphQL unavailable\n' >&2; exit 1; }
       editor=blacksmith-sh; live_head="$GH_HEAD"
@@ -1573,6 +1593,7 @@ EOF
   export GH_BEHIND_SHA GH_MID_SHA GH_AHEAD_SHA GH_OFFREF_SHA GH_DIVERGED_SHA GH_UNKNOWN_SHA GH_SOURCE_HEAD
   export GH_LEGACY_POLICY_SHA
   export GH_BASE_REF=main GH_BASE_SHA=base-sha
+  export GH_RECOVERY_DEFAULT_SHA="$MAIN_SHA"
   export TOUCHSTONE_READ_ATTEMPTS=2 TOUCHSTONE_REQUEST_ATTEMPTS=2 TOUCHSTONE_RETRY_DELAY=0 TOUCHSTONE_GATE_RETRY_DELAY=0
   # The wait for the primary reviewer's reply is exercised by its own case.
   export TOUCHSTONE_REVIEW_RESPONSE_WAIT_SECONDS=0
@@ -2089,7 +2110,7 @@ EOF
   GH_MODE=conflicting_pr run_pr "$TMP/out" open --title 'Conflict' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" '"status":"failed"'
-  assert_has "$TMP/out" 'conflicts with main'
+  assert_has "$TMP/out" 'as DIRTY'
   assert_not_has "$GH_CALLS" 'pr comment'
   assert_not_has "$GH_CALLS" 'actions/runs?head_sha='
   ok "a conflicting new PR consumes no hosted review or workflow recovery"
@@ -3082,13 +3103,18 @@ SLEEP
   printf 'Corrected evidence body.\n' >"$TMP/body2"
 
   : >"$GH_CALLS"
-  GH_MODE=conflicting_pr run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  GH_MODE=conflicting_pr GH_BASE_SHA="$MAIN_SHA" GH_LIVE_BASE_SHA="$HEAD_SHA" \
+    run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'PR #7 at'
-  assert_has "$TMP/out" "conflicts with $GH_BASE_REF at $GH_BASE_SHA"
+  assert_has "$TMP/out" "recorded review base $MAIN_SHA; named branch $GH_BASE_REF currently at $HEAD_SHA"
   assert_has "$TMP/out" "fetch $GH_BASE_REF from the PR base repository https://github.com/autumngarage/current"
-  assert_has "$TMP/out" "refuse unless FETCH_HEAD is $GH_BASE_SHA"
-  assert_has "$TMP/out" 'merge that verified commit'
+  assert_has "$TMP/out" "refuse unless FETCH_HEAD is $HEAD_SHA"
+  assert_not_has "$TMP/out" "refuse unless FETCH_HEAD is $MAIN_SHA"
+  assert_has "$TMP/out" 're-read the PR binding and named branch'
+  assert_has "$TMP/out" 'Merge that verified commit'
+  [ "$(grep -c 'query TouchstoneConflictRecovery(' "$GH_CALLS")" -eq 1 ] || fail "recovery did not use one snapshot"
+  assert_not_has "$GH_CALLS" '--json headRefOid,baseRefName,baseRefOid,mergeStateStatus'
   assert_has "$TMP/out" 'prove every feature-side edit survived against the pre-merge head'
   assert_has "$TMP/out" 'run the complete validation suite'
   assert_not_has "$TMP/out" 'rebase'
@@ -3105,8 +3131,69 @@ SLEEP
   assert_not_has "$GH_CALLS" '/rerun'
   ok "conflict diagnosis is bound to re-read PR coordinates"
 
+  # AUT-1786: the recovery-only fields neither replace recorded review
+  # coordinates nor impose a live-ref dependency on CLEAN/UNKNOWN reads.
+  GH_MODE=conflicting_pr GH_BASE_SHA="$MAIN_SHA" GH_LIVE_BASE_SHA="$MAIN_SHA" \
+    run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" "refuse unless FETCH_HEAD is $MAIN_SHA"
+  ok "equal recorded/live base tips keep the existing recovery target"
+
+  GH_MODE=conflicting_pr GH_FAKE_REPO=autumngarage/upstream \
+    run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'fetch main from the PR base repository https://github.com/autumngarage/upstream'
+  assert_not_has "$TMP/out" "$(git -C "$TMP/project" remote get-url origin)"
+  ok "recovery uses the canonical upstream base repository rather than the feature origin"
+
+  for mutation in '.baseRefName="other-base"' '.baseRefOid="advanced-base-sha"'; do
+    GH_MODE=conflicting_pr GH_RECOVERY_MUTATION="$mutation" \
+      run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+    assert_rc "$RUN_RC" 2
+    assert_has "$TMP/out" 'PR coordinates moved before required-workflow recovery'
+    assert_not_has "$TMP/out" 'refuse unless FETCH_HEAD'
+  done
+  ok "retargeting and recorded-base movement still refuse before recovery advice"
+
+  for mutation in '.baseRef=null' '.baseRef.target=null' '.baseRef.target.__typename="Tag"' \
+    '.baseRef.target.oid="not-a-commit"' '.baseRef.name="other-base"' '.baseRef.prefix="refs/tags/"' \
+    '.baseRepository=null' '.baseRepository.nameWithOwner="not-a-repository"' \
+    '.baseRepository.url="https://other.example/autumngarage/current"'; do
+    GH_MODE=conflicting_pr GH_RECOVERY_MUTATION="$mutation" \
+      run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+    assert_rc "$RUN_RC" 2
+    assert_has "$TMP/out" 'live recovery target is unavailable'
+    assert_not_has "$TMP/out" 'refuse unless FETCH_HEAD'
+    assert_not_has "$GH_CALLS" 'actions/runs?head_sha='
+    assert_not_has "$GH_CALLS" '/rerun'
+  done
+  ok "missing or malformed live branch/repository fields never invent a recovery target"
+
+  GH_MODE=conflicting_pr_unavailable run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'could not read mergeability before waiting for required workflows'
+  assert_not_has "$TMP/out" 'refuse unless FETCH_HEAD'
+  GH_RECOVERY_MUTATION=null run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'could not read PR coordinates before required-workflow recovery'
+  assert_not_has "$TMP/out" 'refuse unless FETCH_HEAD'
+  ok "failed and partial snapshots stop without fabricated recovery advice"
+
+  rm -f "$TMP/state/review-request"
+  GH_LIVE_BASE_SHA="$MAIN_SHA" run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" "touchstone:pr-open head=$HEAD_SHA base=main base_sha=$GH_BASE_SHA"
+  # A successful open retains its existing guards at several phases; the
+  # DIRTY case above isolates one guard and asserts exactly one request.
+  assert_not_has "$GH_CALLS" '--json headRefOid,baseRefName,baseRefOid,mergeStateStatus'
+  GH_RECOVERY_MUTATION='.baseRef=null | .baseRepository=null' \
+    run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  assert_rc "$RUN_RC" 0
+  ok "CLEAN preserves recorded review coordinates and accepts absent recovery-only fields"
+
   : >"$GH_CALLS"
-  GH_MODE=unknown_mergeability run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
+  GH_MODE=unknown_mergeability GH_RECOVERY_MUTATION='.baseRef=null | .baseRepository=null' \
+    run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body2"
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'actions/runs?head_sha='
   grep -q 'rerun 80' "$TMP/state/evidence-reruns" 2>/dev/null \
@@ -4657,6 +4744,14 @@ STUB
       '{number:42,id:9876543,open:true,base:{ref:"main"},pull_requests:[$parent[0],$child[0]]}' >"$TMP/state/native-stack.json"
     jq -n --arg head "$HEAD_SHA" '{status:"pending",details:{message:"Merge request enqueued.",uuid:"630b9d5e-3f2a-4f7e-8b0c-2d5f9a8c1e42",merge_method:"default",merge_action:"merge_queue",expected_head_sha:$head,bypass_rules:false}}' >"$TMP/state/native-async.json"
   }
+  native_fixture
+  GH_MODE=conflicting_pr GH_LIVE_BASE_SHA="$GH_PARENT_HEAD" \
+    run_pr "$TMP/out" open --title 'Native child' --body-file "$TMP/body" --stack-parent 6 --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" "fetch feat/parent from the PR base repository https://github.com/autumngarage/current"
+  assert_has "$TMP/out" "refuse unless FETCH_HEAD is $GH_PARENT_HEAD"
+  assert_not_has "$TMP/out" "refuse unless FETCH_HEAD is $GH_TRUNK_SHA"
+  assert_not_has "$GH_CALLS" 'actions/runs?head_sha='
   native_fixture
   run_pr "$TMP/out" open --title 'Native child' --body-file "$TMP/body" --stack-parent 6 --json
   assert_rc "$RUN_RC" 0

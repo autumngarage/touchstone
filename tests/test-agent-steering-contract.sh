@@ -632,6 +632,10 @@ assert_contains "$GIT_WORKFLOW_GUIDE" \
 assert_contains "$GIT_WORKFLOW_GUIDE" "PR's base repository"
 assert_contains "$GIT_WORKFLOW_GUIDE" '`baseRefOid`'
 assert_contains "$GIT_WORKFLOW_GUIDE" \
+  '`baseRef.target.oid`'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  'that recorded live base tip'
+assert_not_contains "$GIT_WORKFLOW_GUIDE" \
   'unless `FETCH_HEAD` equals the recorded `baseRefOid`'
 assert_contains "$GIT_WORKFLOW_GUIDE" 'with the same `--base`'
 assert_contains "$GIT_WORKFLOW_GUIDE" '`--ours` and'

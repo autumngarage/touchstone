@@ -377,13 +377,19 @@ With a verified merge queue, do nothing when the base merely advances: the
 queue tests the combined result. Without one, a base advance uses the sequence
 below even when GitHub is not `DIRTY`. Always act when GitHub reports
 `mergeStateStatus: DIRTY`, because the branch cannot be merged as-is. Read the
-PR's base repository, `baseRefName`, and `baseRefOid`; inherited stacks,
-explicit bases, and forks do not necessarily target `origin` or the repository
-default branch.
+PR's base repository, `baseRefName`, and recorded review base `baseRefOid`;
+separately resolve the named branch's live commit through `baseRef.target.oid`.
+The PR-associated `baseRefOid` can lag that branch and is not the fetch target.
+Inherited stacks, explicit bases, and forks do not necessarily target `origin`
+or the repository default branch.
 
-1. Record the current head and base binding. Fetch `baseRefName` from the base
-   repository, refuse unless `FETCH_HEAD` equals the recorded `baseRefOid`, and
-   merge that verified commit into the feature branch.
+1. Record the current head, review binding, and live named base tip. Fetch
+   `baseRefName` from the PR's base repository, refuse unless `FETCH_HEAD` equals
+   that recorded live base tip, and merge that verified commit into the feature
+   branch. If the fetched tip differs, re-read the PR identity and named branch
+   before choosing another target. A deleted, missing, or unreadable live base
+   stops recovery; do not substitute the recorded review base, a default branch,
+   or local `origin`.
 2. Resolve conflicts deliberately and commit the merge. `--ours` and
    `--theirs` are whole-file operations, not hunk choices; either discards all
    changes from the other side of that file, including changes far from the

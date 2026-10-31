@@ -2277,20 +2277,43 @@ verify_live_coordinates() {
 }
 
 refuse_conflicting_open_pr() {
-  local number="$1" head="$2" base_ref="$3" base_sha="$4" live_row live_head live_base live_base_sha merge_state
-  read_with_retry gh pr view "$number" --repo "$REPO_SPEC" \
-    --json headRefOid,baseRefName,baseRefOid,mergeStateStatus \
-    --jq '[.headRefOid,.baseRefName,.baseRefOid,(.mergeStateStatus // "UNKNOWN")] | @tsv' \
+  local number="$1" head="$2" base_ref="$3" base_sha="$4" snapshot live_row live_head live_base live_base_sha merge_state
+  local recovery_row recovery_url recovery_sha
+  read_with_retry gh api graphql --hostname "$REPO_HOST" \
+    -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F number="$number" \
+    -f query='query TouchstoneConflictRecovery($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid baseRefName baseRefOid mergeStateStatus baseRepository{nameWithOwner url} baseRef{name prefix target{__typename oid}}}}}' \
+    --jq '.data.repository.pullRequest' \
     || fail_operation "could not read mergeability before waiting for required workflows: $READ_OUTPUT" "Retry after GitHub recovers."
-  live_row="$READ_OUTPUT"
+  snapshot="$READ_OUTPUT"
+  live_row="$(printf '%s' "$snapshot" | jq -er '
+    if ([.headRefOid,.baseRefName,.baseRefOid] | all(.[]; type == "string" and length > 0))
+    then [.headRefOid,.baseRefName,.baseRefOid,(.mergeStateStatus // "UNKNOWN")] | @tsv
+    else error("missing PR coordinates") end
+  ')" || fail_operation "could not read PR coordinates before required-workflow recovery" "Re-read the pull request before retrying."
   IFS="$(printf '\t')" read -r live_head live_base live_base_sha merge_state <<<"$live_row"
   [ "$live_head" = "$head" ] && [ "$live_base" = "$base_ref" ] && [ "$live_base_sha" = "$base_sha" ] \
     || fail_input "PR coordinates moved before required-workflow recovery" "Re-run against the live head and base."
-  [ "$merge_state" != DIRTY ] \
-    || fail_input "PR #$number at $head conflicts with $base_ref at $base_sha, so GitHub cannot create or accept its required workflows" \
-      "Follow $TOOL_ROOT/principles/git-workflow.md: fetch $base_ref from the PR base repository $REPO_URL, refuse unless FETCH_HEAD is $base_sha, merge that verified commit, prove every feature-side edit survived against the pre-merge head, run the complete validation suite, push, and re-run this command."
-}
+  [ "$merge_state" = DIRTY ] || return 0
 
+  # PR-associated baseRefOid can lag the named branch a fetch will resolve.
+  recovery_row="$(printf '%s' "$snapshot" | jq -er --arg base "$base_ref" --arg host "$REPO_HOST" '
+    .baseRepository as $repo | .baseRef as $ref
+    | select(($repo.nameWithOwner | type) == "string"
+      and ($repo.nameWithOwner | test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))
+      and ($repo.url == ("https://" + $host + "/" + $repo.nameWithOwner)
+        or $repo.url == ("http://" + $host + "/" + $repo.nameWithOwner))
+      and $ref.name == $base and $ref.prefix == "refs/heads/"
+      and $ref.target.__typename == "Commit"
+      and ($ref.target.oid | type) == "string"
+      and ($ref.target.oid | test("^[0-9a-f]{40}$")))
+    | [$repo.url,$ref.target.oid] | @tsv
+  ' 2>/dev/null)" \
+    || fail_input "GitHub reports PR #$number as DIRTY, but its live recovery target is unavailable" \
+      "Re-read the PR's baseRepository and named branch $base_ref; do not substitute the recorded review base, a default branch, or local origin."
+  IFS="$(printf '\t')" read -r recovery_url recovery_sha <<<"$recovery_row"
+  fail_input "GitHub reports PR #$number at $head as DIRTY (recorded review base $base_sha; named branch $base_ref currently at $recovery_sha)" \
+    "Follow $TOOL_ROOT/principles/git-workflow.md: fetch $base_ref from the PR base repository $recovery_url, refuse unless FETCH_HEAD is $recovery_sha; if it differs, re-read the PR binding and named branch before choosing another target. Merge that verified commit, prove every feature-side edit survived against the pre-merge head, run the complete validation suite, push, and re-run this command."
+}
 read_live_body() {
   local number="$1"
   read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json body --jq '.body' \
