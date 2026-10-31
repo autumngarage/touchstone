@@ -236,6 +236,7 @@ gh api graphql --paginate --slurp >"$TMP/state/valid-pages"
 for mutation in invalid-json '[]' '.[0].errors = [{message:"unavailable"}]' \
   '.[0].data.repository = null' '.[0].data.repository.nameWithOwner = "someone/else"' \
   '.[0].data.repository.pullRequests.nodes = null' \
+  'del(.[0].data.repository.pullRequests.nodes[0].headRepository)' \
   '.[0].data.repository.pullRequests.nodes[0].state = "UNKNOWN"' \
   '.[0].data.repository.pullRequests.pageInfo = {}'; do
   if [ "$mutation" = invalid-json ]; then

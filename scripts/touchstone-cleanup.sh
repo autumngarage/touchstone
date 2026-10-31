@@ -195,7 +195,8 @@ if [ "$GH_OK" = true ]; then
       }' 2>/dev/null)" \
     || ! PR_ROWS="$(printf '%s' "$PR_PAGES" | jq -r --arg repo "$REPO_FULL" '
       def valid_pr:
-        (.headRefName | type == "string")
+        has("headRepository")
+        and (.headRefName | type == "string")
         and (.number | type == "number" and . > 0 and floor == .)
         and (.state == "OPEN" or .state == "CLOSED" or .state == "MERGED")
         and (.headRefOid | type == "string" and test("^[0-9a-f]{40}\\z"))
