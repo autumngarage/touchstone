@@ -131,6 +131,15 @@ echo changed >>"$TMP/repo/tracked.txt"
 # a linked worktree, on a path with a space
 git -C "$TMP/repo" worktree add -q "$TMP/repo wt" -b feat/in-flight >/dev/null 2>&1
 FLIGHT_SHA="$(git -C "$TMP/repo" rev-parse feat/in-flight)"
+# A clean, delivered checkout can still hold ignored output and depend on an
+# external toolchain. Lifecycle evidence does not release either payload.
+git -C "$TMP/repo" worktree add -q --detach "$TMP/retained wt" "$DONE_SHA"
+mkdir -p "$TMP/retained wt/needed-output" "$TMP/rust-native"
+printf 'retained output\n' >"$TMP/retained wt/needed-output/evidence"
+printf 'retained compiler\n' >"$TMP/rust-native/compiler"
+printf '\nneeded-output/\n' >>"$(git -C "$TMP/retained wt" rev-parse --git-path info/exclude)"
+[ -z "$(git -C "$TMP/retained wt" status --porcelain)" ] || fail "retained-payload fixture is not clean"
+cp "$(git -C "$TMP/retained wt" rev-parse --git-path index)" "$TMP/retained-index-before"
 # a merged branch that still bases an open stacked PR: must not be deleted
 git -C "$TMP/repo" push -q origin main:refs/heads/feat/stack-parent
 git -C "$TMP/repo" fetch -q origin
@@ -171,8 +180,13 @@ grep -q "repo wt \[feat/in-flight\]" "$TMP/out" && ok "worktree path with a spac
 grep -E '^  remote-branch.*feat/stack-parent.*still bases open PR #46' "$TMP/out" >/dev/null && ! grep -E 'delete feat/stack-parent' "$TMP/out" >/dev/null \
   && ok "a merged branch that bases an open PR is preserved, retarget named" || fail "stack parent not protected: $(grep stack-parent "$TMP/out")"
 grep -E '^  local-branch.*feat/fork-open \(#47 merged\)' "$TMP/out" >/dev/null && ok "a fork's open PR does not hide our finished branch" || fail "fork open PR hid a finished branch"
-grep -q 'confirm the worker is terminal, then confirm its final report reached the parent or its cancellation was acknowledged; then git worktree remove' "$TMP/out" \
+grep -q 'confirm the worker is terminal, then confirm its final report reached the parent or its cancellation was acknowledged' "$TMP/out" \
   && ok "worktree removal requires terminal-worker evidence" || fail "worktree removal remedy trusts repository state alone"
+grep -q 'retain unless the current creator releases this exact resource with needed payload recovery and all consumers finished; honor retention holds' "$TMP/out" \
+  && ok "terminal delivery does not release retained payloads or consumers" || fail "worktree remedy omits independent payload release"
+grep -q 'use the native lifecycle owner for managed worktrees, otherwise ordinary Git with those same checks' "$TMP/out" \
+  && ! grep -q 'then git worktree remove' "$TMP/out" \
+  && ok "managed and ordinary worktrees keep the same release preconditions" || fail "worktree remedy gives an unqualified removal command"
 grep -q 'confirm its PR is merged' "$TMP/out" \
   && fail "worktree removal still depends on PR lifecycle" || ok "worktree removal ignores PR lifecycle"
 grep -q 'git worktree prune' "$TMP/out" \
@@ -180,6 +194,10 @@ grep -q 'git worktree prune' "$TMP/out" \
 # nothing mutated
 [ -f "$TMP/repo/__pycache__.tmp" ] && git -C "$TMP/repo" rev-parse --verify -q feat/done >/dev/null \
   && [ -d "$TMP/repo wt" ] && [ ! -f "$TMP/repo/.git/FETCH_HEAD" ] && ok "check mutated nothing (no FETCH_HEAD either)" || fail "check mutated the repository"
+[ "$(cat "$TMP/retained wt/needed-output/evidence")" = 'retained output' ] \
+  && [ "$(cat "$TMP/rust-native/compiler")" = 'retained compiler' ] \
+  && cmp -s "$TMP/retained-index-before" "$(git -C "$TMP/retained wt" rev-parse --git-path index)" \
+  && ok "ignored output, external toolchain and worktree index stay intact" || fail "check changed retained payload or index"
 
 echo "==> --json carries the same findings under a versioned schema"
 run --json
@@ -362,10 +380,11 @@ rm -f "$TMP/state/api-down"
 echo "==> a worktree whose directory was removed by hand is reported, not a crash"
 rm -rf "$TMP/repo wt"
 run
-[ "$RC" -eq 1 ] && grep -q 'worktree.*directory missing' "$TMP/out" && grep -q 'git worktree prune' "$TMP/out" \
-  && ok "prunable worktree reported with the prune remedy" || fail "prunable worktree not handled (rc=$RC): $(head -3 "$TMP/out")"
-grep -q 'confirm every prunable worker is terminal, then confirm each final report or cancellation was acknowledged; then git worktree prune' "$TMP/out" \
-  && ok "pruning requires aggregate terminal-worker evidence" || fail "prune remedy proves only one missing worktree"
+[ "$RC" -eq 1 ] && grep -q 'worktree.*directory missing' "$TMP/out" \
+  && ok "prunable worktree reported" || fail "prunable worktree not handled (rc=$RC): $(head -3 "$TMP/out")"
+grep -q 'reconcile this missing record with its lifecycle owner; do not infer permission to prune sibling records' "$TMP/out" \
+  && ! grep -q 'git worktree prune' "$TMP/out" \
+  && ok "one missing directory cannot authorize repository-wide pruning" || fail "prune remedy authorizes sibling records"
 git -C "$TMP/repo" worktree prune
 
 echo "==> an unreachable origin is a checkout finding, not a clean exit"
