@@ -141,20 +141,20 @@ fi
 # Porcelain records are NUL-separated with -z, so a path with spaces stays
 # one path; the first record is the main checkout.
 # A worktree whose directory was removed by hand (porcelain marks it
-# "prunable") still owns its branch; it is reported with the prune remedy
+# "prunable") still owns its branch; it is reported for owner reconciliation
 # instead of crashing on a path that is not there.
 MAIN_WORKTREE=""
 WT_PATH=""
 WT_BRANCH=""
 WT_PRUNABLE=false
 WORKER_DONE="confirm the worker is terminal, then confirm its final report reached the parent or its cancellation was acknowledged"
-PRUNABLE_DONE="confirm every prunable worker is terminal, then confirm each final report or cancellation was acknowledged"
+PAYLOAD_RELEASE="retain unless the current creator releases this exact resource with needed payload recovery and all consumers finished; honor retention holds"
 emit_worktree() {
   [ -n "$WT_PATH" ] && [ "$WT_PATH" != "$MAIN_WORKTREE" ] || return 0
   if [ "$WT_PRUNABLE" = true ]; then
-    finding "worktree" "$WT_PATH [${WT_BRANCH:-(detached)}] directory missing" "$PRUNABLE_DONE; then git worktree prune (the directory is gone; Git still records it)"
+    finding "worktree" "$WT_PATH [${WT_BRANCH:-(detached)}] directory missing" "$WORKER_DONE; $PAYLOAD_RELEASE; reconcile this missing record with its lifecycle owner; do not infer permission to prune sibling records"
   else
-    finding "worktree" "$WT_PATH [${WT_BRANCH:-(detached)}]" "$WORKER_DONE; then git worktree remove $(q "$WT_PATH")"
+    finding "worktree" "$WT_PATH [${WT_BRANCH:-(detached)}]" "$WORKER_DONE; $PAYLOAD_RELEASE; use the native lifecycle owner for managed worktrees, otherwise ordinary Git with those same checks"
   fi
 }
 while IFS= read -r -d '' record; do

@@ -849,21 +849,38 @@ moves on. It is what turned one day of agent work into two stale worktrees,
 ten merged local branches, fifty-six merged remote branches, a `__pycache__`
 that refused the next ship as "dirty", and tracker items left In Progress
 (2026-08-21). Before a session ends, every item it created satisfies the
-steps below, in this order — each line is a command, not advice:
+steps below, in this order, subject to the independent release checks below:
 
 ```bash
 touchstone cleanup check            # read-only: lists what is left; exit 0 means nothing
 git checkout <default> && git pull --rebase    # first: Git refuses to delete the branch you are on
-git worktree remove <path>          # only after terminal result delivery or confirmed cancellation
-git worktree prune                  # only after every prunable worker meets that lifecycle proof
+git worktree remove <path>          # ordinary Git only after lifecycle AND exact resource release
+git worktree prune                  # after every prunable worker meets that lifecycle proof AND every record is independently released
 git branch -D <branch>              # after the merged-head proof under "Periodic branch hygiene"
 git push origin --force-with-lease=<branch>:<merged-sha> :<branch>   # delete the MERGED PR's remote branch only if it is still at the merged SHA (a CLOSED one may hold abandoned work: decide, don't reflexively delete)
 git status --porcelain --untracked-files=all   # must print nothing: remove test/build residue or ignore it
 ```
 
+Terminal result delivery or confirmed cancellation is lifecycle evidence, not
+permission to discard payloads. Before removing a worktree or scratch, its
+current creator must release that exact resource: independently preserve needed
+source, index, unpublished commits and dirty, ignored, private or external
+outputs; distinguish installed toolchains from disposable build output; honor
+retention holds; and confirm all descendants and other output consumers have
+finished. Missing or incomplete proof means retain and route to the owner.
+Clean or merged Git state, age, no observed cwd and a receipt alone are not
+substitutes. Git snapshots do not automatically preserve ignored or external
+payloads.
+
+For managed worktrees, use their native lifecycle owner after those checks and
+honor its identity, primary/shared/pinned and submodule refusals. Do not force,
+deinitialize submodules or substitute direct Git removal. One missing worktree
+finding does not release sibling records for repository-wide pruning.
+
 Then reconcile the tracker under "Keeping a tracked item current, and closing
-it", including its project-completion sweep. Scratch files under `$TMPDIR`
-that the session created go too.
+it", including its project-completion sweep. Scratch under `$TMPDIR` follows
+the same release checks; keep failure diagnostics and required recovery rather
+than treating every session-created file as disposable on exit.
 
 `touchstone cleanup check` never deletes anything — what is finished is the
 driver's decision, and a tool that pruned branches on its own would be
