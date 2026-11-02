@@ -840,8 +840,32 @@ refresh_same_coordinates() {
       == ($saved | del(.state,.autoMergeRequest,.mergeQueueEntry))' <<<"$2" >/dev/null
 }
 
+refresh_safe_facts() {
+  [ "${TOUCHSTONE_POLICY_SAFE_FACTS:-}" = 1 ] && [ -f /dev/fd/3 ] || return 0
+  local report
+  if report="$(jq -acenS --arg phase "$1" --argjson targets "$2" \
+    --argjson failures "$3" --argjson first "$4" '
+      def positive: type=="number" and floor==. and .>0 and .<=2147483647;
+      {version:1,kind:"refresh-incomplete",installed:true,phase:$phase,
+       targets:$targets,failures:$failures,first:$first}
+      | select(if .phase=="enumeration" then .targets==null and .failures==null and .first==null
+        elif .phase=="opt-out" then (.targets | positive) and .failures==.targets and .first==null
+        else (.targets | positive) and (.failures | positive) and .failures<=.targets
+          and (.first==null or ((.first.pr | positive)
+            and (.first.head | test("^[0-9a-fA-F]{40}$")))) end)
+    ' 2>/dev/null)"; then
+    # A diagnostic write must never change the policy operation or its status.
+    { printf "%s\n" "$report" >&3; } 2>/dev/null || :
+  fi
+  return 0
+}
+
 refresh_failure() {
   echo "ERROR: policy installed; PR #$1 head $2 refresh incomplete at $3; inspect native state before recovery." >&2
+  if [ "${TOUCHSTONE_POLICY_SAFE_FACTS:-}" = 1 ] && [ "${first_failure:-null}" = null ]; then
+    first_failure="$(jq -cnS --arg phase "$3" --argjson pr "$1" --arg head "$2" \
+      '{phase:$phase,pr:$pr,head:$head}' 2>/dev/null)" || first_failure=null
+  fi
 }
 
 refresh_one_pr() {
@@ -931,15 +955,17 @@ refresh_one_pr() {
 }
 
 retrigger_open_pull_requests() {
-  local prs saved failed=0 count
+  local prs saved failed=0 count failures=0 first_failure=null
   prs="$(refresh_pr_snapshot)" || {
     echo "ERROR: policy installed; PR refresh incomplete at enumeration; no pull requests changed." >&2
+    refresh_safe_facts enumeration null null null
     return 1
   }
   count="$(jq length <<<"$prs")"
   [ "$count" -gt 0 ] || return 0
   if [ "${RETRIGGER_OPEN_PRS:-true}" != true ]; then
     echo "ERROR: policy installed; PR refresh incomplete: --no-retrigger skipped $count intended-base pull requests." >&2
+    refresh_safe_facts opt-out "$count" "$count" null
     return 1
   fi
   while IFS= read -r saved; do
@@ -947,8 +973,10 @@ retrigger_open_pull_requests() {
       sleep "${RETRIGGER_SPACING_SECONDS:-20}"
     else
       failed=1
+      failures=$((failures + 1))
     fi
   done < <(jq -c '.[]' <<<"$prs")
+  [ "$failed" = 0 ] || refresh_safe_facts pr-refresh "$count" "$failures" "$first_failure"
   return "$failed"
 }
 

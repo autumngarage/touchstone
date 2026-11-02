@@ -23,6 +23,7 @@ cat >"$RELEASE/scripts/touchstone-pr.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 state="${TOUCHSTONE_POLICY_TEST_STATE:?}"
+echo status >>"$state/status-calls"
 if [ -f "$state/status-fails" ]; then echo 'SECRET STATUS BODY' >&2; exit 1; fi
 if [ -f "$state/oversized" ]; then
   dd if=/dev/zero bs=70000 count=1 2>/dev/null | tr '\0' x
@@ -49,6 +50,7 @@ cat >"$RELEASE/scripts/github-policy.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 state="${TOUCHSTONE_POLICY_TEST_STATE:?}"
+echo apply >>"$state/engine-calls"
 [ "$1" = apply ] && [ -r "$2" ]
 printf '%s\n' "${GH_HOST-unset}" >"$state/mutation-host"
 if [ -f "$state/variation" ]; then
@@ -56,8 +58,16 @@ if [ -f "$state/variation" ]; then
 fi
 [ ! -f "$state/apply-must-not-run" ] || { touch "$state/apply-was-called"; exit 99; }
 printf 'SECRET PROVIDER BODY THAT MUST NEVER ESCAPE\n' >&2
+printf 'SECRET PROVIDER STDOUT THAT MUST NEVER ESCAPE\n'
 if [ -f "$state/permission-denied" ]; then exit 1; fi
 touch "$state/applied"
+if [ -f "$state/interrupted" ]; then kill -TERM "$$"; fi
+if [ -f "$state/safe-report" ]; then
+  if [ "${TOUCHSTONE_POLICY_SAFE_FACTS:-}" = 1 ]; then
+    { cat "$state/safe-report" >&3; } 2>/dev/null || :
+  fi
+  exit "$(cat "$state/engine-status")"
+fi
 if [ -f "$state/lost-reply" ]; then exit 1; fi
 printf 'mutation internals that must never escape\n'
 EOF
@@ -124,9 +134,144 @@ jq -e '.status == "already-applied"' "$TMP/already.json" >/dev/null \
 ok "already-applied is an idempotent read"
 rm -f "$STATE/apply-must-not-run" "$STATE/applied"
 
+# Exercise both render branches before reporting an old-source failure.
+bad=0
+for mode in json human; do
+  rm -f "$STATE/applied" "$STATE/status-calls" "$STATE/engine-calls"
+  jq -cnS '{version:1,kind:"refresh-incomplete",installed:true,phase:"pr-refresh",
+    targets:2,failures:1,first:{phase:"reopen",pr:42,head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}' >"$STATE/safe-report"
+  echo 7 >"$STATE/engine-status"
+  status=0
+  if [ "$mode" = json ]; then
+    run >"$TMP/partial-$mode" 2>"$TMP/partial-$mode.err" || status=$?
+  else
+    TOUCHSTONE_POLICY_TEST_STATE="$STATE" bash "$RELEASE/bin/touchstone" policy apply \
+      --project "$PROJECT" --base main --authorize-admin \
+      >"$TMP/partial-$mode" 2>"$TMP/partial-$mode.err" || status=$?
+  fi
+  if [ "$status" -ne 7 ]; then
+    echo "FAIL: $mode lost child exit7 (got $status)"
+    bad=1
+  fi
+  for fact in 'installed' 'incomplete' '1 of 2' 'FIRST RECORDED' 'reopen' '#42' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; do
+    if ! grep -q "$fact" "$TMP/partial-$mode"; then
+      echo "FAIL: $mode lost safe fact: $fact"
+      bad=1
+    fi
+  done
+  if grep -Eiq 'SECRET|administrator|authentication' "$TMP/partial-$mode" "$TMP/partial-$mode.err"; then
+    echo "FAIL: $mode exposed provider text or inferred authentication"
+    bad=1
+  fi
+  [ "$(wc -l <"$STATE/status-calls" | tr -d ' ')" = 1 ] || fail "read status after engine failure"
+  [ "$(wc -l <"$STATE/engine-calls" | tr -d ' ')" = 1 ] || fail "retried engine failure"
+done
+[ "$bad" = 0 ] || fail "partial refresh contract failed in JSON/human modes"
+rm -f "$STATE/applied" "$STATE/safe-report" "$STATE/engine-status"
+ok "safe incomplete refresh facts and exact exit survive both render modes"
+
+report_failure() {
+  local expected="$1" result=0
+  rm -f "$STATE/applied" "$STATE/status-calls" "$STATE/engine-calls"
+  echo 7 >"$STATE/engine-status"
+  run >"$TMP/report.json" 2>"$TMP/report.err" || result=$?
+  [ "$result" = 7 ] || fail "report changed child status"
+  jq -e --arg expected "$expected" '.status=="action-required" and (.detail | contains($expected))' \
+    "$TMP/report.json" >/dev/null || fail "wrong safe report disposition: $expected"
+  if grep -Eiq 'SECRET|administrator|authentication' "$TMP/report.json" "$TMP/report.err"; then
+    fail "report crossed the provider boundary"
+  fi
+  [ "$(wc -l <"$STATE/status-calls" | tr -d ' ')" = 1 ] || fail "report failure read status"
+  [ "$(wc -l <"$STATE/engine-calls" | tr -d ' ')" = 1 ] || fail "report failure retried"
+}
+jq -cnS '{version:1,kind:"refresh-incomplete",installed:true,phase:"pr-refresh",
+  targets:1,failures:1,first:{phase:"reopen",pr:1,head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}' >"$TMP/min-report"
+cp "$TMP/min-report" "$STATE/safe-report"
+report_failure '1 of 1'
+jq -cS '.targets=2147483647 | .failures=2147483647 | .first.pr=2147483647
+  | .first.phase="after-reopen-coordinates"' "$TMP/min-report" >"$TMP/max-report"
+[ "$(wc -c <"$TMP/max-report" | tr -d ' ')" = 234 ] || fail "canonical domain bound changed"
+cp "$TMP/max-report" "$STATE/safe-report"
+report_failure '2147483647 of 2147483647'
+jq -cS '.phase="enumeration" | .targets=null | .failures=null | .first=null' \
+  "$TMP/min-report" >"$TMP/enumeration-report"
+cp "$TMP/enumeration-report" "$STATE/safe-report"
+report_failure 'enumeration'
+jq -cS '.phase="opt-out" | .first=null' "$TMP/min-report" >"$STATE/safe-report"
+report_failure 'SKIPPED 1'
+jq -cS '.first=null' "$TMP/min-report" >"$STATE/safe-report"
+report_failure 'No safe per-PR sample'
+
+for change in '.version=2' '.installed=false' '.kind="unknown"' '.phase="unknown"' \
+  'del(.targets)' '.extra="SECRET"' '.targets=0' '.targets=2147483648' '.targets=1.5' \
+  '.failures=0' '.failures=2' '.first.pr=0' '.first.pr=2147483648' \
+  '.first.head="SECRET"' '.first.phase="unknown"' '.first.extra="SECRET"' \
+  '.phase="enumeration"' '.phase="opt-out"'; do
+  jq -cS "$change" "$TMP/min-report" >"$STATE/safe-report"
+  report_failure 'Policy apply failed'
+done
+cat "$TMP/enumeration-report" "$TMP/enumeration-report" >"$STATE/safe-report"
+report_failure 'Policy apply failed'
+{
+  printf '{}\n'
+  cat "$TMP/enumeration-report"
+} >"$STATE/safe-report"
+[ "$(wc -c <"$STATE/safe-report" | tr -d ' ')" -le 234 ] || fail "mixed record fixture missed parser"
+report_failure 'Policy apply failed'
+sed 's/"version":1/"version":1,"version":1/' "$TMP/min-report" >"$STATE/safe-report"
+report_failure 'Policy apply failed'
+jq . "$TMP/min-report" >"$STATE/safe-report"
+report_failure 'Policy apply failed'
+printf '%s' "$(cat "$TMP/min-report")" >"$STATE/safe-report"
+report_failure 'Policy apply failed'
+cp "$TMP/min-report" "$STATE/safe-report"
+printf '\n' >>"$STATE/safe-report"
+report_failure 'Policy apply failed'
+cp "$TMP/max-report" "$STATE/safe-report"
+printf ' ' >>"$STATE/safe-report"
+report_failure 'Policy apply failed'
+printf 'SECRET malformed report\n' >"$STATE/safe-report"
+report_failure 'Policy apply failed'
+
+# Report validity cannot turn a successful engine into a failed invocation.
+rm -f "$STATE/applied"
+echo 0 >"$STATE/engine-status"
+run >"$TMP/success-with-invalid-report.json"
+jq -e '.status=="applied"' "$TMP/success-with-invalid-report.json" >/dev/null \
+  || fail "invalid diagnostic changed engine success"
+rm -f "$STATE/applied" "$STATE/safe-report" "$STATE/engine-status"
+ok "single canonical bounded facts fail neutral without changing engine status"
+
+mkdir -p "$TMP/tools"
+TOUCHSTONE_POLICY_TEST_MKTEMP="$(command -v mktemp)"
+export TOUCHSTONE_POLICY_TEST_MKTEMP
+cat >"$TMP/tools/mktemp" <<'EOF'
+#!/usr/bin/env bash
+directory="$("$TOUCHSTONE_POLICY_TEST_MKTEMP" "$@")" || exit $?
+mkdir "$directory/safe-facts.json"
+printf '%s\n' "$directory"
+EOF
+chmod +x "$TMP/tools/mktemp"
+cp "$TMP/min-report" "$STATE/safe-report"
+PATH="$TMP/tools:$PATH" report_failure 'Policy apply failed'
+rm -f "$STATE/applied" "$STATE/safe-report" "$STATE/engine-status"
+ok "descriptor setup failure still invokes the engine and preserves its status"
+
+touch "$STATE/interrupted"
+rm -f "$STATE/applied" "$STATE/status-calls" "$STATE/engine-calls"
+status=0
+run >"$TMP/interrupted.json" 2>"$TMP/interrupted.err" || status=$?
+[ "$status" = 143 ] || fail "interrupted engine status was masked"
+jq -e '.status=="action-required" and (.detail | contains("Policy apply failed"))' \
+  "$TMP/interrupted.json" >/dev/null || fail "interruption invented terminal refresh facts"
+[ ! -s "$TMP/interrupted.err" ] || fail "engine termination diagnostics escaped"
+[ "$(wc -l <"$STATE/status-calls" | tr -d ' ')" = 1 ] || fail "interrupted engine read status"
+rm -f "$STATE/interrupted" "$STATE/applied"
+ok "interrupted engine is a private neutral failure with its original status"
+
 touch "$STATE/permission-denied"
 if run >"$TMP/denied.json"; then fail "permission failure reported success"; fi
-jq -e '.status == "action-required" and (.detail | contains("administrator"))' "$TMP/denied.json" >/dev/null \
+jq -e '.status == "action-required" and (.detail | contains("Policy apply failed"))' "$TMP/denied.json" >/dev/null \
   || fail "permission failure was not actionable"
 grep -q 'SECRET' "$TMP/denied.json" && fail "provider diagnostics escaped the policy API"
 ok "permission failure is bounded and does not echo provider output"
