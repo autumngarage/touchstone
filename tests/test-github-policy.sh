@@ -34,18 +34,29 @@ set -euo pipefail
 
 if [ "${1:-}" = pr ]; then
   echo "PR $2 $3" >>"$GH_FAKE_STATE/pr-mutations.log"
+  if [ -f "$GH_FAKE_STATE/fail-$2" ]; then exit 1; fi
+  pr="$GH_FAKE_STATE/pr-$3.json"
+  if [ -f "$pr" ]; then
+    case "$2" in
+      close) jq '.state="CLOSED" | .autoMergeRequest=null' "$pr" >"$pr.next" ;;
+      reopen) jq '.state="OPEN"' "$pr" >"$pr.next" ;;
+      *) exit 2 ;;
+    esac
+    mv "$pr.next" "$pr"
+  fi
   exit 0
 fi
 method=GET
 fields=""
 endpoint=""
 jq_filter=""
+input_stdin=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     api) shift ;;
     -H) shift 2 ;;
     --method | -X) method="$2"; shift 2 ;;
-    --input) shift 2 ;;
+    --input) [ "$2" != - ] || input_stdin=true; shift 2 ;;
     --jq) jq_filter="$2"; shift 2 ;;
     -F | -f) fields="${fields:-} $2"; shift 2 ;;
     -*) shift ;;
@@ -54,6 +65,11 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$endpoint" ] || exit 2
 state="$GH_FAKE_STATE"
+input_payload=""
+if [ "$endpoint" = graphql ] && [ "$input_stdin" = true ]; then
+  input_payload="$(cat)"
+  fields="$fields $(jq -r .query <<<"$input_payload")"
+fi
 
 emit() {
   local json="$1"
@@ -76,7 +92,43 @@ case "$method $endpoint" in
           live) emit '{"data":{"repository":{"mergeQueue":{"entries":{"totalCount":2}}}}}' ;;
           *) emit '{"data":{"repository":{"mergeQueue":{"entries":{"totalCount":0}}}}}' ;;
         esac ;;
+      *'pullRequests(first:'*)
+        [ ! -f "$state/fail-list" ] || exit 1
+        if [ -f "$state/pr-pages.json" ]; then cat "$state/pr-pages.json"; else
+          emit '[{"data":{"repository":{"nameWithOwner":"autumngarage/touchstone","pullRequests":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}]'
+        fi
+        ;;
+      *'enablePullRequestAutoMerge('*)
+        [ ! -f "$state/fail-restore" ] || exit 1
+        payload="$input_payload"
+        printf '%s\n' "$payload" >"$state/restore-input.json"
+        echo "PR restore 42" >>"$state/pr-mutations.log"
+        jq '.variables.input as $i | {id:"PR42",number:42,state:"OPEN",isDraft:false,
+          headRefOid:$i.expectedHeadOid,baseRefName:"main",
+          repository:{nameWithOwner:"autumngarage/touchstone"},
+          mergeQueueEntry:null,autoMergeRequest:($i | del(.pullRequestId,.expectedHeadOid)
+            | .enabledAt="2026-11-02T01:00:00Z" | .enabledBy={login:"driver"})}' \
+          <<<"$payload" >"$state/pr-42.json"
+        if [ -f "$state/restore-outcome" ]; then
+          jq --arg o "$(cat "$state/restore-outcome")" \
+            'if $o=="queued" then .mergeQueueEntry={id:"Q"} | .autoMergeRequest=null
+             elif $o=="merged" then .state="MERGED" | .autoMergeRequest=null
+             elif $o=="missing" then .autoMergeRequest=null else . end' \
+            "$state/pr-42.json" >"$state/pr-42.next"
+          mv "$state/pr-42.next" "$state/pr-42.json"
+        fi
+        emit '{"data":{"enablePullRequestAutoMerge":{"pullRequest":{"id":"PR42"}}}}'
+        ;;
       *'pullRequest(number:'*)
+        number="$(sed -n 's/.* number=\([0-9]*\).*/\1/p' <<<"$fields")"
+        if [ -f "$state/pr-$number.json" ]; then
+          count="$(cat "$state/pr-read-count" 2>/dev/null || echo 0)"
+          count=$((count + 1)); echo "$count" >"$state/pr-read-count"
+          read_file="$state/pr-$number.json"
+          if [ -f "$state/read-$count.json" ]; then read_file="$state/read-$count.json"; fi
+          jq '{data:{repository:{pullRequest:.}}}' "$read_file"
+          exit 0
+        fi
         case "${GH_FAKE_PR_QUEUE:-empty}" in
           error) exit 1 ;;
           malformed) emit '{"data":{"repository":{"pullRequest":{}}}}' ;;
@@ -481,6 +533,9 @@ init_branch() {
     "$TMP_DIR/state/repo-ruleset.json" "$TMP_DIR/state/auto-merge" \
     "$TMP_DIR/state/source-ruleset.json" "$TMP_DIR/state/source-repo-ruleset.json" \
     "$TMP_DIR/state/source-auto-merge"
+  rm -f "$TMP_DIR/state"/pr-*.json "$TMP_DIR/state"/read-*.json \
+    "$TMP_DIR/state"/pr-read-count "$TMP_DIR/state"/pr-mutations.log \
+    "$TMP_DIR/state"/restore-input.json "$TMP_DIR/state"/fail-* "$TMP_DIR/state"/restore-outcome
 }
 
 run_policy() {
@@ -1191,20 +1246,224 @@ after_count="$(wc -l <"$TMP_DIR/state/mutations.log" | tr -d ' ')"
 [ "$before_count" = "$after_count" ] || fail "second apply changed remote state"
 ok "apply is ordered safely and a second apply is a no-op"
 
-echo "==> Refresh preserves a PR that joined the queue after apply began"
-for queue_state in live error malformed; do
-  rm -f "$TMP_DIR/state/pr-mutations.log"
-  GH_FAKE_OPEN_PRS=1 GH_FAKE_PR_QUEUE="$queue_state" RETRIGGER_SPACING_SECONDS=0 \
-    run_policy apply "$POLICY" >"$TMP_DIR/queue-refresh.out" 2>&1
-  [ ! -f "$TMP_DIR/state/pr-mutations.log" ] || fail "refresh mutated queued or ambiguous PR ($queue_state)"
-  grep -q 'left untouched' "$TMP_DIR/queue-refresh.out" || fail "skipped refresh was silent"
+echo "==> Workflow refresh preserves existing auto-merge intent"
+refresh_fixture() {
+  rm -f "$TMP_DIR/state"/pr-*.json "$TMP_DIR/state"/read-*.json \
+    "$TMP_DIR/state"/pr-read-count "$TMP_DIR/state"/pr-mutations.log \
+    "$TMP_DIR/state"/restore-input.json "$TMP_DIR/state"/fail-* \
+    "$TMP_DIR/state"/restore-outcome
+  jq -n '{
+    id:"PR42",number:42,state:"OPEN",isDraft:false,
+    headRefOid:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",baseRefName:"main",
+    repository:{nameWithOwner:"autumngarage/touchstone"},mergeQueueEntry:null,
+    autoMergeRequest:{mergeMethod:"SQUASH",authorEmail:"author@example.invalid",
+      commitHeadline:"title $() \n second line",commitBody:"body \n next",
+      enabledAt:"2026-11-01T20:00:00Z",enabledBy:{login:"owner"}}
+  }' >"$TMP_DIR/state/pr-42.json"
+  refresh_pages
+  # Simulate the outgoing pin without changing the authoritative desired source.
+  jq --slurpfile desired "$POLICY" '.rules=$desired[0].managedRuleset.rules
+    | (.rules[] | select(.type=="workflows") | .parameters.workflows[].sha) =
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' "$TMP_DIR/state/ruleset.json" >"$TMP_DIR/state/old-pin.json"
+  mv "$TMP_DIR/state/old-pin.json" "$TMP_DIR/state/ruleset.json"
+}
+refresh_pages() {
+  jq '[{data:{repository:{nameWithOwner:"autumngarage/touchstone",
+    pullRequests:{nodes:[.],pageInfo:{hasNextPage:false,endCursor:"cursor42"}}}}}]' \
+    "$TMP_DIR/state/pr-42.json" >"$TMP_DIR/state/pr-pages.json"
+}
+RETRIGGER_SPACING_SECONDS=0
+export RETRIGGER_SPACING_SECONDS
+refresh_fixture
+run_policy apply "$POLICY" >"$TMP_DIR/refresh.out" 2>&1 \
+  || {
+    cat "$TMP_DIR/refresh.out"
+    fail "expected successful refresh"
+  }
+[ -f "$TMP_DIR/state/restore-input.json" ] || fail "refresh lost prior auto-merge intent"
+jq -e --slurpfile pr "$TMP_DIR/state/pr-42.json" \
+  '.variables.input.expectedHeadOid==$pr[0].headRefOid
+   and .variables.input.mergeMethod=="SQUASH"
+   and .variables.input.authorEmail=="author@example.invalid"
+   and .variables.input.commitBody=="body \n next"' "$TMP_DIR/state/restore-input.json" >/dev/null \
+  || fail "refresh did not preserve exact head and merge material"
+ok "refresh restores only captured exact-head native intent"
+refresh_fixture
+touch "$TMP_DIR/state/fail-reopen"
+if run_policy apply "$POLICY" >"$TMP_DIR/refresh.out" 2>&1; then
+  fail "partial refresh falsely reported success"
+fi
+[ -f "$TMP_DIR/state/ruleset.json" ] || fail "refresh failure rolled back installed protection"
+ok "partial refresh fails while leaving policy installed"
+
+refresh_expect_failure() {
+  if run_policy apply "$POLICY" >"$TMP_DIR/refresh.out" 2>&1; then
+    fail "refresh accepted $1"
+  fi
+  grep -q 'refresh incomplete' "$TMP_DIR/refresh.out" || fail "no phase diagnostic for $1"
+  [ -f "$TMP_DIR/state/ruleset.json" ] || fail "refresh failure removed protection ($1)"
+}
+for phase in close reopen restore; do
+  refresh_fixture
+  touch "$TMP_DIR/state/fail-$phase"
+  refresh_expect_failure "$phase command failure"
+  grep -q "at $phase" "$TMP_DIR/refresh.out" || fail "wrong leftover phase for $phase"
 done
-GH_FAKE_QUEUE=null GH_FAKE_OPEN_PRS=1 RETRIGGER_SPACING_SECONDS=0 \
-  run_policy apply "$POLICY" >"$TMP_DIR/queue-refresh.out" 2>&1
-[ "$(cat "$TMP_DIR/state/pr-mutations.log")" = "$(printf 'PR close 42\nPR reopen 42')" ] \
-  || fail "an explicitly unqueued PR did not refresh"
-rm -f "$TMP_DIR/state/pr-mutations.log"
-ok "queued and unknown PRs stay untouched; a queue-less repository still refreshes unqueued PRs"
+for outcome in queued merged; do
+  refresh_fixture
+  echo "$outcome" >"$TMP_DIR/state/restore-outcome"
+  run_policy apply "$POLICY" >"$TMP_DIR/refresh.out" 2>&1 \
+    || {
+      cat "$TMP_DIR/refresh.out"
+      fail "expected successful refresh"
+    }
+  [ "$(wc -l <"$TMP_DIR/state/pr-mutations.log" | tr -d ' ')" = 3 ] \
+    || fail "mutated after native $outcome"
+done
+refresh_fixture
+echo missing >"$TMP_DIR/state/restore-outcome"
+refresh_expect_failure "missing native restored intent"
+grep -q restore-readback "$TMP_DIR/refresh.out" || fail "unqualified readback was accepted"
+
+refresh_fixture
+jq '.autoMergeRequest=null' "$TMP_DIR/state/pr-42.json" >"$TMP_DIR/state/unarmed.json"
+mv "$TMP_DIR/state/unarmed.json" "$TMP_DIR/state/pr-42.json"
+refresh_pages
+run_policy apply "$POLICY" >"$TMP_DIR/refresh.out" 2>&1 \
+  || {
+    cat "$TMP_DIR/refresh.out"
+    fail "expected successful refresh"
+  }
+[ ! -f "$TMP_DIR/state/restore-input.json" ] || fail "armed a previously unarmed PR"
+
+# Fresh fences check each independent mutable domain before close; actor/time
+# replacement must fail even when the requested merge method did not change.
+for edit in '.headRefOid="cccccccccccccccccccccccccccccccccccccccc"' \
+  '.baseRefName="release"' '.isDraft=true' '.state="CLOSED"' \
+  '.mergeQueueEntry={id:"queued"}' 'del(.mergeQueueEntry)' \
+  '.autoMergeRequest.enabledBy.login="replacement"' \
+  '.autoMergeRequest.enabledAt="2026-11-01T21:00:00Z"' \
+  '.autoMergeRequest.commitBody="replacement"'; do
+  refresh_fixture
+  jq "$edit" "$TMP_DIR/state/pr-42.json" >"$TMP_DIR/state/read-1.json"
+  refresh_expect_failure "pre-close fence: $edit"
+  [ ! -f "$TMP_DIR/state/pr-mutations.log" ] || fail "mutated moved/unknown PR: $edit"
+done
+for step in 2 3 4; do
+  refresh_fixture
+  jq '.headRefOid="cccccccccccccccccccccccccccccccccccccccc"' \
+    "$TMP_DIR/state/pr-42.json" >"$TMP_DIR/state/read-$step.json"
+  refresh_expect_failure "head moved at read $step"
+  expected=1
+  [ "$step" -lt 3 ] || expected=2
+  [ "$step" -lt 4 ] || expected=3
+  [ "$(wc -l <"$TMP_DIR/state/pr-mutations.log" | tr -d ' ')" = "$expected" ] \
+    || fail "continued mutating after moved head at $step"
+done
+refresh_fixture
+cp "$TMP_DIR/state/pr-42.json" "$TMP_DIR/state/read-3.json"
+refresh_expect_failure "replacement intent after reopen"
+[ ! -f "$TMP_DIR/state/restore-input.json" ] || fail "overwrote a replacement request"
+ok "phase failures, unknown/moved coordinates and intent replacements refuse without blind retries"
+
+for step in 2 3; do
+  refresh_fixture
+  jq '.mergeQueueEntry={id:"new-queue"}' "$TMP_DIR/state/pr-42.json" >"$TMP_DIR/state/read-$step.json"
+  refresh_expect_failure "queue moved at phase $step"
+  [ ! -f "$TMP_DIR/state/restore-input.json" ] || fail "restored after queue entry"
+done
+for step in 1 2 3 4; do
+  refresh_fixture
+  printf '{}\n' >"$TMP_DIR/state/read-$step.json"
+  refresh_expect_failure "unavailable phase $step"
+done
+refresh_fixture
+jq '.enforcement="disabled"' "$TMP_DIR/state/ruleset.json" >"$TMP_DIR/state/disabled.json"
+mv "$TMP_DIR/state/disabled.json" "$TMP_DIR/state/ruleset.json"
+run_policy apply "$POLICY" >"$TMP_DIR/refresh.out" 2>&1 \
+  || {
+    cat "$TMP_DIR/refresh.out"
+    fail "enforcement change did not refresh"
+  }
+[ -f "$TMP_DIR/state/restore-input.json" ] || fail "enforcement change was treated as unrelated"
+refresh_fixture
+jq 'del(.rules[] | select(.type=="workflows") | .parameters.workflows)' \
+  "$TMP_DIR/state/ruleset.json" >"$TMP_DIR/state/malformed.json"
+mv "$TMP_DIR/state/malformed.json" "$TMP_DIR/state/ruleset.json"
+before_malformed="$(cat "$TMP_DIR/state/mutations.log")"
+if run_policy apply "$POLICY" >"$TMP_DIR/refresh.out" 2>&1; then
+  fail "malformed workflow comparison was treated as unchanged"
+fi
+[ "$before_malformed" = "$(cat "$TMP_DIR/state/mutations.log")" ] \
+  || fail "malformed comparison changed policy before refusal"
+[ ! -f "$TMP_DIR/state/pr-mutations.log" ] || fail "malformed comparison changed a PR"
+ok "queue transitions, unavailable phase reads and malformed workflow input fail closed"
+
+# Pagination uses the actual gh --paginate --slurp GraphQL shape. First-page
+# drafts make the sole second-page PR the only mutable target.
+refresh_fixture
+jq '.[0] as $page | [
+  ($page | .data.repository.pullRequests.nodes =
+    [range(100;200) as $n | $page.data.repository.pullRequests.nodes[0]
+      | .number=$n | .id=("draft"+($n|tostring)) | .isDraft=true]
+    | .data.repository.pullRequests.pageInfo={hasNextPage:true,endCursor:"page100"}),
+  ($page | .data.repository.pullRequests.pageInfo={hasNextPage:false,endCursor:"page101"})
+]' "$TMP_DIR/state/pr-pages.json" >"$TMP_DIR/state/pages.next"
+mv "$TMP_DIR/state/pages.next" "$TMP_DIR/state/pr-pages.json"
+run_policy apply "$POLICY" >"$TMP_DIR/refresh.out" 2>&1 \
+  || {
+    cat "$TMP_DIR/refresh.out"
+    fail "expected successful refresh"
+  }
+[ -f "$TMP_DIR/state/restore-input.json" ] || fail "omitted the PR after the first 100"
+for edit in '.[-1].data.repository.pullRequests.pageInfo.hasNextPage=true' \
+  '.[0].errors=[{message:"failed"}]' '.[0].data.repository.pullRequests.nodes=null' \
+  '.[0].data.repository.pullRequests.nodes[0].autoMergeRequest.mergeMethod="UNKNOWN"' \
+  '.[0].data.repository.pullRequests.nodes += .[0].data.repository.pullRequests.nodes' \
+  '.[0].data.repository.pullRequests.pageInfo.hasNextPage="false"'; do
+  refresh_fixture
+  jq "$edit" "$TMP_DIR/state/pr-pages.json" >"$TMP_DIR/state/pages.next"
+  mv "$TMP_DIR/state/pages.next" "$TMP_DIR/state/pr-pages.json"
+  refresh_expect_failure "partial/malformed enumeration"
+  [ ! -f "$TMP_DIR/state/pr-mutations.log" ] || fail "mutated before full enumeration"
+done
+refresh_fixture
+touch "$TMP_DIR/state/fail-list"
+refresh_expect_failure "enumeration API failure"
+[ ! -f "$TMP_DIR/state/pr-mutations.log" ] || fail "mutated on list error"
+ok "all pages are authoritative and validated before any close"
+
+refresh_fixture
+if run_policy apply --no-retrigger "$POLICY" >"$TMP_DIR/refresh.out" 2>&1; then
+  fail "--no-retrigger hid outstanding invalidated PRs"
+fi
+[ ! -f "$TMP_DIR/state/pr-mutations.log" ] || fail "--no-retrigger mutated a PR"
+grep -q 'skipped 1' "$TMP_DIR/refresh.out" || fail "optout did not name remaining count"
+refresh_fixture
+jq '.[0].data.repository.pullRequests.nodes=[]' "$TMP_DIR/state/pr-pages.json" >"$TMP_DIR/state/pages.next"
+mv "$TMP_DIR/state/pages.next" "$TMP_DIR/state/pr-pages.json"
+run_policy apply --no-retrigger "$POLICY" >"$TMP_DIR/refresh.out" 2>&1
+
+for change in identical reordered unrelated; do
+  refresh_fixture
+  jq --slurpfile desired "$POLICY" '.rules=$desired[0].managedRuleset.rules' \
+    "$TMP_DIR/state/ruleset.json" >"$TMP_DIR/state/no-refresh.json"
+  mv "$TMP_DIR/state/no-refresh.json" "$TMP_DIR/state/ruleset.json"
+  if [ "$change" = reordered ]; then
+    jq '.rules |= reverse | (.rules[] | select(.type=="workflows") | .parameters.workflows) |= reverse' \
+      "$TMP_DIR/state/ruleset.json" >"$TMP_DIR/state/no-refresh.json"
+    mv "$TMP_DIR/state/no-refresh.json" "$TMP_DIR/state/ruleset.json"
+  elif [ "$change" = unrelated ]; then
+    jq '.bypass_actors=[]' "$TMP_DIR/state/ruleset.json" >"$TMP_DIR/state/no-refresh.json"
+    mv "$TMP_DIR/state/no-refresh.json" "$TMP_DIR/state/ruleset.json"
+  fi
+  run_policy apply --no-retrigger "$POLICY" >"$TMP_DIR/refresh.out" 2>&1
+  [ ! -f "$TMP_DIR/state/pr-mutations.log" ] || fail "$change apply needlessly refreshed a PR"
+done
+ok "unchanged/reordered/unrelated policy and empty targets are no-op refreshes; meaningful optout is incomplete"
+rm -f "$TMP_DIR/state"/pr-*.json "$TMP_DIR/state"/read-*.json \
+  "$TMP_DIR/state"/pr-read-count "$TMP_DIR/state"/pr-mutations.log \
+  "$TMP_DIR/state"/restore-input.json "$TMP_DIR/state"/fail-* "$TMP_DIR/state"/restore-outcome
 
 jq -e '.rules[] | select(.type == "pull_request") | .parameters.required_reviewers == []' \
   "$TMP_DIR/state/ruleset.json" >/dev/null \
