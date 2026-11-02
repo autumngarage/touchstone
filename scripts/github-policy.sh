@@ -12,13 +12,15 @@ Usage:
   scripts/github-policy.sh diff [policy.json]
   scripts/github-policy.sh dry-run [policy.json]
   scripts/github-policy.sh backup <output.json> [policy.json]
-  scripts/github-policy.sh apply [policy.json]
+  scripts/github-policy.sh apply [policy.json] [--no-retrigger]
   scripts/github-policy.sh verify [policy.json]
   scripts/github-policy.sh rollback <backup.json> [policy.json]
 
 apply installs and verifies the organization ruleset before removing legacy
 branch protection. rollback restores branch protection before changing the
-ruleset, so neither direction creates an unprotected interval.
+ruleset, so neither direction creates an unprotected interval. --no-retrigger
+leaves PRs untouched; an outstanding required-workflow refresh returns nonzero
+while the successfully installed policy remains in place.
 EOF
 }
 
@@ -700,9 +702,8 @@ COMMAND="${1:-}"
 }
 shift
 
-# Re-running open pull requests' gates is the default because leaving them
-# invalidated is the failure this exists to prevent. The escape is for an
-# operator who wants the pin moved without touching pull requests.
+# Refresh changed required workflows by default. The operator escape leaves
+# PRs untouched and reports incomplete when relevant open PRs still need it.
 RETRIGGER_OPEN_PRS=true
 kept=()
 for arg in "$@"; do
@@ -746,51 +747,209 @@ require_empty_merge_queue() {
   [ "$count" -eq 0 ] || die "merge queue has $count live entries; wait for it to empty before applying policy"
 }
 
-# A PR may join after the initial apply check. Never close a queued PR, and
-# never treat unavailable or malformed queue evidence as permission to close.
-pr_is_unqueued() {
+# Compare only required workflow enforcement/applicability, using the existing
+# normalizer: reordering or unrelated policy edits do not invalidate evidence.
+workflow_refresh_signature() {
+  local raw
+  raw="$(cat)"
+  jq -e '. == null or (type=="object" and (.rules | type)=="array"
+    and (.conditions | type)=="object" and (.target | type)=="string"
+    and (.enforcement | IN("active","disabled","evaluate"))
+    and all(.rules[]; (.type | type)=="string"
+      and (if .type=="workflows" then
+        (.parameters.workflows | type)=="array"
+        and all(.parameters.workflows[]; (.repository_id | type)=="number"
+          and (.path | type)=="string" and (.ref | type)=="string"
+          and (.sha | type)=="string")
+      else true end)))' <<<"$raw" >/dev/null || return 1
+  if [ "$raw" = null ]; then
+    printf 'null\n'
+    return 0
+  fi
+  normalize_ruleset <<<"$raw" | jq -cS '
+    {target,enforcement,conditions,rules:[.rules[]? | select(.type=="workflows")]}
+    | if (.rules | length)==0 then null else . end'
+}
+
+REFRESH_PR_FIELDS='id number state isDraft headRefOid baseRefName
+  repository{nameWithOwner} mergeQueueEntry{id}
+  autoMergeRequest{mergeMethod authorEmail commitHeadline commitBody enabledAt enabledBy{login}}'
+REFRESH_PR_VALIDATION='
+  def text: type=="string" and length>0;
+  def nullable_text: .==null or type=="string";
+  def valid_pr:
+    type=="object" and (.id | text) and (.number | type=="number" and .>0 and .==floor)
+    and (.state | IN("OPEN","CLOSED","MERGED")) and (.isDraft | type=="boolean")
+    and (.headRefOid | type=="string" and test("^[0-9a-f]{40}$"))
+    and .baseRefName==$branch and .repository.nameWithOwner==$repo
+    and has("mergeQueueEntry")
+    and (.mergeQueueEntry==null or (.mergeQueueEntry.id | text))
+    and has("autoMergeRequest")
+    and (.autoMergeRequest==null or (.autoMergeRequest |
+      type=="object" and (.mergeMethod | IN("MERGE","SQUASH","REBASE"))
+      and has("authorEmail") and (.authorEmail | nullable_text)
+      and has("commitHeadline") and (.commitHeadline | nullable_text)
+      and has("commitBody") and (.commitBody | nullable_text)
+      and (.enabledAt | text) and (.enabledBy.login | text)));
+'
+
+# Fully validate every page BEFORE closing anything. This is a snapshot, not a
+# transaction: native close has no expected-head or queue predicate.
+refresh_pr_snapshot() {
+  local pages
+  pages="$(api --paginate --slurp graphql -f owner="$ORG" -f name="$REPOSITORY" -f branch="$BRANCH" \
+    -f query="query(\$owner:String!,\$name:String!,\$branch:String!,\$endCursor:String){
+      repository(owner:\$owner,name:\$name){nameWithOwner
+        pullRequests(first:100,after:\$endCursor,states:OPEN,baseRefName:\$branch){
+          nodes{$REFRESH_PR_FIELDS} pageInfo{hasNextPage endCursor}}}}")" || return 1
+  jq -ce --arg repo "$ORG/$REPOSITORY" --arg branch "$BRANCH" "$REFRESH_PR_VALIDATION
+    if type!=\"array\" or length==0 then error(\"missing pages\") else . end
+    | . as \$pages
+    | if all(.[]; (.errors // [] | length)==0
+        and .data.repository.nameWithOwner==\$repo
+        and (.data.repository.pullRequests.nodes | type)==\"array\"
+        and (.data.repository.pullRequests.nodes | length)<=100
+        and (.data.repository.pullRequests.pageInfo.hasNextPage | type)==\"boolean\"
+        and (.data.repository.pullRequests.pageInfo.endCursor | .==null or text))
+      and (.[-1].data.repository.pullRequests.pageInfo.hasNextPage==false)
+      and all(range(0;length-1); \$pages[.].data.repository.pullRequests.pageInfo
+        | .hasNextPage==true and (.endCursor | text))
+      and ([.[] | .data.repository.pullRequests.pageInfo.endCursor | select(.!=null)]
+        | length==(unique | length))
+      then [.[].data.repository.pullRequests.nodes[]]
+      else error(\"incomplete pages\") end
+    | if all(.[]; valid_pr and .state==\"OPEN\")
+        and (length==([.[].id] | unique | length))
+        and (length==([.[].number] | unique | length))
+      then map(select(.isDraft==false)) else error(\"invalid PR snapshot\") end" <<<"$pages"
+}
+
+read_refresh_pr() {
   local response
-  response="$(api graphql -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeQueueEntry{id}}}}' \
-    -f owner="$ORG" -f name="$REPOSITORY" -F number="$1")" || return 1
-  jq -e '(.errors // [] | length) == 0
-    and (.data.repository.pullRequest | type) == "object"
-    and (.data.repository.pullRequest | has("mergeQueueEntry"))
-    and .data.repository.pullRequest.mergeQueueEntry == null' <<<"$response" >/dev/null
+  response="$(api graphql -f owner="$ORG" -f name="$REPOSITORY" -F number="$1" \
+    -f query="query(\$owner:String!,\$name:String!,\$number:Int!){
+      repository(owner:\$owner,name:\$name){pullRequest(number:\$number){$REFRESH_PR_FIELDS}}}")" || return 1
+  jq -ceS --arg repo "$ORG/$REPOSITORY" --arg branch "$BRANCH" "$REFRESH_PR_VALIDATION
+    if (.errors // [] | length)>0 then error(\"GraphQL errors\") else .data.repository.pullRequest end
+    | if valid_pr then . else error(\"invalid PR state\") end" <<<"$response"
+}
+
+refresh_same_coordinates() {
+  jq -e --argjson saved "$1" '
+    del(.state,.autoMergeRequest,.mergeQueueEntry)
+      == ($saved | del(.state,.autoMergeRequest,.mergeQueueEntry))' <<<"$2" >/dev/null
+}
+
+refresh_failure() {
+  echo "ERROR: policy installed; PR #$1 head $2 refresh incomplete at $3; inspect native state before recovery." >&2
+}
+
+refresh_one_pr() {
+  local saved="$1" number head fresh prior input response
+  number="$(jq -r .number <<<"$saved")"
+  head="$(jq -r .headRefOid <<<"$saved")"
+  prior="$(jq -cS .autoMergeRequest <<<"$saved")"
+  fresh="$(read_refresh_pr "$number")" || {
+    refresh_failure "$number" "$head" before-close-read
+    return 1
+  }
+  if ! refresh_same_coordinates "$saved" "$fresh" \
+    || ! jq -e --argjson prior "$prior" \
+      '.state=="OPEN" and .isDraft==false and .mergeQueueEntry==null and .autoMergeRequest==$prior' <<<"$fresh" >/dev/null; then
+    refresh_failure "$number" "$head" before-close-fence
+    return 1
+  fi
+  gh pr close "$number" --repo "$ORG/$REPOSITORY" >/dev/null 2>&1 \
+    || {
+      refresh_failure "$number" "$head" close
+      return 1
+    }
+  sleep 2
+  fresh="$(read_refresh_pr "$number")" || {
+    refresh_failure "$number" "$head" after-close-read
+    return 1
+  }
+  if ! refresh_same_coordinates "$saved" "$fresh" \
+    || ! jq -e '.state=="CLOSED" and .isDraft==false and .mergeQueueEntry==null
+      and .autoMergeRequest==null' <<<"$fresh" >/dev/null; then
+    refresh_failure "$number" "$head" before-reopen-fence
+    return 1
+  fi
+  gh pr reopen "$number" --repo "$ORG/$REPOSITORY" >/dev/null 2>&1 \
+    || {
+      refresh_failure "$number" "$head" reopen
+      return 1
+    }
+  fresh="$(read_refresh_pr "$number")" || {
+    refresh_failure "$number" "$head" after-reopen-read
+    return 1
+  }
+  if ! refresh_same_coordinates "$saved" "$fresh"; then
+    refresh_failure "$number" "$head" after-reopen-coordinates
+    return 1
+  fi
+  # A replacement intent belongs to its current actor, even if its method is
+  # unchanged. Queue entry ends mutation. Native enable has no intent CAS.
+  if ! jq -e '.state=="OPEN" and .isDraft==false and .mergeQueueEntry==null
+    and .autoMergeRequest==null' <<<"$fresh" >/dev/null; then
+    refresh_failure "$number" "$head" before-restore-fence
+    return 1
+  fi
+  if [ "$prior" != null ]; then
+    input="$(jq -cn --argjson saved "$saved" '
+      {query:"mutation($input:EnablePullRequestAutoMergeInput!){enablePullRequestAutoMerge(input:$input){pullRequest{id}}}",
+       variables:{input:($saved.autoMergeRequest
+         | {mergeMethod,authorEmail,commitHeadline,commitBody}
+         | with_entries(select(.value!=null))
+         | .pullRequestId=$saved.id | .expectedHeadOid=$saved.headRefOid)}}')" || return 1
+    response="$(api graphql --input - <<<"$input")" \
+      || {
+        refresh_failure "$number" "$head" restore
+        return 1
+      }
+    jq -e --arg id "$(jq -r .id <<<"$saved")" \
+      '(.errors // [] | length)==0 and .data.enablePullRequestAutoMerge.pullRequest.id==$id' <<<"$response" >/dev/null \
+      || {
+        refresh_failure "$number" "$head" restore-response
+        return 1
+      }
+    fresh="$(read_refresh_pr "$number")" || {
+      refresh_failure "$number" "$head" restore-readback
+      return 1
+    }
+    if ! refresh_same_coordinates "$saved" "$fresh" \
+      || ! jq -e --argjson prior "$prior" '
+        .state=="MERGED" or (.state=="OPEN" and .isDraft==false
+          and (.mergeQueueEntry!=null or (.autoMergeRequest!=null
+            and (.autoMergeRequest | {mergeMethod,authorEmail,commitHeadline,commitBody})
+              == ($prior | {mergeMethod,authorEmail,commitHeadline,commitBody}))))' <<<"$fresh" >/dev/null; then
+      refresh_failure "$number" "$head" restore-readback
+      return 1
+    fi
+  fi
+  echo "  refreshed #$number at $head (native merge outcome; checks still required)"
 }
 
 retrigger_open_pull_requests() {
-  local open_prs number failed=0
-  [ "${RETRIGGER_OPEN_PRS:-true}" = true ] || {
-    echo "Skipping pull-request re-trigger (--no-retrigger); open pull requests keep evidence this apply invalidated."
-    return 0
+  local prs saved failed=0 count
+  prs="$(refresh_pr_snapshot)" || {
+    echo "ERROR: policy installed; PR refresh incomplete at enumeration; no pull requests changed." >&2
+    return 1
   }
-  open_prs="$(api "repos/$ORG/$REPOSITORY/pulls?state=open&per_page=100" 2>/dev/null \
-    | jq -r '[.[] | select(.draft | not) | .number] | join(" ")' 2>/dev/null)" || {
-    echo "WARNING: could not list open pull requests in $ORG/$REPOSITORY; re-run their gates manually." >&2
-    return 0
-  }
-  [ -n "$open_prs" ] && [ "$open_prs" != "" ] || return 0
-  echo "Re-running required workflows on open pull requests whose evidence this apply invalidated:"
-  for number in $open_prs; do
-    if ! pr_is_unqueued "$number"; then
-      echo "  WARNING: not refreshing #$number: queued or queue state unavailable; left untouched." >&2
-      failed=1
-      continue
-    fi
-    if gh pr close "$number" --repo "$ORG/$REPOSITORY" >/dev/null 2>&1 \
-      && sleep 2 \
-      && gh pr reopen "$number" --repo "$ORG/$REPOSITORY" >/dev/null 2>&1; then
-      echo "  re-triggered #$number"
-      # Every re-trigger starts a gate run that calls the review provider.
-      # Firing them all at once is a burst on a shared rate limit, and a burst
-      # is exactly what trips it. Space them out.
+  count="$(jq length <<<"$prs")"
+  [ "$count" -gt 0 ] || return 0
+  if [ "${RETRIGGER_OPEN_PRS:-true}" != true ]; then
+    echo "ERROR: policy installed; PR refresh incomplete: --no-retrigger skipped $count intended-base pull requests." >&2
+    return 1
+  fi
+  while IFS= read -r saved; do
+    if refresh_one_pr "$saved"; then
       sleep "${RETRIGGER_SPACING_SECONDS:-20}"
     else
-      echo "  WARNING: could not re-trigger #$number; close and reopen it to re-run its gate." >&2
       failed=1
     fi
-  done
-  [ "$failed" -eq 0 ] || echo "Some pull requests were not re-triggered; their gates report a passing check and an unbound gate until they are." >&2
+  done < <(jq -c '.[]' <<<"$prs")
+  return "$failed"
 }
 
 case "$COMMAND" in
@@ -901,6 +1060,10 @@ case "$COMMAND" in
     source_protection="$(branch_protection_json)"
     source_repo_ruleset="$(managed_repo_ruleset_json)"
     source_auto_merge="$(auto_merge_setting)" || die "could not read the repository's auto-merge setting"
+    old_workflows="$(workflow_refresh_signature <<<"$source_ruleset")" \
+      || die "could not compare prior workflow requirements; policy was not changed"
+    new_workflows="$(workflow_refresh_signature <<<"$desired")" \
+      || die "could not compare desired workflow requirements; policy was not changed"
     # A repository with neither a managed ruleset nor legacy protection is a
     # fresh consumer: there is nothing to replace, so the install is a
     # bootstrap. Its failure path is the mirror image -- remove what this run
@@ -950,7 +1113,9 @@ case "$COMMAND" in
       die "policy replacement failed; the complete prior policy state was restored"
     fi
     echo "Applied and verified GitHub policy without legacy branch protection."
-    retrigger_open_pull_requests
+    if [ "$old_workflows" != "$new_workflows" ]; then
+      retrigger_open_pull_requests || die "policy installed; pull-request refresh incomplete"
+    fi
     echo "Merge the reviewed rollback-prerequisite removal, then run verify."
     ;;
   verify)
