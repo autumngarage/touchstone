@@ -1275,12 +1275,13 @@ refresh_pages() {
 RETRIGGER_SPACING_SECONDS=0
 export RETRIGGER_SPACING_SECONDS
 refresh_fixture
-run_policy apply "$POLICY" >"$TMP_DIR/refresh.out" 2>&1 \
+TOUCHSTONE_POLICY_SAFE_FACTS=1 run_policy apply "$POLICY" 3>"$TMP_DIR/safe-facts.json" >"$TMP_DIR/refresh.out" 2>&1 \
   || {
     cat "$TMP_DIR/refresh.out"
     fail "expected successful refresh"
   }
 [ -f "$TMP_DIR/state/restore-input.json" ] || fail "refresh lost prior auto-merge intent"
+[ ! -s "$TMP_DIR/safe-facts.json" ] || fail "successful refresh emitted failure facts"
 jq -e --slurpfile pr "$TMP_DIR/state/pr-42.json" \
   '.variables.input.expectedHeadOid==$pr[0].headRefOid
    and .variables.input.mergeMethod=="SQUASH"
@@ -1290,11 +1291,75 @@ jq -e --slurpfile pr "$TMP_DIR/state/pr-42.json" \
 ok "refresh restores only captured exact-head native intent"
 refresh_fixture
 touch "$TMP_DIR/state/fail-reopen"
-if run_policy apply "$POLICY" >"$TMP_DIR/refresh.out" 2>&1; then
+status=0
+TOUCHSTONE_POLICY_SAFE_FACTS=1 run_policy apply "$POLICY" 3>"$TMP_DIR/safe-facts.json" \
+  >"$TMP_DIR/refresh.out" 2>&1 || status=$?
+if [ "$status" != 1 ]; then
   fail "partial refresh falsely reported success"
 fi
 [ -f "$TMP_DIR/state/ruleset.json" ] || fail "refresh failure rolled back installed protection"
+jq -e '.version==1 and .kind=="refresh-incomplete" and .installed==true
+  and .phase=="pr-refresh" and .targets==1 and .failures==1
+  and .first=={phase:"reopen",pr:42,head:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+  "$TMP_DIR/safe-facts.json" >/dev/null || fail "real producer lost safe failure facts"
+cp "$TMP_DIR/state/pr-mutations.log" "$TMP_DIR/failure-mutations.expected"
 ok "partial refresh fails while leaving policy installed"
+
+for descriptor in absent closed nonregular readonly; do
+  refresh_fixture
+  touch "$TMP_DIR/state/fail-reopen"
+  status=0
+  case "$descriptor" in
+    absent) run_policy apply "$POLICY" 3>"$TMP_DIR/safe-facts.json" >"$TMP_DIR/refresh.out" 2>&1 || status=$? ;;
+    closed) TOUCHSTONE_POLICY_SAFE_FACTS=1 run_policy apply "$POLICY" 3>&- >"$TMP_DIR/refresh.out" 2>&1 || status=$? ;;
+    nonregular) TOUCHSTONE_POLICY_SAFE_FACTS=1 run_policy apply "$POLICY" 3>/dev/null >"$TMP_DIR/refresh.out" 2>&1 || status=$? ;;
+    readonly) TOUCHSTONE_POLICY_SAFE_FACTS=1 run_policy apply "$POLICY" 3<"$TMP_DIR/failure-mutations.expected" >"$TMP_DIR/refresh.out" 2>&1 || status=$? ;;
+  esac
+  [ "$status" = 1 ] || fail "$descriptor diagnostic changed policy status"
+  diff -q "$TMP_DIR/failure-mutations.expected" "$TMP_DIR/state/pr-mutations.log" >/dev/null \
+    || fail "$descriptor diagnostic changed mutations"
+  if grep -Eq 'Bad file descriptor|Broken pipe' "$TMP_DIR/refresh.out"; then fail "descriptor diagnostic escaped"; fi
+done
+ok "absent, closed, nonregular and unwritable reports are inert"
+
+# Reuse the real two-target lifecycle; only the existing input serializer fails.
+TOUCHSTONE_POLICY_TEST_REAL_JQ="$(command -v jq)"
+export TOUCHSTONE_POLICY_TEST_REAL_JQ
+cat >"$TMP_DIR/bin/jq" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *EnablePullRequestAutoMergeInput*) [ ! -f "$GH_FAKE_STATE/originless-failure" ] || exit 71 ;;
+  *'--arg phase pr-refresh'*) [ ! -f "$GH_FAKE_STATE/report-serialization-fails" ] || exit 72 ;;
+esac
+exec "$TOUCHSTONE_POLICY_TEST_REAL_JQ" "$@"
+EOF
+chmod +x "$TMP_DIR/bin/jq"
+for failure in phase originless; do
+  refresh_fixture
+  jq '.id="PR43" | .number=43' "$TMP_DIR/state/pr-42.json" >"$TMP_DIR/state/pr-43.json"
+  jq --slurpfile second "$TMP_DIR/state/pr-43.json" \
+    '.[0].data.repository.pullRequests.nodes += $second' "$TMP_DIR/state/pr-pages.json" >"$TMP_DIR/state/pages.next"
+  mv "$TMP_DIR/state/pages.next" "$TMP_DIR/state/pr-pages.json"
+  if [ "$failure" = phase ]; then touch "$TMP_DIR/state/fail-reopen"; else touch "$TMP_DIR/state/originless-failure"; fi
+  status=0
+  TOUCHSTONE_POLICY_SAFE_FACTS=1 run_policy apply "$POLICY" 3>"$TMP_DIR/safe-facts.json" \
+    >"$TMP_DIR/refresh.out" 2>&1 || status=$?
+  [ "$status" = 1 ] || fail "failure count became the exit code"
+  jq -e --arg failure "$failure" '.targets==2 and .failures==2
+    and (if $failure=="phase" then .first.pr==42 and .first.phase=="reopen" else .first==null end)' \
+    "$TMP_DIR/safe-facts.json" >/dev/null || fail "aggregate omitted failed targets"
+  rm -f "$TMP_DIR/state/originless-failure"
+done
+refresh_fixture
+touch "$TMP_DIR/state/fail-reopen" "$TMP_DIR/state/report-serialization-fails"
+status=0
+TOUCHSTONE_POLICY_SAFE_FACTS=1 run_policy apply "$POLICY" 3>"$TMP_DIR/safe-facts.json" \
+  >"$TMP_DIR/refresh.out" 2>&1 || status=$?
+[ "$status" = 1 ] && [ ! -s "$TMP_DIR/safe-facts.json" ] || fail "serialization changed operation status"
+diff -q "$TMP_DIR/failure-mutations.expected" "$TMP_DIR/state/pr-mutations.log" >/dev/null \
+  || fail "serialization changed mutations"
+rm -f "$TMP_DIR/bin/jq" "$TMP_DIR/state/report-serialization-fails"
+ok "all failed targets count, originless samples stay null, serialization cannot alter mutations"
 
 refresh_expect_failure() {
   if run_policy apply "$POLICY" >"$TMP_DIR/refresh.out" 2>&1; then
@@ -1429,16 +1494,24 @@ for edit in '.[-1].data.repository.pullRequests.pageInfo.hasNextPage=true' \
 done
 refresh_fixture
 touch "$TMP_DIR/state/fail-list"
-refresh_expect_failure "enumeration API failure"
+status=0
+TOUCHSTONE_POLICY_SAFE_FACTS=1 run_policy apply "$POLICY" 3>"$TMP_DIR/safe-facts.json" \
+  >"$TMP_DIR/refresh.out" 2>&1 || status=$?
+[ "$status" = 1 ] || fail "enumeration changed status"
+jq -e '.phase=="enumeration" and .targets==null and .failures==null and .first==null' \
+  "$TMP_DIR/safe-facts.json" >/dev/null || fail "enumeration invented complete targets"
 [ ! -f "$TMP_DIR/state/pr-mutations.log" ] || fail "mutated on list error"
 ok "all pages are authoritative and validated before any close"
 
 refresh_fixture
-if run_policy apply --no-retrigger "$POLICY" >"$TMP_DIR/refresh.out" 2>&1; then
+if TOUCHSTONE_POLICY_SAFE_FACTS=1 run_policy apply --no-retrigger "$POLICY" \
+  3>"$TMP_DIR/safe-facts.json" >"$TMP_DIR/refresh.out" 2>&1; then
   fail "--no-retrigger hid outstanding invalidated PRs"
 fi
 [ ! -f "$TMP_DIR/state/pr-mutations.log" ] || fail "--no-retrigger mutated a PR"
 grep -q 'skipped 1' "$TMP_DIR/refresh.out" || fail "optout did not name remaining count"
+jq -e '.phase=="opt-out" and .targets==1 and .failures==1 and .first==null' \
+  "$TMP_DIR/safe-facts.json" >/dev/null || fail "optout lost skipped targets"
 refresh_fixture
 jq '.[0].data.repository.pullRequests.nodes=[]' "$TMP_DIR/state/pr-pages.json" >"$TMP_DIR/state/pages.next"
 mv "$TMP_DIR/state/pages.next" "$TMP_DIR/state/pr-pages.json"

@@ -5,6 +5,8 @@ set -euo pipefail
 
 SCHEMA="touchstone.policy/v1"
 MAXIMUM_STATUS_BYTES=65536
+# One sample, 40-hex head and GraphQL Int counts: maximum canonical v1 bytes + LF.
+MAXIMUM_SAFE_FACTS_BYTES=234
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 CANONICAL_POLICY="$ROOT/policy/github/touchstone-main.json"
 OPERATION="${1:-}"
@@ -46,6 +48,41 @@ emit() {
 fail_input() {
   emit action-required "" "$1"
   exit 2
+}
+
+safe_failure_detail() {
+  [ -f "$SAFE_FACTS_FILE" ] || return 1
+  [ "$(wc -c <"$SAFE_FACTS_FILE" | tr -d ' ')" -le "$MAXIMUM_SAFE_FACTS_BYTES" ] || return 1
+  if ! jq -acesS '
+    def positive: type=="number" and floor==. and .>0 and .<=2147483647;
+    def sample:
+      type=="object" and keys==["head","phase","pr"]
+      and (.pr | positive) and (.head | type=="string" and test("^[0-9a-fA-F]{40}$"))
+      and (.phase | IN("before-close-read","before-close-fence","close","after-close-read",
+        "before-reopen-fence","reopen","after-reopen-read","after-reopen-coordinates",
+        "before-restore-fence","restore","restore-response","restore-readback"));
+    select(length==1) | .[0]
+    | select(type=="object" and keys==["failures","first","installed","kind","phase","targets","version"]
+      and .version==1 and .kind=="refresh-incomplete" and .installed==true
+      and (if .phase=="enumeration" then .targets==null and .failures==null and .first==null
+        elif .phase=="opt-out" then (.targets | positive) and .failures==.targets and .first==null
+        elif .phase=="pr-refresh" then (.targets | positive) and (.failures | positive)
+          and .failures<=.targets and (.first==null or (.first | sample))
+        else false end))
+  ' "$SAFE_FACTS_FILE" >"$TEMP_DIR/safe-canonical.json" 2>/dev/null; then
+    return 1
+  fi
+  # Compare files: command substitution would hide trailing bytes/newlines.
+  cmp -s "$SAFE_FACTS_FILE" "$TEMP_DIR/safe-canonical.json" || return 1
+  jq -r '
+    "GitHub policy is installed, but pull-request refresh is incomplete: " +
+    (if .phase=="enumeration" then "enumeration did not produce a complete target set."
+     elif .phase=="opt-out" then "SKIPPED \(.targets) intended targets."
+     else "\(.failures) of \(.targets) intended targets failed." +
+       (if .first==null then " No safe per-PR sample was recorded."
+        else " FIRST RECORDED failure: PR #\(.first.pr) head \(.first.head) at \(.first.phase)." end)
+     end) + " Inspect native state before recovery."
+  ' "$TEMP_DIR/safe-canonical.json" 2>/dev/null
 }
 
 usage() {
@@ -196,10 +233,28 @@ esac
 # github-policy.sh is the sole mutation implementation. Its transaction owns
 # rollback and verification. Its operator diagnostics remain private so a
 # provider body or credential-adjacent detail can never cross this API.
-if ! GH_HOST="$REPOSITORY_HOST" bash "$ROOT/scripts/github-policy.sh" apply "$POLICY_FILE" \
-  >"$DIAGNOSTIC_FILE" 2>&1; then
-  emit action-required "$REPOSITORY" "GitHub did not accept the policy change. Sign in with an organization administrator account, confirm repository access, then retry."
-  exit 1
+SAFE_FACTS_FILE="$TEMP_DIR/safe-facts.json"
+SAFE_FACTS_ENABLED=0
+if { exec 3>"$SAFE_FACTS_FILE"; } 2>/dev/null && [ -f /dev/fd/3 ]; then
+  SAFE_FACTS_ENABLED=1
+else
+  { exec 3>&-; } 2>/dev/null || :
+fi
+ENGINE_STATUS=0
+if {
+  GH_HOST="$REPOSITORY_HOST" TOUCHSTONE_POLICY_SAFE_FACTS="$SAFE_FACTS_ENABLED" \
+    bash "$ROOT/scripts/github-policy.sh" apply "$POLICY_FILE"
+} >"$DIAGNOSTIC_FILE" 2>&1; then
+  ENGINE_STATUS=0
+else
+  ENGINE_STATUS=$?
+fi
+{ exec 3>&-; } 2>/dev/null || :
+if [ "$ENGINE_STATUS" -ne 0 ]; then
+  DETAIL="Policy apply failed; inspect the policy operation before recovery."
+  if SAFE_DETAIL="$(safe_failure_detail)"; then DETAIL="$SAFE_DETAIL"; fi
+  emit action-required "$REPOSITORY" "$DETAIL" || exit "$ENGINE_STATUS"
+  exit "$ENGINE_STATUS"
 fi
 
 if ! bash "$ROOT/scripts/touchstone-pr.sh" policy-status \

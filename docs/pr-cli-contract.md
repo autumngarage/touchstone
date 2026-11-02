@@ -35,8 +35,14 @@ consumer from the canonical policy shipped in the same reviewed release,
 delegates mutation and rollback to the existing policy engine, then accepts
 success only after `policy status` verifies the exact hostname, repository, and branch.
 It stores no credential and never returns the policy engine's provider
-diagnostics. Repeating it after a lost reply is safe: the verified policy is
-reported as `already-applied` without another mutation.
+diagnostics. A failed engine invocation retains its exit status and returns
+only validated, engine-owned incomplete-refresh facts, when available: installed
+protection, the refresh phase, intended/failed or skipped counts, and a first
+recorded PR/head sample (not an exhaustive list). Missing or invalid facts produce
+a neutral failure, never an authentication diagnosis. Installed protection does
+not prove the PR refresh completed. Repeating after a lost reply can report
+`already-applied` without another mutation; that read does not establish whether
+an earlier interrupted refresh completed.
 When `open` requests a policy-declared review gate, its JSON result includes
 `reviewGate.runId` and `reviewGate.action`. `rerun-requested` means the client
 refreshed a completed attempt; `already-active` means a behavior-v2 run is the
