@@ -15,7 +15,7 @@
       "allow_force_pushes": false,
       "allow_deletions": false
     },
-    "validationRevision": "0a765b7a317f59409601b65f369e44e1d998f691"
+    "validationRevision": "6a5e63bb89500a344ad5d8f7f0375b4ccc24ef26"
   },
   "branch": "main",
   "rollbackPrerequisites": {
@@ -89,7 +89,7 @@
               "path": ".github/workflows/validate.yml",
               "ref": "refs/heads/main",
               "repository_id": 1333343261,
-              "sha": "0a765b7a317f59409601b65f369e44e1d998f691"
+              "sha": "6a5e63bb89500a344ad5d8f7f0375b4ccc24ef26"
             }
           ]
         }
