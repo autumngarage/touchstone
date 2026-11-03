@@ -35,6 +35,8 @@ Before adding anything here, name which of the three it serves; if you cannot, i
 - **Driving CLI** — Claude Code, Codex, or Gemini CLI. Owns file edits, git state, tests, commits, PR creation, PR comment triage, fix commits, approval tracking, and merge. Drivers are interchangeable; driver fallback is shared-contract fallback — if one is unavailable, another reads the same files and continues.
 - **PR-visible reviewer** — GitHub-hosted review runs asynchronously against the exact pushed head. It reports findings on the PR; it never owns local files, git state, validation, or merge authority.
 
+**Retain unfinished work.** After an interruption, resume the original objective unless the user cancels or replaces it. A checkpoint or queue entry does not end delivery ownership. Continue authorized work or record a concrete blocker, resumption condition and responsible driver; hand off explicitly. Follow `principles/git-workflow.md`.
+
 ## Engineering principles (always in mind)
 
 Non-negotiable. Every code change is reviewed against them. Full rationale lives in `principles/engineering-principles.md`.

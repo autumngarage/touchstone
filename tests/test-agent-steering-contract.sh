@@ -29,12 +29,21 @@ assert_not_contains() {
   fi
 }
 
+# Ownership rules live once in the workflow; every driver routes there.
+for rule in "Keep an identifiable execution owner" "Resume after interruptions" \
+  "Make a real stop resumable" "Own delayed acceptance"; do
+  assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "$rule"
+done
+
 echo "==> TOUCHSTONE.md and managed AGENTS blocks expose the driver/reviewer contract"
 # AGENTS.md and GEMINI.md inline the managed block.
 for file in \
   "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
   "$TOUCHSTONE_ROOT/AGENTS.md" \
   "$TOUCHSTONE_ROOT/GEMINI.md"; do
+  assert_contains "$file" "Retain unfinished work"
+  assert_contains "$file" "resume the original objective"
+  assert_contains "$file" "queue entry does not end delivery ownership"
   assert_contains "$file" "Agent Roles And Fallbacks"
   assert_contains "$file" "Driving CLI"
   assert_contains "$file" "PR-visible reviewer"
@@ -417,6 +426,9 @@ echo "==> Gemini entry files name the driving CLI role inline"
 # GEMINI.md carries the managed block inline, so the contract phrases must
 # appear directly.
 for file in "$TOUCHSTONE_ROOT/GEMINI.md" "$TOUCHSTONE_ROOT/AGENTS.md"; do
+  assert_contains "$file" "Retain unfinished work"
+  assert_contains "$file" "resume the original objective"
+  assert_contains "$file" "queue entry does not end delivery ownership"
   assert_contains "$file" "Agent Roles And Fallbacks"
   assert_contains "$file" "Driving CLI"
   assert_contains "$file" "PR-visible reviewer"
