@@ -1124,6 +1124,35 @@ Claiming is the start of a task's life; this is the rest of it. The rules are
 the same for whichever tracker `.touchstone-tracker.toml` declares — only the
 transport differs.
 
+**Keep an identifiable execution owner.** A shared human assignee is not the
+executing driver. Record the responsible agent/chat and current branch/worktree
+or PR on the existing item. Check active claims and PRs before editing the same
+boundary. Preserve responsibility through delivery and remaining acceptance;
+transfer it only with an acknowledged handoff or explicit user parking.
+
+**Resume after interruptions.** A side question or unrelated request does not
+replace the original objective unless the user says so or the requests are
+incompatible. Handle it, then resume the unfinished work. Before ending a turn
+or switching units, check the original acceptance and continue the authorized
+next action if possible. A checkpoint, passing test, open PR or queue entry is
+progress, not completion. Queue entry ends mutation, not observation, feedback
+triage or closeout; honor the existing polling limits and review stop rules.
+
+**Make a real stop resumable.** Begin a blocked-work or handoff summary with
+execution owner, artifact/PR, next action, exact blocker and resumption condition;
+put historical evidence afterward. Recheck the named issue/PR or external event
+when resuming rather than repeating an old blocker. A proposed recipient is not
+an accepted handoff: until acknowledged, name the current owner and the transfer
+as pending. An inactive chat cannot wake itself; record that limitation instead
+of promising automatic follow-up or creating an unrequested automation.
+
+**Own delayed acceptance.** Before starting a measurement window, record who
+will collect the result, when or on what event, and where it will be published.
+Carry that obligation across interruptions and handoffs. Distinguish implemented,
+merged and accepted work; source merge does not discharge remaining validation.
+A genuine access, spending or authorization blocker is recorded, not bypassed.
+These rules do not authorize scope expansion or reopen exhausted review rounds.
+
 **One item per unit of work.** Independent work you discover mid-task gets its
 own item; do not widen the one you claimed. Work the approved acceptance
 criterion already implies — its regression test, the change that holds the same

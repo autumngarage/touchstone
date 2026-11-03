@@ -80,7 +80,8 @@ invariant after the shipping decision and validation. Do not open one per
 commit — a PR that ships half an invariant pays the overhead twice and
 reviews a state nothing can validate.
 
-If work outlives the session, leave a checkpoint and the remaining scope.
+If work outlives the session, follow the execution-owner and resumable-handoff
+rules in `principles/git-workflow.md`; a checkpoint alone is not a handoff.
 A session ending or another PR merging does not authorize shipping.
 
 ## Scope-expansion checkpoint
