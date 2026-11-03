@@ -16,6 +16,42 @@ ok() {
   echo "  OK: $*"
 }
 
+# Inputs below are consumed by the production classification fragment.
+# shellcheck disable=SC2034
+(
+  echo "==> an unmergeable queue entry has an explicit safe next action (AUT-3329)"
+  ERRORS=0
+  sed -n '/^classify_pr_phase() {/,/^}/p' \
+    "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" >"$TMP_DIR/classify.sh"
+  # Producer #2307's native snapshot: top-level mergeability UNKNOWN, but
+  # a live UNMERGEABLE queue entry. The queue has not released this head.
+  ENFORCEMENT_STATUS=applied MERGE_QUEUE_STATE=UNMERGEABLE PR_BLOCKER_REASON=""
+  # shellcheck source=/dev/null
+  . "$TMP_DIR/classify.sh"
+  classify_pr_phase OPEN UNKNOWN false 2307 2cb2dd068891f34e6ccbdfb7f4d14155f01c87e1 main 488b0c0d4f024341e0f1db6919c39cea3f52b091
+  [ "$PR_PHASE:$PR_NEXT_ACTION:$PR_BLOCKER_REASON" = action-required:wait-queue-release:queue-unmergeable ] \
+    || fail "the queued conflict has no exact reason and immutable-head recovery"
+  # A new observation must not retain the previous conflict reason.
+  MERGE_QUEUE_STATE=AWAITING_CHECKS
+  classify_pr_phase OPEN UNKNOWN false 2307 head main base
+  [ "$PR_PHASE:$PR_NEXT_ACTION:$PR_BLOCKER_REASON" = queued:wait: ] \
+    || fail "a normal queue observation retained a conflict"
+  MERGE_QUEUE_STATE=FUTURE_STATE
+  classify_pr_phase OPEN UNKNOWN false 2307 head main base
+  [ "$PR_PHASE:$PR_NEXT_ACTION:$PR_BLOCKER_REASON" = action-required:inspect: ] \
+    || fail "an unknown queue state invented a known conflict"
+  MERGE_QUEUE_STATE="" MERGE_QUEUE_EVICTED=true ENFORCEMENT_QUEUE_APPLIED=true
+  classify_pr_phase OPEN UNKNOWN false 2307 head main base
+  [ "$PR_PHASE:$PR_NEXT_ACTION:$PR_BLOCKER_REASON" = evicted:inspect: ] \
+    || fail "native removal retained the live-entry blocker"
+  ENFORCEMENT_STATUS=partial MERGE_QUEUE_STATE=UNMERGEABLE
+  classify_pr_phase OPEN UNKNOWN false 2307 head main base
+  [ "$PR_PHASE:$PR_NEXT_ACTION:$PR_BLOCKER_REASON" = action-required:inspect: ] \
+    || fail "a queue entry bypassed missing enforcement"
+  [ "$ERRORS" -eq 0 ] || exit 1
+  ok "queued conflict, normal/unknown observations, native removal and enforcement remain distinct"
+)
+
 (
   echo "==> recovery records survive native jq.exe newline conversion (AUT-1786)"
   ERRORS=0
@@ -571,6 +607,7 @@ case "$1 ${2:-}" in
       case "${GH_MODE:-ok}" in
         status_closed) pr_state=CLOSED ;;
         status_merged) pr_state=MERGED ;;
+        status_gate_queue_unmergeable) merge_state=UNKNOWN ;;
         status_gate_queue_removed | status_gate_blocked_success | status_gate_blocked_threads) merge_state=BLOCKED ;;
       esac
       [ ! -f "$GH_STATE/status-draft" ] || draft=true
@@ -2046,10 +2083,19 @@ EOF
   assert_has "$TMP/out" '"phase":"merged","nextAction":"done"'
   GH_MODE=status_gate_queue_unmergeable run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"mergeQueue":{"state":"UNMERGEABLE","position":1},"mergeQueueEviction":null,"phase":"action-required","nextAction":"inspect"'
+  assert_has "$TMP/out" '"mergeState":"UNKNOWN"'
+  assert_has "$TMP/out" '"mergeQueue":{"state":"UNMERGEABLE","position":1},"mergeQueueEviction":null,"phase":"action-required","nextAction":"wait-queue-release","blockerReason":"queue-unmergeable"'
+  assert_not_has "$GH_CALLS" 'dequeuePullRequest'
+  assert_not_has "$GH_CALLS" 'enqueuePullRequest'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  GH_MODE=status_gate_queue_unmergeable run_pr "$TMP/out" status 7
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'Keep this queued head unchanged'
+  assert_has "$TMP/out" 'After confirmed removal, inspect the removal reason'
   GH_MODE=status_gate_queue_unknown run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"mergeQueue":{"state":"FUTURE_STATE","position":1},"mergeQueueEviction":null,"phase":"action-required","nextAction":"inspect"'
+  assert_not_has "$TMP/out" '"blockerReason"'
   GH_MODE=status_head_moved run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" "moved from $HEAD_SHA to moved-head while status was being read"
@@ -4748,6 +4794,17 @@ STUB
   assert_not_has "$GH_CALLS" 'pr merge'
   assert_not_has "$GH_CALLS" 'pr comment'
 
+  echo "==> an existing unmergeable entry preserves its head without another mutation"
+  rm -f "$TMP/calls"
+  GH_MODE=status_gate_queue_unmergeable run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'unmergeable queue entry'
+  assert_has "$TMP/out" 'Keep this queued head unchanged'
+  assert_not_has "$GH_CALLS" 'pr merge'
+  assert_not_has "$GH_CALLS" 'pr comment'
+  assert_not_has "$GH_CALLS" 'dequeuePullRequest'
+  assert_not_has "$GH_CALLS" 'enqueuePullRequest'
+
   echo "==> an unknown live queue state fails closed without a merge mutation"
   rm -f "$TMP/calls"
   GH_MODE=merge_queue_unknown_existing run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
@@ -4762,6 +4819,7 @@ STUB
   GH_MODE=merge_queue_unmergeable_after run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" 'unmergeable queue state'
+  assert_has "$TMP/out" 'Keep this queued head unchanged'
   assert_has "$GH_CALLS" 'pr merge'
   assert_not_has "$TMP/out" '"status":"queued"'
 
