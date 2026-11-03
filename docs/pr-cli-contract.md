@@ -281,8 +281,10 @@ taking this document's word for it.
   `armed-blocked`, `armed-not-queued`, `merged`, `closed`, or
   `action-required`.
   Its `nextAction` values are `wait`, `address-review`, `queue`,
-  `done`, and `inspect`; both `reviewing` and `queued` intentionally use
-  `wait`, and both `fix-required` and `answer-required` use `address-review`. Every phase has one `nextAction` except `armed-not-queued`, which is
+  `done`, `inspect`, and `wait-queue-release`; both `reviewing` and `queued` intentionally use
+  `wait`, and both `fix-required` and `answer-required` use `address-review`. The
+  `action-required` phase uses `wait-queue-release` for a known unmergeable live
+  queue entry and `inspect` otherwise. The `armed-not-queued` phase is
   `queue` where GitHub reports the PR `CLEAN` and `inspect` otherwise. Human
   output prints the exact-head `touchstone pr merge PR --head SHA` command
   wherever `nextAction` is `queue` (`ready-to-queue`, and a `CLEAN`
@@ -298,7 +300,16 @@ taking this document's word for it.
   `action-required`. Effective enforcement is checked before queue state, so
   a queue entry never implies that review was authorized in a partially
   adopted repository. A known live queue state is `queued`; `UNMERGEABLE` or
-  an unknown future queue state is `action-required`. With no live entry, a
+  an unknown future queue state is `action-required`. An authoritative
+  `UNMERGEABLE` entry adds `blockerReason: "queue-unmergeable"` and uses
+  `nextAction: "wait-queue-release"`: keep the queued head unchanged while
+  GitHub resolves or removes the entry. It is not an eviction or permission
+  to dequeue, rearm, retry or edit. After confirmed removal, inspect the
+  removal reason through the existing recovery path. No removal deadline is
+  implied. The optional reason is absent on other observations, including
+  after removal; consumers that do not recognize it retain their conservative
+  handling of `action-required`. These are additive status fields, not owner
+  notification delivery or a live watcher. With no live entry, a
   PR whose newest event among queue additions, queue removals, head changes
   (commits and force-pushes), and retargets is a removal is `evicted` — the
   required check failed on the queue branch and nothing has changed since.

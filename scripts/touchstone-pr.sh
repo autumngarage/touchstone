@@ -3584,6 +3584,10 @@ head_blockers_json() {
 
 ACCEPTED_DELIVERY_STATE=""
 DELIVERY_STATE_CLASS=""
+queue_unmergeable_recovery() {
+  printf '%s' 'The current queue entry is unmergeable. Keep this queued head unchanged while GitHub resolves or removes the entry. After confirmed removal, inspect the removal reason and use the existing recovery path.'
+}
+
 classify_delivery_state() {
   local queue_state="$1" auto_merge_armed="$2"
   DELIVERY_STATE_CLASS=""
@@ -3606,7 +3610,7 @@ read_accepted_delivery_state() {
     queued | auto-merge-enabled) ACCEPTED_DELIVERY_STATE="$DELIVERY_STATE_CLASS" ;;
     unmergeable)
       fail_operation "PR #$number has an unmergeable queue entry for $head; no merge mutation was made" \
-        "Inspect the authoritative merge-group run and fix forward."
+        "$(queue_unmergeable_recovery)"
       ;;
     unknown)
       fail_operation "PR #$number has unknown merge-queue state $MERGE_QUEUE_STATE for $head; no merge mutation was made" \
@@ -3680,6 +3684,7 @@ merge_queue_eviction_text() {
 PR_PHASE=""
 PR_NEXT_ACTION=""
 PR_NEXT_COMMAND=""
+PR_BLOCKER_REASON=""
 # Contract 4 only: the gate evaluates once and fails fast when review evidence
 # is missing, so a concluded failure may be a head that is only waiting for
 # review. The gate records which only in its run log, and status does not read
@@ -3726,6 +3731,7 @@ classify_pr_phase() {
   PR_PHASE=action-required
   PR_NEXT_ACTION=inspect
   PR_NEXT_COMMAND=""
+  PR_BLOCKER_REASON=""
   PR_GATE_FAILURE_MAY_BE_WAITING=false
   PR_HEAD_BLOCKERS_READ=false
 
@@ -3757,6 +3763,8 @@ classify_pr_phase() {
       return 0
       ;;
     UNMERGEABLE)
+      PR_NEXT_ACTION=wait-queue-release
+      PR_BLOCKER_REASON=queue-unmergeable
       return 0
       ;;
     "") ;;
@@ -4284,6 +4292,10 @@ status_pr() {
     json_string "$PR_PHASE"
     printf ',"nextAction":'
     json_string "$PR_NEXT_ACTION"
+    if [ -n "$PR_BLOCKER_REASON" ]; then
+      printf ',"blockerReason":'
+      json_string "$PR_BLOCKER_REASON"
+    fi
     case "$PR_PHASE" in
       armed-blocked | armed-waiting-checks | armed-not-queued)
         printf ',"blockers":'
@@ -4312,6 +4324,7 @@ status_pr() {
     printf 'PR #%s: %s\n  url: %s\n  head: %s\n  base: %s at %s\n  phase: %s\n  next action: %s\n  merge state: %s\n  draft: %s\n  auto-merge: %s\n  merge queue: %s\n  review gate: %s\n' \
       "$number" "$state" "$url" "$head" "$base" "$base_sha" "$PR_PHASE" "$next_action_text" "$merge_state" "$draft" "$(auto_merge_text)" "$(merge_queue_text)" "$(review_gate_check_text)"
     [ "$MERGE_QUEUE_EVICTED" != true ] || printf '  merge queue history: %s\n' "$(merge_queue_eviction_text)"
+    [ "$PR_BLOCKER_REASON" != queue-unmergeable ] || printf '  next step: %s\n' "$(queue_unmergeable_recovery)"
     local refused_run_ids="$REQUIRED_RUNS_REFUSED_IDS"
     [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.actionsRefused == null')" = true ] \
       || refused_run_ids="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.workflowRunId')${refused_run_ids:+ $refused_run_ids}"
@@ -4425,7 +4438,7 @@ reconcile_delivery() {
     RECONCILED_DELIVERY_STATE="$DELIVERY_STATE_CLASS"
   elif [ "$state" = OPEN ] && [ "$DELIVERY_STATE_CLASS" = unmergeable ]; then
     fail_operation "GitHub returned an unmergeable queue state for PR #$PR_NUMBER after the $mutation request" \
-      "Inspect the authoritative merge-group run; do not retry the $mutation mutation blindly."
+      "$(queue_unmergeable_recovery)"
   elif [ "$state" = OPEN ] && [ "$DELIVERY_STATE_CLASS" = unknown ]; then
     fail_operation "GitHub returned unknown merge-queue state $queue_state for PR #$PR_NUMBER after the $mutation request" \
       "Inspect GitHub; do not retry the $mutation mutation blindly."
