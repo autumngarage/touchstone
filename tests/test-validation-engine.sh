@@ -2620,8 +2620,89 @@ case "$out" in
   *) fail "invalid group name not named: $out" ;;
 esac
 
+echo "==> preparation runs setup without claiming validation for schemas 1-3"
+for schema in 1 2 3; do
+  PREPARED="$GROUPS_TMP/prepare-$schema"
+  mkdir -p "$PREPARED"
+  {
+    printf 'schema = %s\n' "$schema"
+    cat <<'TOML'
+[validation]
+runtime = "bash"
+setup = "echo PREP_SETUP"
+[[validation.targets]]
+name = "root"
+path = "."
+[[validation.tasks]]
+name = "suite"
+target = "root"
+command = "echo PREP_TASK"
+required = true
+TOML
+  } >"$PREPARED/.touchstone.toml"
+  out="$(bash "$RUN_ENGINE" prepare --json --project "$PREPARED" 2>"$TMP_DIR/prepare.err")"
+  [ "$out" = '{"schema":1,"verdict":"prepared","ran":0,"skipped":0,"failed":0,"failures":[]}' ] \
+    || fail "schema-$schema preparation claimed validation: $out"
+  assert_contains "$TMP_DIR/prepare.err" PREP_SETUP
+  assert_not_contains "$TMP_DIR/prepare.err" PREP_TASK
+  out="$(bash "$RUN_ENGINE" validate --json --project "$PREPARED" 2>"$TMP_DIR/validate-after-prepare.err")"
+  assert_contains "$TMP_DIR/validate-after-prepare.err" PREP_SETUP
+  assert_contains "$TMP_DIR/validate-after-prepare.err" PREP_TASK
+  case "$out" in
+    *'"verdict":"passed","ran":1,'*) pass "schema-$schema validation still executes setup and its task" ;;
+    *) fail "schema-$schema validation changed after preparation: $out" ;;
+  esac
+done
+
+echo "==> preparation preserves stage/group selection and empty setup behavior"
+out="$(bash "$RUN_ENGINE" prepare --stage commit --group beta --project "$GROUPED" 2>&1)"
+case "$out" in
+  *SETUP_SENTINEL*'prepare verdict: prepared'*) pass "selected preparation uses the existing setup owner" ;;
+  *) fail "selected preparation missed setup: $out" ;;
+esac
+case "$out" in
+  *GUARD_SENTINEL* | *B1_SENTINEL*) fail "preparation executed a task: $out" ;;
+esac
+out="$(bash "$RUN_ENGINE" prepare --stage commit --project "$SETUPONLY" 2>&1)"
+case "$out" in
+  *SETUP_SENTINEL*) fail "preparation provisioned a stage without tasks" ;;
+esac
+sed '/^setup = /d' "$PREPARED/.touchstone.toml" >"$PREPARED/no-setup.toml"
+out="$(bash "$RUN_ENGINE" prepare --config no-setup.toml --project "$PREPARED" 2>&1)"
+case "$out" in
+  *PREP_TASK*) fail "preparation without setup executed validation" ;;
+  *'prepare verdict: prepared'*) pass "absent setup requires no provisioning" ;;
+  *) fail "absent setup did not report preparation: $out" ;;
+esac
+
+echo "==> preparation failures retain setup status and fail before tasks"
+sed 's/echo PREP_SETUP/exit 47/' "$PREPARED/.touchstone.toml" >"$PREPARED/failing.toml"
+set +e
+out="$(bash "$RUN_ENGINE" prepare --json --config failing.toml --project "$PREPARED" 2>"$TMP_DIR/prepare-failed.err")"
+status=$?
+set -e
+[ "$status" -eq 47 ] || fail "preparation lost setup exit status: $status"
+case "$out" in
+  *'"verdict":"failed"'*'"task":"setup","target":"root","status":47,'*) pass "setup failure remains diagnostic" ;;
+  *) fail "preparation did not report its setup failure: $out" ;;
+esac
+assert_not_contains "$TMP_DIR/prepare-failed.err" PREP_TASK
+set +e
+bash "$RUN_ENGINE" prepare --group unknown --project "$GROUPED" >"$TMP_DIR/prepare-invalid.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "unknown preparation group was accepted"
+assert_contains "$TMP_DIR/prepare-invalid.out" "unknown group 'unknown'"
+assert_not_contains "$TMP_DIR/prepare-invalid.out" SENTINEL
+set +e
+bash "$RUN_ENGINE" prepare --check-contract --project "$PREPARED" >"$TMP_DIR/prepare-check.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "preparation was confused with contract inspection"
+assert_contains "$TMP_DIR/prepare-check.out" 'use validate --check-contract'
+
 if [ "$FAILURES" -ne 0 ]; then
-  echo "$FAILURES group check(s) failed" >&2
+  echo "$FAILURES group/preparation check(s) failed" >&2
   exit 1
 fi
 echo "==> PASS: execution groups select tasks, inventory is exact, and schemas 1-2 are unchanged"

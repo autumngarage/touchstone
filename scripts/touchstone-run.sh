@@ -4,6 +4,7 @@
 #
 # Usage:
 #   bash scripts/touchstone-run.sh validate [--stage STAGE] [--group GROUP] [--check-contract] [--json] [--project DIR] [--config FILE]
+#   bash scripts/touchstone-run.sh prepare [--stage STAGE] [--group GROUP] [--json] [--project DIR] [--config FILE]
 #
 # --stage selects which declared tasks run. Default 'enforce' runs every task
 # a gate must see; 'commit' runs only authoring guards, which are local fast
@@ -95,8 +96,12 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ "$ACTION" != validate ]; then
-  echo "ERROR: the engine supports only 'validate'; tasks come from .touchstone.toml" >&2
+if [ "$ACTION" != validate ] && [ "$ACTION" != prepare ]; then
+  echo "ERROR: the engine supports 'validate' and 'prepare'; tasks come from .touchstone.toml" >&2
+  exit 2
+fi
+if [ "$ACTION" = prepare ] && [ "$CHECK_CONTRACT" = true ]; then
+  echo "ERROR: prepare executes setup; use validate --check-contract to inspect declarations" >&2
   exit 2
 fi
 
@@ -201,8 +206,8 @@ emit_report() {
   local verdict="$1" first=true task target status reason
 
   if [ "$JSON_MODE" = false ]; then
-    printf '==> validate verdict: %s ran=%d skipped=%d failed=%d\n' \
-      "$verdict" "$RAN" "$SKIPPED" "$FAILED"
+    printf '==> %s verdict: %s ran=%d skipped=%d failed=%d\n' \
+      "$ACTION" "$verdict" "$RAN" "$SKIPPED" "$FAILED"
     if [ "$verdict" = failed ] && [ "$STAGE_ARG" = commit ]; then
       printf 'COMMIT REFUSED: commit-stage validation failed (%d failure(s))\n' "$FAILED"
     fi
@@ -630,6 +635,11 @@ if [ -n "$SETUP_COMMAND" ] && [ "$STAGE_HAS_TASKS" = true ]; then
     emit_report failed
     exit "$EXIT_STATUS"
   fi
+fi
+
+if [ "$ACTION" = prepare ]; then
+  emit_report prepared
+  exit 0
 fi
 
 while IFS="$(printf '\t')" read -r task_name task_target _task_required task_stage task_group task_command; do

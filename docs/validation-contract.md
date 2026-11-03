@@ -168,6 +168,21 @@ asserts that. A repository that still has `.touchstone-config` receives an
 explicit migration error; frozen consumers keep their committed legacy runner
 until a reviewable adoption plan creates `.touchstone.toml`.
 
+## Preparation before toolchain cache selection
+
+The pinned engine also accepts `prepare` with the same project, config, stage
+and group selectors. It validates the selected declaration and targets, then
+runs only the declared setup, if the selection has tasks. Its successful
+report has verdict `prepared` and zero executed tasks, never `passed`.
+Setup failure retains the normal diagnostic and exit status. Combining
+`prepare` with `--check-contract` is refused; contract inspection remains
+`validate --check-contract`.
+
+A workflow can prepare before fingerprinting a project-selected toolchain and
+restoring its build cache. It must then run ordinary `validate`, which still
+executes setup and every selected task. Setup must therefore be idempotent;
+preparation supplies no flag or receipt that bypasses validation.
+
 ## Legacy CI compatibility audit
 
 `scripts/check-legacy-ci.sh <repository>` detects the known-bad frozen pairing:
