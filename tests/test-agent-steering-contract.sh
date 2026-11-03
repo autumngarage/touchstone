@@ -35,6 +35,13 @@ for rule in "Keep an identifiable execution owner" "Resume after interruptions" 
   assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "$rule"
 done
 
+# A merged slice must not strand its remainder in review or close its parent.
+for rule in "Review means an open PR, not unfinished work" \
+  "reconcile all linked items" "Remaining" "Execution owner" "Resume when" \
+  "different execution owner or release schedule" "configured transitions"; do
+  assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "$rule"
+done
+
 echo "==> TOUCHSTONE.md and managed AGENTS blocks expose the driver/reviewer contract"
 # AGENTS.md and GEMINI.md inline the managed block.
 for file in \

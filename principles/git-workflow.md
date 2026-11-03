@@ -1138,9 +1138,10 @@ next action if possible. A checkpoint, passing test, open PR or queue entry is
 progress, not completion. Queue entry ends mutation, not observation, feedback
 triage or closeout; honor the existing polling limits and review stop rules.
 
-**Make a real stop resumable.** Begin a blocked-work or handoff summary with
-execution owner, artifact/PR, next action, exact blocker and resumption condition;
-put historical evidence afterward. Recheck the named issue/PR or external event
+**Make a real stop resumable.** Start the current summary with three short lines:
+**Remaining**, **Execution owner**, **Resume when**. Name the next action,
+artifact/PR and exact blocker there; keep historical evidence in comments or
+linked receipts rather than competing current-state paragraphs. Recheck the named issue/PR or external event
 when resuming rather than repeating an old blocker. A proposed recipient is not
 an accepted handoff: until acknowledged, name the current owner and the transfer
 as pending. An inactive chat cannot wake itself; record that limitation instead
@@ -1166,6 +1167,23 @@ Change state only when the event changes the item's lifecycle; routing a
 finding does not stop implementation or review of the original task.
 A tracker reconciled hours later gives someone following the work without
 reading your session a wrong answer.
+
+**Review means an open PR, not unfinished work.** After every PR merge or
+closure, reconcile all linked items against their remaining approved scope.
+An item may stay in review only for a specific open PR awaiting review, checks
+or merge for that scope. Merged source awaiting deployment, configuration or
+acceptance is active work or a queued remainder, never a review wait by itself.
+A closed-unmerged PR proves no delivery. Choose the state from the remaining
+work, not the last PR event; read it back after integration automation runs.
+Project guidance maps these meanings to the tracker's existing statuses.
+
+Keep an umbrella's state about its overall work; a child PR does not put the
+whole programme in review or complete it. Split remaining acceptance into a
+linked item only when it has a different execution owner or release schedule;
+otherwise retain it on the existing item. Transfer the criteria and owner
+before closing the source item. Check the native tracker's PR-link semantics
+and configured transitions before adding automation; contextual links must not
+accidentally activate or close parents.
 
 **Close it when its full approved scope lands, and confirm it closed.** A merged
 slice does not complete an umbrella task with unfinished acceptance criteria.
