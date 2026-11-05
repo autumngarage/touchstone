@@ -3468,16 +3468,25 @@ verify_native_stack() {
 }
 
 read_pr_row() {
+  local snapshot merge_commit merged_at number state url head head_repo base base_sha
+  PR_MERGE_COMMIT=null PR_MERGED_AT=null
   read_with_retry gh pr view "$PR_NUMBER" --repo "$REPO_SPEC" \
-    --json number,state,url,headRefOid,headRepository,baseRefName,baseRefOid,mergeStateStatus,isDraft \
-    --jq '[.number,.state,.url,.headRefOid,(.headRepository.nameWithOwner // "-"),.baseRefName,.baseRefOid,.mergeStateStatus,.isDraft] | @tsv' \
+    --json number,state,url,headRefOid,headRepository,baseRefName,baseRefOid,mergeStateStatus,isDraft,mergeCommit,mergedAt \
     || fail_operation "could not read PR #$PR_NUMBER: $READ_OUTPUT" "Verify the PR and GitHub access."
-  PR_ROW="$READ_OUTPUT"
-  local number state url head head_repo base base_sha
+  # Nested native-stack reads reuse READ_OUTPUT. Keep this single PR snapshot
+  # local and leave the shared nine-column interface unchanged.
+  snapshot="$READ_OUTPUT"
+  PR_ROW="$(printf '%s' "$snapshot" | jq -er 'select(type == "object") |
+    [.number,.state,.url,.headRefOid,(.headRepository.nameWithOwner // "-"),.baseRefName,.baseRefOid,.mergeStateStatus,.isDraft] | @tsv')" \
+    || fail_operation "GitHub returned a malformed snapshot for PR #$PR_NUMBER" "Inspect the PR response before retrying."
+  [ -n "$PR_ROW" ] || fail_operation "GitHub returned an empty snapshot for PR #$PR_NUMBER" "Inspect the PR response before retrying."
+  merge_commit="$(printf '%s' "$snapshot" | jq -c '.mergeCommit // null')"
+  merged_at="$(printf '%s' "$snapshot" | jq -c '.mergedAt // null')"
   IFS=$'\t' read -r number state url head head_repo base base_sha _ <<<"$PR_ROW"
   if [ "$state" = OPEN ] && [ "${1:-true}" = true ]; then
     read_native_stack "$number" "$head" "$base" "$base_sha"
   fi
+  PR_MERGE_COMMIT="$merge_commit" PR_MERGED_AT="$merged_at"
 }
 
 # The queue surface is the live entry AND its history for this head. A head
@@ -4250,6 +4259,17 @@ status_pr() {
   local number state url head head_repo base base_sha merge_state draft
   read_pr_row
   IFS="$(printf '\t')" read -r number state url head head_repo base base_sha merge_state draft <<<"$PR_ROW"
+  local merge_commit="$PR_MERGE_COMMIT" merged_at="$PR_MERGED_AT" merge_identity
+  merge_identity='{"mergeCommit":null,"mergedAt":null}'
+  if [ "$state" = MERGED ]; then
+    merge_identity="$(jq -cen --argjson commit "$merge_commit" --argjson at "$merged_at" '
+      select(($commit | type) == "object" and ($commit.oid | type) == "string"
+        and ($commit.oid | test("^[0-9a-f]{40}$")) and $commit.oid != "0000000000000000000000000000000000000000"
+        and ($at | type) == "string" and ($at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+        and ((try ($at | fromdateiso8601 | todateiso8601) catch "") == $at))
+      | {mergeCommit:{oid:$commit.oid},mergedAt:$at}')" \
+      || fail_operation "merged PR #$number has no complete native merge identity" "Inspect GitHub before accepting delivery."
+  fi
   [ "$head_repo" != - ] || head_repo=""
   # Read before the first byte of output: a failed read must produce one
   # error document, not a truncated status followed by another object.
@@ -4276,6 +4296,8 @@ status_pr() {
     json_string "$url"
     printf ',"head":'
     json_string "$head"
+    printf ',"mergeCommit":%s,"mergedAt":%s' \
+      "$(printf '%s' "$merge_identity" | jq -c '.mergeCommit')" "$(printf '%s' "$merge_identity" | jq -c '.mergedAt')"
     printf ',"baseRef":'
     json_string "$base"
     printf ',"baseSha":'

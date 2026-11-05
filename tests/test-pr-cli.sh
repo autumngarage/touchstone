@@ -16,6 +16,112 @@ ok() {
   echo "  OK: $*"
 }
 
+# AUT759-MERGE-IDENTITY-BEGIN
+(
+  echo "==> status keeps the actual merge identity from its one PR snapshot (AUT-759)"
+  ERRORS=0
+  fragment="$TMP_DIR/merge-status.sh"
+  for function in read_pr_row status_pr classify_pr_phase; do
+    sed -n "/^$function() {/,/^}/p" "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" >>"$fragment"
+  done
+  # shellcheck source=/dev/null
+  . "$fragment"
+  # The native response shape is gh pr view's documented mergeCommit/mergedAt.
+  native='{"number":7,"state":"MERGED","url":"https://github.com/autumngarage/example/pull/7","headRefOid":"1111111111111111111111111111111111111111","headRepository":{"nameWithOwner":"autumngarage/example"},"baseRefName":"main","baseRefOid":"2222222222222222222222222222222222222222","mergeStateStatus":"UNKNOWN","isDraft":false,"mergeCommit":{"oid":"3333333333333333333333333333333333333333"},"mergedAt":"2026-11-05T04:27:06Z"}'
+  # shellcheck disable=SC2034
+  JSON_MODE=true OUTPUT_SCHEMA=touchstone.pr/v2 PR_NUMBER=7 REPO_SPEC=autumngarage/example
+  calls="$TMP_DIR/merge-status-calls"
+  output="$TMP_DIR/merge-status.json"
+  queue=""
+  # Consumed by the production emitter sourced above.
+  # shellcheck disable=SC2034
+  REQUIRED_RUNS_REFUSED_JSON='[]'
+  read_with_retry() {
+    printf '%s\n' "$*" >>"$calls"
+    [ "$1 $2 $3" = "gh pr view" ] || return 1
+    shift 3
+    expression=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = --jq ]; then
+        expression="$2"
+        break
+      fi
+      shift
+    done
+    if [ -n "$expression" ]; then
+      READ_OUTPUT="$(printf '%s' "$NATIVE_SNAPSHOT" | jq -er "$expression")"
+    else
+      READ_OUTPUT="$NATIVE_SNAPSHOT"
+    fi
+  }
+  # The sourced reader/emitter consumes these shared scratch variables.
+  # shellcheck disable=SC2034
+  clobber() {
+    READ_OUTPUT='{"unrelated":"scratch"}'
+    PR_MERGE_COMMIT='{"oid":"4444444444444444444444444444444444444444"}'
+    PR_MERGED_AT='"2000-01-01T00:00:00Z"'
+  }
+  read_native_stack() { clobber; }
+  read_auto_merge_state() { clobber; }
+  # shellcheck disable=SC2034
+  read_enforcement() {
+    ENFORCEMENT_STATUS=applied ENFORCEMENT_REVIEW_GATE_APPLIED=false MERGE_QUEUE_STATE="$queue"
+    clobber
+  }
+  json_string() { jq -cn --arg value "$1" '$value'; }
+  auto_merge_json() { printf '{"armed":false,"head":"1111111111111111111111111111111111111111","enabledAt":null}'; }
+  merge_queue_json() { printf 'null'; }
+  merge_queue_eviction_json() { printf 'null'; }
+  enforcement_json() { printf '{"status":"applied"}'; }
+  policy_binding_json_fields() { printf ',"policy":{"revision":"fixture"}'; }
+  fail_operation() {
+    printf '{"status":"error"}\n'
+    exit 1
+  }
+
+  NATIVE_SNAPSHOT="$native"
+  : >"$calls"
+  status_pr >"$output"
+  jq -e '.phase == "merged" and .nextAction == "done"
+    and .mergeCommit.oid == "3333333333333333333333333333333333333333"
+    and .mergedAt == "2026-11-05T04:27:06Z" and .mergeCommit.oid != .head and .mergeCommit.oid != .baseSha' "$output" >/dev/null \
+    || fail "merged status lost the exact native merge identity"
+  [ "$(wc -l <"$calls" | tr -d ' ')" = 1 ] || fail "merge identity added another PR read"
+
+  # Reuse the same shell: no stale merge identity may survive a later read.
+  for state in OPEN CLOSED; do
+    NATIVE_SNAPSHOT="$(printf '%s' "$native" | jq -c --arg state "$state" '.state=$state')"
+    queue=AWAITING_CHECKS
+    : >"$calls"
+    status_pr >"$output"
+    jq -e --arg state "$state" '.state == $state and has("mergeCommit") and .mergeCommit == null
+      and has("mergedAt") and .mergedAt == null
+      and (if $state == "OPEN" then .phase == "queued" and .nextAction == "wait"
+           else .phase == "closed" and .nextAction == "inspect" end)' "$output" >/dev/null \
+      || fail "$state acquired prospective or stale merge identity"
+    [ "$(wc -l <"$calls" | tr -d ' ')" = 1 ] || fail "$state added another PR read"
+  done
+  NATIVE_SNAPSHOT="$(printf '%s' "$native" | jq -c '.state="OPEN" | .mergeCommit=null | .mergedAt=null')"
+  read_pr_row
+  [ "$(printf '%s\n' "$PR_ROW" | awk -F '\t' '{print NF}')" = 9 ] || fail "the shared PR row gained columns"
+  [ "$(printf '%s\n' "$PR_ROW" | awk -F '\t' '{print $9}')" = false ] || fail "draft ceased to be the final PR column"
+
+  for mutation in 'del(.mergeCommit)' '.mergeCommit=null' '.mergeCommit={}' \
+    '.mergeCommit.oid="short"' '.mergeCommit.oid="0000000000000000000000000000000000000000"' \
+    'del(.mergedAt)' '.mergedAt=null' '.mergedAt="not-a-date"' '.mergedAt="2026-02-30T04:27:06Z"'; do
+    NATIVE_SNAPSHOT="$(printf '%s' "$native" | jq -c "$mutation")"
+    if (status_pr) >"$output"; then fail "MERGED accepted incomplete identity: $mutation"; fi
+    jq -es 'length == 1 and .[0].status == "error"' "$output" >/dev/null \
+      || fail "malformed merge emitted a successful or partial status document"
+  done
+  NATIVE_SNAPSHOT='{'
+  if (status_pr) >"$output" 2>/dev/null; then fail "malformed PR JSON was accepted"; fi
+  jq -es 'length == 1 and .[0].status == "error"' "$output" >/dev/null || fail "malformed PR JSON leaked success"
+  [ "$ERRORS" -eq 0 ] || exit 1
+  ok "exact merge pair, nullable nonmerged states, scratch isolation, nine columns and malformed refusal"
+)
+# AUT759-MERGE-IDENTITY-END
+
 # Inputs below are consumed by the production classification fragment.
 # shellcheck disable=SC2034
 (
@@ -191,6 +297,16 @@ set -euo pipefail
 # The fixture's own reads of its pages (GH_UNLOGGED) are not the command's.
 [ -n "${GH_UNLOGGED:-}" ] || printf '%s\n' "$*" >>"$GH_CALLS"
 has() { local needle="$1"; shift; [[ "$*" == *"$needle"* ]]; }
+pr_row_response() {
+  if ! has 'isDraft,mergeCommit,mergedAt' "$@"; then cat; return; fi
+  # Existing scenario fields become a native-shaped response for the reader;
+  # production jq, not the fixture, still derives the nine-column interface.
+  jq -Rc 'split("\t") as $r | {number:($r[0]|tonumber),state:$r[1],url:$r[2],headRefOid:$r[3],
+    headRepository:(if $r[4] == "-" then null else {nameWithOwner:$r[4]} end),
+    baseRefName:$r[5],baseRefOid:$r[6],mergeStateStatus:$r[7],isDraft:($r[8] == "true"),
+    mergeCommit:(if $r[1] == "MERGED" then {oid:"3333333333333333333333333333333333333333"} else null end),
+    mergedAt:(if $r[1] == "MERGED" then "2026-11-05T04:27:06Z" else null end)}'
+}
 serve_rules() {
   # A real effective-rules document through the caller's real jq: the
   # policy's three pinned workflows plus the queue and the native rules
@@ -410,7 +526,11 @@ if [ -n "${GH_STACK:-}" ]; then
     [ ! -f "$GH_STATE/parent-gate-fails" ] || export GH_MODE=status_gate_failure
     if [ "$1 ${2:-}" = 'pr view' ]; then
       shift 3
-      GH_UNLOGGED=1 "$0" pr view 7 "$@" | sed $'s/^7\t/6\t/'
+      if has 'isDraft,mergeCommit,mergedAt' "$@"; then
+        GH_UNLOGGED=1 "$0" pr view 7 "$@" | jq '.number=6'
+      else
+        GH_UNLOGGED=1 "$0" pr view 7 "$@" | sed $'s/^7\t/6\t/'
+      fi
       exit 0
     fi
   fi
@@ -597,7 +717,7 @@ case "$1 ${2:-}" in
       head_repo="${GH_FAKE_HEAD_REPO:-${GH_FAKE_REPO:-${GH_REPO:-autumngarage/current}}}"
       [ ! -f "$GH_STATE/head-repo-missing" ] || head_repo=-
       printf '7\tMERGED\thttps://example.test/pr/7\t%s\t%s\tmain\t%s\tUNKNOWN\tfalse\n' \
-        "$GH_HEAD" "$head_repo" "${GH_BASE_SHA:-base-sha}"
+        "$GH_HEAD" "$head_repo" "${GH_BASE_SHA:-base-sha}" | pr_row_response "$@"
     else
       head_repo="${GH_FAKE_HEAD_REPO:-${GH_FAKE_REPO:-${GH_REPO:-autumngarage/current}}}"
       [ ! -f "$GH_STATE/head-repo-missing" ] || head_repo=-
@@ -617,7 +737,7 @@ case "$1 ${2:-}" in
       row_head="$GH_HEAD"
       if [ -f "$GH_STATE/head-moves-after-reads" ] && fake_after_reads head-moves-after-reads; then row_head=moved-head; fi
       printf '7\t%s\thttps://example.test/pr/7\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$pr_state" "$row_head" "$head_repo" "${GH_BASE_REF:-main}" "${GH_BASE_SHA:-base-sha}" "$merge_state" "$draft"
+        "$pr_state" "$row_head" "$head_repo" "${GH_BASE_REF:-main}" "${GH_BASE_SHA:-base-sha}" "$merge_state" "$draft" | pr_row_response "$@"
     fi
     ;;
   "pr merge")

@@ -293,6 +293,14 @@ taking this document's word for it.
   addition: a consumer that switches on phase treats an unknown value as
   `inspect`, and no existing value changes meaning.
 
+  Status also reports `mergeCommit` (`{"oid":"<full actual merge SHA>"}`) and
+  `mergedAt` (GitHub's UTC timestamp), from the same PR read as state/head/base.
+  Both are `null` for OPEN and CLOSED-unmerged, even if GitHub reports a
+  prospective merge commit. MERGED requires the complete valid pair; a missing
+  or malformed identity returns an observation error before status output.
+  This is native merge identity, not independent required-check or release
+  acceptance, and it is never derived from head, base or current main.
+
   Classification is deliberately small and fail closed. `MERGED` is terminal
   (`merged`), and so is `CLOSED` without a merge (`closed`): neither receives
   another required-workflow run, so every wait on such a PR stops rather than
@@ -375,7 +383,7 @@ taking this document's word for it.
   additive sibling `mergeQueueEviction` (`{at, reason, queueBase}`, or `null`). ETA and
   merge-group internals stay outside the versioned contract.
   Raw equivalent: `gh pr view --json
-  number,state,url,headRefOid,baseRefName,baseRefOid,mergeStateStatus,isDraft`
+  number,state,url,headRefOid,baseRefName,baseRefOid,mergeStateStatus,isDraft,mergeCommit,mergedAt`
   plus `autoMergeRequest { enabledAt }`, `mergeQueueEntry { state position
   enqueuedAt }`, and the PR's `timelineItems` filtered to
   `ADDED_TO_MERGE_QUEUE_EVENT`, `REMOVED_FROM_MERGE_QUEUE_EVENT`,
