@@ -1951,7 +1951,16 @@ EOF
 case "${1:-} ${2:-}" in
   'auth status') exit 0 ;;
   'repo view') printf '%s\n' $'autumngarage/consumer\thttps://github.com/autumngarage/consumer' ;;
-  'pr view') printf '%s\n' $'1\tOPEN\thttps://example.invalid/pr/1\t1111111111111111111111111111111111111111\tautumngarage/consumer\tmain\t2222222222222222222222222222222222222222\tCLEAN\tfalse' ;;
+  'pr view')
+    response='{"number":1,"state":"OPEN","url":"https://example.invalid/pr/1","headRefOid":"1111111111111111111111111111111111111111","headRepository":{"nameWithOwner":"autumngarage/consumer"},"baseRefName":"main","baseRefOid":"2222222222222222222222222222222222222222","mergeStateStatus":"CLEAN","isDraft":false,"mergeCommit":null,"mergedAt":null}'
+    # Match gh's raw JSON and optional projection instead of hard-coding TSV.
+    expression=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = --jq ]; then expression="$2"; break; fi
+      shift
+    done
+    if [ -n "$expression" ]; then printf '%s' "$response" | jq -r "$expression"; else printf '%s\n' "$response"; fi
+    ;;
   'api graphql') printf '%s\n' '{"head":"1111111111111111111111111111111111111111","autoMergeEnabledAt":null,"mergeQueueState":null}' ;;
   'api --hostname')
     if [[ "$*" == *'repos/autumngarage/consumer/pulls/1'* ]]; then
