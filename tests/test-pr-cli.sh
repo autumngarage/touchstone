@@ -1395,6 +1395,11 @@ case "$1 ${2:-}" in
       if [ -f "$GH_STATE/overlapping-pins" ] && has "?ref=$GH_MID_SHA" "$@"; then behavior_version=1; fi
       if [ -f "$GH_STATE/behavior-version-missing" ]; then
         printf '%s\n' '{"contractVersion":1}'
+      elif [ -f "$GH_STATE/evidence-checker" ]; then
+        jq -cn --argjson version "$behavior_version" --arg sha "$(shasum -a 256 "$GH_EVIDENCE_CHECKER_SOURCE" | awk '{print $1}')" \
+          '{contractVersion:1,gateBehaviorContractVersion:$version,
+            evidenceChecker:{repository:"autumngarage/touchstone",path:"scripts/check-delivery-evidence.sh",
+              revision:"abababababababababababababababababababab",sha256:$sha}}'
       else
         jq -cn --argjson version "$behavior_version" \
           '{contractVersion:1,gateBehaviorContractVersion:$version}'
@@ -1405,6 +1410,9 @@ case "$1 ${2:-}" in
       printf 'jobs:\n  review-gate:\n    env:\n      REVIEW_REQUEST_WAIT_SECONDS: 120\n      # REVIEW_EVIDENCE_WAIT_SECONDS: 5 only in a comment\n'
       [ -f "$GH_STATE/review-gate-no-deadline" ] \
         || printf '      REVIEW_EVIDENCE_WAIT_SECONDS: %s\n' "${GH_EVIDENCE_WAIT_SECONDS:-600}"
+    elif has 'autumngarage/touchstone/contents/scripts/check-delivery-evidence.sh?ref=' "$@"; then
+      [ ! -f "$GH_STATE/evidence-checker-unreadable" ] || { printf 'Not Found\n' >&2; exit 1; }
+      cat "$GH_EVIDENCE_CHECKER_SOURCE"
     elif has '/contents/' "$@" && has '?ref=' "$@"; then
       cat "$GH_CANDIDATE_POLICY"
     elif has 'actions/permissions --jq .enabled' "$@"; then
@@ -2354,6 +2362,67 @@ EOF
     || fail "a rejected body still posted a hosted review request"
   assert_not_has "$TMP/out" 'Actions refused'
   rm -f "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request"
+
+  echo "==> open runs the pinned evidence checker before any mutation"
+  export GH_EVIDENCE_CHECKER_SOURCE="$ROOT/scripts/check-delivery-evidence.sh"
+  touch "$TMP/state/review-gate" "$TMP/state/evidence-checker"
+  rm -f "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request"
+  cat >"$TMP/body-nested" <<'BODY'
+## Intent
+Change.
+
+## Validation
+- Build:
+  - n/a, nothing to build
+- Automated tests:
+  - ran the suite
+- Manual validation: n/a, none
+
+## Review tier
+trivial
+
+## Why this tier
+Inert.
+BODY
+  : >"$GH_CALLS"
+  run_pr "$TMP/out" open --title 'Nested rows' --body-file "$TMP/body-nested"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" "the Validation row '- Automated tests:' filled in"
+  assert_has "$TMP/out" 'checker pinned at touchstone abababababababababababababababababababab'
+  assert_has "$TMP/out" 'nothing was pushed, created or edited'
+  assert_not_has "$GH_CALLS" 'pr create'
+  assert_not_has "$GH_CALLS" 'pr edit'
+  assert_not_has "$GH_CALLS" 'pr comment'
+  assert_not_has "$GH_CALLS" 'actions/runs'
+  ok "a nested-bullet Validation row is refused before any mutation"
+  cat >"$TMP/body-valid" <<'BODY'
+## Intent
+Change.
+
+## Validation
+- Build: n/a, nothing to build
+- Automated tests: ran the suite, passed
+- Manual validation: n/a, none
+
+## Review tier
+trivial
+
+## Why this tier
+Inert.
+BODY
+  run_pr "$TMP/out" open --title 'Valid rows' --body-file "$TMP/body-valid"
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'Delivery-evidence precheck passed (checker pinned at touchstone abababababababababababababababababababab)'
+  ok "a valid body proceeds past the precheck"
+  rm -f "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request"
+  touch "$TMP/state/evidence-checker-unreadable"
+  run_pr "$TMP/out" open --title 'Checker unavailable' --body-file "$TMP/body-nested"
+  assert_has "$TMP/out" 'Delivery-evidence precheck skipped: the pinned checker could not be fetched at touchstone abababababababababababababababababababab'
+  assert_has "$TMP/out" 'remains the authority'
+  assert_not_has "$TMP/out" 'precheck passed'
+  assert_not_has "$TMP/out" 'nothing was pushed, created or edited'
+  ok "an unobtainable checker falls through with a stated reason"
+  rm -f "$TMP/state/evidence-checker" "$TMP/state/evidence-checker-unreadable" "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request"
 
   echo "==> a required job Actions refused to start is not an evidence verdict (AUT-1594)"
   # hesperus#354 and vesper#1255: with the Actions budget at zero, GitHub
