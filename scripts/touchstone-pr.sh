@@ -3106,17 +3106,31 @@ precheck_delivery_evidence() {
     reason="the workflow source repository $expected_id could not be read"
   else
     source_repo="$WORKFLOW_SOURCE_REPOSITORY"
-    if ! read_with_retry gh api --hostname "$REPO_HOST" -H "Accept: application/vnd.github.raw+json" \
+    manifest=""
+    # Newer pins declare the checker in the source contract; earlier ones write
+    # the same two values into the workflow's fetch step. Both are the pin the
+    # workflow itself runs. A missing file is a definite answer, so these are
+    # single reads, not retried.
+    if capture_command gh api --hostname "$REPO_HOST" -H "Accept: application/vnd.github.raw+json" \
       "repos/$source_repo/contents/.touchstone-source-contract.json?ref=$shas"; then
-      reason=".touchstone-source-contract.json could not be read at $source_repo@$shas"
-    elif ! manifest="$(jq -r '
-      select(.contractVersion == 1 and (.evidenceChecker | type == "object")
-        and .evidenceChecker.repository == "autumngarage/touchstone"
-        and .evidenceChecker.path == "scripts/check-delivery-evidence.sh"
-        and (.evidenceChecker.revision | type == "string" and test("^[0-9a-f]{40}$"))
-        and (.evidenceChecker.sha256 | type == "string" and test("^[0-9a-f]{64}$")))
-      | [.evidenceChecker.revision, .evidenceChecker.sha256] | @tsv' <<<"$READ_OUTPUT" 2>/dev/null)" || [ -z "$manifest" ]; then
-      reason="the source contract at $source_repo@$shas declares no usable evidence checker"
+      manifest="$(jq -r '
+        select(.contractVersion == 1 and (.evidenceChecker | type == "object")
+          and .evidenceChecker.repository == "autumngarage/touchstone"
+          and .evidenceChecker.path == "scripts/check-delivery-evidence.sh"
+          and (.evidenceChecker.revision | type == "string" and test("^[0-9a-f]{40}$"))
+          and (.evidenceChecker.sha256 | type == "string" and test("^[0-9a-f]{64}$")))
+        | [.evidenceChecker.revision, .evidenceChecker.sha256] | @tsv' <<<"$CAPTURE_OUTPUT" 2>/dev/null)" || manifest=""
+    fi
+    if [ -z "$manifest" ] \
+      && capture_command gh api --hostname "$REPO_HOST" -H "Accept: application/vnd.github.raw+json" \
+        "repos/$source_repo/contents/.github/workflows/delivery-evidence.yml?ref=$shas"; then
+      manifest="$(printf '%s\n' "$CAPTURE_OUTPUT" | awk '
+        match($0, /touchstone_revision="[0-9a-f]{40}"/) { rev = substr($0, RSTART + 21, 40) }
+        match($0, /evaluator_sha256="[0-9a-f]{64}"/) { sum = substr($0, RSTART + 18, 64) }
+        END { if (rev != "" && sum != "") printf "%s\t%s\n", rev, sum }')"
+    fi
+    if [ -z "$manifest" ]; then
+      reason="the delivery-evidence pin at $source_repo@$shas declares no readable evidence checker"
     else
       IFS=$'\t' read -r revision sha256 <<<"$manifest"
       if ! read_with_retry gh api --hostname "$REPO_HOST" -H "Accept: application/vnd.github.raw+json" \

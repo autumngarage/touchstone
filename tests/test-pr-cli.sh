@@ -1395,7 +1395,7 @@ case "$1 ${2:-}" in
       if [ -f "$GH_STATE/overlapping-pins" ] && has "?ref=$GH_MID_SHA" "$@"; then behavior_version=1; fi
       if [ -f "$GH_STATE/behavior-version-missing" ]; then
         printf '%s\n' '{"contractVersion":1}'
-      elif [ -f "$GH_STATE/evidence-checker" ]; then
+      elif [ -f "$GH_STATE/evidence-checker" ] && [ ! -f "$GH_STATE/evidence-checker-in-workflow" ]; then
         jq -cn --argjson version "$behavior_version" --arg sha "$(shasum -a 256 "$GH_EVIDENCE_CHECKER_SOURCE" | awk '{print $1}')" \
           '{contractVersion:1,gateBehaviorContractVersion:$version,
             evidenceChecker:{repository:"autumngarage/touchstone",path:"scripts/check-delivery-evidence.sh",
@@ -1404,6 +1404,12 @@ case "$1 ${2:-}" in
         jq -cn --argjson version "$behavior_version" \
           '{contractVersion:1,gateBehaviorContractVersion:$version}'
       fi
+    elif has 'touchstone-workflows/contents/.github/workflows/delivery-evidence.yml?ref=' "$@"; then
+      # An earlier pin's workflow text: the checker pin is two assignments in
+      # its fetch step, not a manifest field.
+      [ -f "$GH_STATE/evidence-checker" ] || { printf 'Not Found\n' >&2; exit 1; }
+      printf '    steps:\n      - run: |\n          touchstone_revision="abababababababababababababababababababab"\n          evaluator_sha256="%s"\n' \
+        "$(shasum -a 256 "$GH_EVIDENCE_CHECKER_SOURCE" | awk '{print $1}')"
     elif has 'touchstone-workflows/contents/.github/workflows/review-gate.yml?ref=' "$@"; then
       # The pinned gate's own text. The contract-4 wait derives its deadline
       # from the env line alone: a commented mention is not a declaration.
@@ -2422,6 +2428,14 @@ BODY
   assert_not_has "$TMP/out" 'precheck passed'
   assert_not_has "$TMP/out" 'nothing was pushed, created or edited'
   ok "an unobtainable checker falls through with a stated reason"
+  rm -f "$TMP/state/evidence-checker-unreadable" "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request"
+  touch "$TMP/state/evidence-checker-in-workflow"
+  run_pr "$TMP/out" open --title 'Workflow-pinned checker' --body-file "$TMP/body-nested"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" "the Validation row '- Automated tests:' filled in"
+  assert_not_has "$GH_CALLS" 'pr create'
+  ok "a pin that writes the checker into the workflow's fetch step is read the same way"
+  rm -f "$TMP/state/evidence-checker-in-workflow"
   rm -f "$TMP/state/evidence-checker" "$TMP/state/evidence-checker-unreadable" "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request"
 
   echo "==> a required job Actions refused to start is not an evidence verdict (AUT-1594)"
