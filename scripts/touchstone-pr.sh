@@ -3077,6 +3077,94 @@ await_review() {
   fi
 }
 
+# Fast feedback before anything is pushed-to, created or edited: run the exact
+# evidence checker the required delivery-evidence workflow runs, resolved the
+# way that workflow resolves it (effective rule pin -> the pinned source's
+# .touchstone-source-contract.json -> the checker revision it declares,
+# verified against the declared sha256). GitHub's run stays the authority; a
+# checker that cannot be obtained here is reported and skipped, never a pass.
+precheck_delivery_evidence() {
+  local base_ref="$1" expected encoded shas source_repo manifest revision sha256 checker actual output status=0
+  local expected_id expected_ref reason=""
+  expected="$(enforcement_policy_jq -c --arg path ".github/workflows/delivery-evidence.yml" \
+    '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]? | select(.path == $path) | {repository_id, ref}] | if length == 1 then .[0] else null end')" \
+    || fail_operation "could not read the declared source for the delivery-evidence workflow" "Reinstall touchstone; the policy file is corrupt or incomplete."
+  [ "$expected" != null ] || return 0
+  expected_id="$(jq -r .repository_id <<<"$expected")"
+  expected_ref="$(jq -r .ref <<<"$expected")"
+  encoded="$(uri_encode "$base_ref")"
+  if ! read_with_retry gh api --hostname "$REPO_HOST" --paginate "repos/$REPO/rules/branches/$encoded"; then
+    reason="the effective rules for $base_ref could not be read"
+  elif ! shas="$(printf '%s\n' "$READ_OUTPUT" | jq -sr --argjson id "$expected_id" --arg ref "$expected_ref" \
+    'add // [] | [.[] | select(.type == "workflows") | .parameters.workflows[]?
+      | select(.path == ".github/workflows/delivery-evidence.yml" and .repository_id == $id and .ref == $ref)
+      | (.sha // "") | ascii_downcase | select(test("^[0-9a-f]{40}$"))] | unique | join(" ")' 2>/dev/null)"; then
+    reason="the effective rules for $base_ref were malformed"
+  elif [ -z "$shas" ] || [ "${shas#* }" != "$shas" ]; then
+    reason="the required workflow does not name exactly one source revision (${shas:-none})"
+  elif ! resolve_workflow_source_repository "$expected_id"; then
+    reason="the workflow source repository $expected_id could not be read"
+  else
+    source_repo="$WORKFLOW_SOURCE_REPOSITORY"
+    manifest=""
+    # Newer pins declare the checker in the source contract; earlier ones write
+    # the same two values into the workflow's fetch step. Both are the pin the
+    # workflow itself runs. A missing file is a definite answer, so these are
+    # single reads, not retried.
+    if capture_command gh api --hostname "$REPO_HOST" -H "Accept: application/vnd.github.raw+json" \
+      "repos/$source_repo/contents/.touchstone-source-contract.json?ref=$shas"; then
+      manifest="$(jq -r '
+        select(.contractVersion == 1 and (.evidenceChecker | type == "object")
+          and .evidenceChecker.repository == "autumngarage/touchstone"
+          and .evidenceChecker.path == "scripts/check-delivery-evidence.sh"
+          and (.evidenceChecker.revision | type == "string" and test("^[0-9a-f]{40}$"))
+          and (.evidenceChecker.sha256 | type == "string" and test("^[0-9a-f]{64}$")))
+        | [.evidenceChecker.revision, .evidenceChecker.sha256] | @tsv' <<<"$CAPTURE_OUTPUT" 2>/dev/null)" || manifest=""
+    fi
+    if [ -z "$manifest" ] \
+      && capture_command gh api --hostname "$REPO_HOST" -H "Accept: application/vnd.github.raw+json" \
+        "repos/$source_repo/contents/.github/workflows/delivery-evidence.yml?ref=$shas"; then
+      manifest="$(printf '%s\n' "$CAPTURE_OUTPUT" | awk '
+        match($0, /touchstone_revision="[0-9a-f]{40}"/) { rev = substr($0, RSTART + 21, 40) }
+        match($0, /evaluator_sha256="[0-9a-f]{64}"/) { sum = substr($0, RSTART + 18, 64) }
+        END { if (rev != "" && sum != "") printf "%s\t%s\n", rev, sum }')"
+    fi
+    if [ -z "$manifest" ]; then
+      reason="the delivery-evidence pin at $source_repo@$shas declares no readable evidence checker"
+    else
+      IFS=$'\t' read -r revision sha256 <<<"$manifest"
+      if ! read_with_retry gh api --hostname "$REPO_HOST" -H "Accept: application/vnd.github.raw+json" \
+        "repos/autumngarage/touchstone/contents/scripts/check-delivery-evidence.sh?ref=$revision"; then
+        reason="the pinned checker could not be fetched at touchstone $revision"
+      elif ! checker="$(mktemp "${TMPDIR:-/tmp}/touchstone-evidence-checker.XXXXXX" 2>/dev/null)"; then
+        reason="no writable temporary directory for the pinned checker"
+      else
+        printf '%s\n' "$READ_OUTPUT" >"$checker"
+        actual="$( (shasum -a 256 "$checker" 2>/dev/null || sha256sum "$checker" 2>/dev/null) | awk '{print $1}')"
+        if [ "$actual" != "$sha256" ]; then
+          reason="the checker fetched at touchstone $revision does not match its pinned sha256"
+        else
+          output="$(TOUCHSTONE_EVIDENCE_CHECKER_REVISION="$revision" bash "$checker" "$BODY_FILE" 2>&1)" || status=$?
+          if [ "$status" -eq 1 ]; then
+            rm -f -- "$checker"
+            fail_input "the PR body fails the delivery-evidence checker pinned at touchstone ${revision}; nothing was pushed, created or edited:
+$output" "Fix the body file and re-run. The required delivery-evidence gate would reject it the same way."
+          elif [ "$status" -ne 0 ]; then
+            reason="the pinned checker exited $status: $(clean_diagnostic "$output")"
+          fi
+        fi
+        rm -f -- "$checker"
+      fi
+    fi
+  fi
+  if [ -n "$reason" ]; then
+    printf 'Delivery-evidence precheck skipped: %s. The required delivery-evidence gate on GitHub remains the authority.\n' "$reason" >&2
+  elif [ "$JSON_MODE" = false ]; then
+    printf 'Delivery-evidence precheck passed (checker pinned at touchstone %s).\n' "$revision" >&2
+  fi
+  return 0
+}
+
 open_pr() {
   # Only request creation needs this packaged helper. Read-only operations
   # retain the single-file entrypoint used by older pinned workflows.
@@ -3151,6 +3239,11 @@ open_pr() {
     || fail_input "repository Actions are disabled for $REPO, so no required workflow can run and nothing would gate this pull request" \
       "$(actions_disabled_remedy | sed 's/^enable them: /Enable them: /'), then retry."
 
+  if [ -n "$STACK_PARENT" ]; then
+    printf 'Delivery-evidence precheck skipped: a stacked open resolves the pin per trunk. The required delivery-evidence gate on GitHub remains the authority.\n' >&2
+  else
+    precheck_delivery_evidence "$BASE_REF"
+  fi
   read_open_pr_rows_for_head "$branch" "$local_head" \
     || fail_operation "could not inspect existing pull requests: $READ_OUTPUT" "Retry after GitHub recovers."
   rows="$READ_OUTPUT"

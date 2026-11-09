@@ -118,7 +118,19 @@ Each operation below records the awkwardness that justifies it. A reader who
 doubts one can re-run that test on raw commands and compare, rather than
 taking this document's word for it.
 
-- `open` proves the local and remote branch heads match, reuses an existing
+- `open` runs the pinned evidence checker locally against `--body-file`,
+  before it creates, edits or comments on anything. It resolves the checker
+  exactly as the `delivery-evidence` workflow does: the effective rule's pinned
+  source revision, that revision's `.touchstone-source-contract.json`
+  `evidenceChecker` (revision and sha256) or, for an earlier pin, the same two
+  values in the workflow's fetch step, then the script at that touchstone
+  revision, verified against the sha256. On refusal it prints the checker's own
+  missing-item lines and exits 2 with nothing mutated. If the checker cannot be
+  obtained (unreadable rules, overlapping pins, a pin declaring
+  no checker, a failed fetch or sha256 mismatch, a stacked open), it
+  prints one `Delivery-evidence precheck skipped: <reason>` line and falls
+  through. The skip is not a pass: the required workflow stays the authority.
+  `open` also proves the local and remote branch heads match, reuses an existing
   open PR for that branch or runs `gh pr create`, re-reads GitHub after the
   mutation, requires the policy-declared `delivery-evidence` workflow to
   accept the surviving body, and only then posts `@codex review` once for the
