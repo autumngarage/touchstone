@@ -114,8 +114,11 @@ can declare `--build-concurrency N` when deriving its policy; GitHub supports
 pool and managed overflow. Other consumers retain their existing capacity.
 
 This changes only GitHub's native build concurrency. Every candidate still
-gets its own required validation and review: `max_entries_to_merge: 1` and
-`ALLGREEN` remain unchanged. More speculative builds can be discarded after
+gets its own required validation and review: `ALLGREEN` remains unchanged and
+`max_entries_to_merge` stays 1 unless a consumer declares `--merge-batch N`
+(1 through 100) so several already-green entries land in one queue step.
+Hesperus declares four. `min_entries_to_merge` stays 1 and its wait 0, so a
+lone entry is never held. More speculative builds can be discarded after
 an earlier candidate fails or the queue is reordered; increase capacity with
 the available runners and keep queue order stable.
 

@@ -4225,6 +4225,7 @@ Closes #42'
   assert_has "$TMP/out" 'removed from the merge queue at 2026-09-02T16:51:33Z (failed_checks) and nothing has changed since'
   assert_has "$TMP/out" 'no merge was requested'
   assert_has "$TMP/out" "touchstone pr merge 7 --head <new head>"
+  assert_has "$TMP/out" "--retry-after-flake"
   assert_not_has "$TMP/out" 'was disarmed'
   # Nothing armed, so nothing to disarm: no mutation of any kind.
   assert_not_has "$GH_CALLS" 'pr merge'
