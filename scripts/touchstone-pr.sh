@@ -1898,11 +1898,13 @@ classify_actions_refusal() {
     }')"
 }
 
+ACTIONS_JOBS_PAGES=""
 read_actions_refusal() {
   local run_id="$1" run_attempt="$2" workflow_name="$3"
   read_with_retry gh api --paginate --hostname "$REPO_HOST" \
     "repos/$REPO/actions/runs/$run_id/attempts/$run_attempt/jobs?per_page=100" \
     || fail_operation "could not read the jobs of $workflow_name run $run_id attempt $run_attempt: $READ_OUTPUT" "Retry after GitHub recovers."
+  ACTIONS_JOBS_PAGES="$READ_OUTPUT"
   classify_actions_refusal "$READ_OUTPUT" "$workflow_name" "$run_id"
 }
 
@@ -2017,6 +2019,148 @@ read_head_run_pages() {
   read_with_retry gh api --hostname "$REPO_HOST" --paginate "repos/$REPO/actions/runs?head_sha=$1&per_page=100" \
     || fail_operation "could not inspect the required workflow runs for $1: $READ_OUTPUT" "Retry after GitHub recovers."
   HEAD_RUN_PAGES="$READ_OUTPUT"
+}
+
+# Three silent stuck states, each recorded by GitHub and each reading as
+# waiting or as an ordinary failure while a ready PR sits blocked (AUT-3920,
+# the 2026-11-09 "Actions and Checks API" incident, up to 83 minutes each):
+# a required run that concluded failure with no jobs at all; a required
+# context whose job a completed run never created; a matrix leg never created,
+# which GitHub reports to the summary job as the result "abandoned". Each is
+# named with its run, attempt and exact recovery, and none is repaired here:
+# the single re-run `open` already makes stays the only automatic one.
+STUCK_RUNS_JSON="[]"
+STUCK_NEW_LINE=""
+STUCK_STATUS_PAGE="https://www.githubstatus.com"
+add_stuck_run() {
+  local state="$1" workflow="$2" run_id="$3" attempt="$4" detail="$5" recovery
+  case "$state" in
+    abandoned-matrix) recovery="gh run rerun $run_id --failed" ;;
+    *) recovery="gh run rerun $run_id" ;;
+  esac
+  STUCK_NEW_LINE="$workflow run $run_id attempt $attempt is stuck ($state), neither waiting nor an ordinary failure: $detail Check $STUCK_STATUS_PAGE for a GitHub Actions incident; once Actions is healthy, run: $recovery"
+  STUCK_RUNS_JSON="$(printf '%s' "$STUCK_RUNS_JSON" | jq -c \
+    --arg state "$state" --arg workflow "$workflow" --argjson run_id "$run_id" --argjson attempt "$attempt" \
+    --arg detail "$detail" --arg recovery "$recovery" --arg line "$STUCK_NEW_LINE" --arg page "$STUCK_STATUS_PAGE" \
+    'if any(.[]; .workflowRunId == $run_id and .state == $state) then .
+     else . + [{state:$state, workflow:$workflow, workflowRunId:$run_id, attempt:$attempt, detail:$detail, statusPage:$page, recovery:$recovery, text:$line}] end')"
+}
+
+stuck_runs_lines() {
+  printf '%s' "$STUCK_RUNS_JSON" | jq -r '.[] | .text'
+}
+
+stuck_runs_remedy() {
+  printf '%s' "$STUCK_RUNS_JSON" | jq -r '[.[].recovery] | unique | join("; ")'
+}
+
+# A run that concluded failure and was not refused: read what GitHub recorded
+# about its jobs. No jobs at all is the first state. A failed summary job whose
+# log carries GitHub's own `abandoned` result is the third; "no sibling
+# failed" is not evidence, since a broken summary matches it too, and a real
+# test failure leaves a `failure` result, so it is never given a re-run hint.
+classify_stuck_run() {
+  local workflow="$1" run_id="$2" attempt="$3" job_id checked=0
+  STUCK_NEW_LINE=""
+  [ "$ACTIONS_REFUSAL_JSON" = null ] || return 0
+  if [ "$(printf '%s\n' "$ACTIONS_JOBS_PAGES" | jq -s '[.[].jobs[]?] | length')" = 0 ]; then
+    add_stuck_run no-jobs "$workflow" "$run_id" "$attempt" "the run concluded failure and GitHub created no jobs for it, so no check ran and nothing evaluated this head."
+    return 0
+  fi
+  for job_id in $(printf '%s\n' "$ACTIONS_JOBS_PAGES" | jq -sr '[.[].jobs[]? | select(.status == "completed" and .conclusion == "failure" and ((.steps // []) | length) > 0) | .id] | .[]'); do
+    checked=$((checked + 1))
+    [ "$checked" -le 8 ] || break
+    capture_command gh api --hostname "$REPO_HOST" --allow-escape-sequences "repos/$REPO/actions/jobs/$job_id/logs" || continue
+    if printf '%s\n' "$CAPTURE_OUTPUT" | grep -Eq '[A-Z_]+: abandoned[[:space:]]*$'; then
+      add_stuck_run abandoned-matrix "$workflow" "$run_id" "$attempt" "job $job_id logged GitHub's result \"abandoned\" for the jobs it needs, so a matrix leg was never created; this is not a test failure."
+      return 0
+    fi
+  done
+}
+
+# The contexts the effective rules require for the base branch, one per line,
+# in REQUIRED_CONTEXTS: set here, not printed, so the GitHub read never runs in
+# a command substitution where a rate limit could not stop the command.
+REQUIRED_CONTEXTS=""
+read_required_contexts() {
+  read_with_retry gh api --hostname "$REPO_HOST" --paginate "repos/$REPO/rules/branches/$(uri_encode "$1")?per_page=100" \
+    || fail_operation "could not read the effective rules for $1: $READ_OUTPUT" "Retry after GitHub recovers."
+  REQUIRED_CONTEXTS="$(printf '%s\n' "$READ_OUTPUT" | jq -sr 'add // [] | [.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context] | unique | .[]')" \
+    || fail_operation "GitHub returned malformed rules for $1" "Retry after GitHub returns complete rule pages."
+}
+
+# A required context no current work produces. Presence is read from this
+# head's current work only: the jobs of each run's current attempt, checks from
+# apps other than Actions, and commit statuses. Names carried over from an
+# earlier attempt or head cannot hide it. Only a completed, successful run
+# whose workflow file defines the missing context is named, since that is the
+# run to re-run; a context some other system reports is not a stuck run.
+read_stuck_missing_job() {
+  local number="$1" head="$2" base="$3" contexts runs present context row run_id attempt path run_name
+  read_required_contexts "$base"
+  contexts="$REQUIRED_CONTEXTS"
+  [ -n "$contexts" ] || return 0
+  runs="$(printf '%s\n' "$HEAD_RUN_PAGES" | jq -sc --argjson n "$number" --arg head "$head" \
+    '[.[].workflow_runs[]? | select(.head_sha == $head and .event == "pull_request" and any(.pull_requests[]?; .number == $n)) | {id, name, path, status, conclusion, attempt:(.run_attempt // 1)}]')" \
+    || fail_operation "GitHub returned malformed workflow runs for $head" "Retry after GitHub returns complete workflow-run pages."
+  [ "$(printf '%s' "$runs" | jq 'length > 0 and all(.[]; .status == "completed")')" = true ] || return 0
+  present=""
+  for row in $(printf '%s' "$runs" | jq -r '.[] | "\(.id):\(.attempt)"'); do
+    read_with_retry gh api --hostname "$REPO_HOST" --paginate "repos/$REPO/actions/runs/${row%%:*}/attempts/${row##*:}/jobs?per_page=100" \
+      || fail_operation "could not read the jobs of run ${row%%:*} attempt ${row##*:}: $READ_OUTPUT" "Retry after GitHub recovers."
+    present="$present
+$(printf '%s\n' "$READ_OUTPUT" | jq -sr '[.[].jobs[]?.name] | .[]')"
+  done
+  read_with_retry gh api --hostname "$REPO_HOST" --paginate "repos/$REPO/commits/$head/check-runs?per_page=100" \
+    || fail_operation "could not read the check runs for $head: $READ_OUTPUT" "Retry after GitHub recovers."
+  present="$present
+$(printf '%s\n' "$READ_OUTPUT" | jq -sr '[.[] | (if type == "object" then .check_runs else . end)[]? | select((.app.slug // "") != "github-actions") | .name] | .[]')"
+  read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/commits/$head/status?per_page=100" \
+    || fail_operation "could not read the commit statuses for $head: $READ_OUTPUT" "Retry after GitHub recovers."
+  present="$present
+$(printf '%s\n' "$READ_OUTPUT" | jq -r '[.statuses[]?.context] | .[]')"
+  while IFS= read -r context; do
+    [ -n "$context" ] || continue
+    if printf '%s\n' "$present" | grep -Fxq -- "$context"; then continue; fi
+    for row in $(printf '%s' "$runs" | jq -r '.[] | select(.conclusion == "success") | "\(.id):\(.attempt):\(.path // "")"'); do
+      run_id="${row%%:*}"
+      attempt="${row#*:}"
+      path="${attempt#*:}"
+      attempt="${attempt%%:*}"
+      path="${path%%@*}"
+      [ -n "$path" ] || continue
+      capture_command gh api --hostname "$REPO_HOST" -H "Accept: application/vnd.github.raw+json" "repos/$REPO/contents/$path?ref=$head" || continue
+      printf '%s\n' "$CAPTURE_OUTPUT" | grep -Fq -- "$context" || continue
+      run_name="$(printf '%s' "$runs" | jq -r --argjson id "$run_id" '.[] | select(.id == $id) | .name')"
+      add_stuck_run missing-job "$run_name" "$run_id" "$attempt" "the run completed success, but required context \"$context\" has no job in its current attempt, no check from another app and no commit status on this head, and $path defines it, so its job was never created and GitHub holds the PR blocked."
+    done
+  done <<<"$contexts"
+}
+
+# Every stuck state for this head, from GitHub's recorded state. The caller has
+# read HEAD_RUN_PAGES and REQUIRED_WORKFLOW_LOCAL_IDS. Reads only.
+read_stuck_runs() {
+  local number="$1" head="$2" base="$3" paths path name run_id run_node status run_started_at attempt conclusion
+  STUCK_RUNS_JSON="[]"
+  paths="$(enforcement_policy_jq -r '[.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]?.path] | unique | .[]')" \
+    || fail_operation "could not read the required workflows the policy declares" "Reinstall touchstone; the policy file is corrupt or incomplete."
+  for path in $paths; do
+    name="$(basename "$path" .yml)"
+    # An ambiguous gate selection is already reported as such by its reader.
+    if [ "$name" = review-gate ] && [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.ambiguous // false')" = true ]; then continue; fi
+    select_required_workflow_run "$HEAD_RUN_PAGES" "$name" "$REQUIRED_WORKFLOW_LOCAL_IDS" "$number" "$head"
+    read -r run_id run_node status run_started_at attempt conclusion <<<"$REQUIRED_RUN_ROW"
+    [ -n "$run_id" ] && [ "$status" = completed ] && [ "$conclusion" = failure ] || continue
+    read_actions_refusal "$run_id" "$attempt" "$name"
+    classify_stuck_run "$name" "$run_id" "$attempt"
+  done
+  read_stuck_missing_job "$number" "$head" "$base"
+}
+
+# What `open` and `merge` print for what they find; JSON callers read the field.
+print_stuck_runs() {
+  [ "$STUCK_RUNS_JSON" != "[]" ] && [ "$JSON_MODE" = false ] || return 0
+  stuck_runs_lines >&2
 }
 
 REQUIRED_WORKFLOW_RUN_ID=""
@@ -2146,6 +2290,8 @@ rerun_required_workflow() {
           return 0
         fi
         report_unstarted_run "$workflow_name" "$run_id"
+        classify_stuck_run "$workflow_name" "$run_id" "$selected_attempt"
+        [ -z "$STUCK_NEW_LINE" ] || [ "$JSON_MODE" = true ] || printf '%s\n' "$STUCK_NEW_LINE" >&2
       fi
       if [ "$refresh_completed" = false ]; then
         [ "$conclusion" = success ] \
@@ -2959,6 +3105,8 @@ wake_review_gate_once() {
         read_actions_refusal "$REVIEW_GATE_RUN_ID" "$run_attempt" review-gate
         [ "$ACTIONS_REFUSAL_JSON" = null ] || record_actions_refusal review-gate "$REVIEW_GATE_RUN_ID"
         report_unstarted_run review-gate "$REVIEW_GATE_RUN_ID"
+        classify_stuck_run review-gate "$REVIEW_GATE_RUN_ID" "$run_attempt"
+        [ -z "$STUCK_NEW_LINE" ] || [ "$JSON_MODE" = true ] || printf '%s\n' "$STUCK_NEW_LINE" >&2
       fi
       printf 'Review gate run %s concluded %s for %s.\n' "$REVIEW_GATE_RUN_ID" "${conclusion:-with no conclusion}" "$head" >&2
       return 0
@@ -3477,6 +3625,12 @@ finish_open() {
   if [ -n "$OPEN_ACTIONS_REFUSALS" ]; then
     fail_operation "Actions refused required jobs for PR #$2 at $4, so no required check can pass; hosted review was still requested ($5) because the reviewer runs outside Actions. $OPEN_ACTIONS_REFUSALS" \
       "$(actions_refusal_remedy "$OPEN_ACTIONS_REFUSED_RUN_IDS")"
+  fi
+  if [ "$ENFORCEMENT_STATUS" = applied ] && [ "$JSON_MODE" = false ]; then
+    STUCK_RUNS_JSON="[]"
+    read_head_run_pages "$4"
+    read_stuck_missing_job "$2" "$4" "$pr_base"
+    print_stuck_runs
   fi
   emit_open_result "$@"
 }
@@ -4317,6 +4471,10 @@ require_review_gate_success() {
       # refusal's own (AUT-1610).
       [ "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r '.actionsRefused == null')" = true ] \
         || fail_input "review gate for $head is not successful: $gate_text" "$(actions_refusal_remedy "$REVIEW_GATE_RUN_ID")"
+      read_head_run_pages "$head"
+      read_stuck_runs "$number" "$head" "$base"
+      [ "$STUCK_RUNS_JSON" = "[]" ] \
+        || fail_input "review gate for $head is not successful: $gate_text. $(stuck_runs_lines)" "Recover with: $(stuck_runs_remedy)"
       fail_input "review gate for $head is not successful: $gate_text" \
         "Use touchstone pr open for an unbound head or answer the reported findings, then wait for a successful exact-head gate."
       ;;
@@ -4371,11 +4529,24 @@ status_pr() {
   if [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ]; then
     read_review_gate_check "$head" "$number"
     read_required_runs_refused "$number" "$head"
+    read_stuck_runs "$number" "$head" "$base"
   else
+    STUCK_RUNS_JSON="[]"
     REVIEW_GATE_CHECK_JSON="$(jq -cn --arg head "$head" '{present:false, head:$head, configured:false}')"
   fi
   classify_pr_phase "$state" "$merge_state" "$draft" "$number" "$head" "$base" "$base_sha"
   local gate_check_json="$REVIEW_GATE_CHECK_JSON" next_action_text="$PR_NEXT_ACTION"
+  # A stuck run is not a wait and not a finding to fix: name it as its own
+  # state, whatever phase the gate observation alone would have suggested.
+  if [ "$STUCK_RUNS_JSON" != "[]" ]; then
+    case "$PR_PHASE" in
+      fix-required | reviewing | armed-waiting-checks | armed-not-queued | ready-to-queue) PR_PHASE=action-required ;;
+    esac
+    PR_GATE_FAILURE_MAY_BE_WAITING=false
+    PR_NEXT_ACTION=inspect
+    PR_NEXT_COMMAND=""
+    next_action_text="inspect: a required run is stuck (see next step)"
+  fi
   if [ "$PR_GATE_FAILURE_MAY_BE_WAITING" = true ]; then
     gate_check_json="$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -c --arg recovery "$(review_gate_failure_recovery)" \
       '. + {failureMayBeWaiting:true, recovery:$recovery}')" \
@@ -4425,6 +4596,7 @@ status_pr() {
     esac
     printf ',"reviewGateCheck":%s' "$gate_check_json"
     [ "$REQUIRED_RUNS_REFUSED_JSON" = "[]" ] || printf ',"actionsRefusedRuns":%s' "$REQUIRED_RUNS_REFUSED_JSON"
+    [ "$STUCK_RUNS_JSON" = "[]" ] || printf ',"stuckRuns":%s' "$STUCK_RUNS_JSON"
     printf ',"reviewGateBehaviorContractVersion":'
     if [ "$ENFORCEMENT_REVIEW_GATE_APPLIED" = true ] && [ -n "$ENFORCEMENT_GATE_BEHAVIOR_VERSION" ]; then
       printf '%s' "$ENFORCEMENT_GATE_BEHAVIOR_VERSION"
@@ -4446,6 +4618,10 @@ status_pr() {
     [ "$REQUIRED_RUNS_REFUSED_JSON" = "[]" ] \
       || printf '%s' "$REQUIRED_RUNS_REFUSED_JSON" | jq -r "$ACTIONS_REFUSAL_JQ"' .[] | "  required run: \(.workflow) run \(.workflowRunId): \(refusal_text)"'
     [ -z "$refused_run_ids" ] || printf '  next step: %s\n' "$(actions_refusal_remedy "$refused_run_ids")"
+    [ "$STUCK_RUNS_JSON" = "[]" ] || {
+      printf '%s' "$STUCK_RUNS_JSON" | jq -r '.[] | "  stuck run: \(.text)"'
+      printf '  next step: recover with: %s\n' "$(stuck_runs_remedy)"
+    }
     [ "$PR_GATE_FAILURE_MAY_BE_WAITING" != true ] \
       || printf '  next step: this gate failure may be a head still waiting for review, not findings; read %s. %s\n' \
         "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r 'if .detailsUrl != null then "the gate run at \(.detailsUrl)" else "the log of review-gate workflow run \(.workflowRunId)" end')" \
@@ -4876,6 +5052,12 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
       [ -z "$ENQUEUED_DELIVERY_STATE" ] || final_state="$ENQUEUED_DELIVERY_STATE"
     fi
   fi
+  STUCK_RUNS_JSON="[]"
+  if [ "$final_state" = auto-merge-enabled ] && [ "$ENFORCEMENT_STATUS" = applied ]; then
+    read_head_run_pages "$EXPECTED_HEAD"
+    read_stuck_runs "$PR_NUMBER" "$EXPECTED_HEAD" "$base"
+    print_stuck_runs
+  fi
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"merge","status":"%s","pullRequest":%s,"head":' \
       "$OUTPUT_SCHEMA" "$final_state" "$PR_NUMBER"
@@ -4894,6 +5076,7 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
       json_string "$REVIEW_GATE_ACTION"
       printf '}'
     fi
+    [ "$STUCK_RUNS_JSON" = "[]" ] || printf ',"stuckRuns":%s' "$STUCK_RUNS_JSON"
     printf '}\n'
   else
     printf 'PR #%s: %s at %s\n' "$PR_NUMBER" "$final_state" "$EXPECTED_HEAD"
