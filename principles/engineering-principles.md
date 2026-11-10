@@ -1,6 +1,6 @@
-# Engineering Principles (HARD REQUIREMENTS)
+# Engineering Principles
 
-These are non-negotiable. Every code change must be reviewed against them; any exception must be explicit, justified, and disclosed in the PR.
+Use these principles to choose a design, not to generate a checklist in every reply. Start from the requested outcome and existing code. Explain material tradeoffs; keep routine reasoning internal. Delivery authorization and review policy live in [git-workflow.md](git-workflow.md).
 
 ## No band-aids
 Fix the root cause. If a symptom patch is the safer scoped change, document the root cause, why the patch is appropriate, and what remains unfixed. A root-cause fix that widens approved scope needs a separate scope decision.
@@ -8,16 +8,7 @@ Fix the root cause. If a symptom patch is the safer scoped change, document the 
 ## Extend existing systems before inventing new ones
 Before adding a system, search for the one that already owns the responsibility. Prefer extending and improving it over building a parallel mechanism. Reuse follows shared responsibility, not similar-looking code. A new system needs a concrete requirement the existing one cannot reasonably support; reuse does not authorize an unrelated migration.
 
-Reviewers must check architectural fit beyond the changed lines: read the relevant
-design decisions and trace existing owners, implementations, and callers. Check
-whether new code duplicates a responsibility, creates a competing source of truth,
-bypasses an established owner, breaks an abstraction boundary, or adds a layer
-without a current requirement. A finding names the existing owner or recorded
-invariant and the concrete consequence introduced by the change. Respect justified
-isolation and explicit migrations; similar code alone does not justify coupling
-unrelated responsibilities. Preserve the review severity bar and approved scope:
-design preferences are not blocking defects or permission for adjacent refactors.
-State unavailable repository context as a limitation, not a completed check.
+Before implementing, trace the existing owner and its callers. Prefer deleting unnecessary work, extending that owner, or using an existing dependency or standard library over introducing a new mechanism. Similar code is not proof of shared responsibility. Reviewers apply the same test and name a concrete consequence, not a design preference.
 
 ## Choose the simplest design that meets the requirement
 Build for demonstrated needs. Each abstraction, option, dependency, and layer must justify its complexity by helping satisfy the current requirement or making the system easier to understand or change. Prefer clear names and direct control flow. Simplicity means fewer concepts and interactions to understand, not the fewest lines; small duplication can be cheaper than coupling unrelated responsibilities.
@@ -35,7 +26,7 @@ Compute from the source of truth by default. Persist derived state only when rec
 Propagate failures or report them with enough context to diagnose them, without exposing secrets. No swallowed errors or success-shaped defaults that hide failure. Fallback behavior must report what failed, what was skipped, and what safety boundary still holds.
 
 ## Every retained fix gets a test
-Defer test authoring, fixture updates, and test scaffolding during iteration, following [Exploration and shipping](local-review.md#exploration-and-shipping). Complete required coverage before the shipping push once the user ends iteration.
+During iteration, write the smallest reproducer or test that resolves the current uncertainty. Defer broad scaffolding and unrelated coverage. Complete required regression evidence before shipping; [Exploration and shipping](local-review.md#exploration-and-shipping) owns delivery timing.
 
 Retained bug fixes need CI regression evidence that fails on the old code and passes on the new code. Reuse an already-failing check or extend an existing case before adding a test, file, fixture, or harness. Test observable behavior, not implementation structure. A regression test does not justify retaining a review fix that created another defect; revert or simplify that fix before another mutation.
 
@@ -50,7 +41,7 @@ For nontrivial logic, name at least one invariant and assert it in a test or run
 Share the same business rules across modes (test/prod, paper/live, dev/staging). Confine mode-specific differences to adapters, configuration, or the I/O boundary. Similar-looking code with different responsibilities need not share an abstraction.
 
 ## Version your data boundaries
-When a model, algorithm, or data source changes in a way that affects decisions, rankings, persisted state, metrics, or user-visible behavior, establish a boundary (cohort, epoch, version) and ensure every downstream consumer honors it. Reads that drive decisions must not blend data across the boundary; aggregating across it dilutes signal with noise from the old regime.
+Version changes to meaning, compatibility, or interpretation at the boundary consumers use. Preserve provenance so results remain attributable. Do not silently combine incompatible regimes; intentional cross-version comparisons or aggregation are valid when their semantics are comparable and explicit. An ordinary data refresh does not require a new architecture or migration by itself.
 
 ## Separate behavior changes from tidying
 Keep functional changes separate from broad renames, formatting sweeps, dependency churn, and unrelated refactors. Separate commits or PRs make the behavior change easier to review, bisect, and revert.
@@ -62,4 +53,4 @@ Before a destructive or one-way operation, define how failure leaves a known rec
 Changes to public APIs, config files, schemas, CLIs, hooks, templates, and generated artifacts need a compatibility or migration plan. Account for downstream consumers that may lag during rollout.
 
 ## Audit weak-point classes
-When you find a structural bug, search for other instances and add a guardrail against recurrence. Follow [audit-weak-points.md](audit-weak-points.md) for bounded scope, prioritization, and follow-up.
+When you find a structural bug, search the relevant callers and sibling paths. Reuse regression coverage; add a broader guardrail only when recurrence and reliable detection justify it. Follow [audit-weak-points.md](audit-weak-points.md) for bounded scope, prioritization, and follow-up.

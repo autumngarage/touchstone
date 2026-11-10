@@ -8,6 +8,16 @@ guidance names an executable boundary for one operation, use it; that boundary
 may sequence and reconcile these commands, but it may never replace GitHub's
 verdict or make the raw recovery path unavailable.
 
+## Read the path you need
+
+For ordinary delivery, use the required workflow in the shared steering and
+[the lifecycle](#the-lifecycle), then the section for the operation at hand:
+[opening a PR](#opening-a-pr), review disposition, merging, and closeout.
+The recovery sections are references for a concrete failure, not additional
+steps every change must perform. Preserve responsibility through merge; a
+pending check calls for waiting, a failing check calls for its evidence, and a
+passed check does not call for another round of speculative improvements.
+
 ## Never commit on the default branch
 
 **This is the one rule that makes everything else work.** Every code change — including a one-line typo fix, a doc tweak, a version bump, a README edit — starts on a feature branch. Committing directly to `main` (or `master`) bypasses PR review and the audit trail, and leaves you in a local state that's awkward to untangle without rewriting history someone else may already have pulled.

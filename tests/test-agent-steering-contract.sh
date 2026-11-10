@@ -116,6 +116,7 @@ for file in \
   assert_contains "$file" "answer what you are not fixing using the dispositions"
   assert_contains "$file" "consider P2, P3, or unbadged feedback"
   assert_contains "$file" "briefly answer and resolve; default to no further action"
+  assert_contains "$file" "no follow-up ticket unless requested"
   assert_not_contains "$file" "answer and route every P2"
   # The bounded-review rule: severity decides what gets implemented, and the
   # loop terminates. Without these an agent treats a reviewer that always has
@@ -161,6 +162,15 @@ assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
   "Choose the simplest design that meets the requirement"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
   "the fix is migration"
+
+# These contradictions caused unnecessary approval loops and review expansion.
+assert_not_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "stop and discuss scope before continuing"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "Proceed within existing authorization"
+assert_not_contains "$TOUCHSTONE_ROOT/principles/local-review.md" "fix the valid findings"
+assert_contains "$TOUCHSTONE_ROOT/principles/local-review.md" "Implement only the fixes that policy permits"
+assert_not_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" "Defer test authoring"
+assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" "smallest reproducer or test"
+assert_contains "$TOUCHSTONE_ROOT/principles/audit-weak-points.md" "recurring, reliably detectable defect"
 
 # A run of findings on one new surface is a design signal, not a work queue.
 # The badge governs a single finding and deliberately says nothing about a
@@ -672,17 +682,17 @@ assert_contains "$GIT_WORKFLOW_GUIDE" \
 
 echo "==> compiler scope and fixtures come from authoritative evidence"
 assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
-  "Bind that enumeration to a versioned source of truth"
+  "versioned specification or reproducible inventory"
 assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
-  "check in the supported inventory"
+  "supported input domains"
 assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
-  "Inputs absent from that source take the"
+  "Unknown formats take an"
 assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
-  "explicit/manual path"
+  "explicit unsupported/manual path"
 assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
   "captured real artifact"
 assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
-  "cannot define npm"
+  "rather than teaching a fake the same assumptions"
 assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" "Portfolio scope is checked-in data"
 
 CORPUS_ROOT="$TOUCHSTONE_ROOT/tests/fixtures/adoption-v1"
@@ -891,22 +901,22 @@ echo "==> Pre-implementation gate covers migration-state enumeration (issue #558
 # The canonical checklist owns the subsystem-removal gate: states derive from
 # the subsystem's persistence boundary (not a fixed global matrix), each supported state names
 # its source of truth and fail-closed behavior, and shims are explicitly
-# inert and time-bounded.
-assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "removing or replacing a subsystem"
-assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "persistence boundary"
+# owned, with a removal condition when temporary.
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "When migrating or replacing persisted/deployed behavior"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "persistence and deployment boundary"
 assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "source of truth"
-assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "fail-closed"
-assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "before the first review request"
-assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "time-bounded migration shims"
-assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "unmatched"
-assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "reviewable unit with adversarial boundary coverage"
-assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "serial test discovery"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "migration or explicit refusal"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "regression evidence"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "temporary shims a removal condition"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "unsupported-state case"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "smallest complete delivery unit"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "split or narrow scope"
 assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "effective"
-assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "where applicable"
-assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "domain can express"
-assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "non-filesystem"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "where relevant"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "supported input domains"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "only the boundaries this change reaches"
 assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "symlink"
-assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "malformed"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "invalid"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
   "migration-state matrix"
 # The principle syncs into downstream projects, where Touchstone-local PR and

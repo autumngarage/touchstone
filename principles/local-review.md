@@ -34,7 +34,7 @@ Split before committing if any are true:
   the same slice (rendered steering surfaces, compiled schemas). Those land
   together; splitting them ships a broken intermediate state.
 - The change cannot be explained in two sentences.
-- Validation requires multiple independent scenarios.
+- Validation reveals independently shippable behaviors, not merely multiple cases of one invariant.
 - A public-interface change plus its call-site migration obscures the intended
   behavioral change.
 
@@ -51,7 +51,7 @@ a pause in conversation, or the end of an agent turn is not that decision.
 An explicit instruction to implement and ship already authorizes the
 transition once the requested work is complete; do not ask again.
 
-While iterating, defer test authoring and scaffolding, final documentation,
+While iterating, use a minimal reproducer or new test when it resolves the current uncertainty. Defer broad scaffolding, final documentation,
 release notes, broad validation runs, and PR preparation and creation. Use
 the smallest manual check or existing test that answers the current
 uncertainty. Repeat a check only when relevant code or inputs change, it
@@ -241,7 +241,7 @@ Preparation is complete when deterministic checks pass (or are recorded as not
 applicable), the intended validation scenario passes, and the PR context is
 written. No tier owes a local review.
 
-After a hosted review round, fix the valid findings, **re-run every applicable
+After a hosted review round, classify findings using the severity and scope dispositions in `principles/git-workflow.md`. Implement only the fixes that policy permits, then **re-run every applicable
 deterministic check and the intended validation scenario** — a valid fix can
 break what already passed — and stop. If a fix materially changes the risk
 surface — a new serialization format, ownership or threading change, security

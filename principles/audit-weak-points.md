@@ -1,6 +1,6 @@
 # Audit One Weak-Point Class at a Time
 
-When you find a structural bug, don't just fix the one you noticed. The same pattern is almost certainly repeated elsewhere in the codebase — and the copies you don't find will bite you later.
+When you find a structural bug, don't just fix the one you noticed. Check whether the same cause exists in relevant sibling paths; do not assume a repository-wide defect without evidence.
 
 When the preceding review fix created the defect, the audit is a stop-before-edit step. Revert or simplify to the last known-good design, then search and classify the weak-point class before further edits. The audit does not authorize patching the failed implementation forward or absorbing every sibling into the current PR.
 
@@ -12,11 +12,11 @@ When the preceding review fix created the defect, the audit is a stop-before-edi
 
 3. **Produce a ranked punch-list.** Sort by production impact, not by how easy they are to fix. The instance that silently corrupts data in a hot path matters more than the one in a rarely-used utility.
 
-4. **Fix in tiers, and track the tail.** Start with the highest-impact instances. Don't try to fix everything in one PR — large blast radius increases review risk and rollback cost. If you split the fix across PRs, commit the ranked list somewhere durable (issue, ADR, follow-up task) so the lower-priority instances don't get abandoned. Prefer landing the guardrail (step 6) in the first PR — it stops new copies while you work through the existing ones.
+4. **Fix in tiers, and track the tail.** Start with the highest-impact instances. Don't try to fix everything in one PR — large blast radius increases review risk and rollback cost. If you split the fix across PRs, commit the ranked list somewhere durable (issue, ADR, follow-up task) so the lower-priority instances don't get abandoned. Reuse existing regression evidence before adding a new guardrail.
 
 5. **Reset contaminated state where filtering doesn't work.** Some derived state (trained models, accumulated statistics, cached computations) can't be "filtered" to exclude pre-fix data — it has to be rebuilt from scratch. Identify these cases and handle them explicitly.
 
-6. **Add a guardrail.** Write a test or lint rule that catches the next instance of the pattern before it ships. This is the step that turns a one-time fix into a permanent improvement. Options:
+6. **Choose proportionate prevention.** Extend an existing behavioral test first. Add a broader lint or structural rule only for a recurring, reliably detectable defect with tolerable false positives. Do not build a new scanner for a one-off mistake. Options when justified:
    - AST-based test that scans for the anti-pattern
    - Lint rule (custom or built-in)
    - Integration test that exercises the failure mode
