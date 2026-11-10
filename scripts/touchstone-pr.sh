@@ -4665,7 +4665,7 @@ refuse_evicted_head() {
     disarmed="; its armed auto-merge request was disarmed so GitHub does not re-queue this head meanwhile"
   fi
   fail_input "PR #$number head $head was removed from the merge queue at ${MERGE_QUEUE_EVICTED_AT:-an unknown time} (${MERGE_QUEUE_EVICTION_REASON:-no reason recorded}) and nothing has changed since; re-queueing it would repeat the eviction, so no merge was requested$disarmed" \
-    "Fix the failing check on a new head, push it, then run touchstone pr merge $number --head <new head>. touchstone pr status $number shows the eviction."
+    "Fix the failing check on a new head, push it, then run touchstone pr merge $number --head <new head>. If the removing check failed for a reason that is not this head (a refused runner admission, a lost runner, a hang), re-queue it once with touchstone pr merge $number --head $head --retry-after-flake \"<run and why it was not this head>\". touchstone pr status $number shows the eviction."
 }
 
 # One re-queue of an evicted head, when the ejection was a flake: the check

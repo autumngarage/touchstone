@@ -806,6 +806,18 @@ for capacity_args in '--build-concurrency' '--no-queue --build-concurrency 6' '-
   bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary $capacity_args >/dev/null 2>&1 || capacity_rc=$?
   [ "$capacity_rc" = 2 ] || fail "invalid queue capacity combination '$capacity_args' did not exit 2"
 done
+for batch in 1 4 100; do
+  queue_batch="$(bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary --merge-batch "$batch")"
+  diff -u <(jq -S --argjson n "$batch" '.managedRepositoryRuleset.rules |= map(if .type == "merge_queue" then .parameters.max_entries_to_merge = $n else . end)' <<<"$queue_default") \
+    <(jq -S . <<<"$queue_batch") >/dev/null \
+    || fail "merge batch $batch changed something besides the native merge-group size"
+done
+for batch_args in '--merge-batch' '--merge-batch 0' '--merge-batch 101' '--no-queue --merge-batch 4' '--merge-batch 4 --merge-batch 2'; do
+  batch_rc=0
+  # shellcheck disable=SC2086
+  bash "$ROOT/scripts/derive-consumer-policy.sh" touchstone-policy-canary $batch_args >/dev/null 2>&1 || batch_rc=$?
+  [ "$batch_rc" = 2 ] || fail "invalid merge batch '$batch_args' did not exit 2"
+done
 ok "native capacity accepts 1 through 100 without changing merge/review policy and rejects invalid declarations"
 # Stock macOS /bin/bash is 3.2; the empty --require-status case must derive
 # there too (set -u and empty arrays are where 3.2 differs).
@@ -899,6 +911,7 @@ for consumer in "$ROOT"/policy/github/consumers/*.json; do
   validation_revision="$(jq -r '.workflowSource.validationRevision // empty' "$consumer")"
   [ -z "$validation_revision" ] || derive_flags+=(--validation-revision "$validation_revision")
   consumer_concurrency=""
+  consumer_batch=1
   if jq -e '.managedRepositoryRuleset == null' "$consumer" >/dev/null; then
     derive_flags+=(--no-queue)
     status_flag=--require-status
@@ -906,6 +919,8 @@ for consumer in "$ROOT"/policy/github/consumers/*.json; do
     status_flag=--require-merge-group-status
     consumer_concurrency="$(jq -r '.managedRepositoryRuleset.rules[] | select(.type == "merge_queue") | .parameters.max_entries_to_build' "$consumer")"
     derive_flags+=(--build-concurrency "$consumer_concurrency")
+    consumer_batch="$(jq -r '.managedRepositoryRuleset.rules[] | select(.type == "merge_queue") | .parameters.max_entries_to_merge' "$consumer")"
+    [ "$consumer_batch" = 1 ] || derive_flags+=(--merge-batch "$consumer_batch")
   fi
   while IFS= read -r context; do
     [ -n "$context" ] && derive_flags+=("$status_flag" "$context")
@@ -921,6 +936,7 @@ for consumer in "$ROOT"/policy/github/consumers/*.json; do
   derive_hint=()
   [ -z "$validation_revision" ] || derive_hint+=(--validation-revision "$validation_revision")
   [ -z "$consumer_concurrency" ] || derive_hint+=(--build-concurrency "$consumer_concurrency")
+  [ "$consumer_batch" = 1 ] || derive_hint+=(--merge-batch "$consumer_batch")
   while IFS= read -r set_name; do
     [ -n "$set_name" ] || continue
     [ -n "$consumer_sets_dir" ] || consumer_sets_dir="$(mktemp -d -t touchstone-consumer-pathset.XXXXXX)"

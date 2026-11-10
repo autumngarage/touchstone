@@ -4,7 +4,7 @@
 # policy from the canonical Touchstone policy.
 #
 # Usage:
-#   bash scripts/derive-consumer-policy.sh REPOSITORY [--no-queue] [--build-concurrency N]
+#   bash scripts/derive-consumer-policy.sh REPOSITORY [--no-queue] [--build-concurrency N] [--merge-batch N]
 #     [--validation-revision FULL_SHA]
 #     [--require-status CONTEXT]...
 #     [--require-merge-group-status CONTEXT]...
@@ -38,7 +38,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 usage() {
-  echo "usage: derive-consumer-policy.sh REPOSITORY [--no-queue] [--build-concurrency N] [--validation-revision FULL_SHA] [--require-status CONTEXT]... [--require-merge-group-status CONTEXT]... [--path-set NAME=FILE]..." >&2
+  echo "usage: derive-consumer-policy.sh REPOSITORY [--no-queue] [--build-concurrency N] [--merge-batch N] [--validation-revision FULL_SHA] [--require-status CONTEXT]... [--require-merge-group-status CONTEXT]... [--path-set NAME=FILE]..." >&2
   exit 2
 }
 REPOSITORY="${1:-}"
@@ -48,6 +48,7 @@ esac
 shift
 QUEUE=true
 QUEUE_BUILD_CONCURRENCY=""
+QUEUE_MERGE_BATCH=""
 VALIDATION_REVISION=""
 STATUS_CONTEXTS=()
 # Counted explicitly: under bash 3.2 with set -u, ${#array[@]} on an empty
@@ -70,6 +71,14 @@ while [ "$#" -gt 0 ]; do
       # avoid jq accepting non-numeric input or shell octal/overflow surprises.
       [[ "$2" =~ ^[1-9][0-9]{0,2}$ ]] && [ "$2" -le 100 ] || usage
       QUEUE_BUILD_CONCURRENCY="$2"
+      shift 2
+      ;;
+    --merge-batch)
+      [ "$#" -ge 2 ] || usage
+      [ -z "$QUEUE_MERGE_BATCH" ] || usage
+      # The native merge-group size range is 1..100, canonical decimals.
+      [[ "$2" =~ ^[1-9][0-9]{0,2}$ ]] && [ "$2" -le 100 ] || usage
+      QUEUE_MERGE_BATCH="$2"
       shift 2
       ;;
     --validation-revision)
@@ -136,8 +145,8 @@ while [ "$#" -gt 0 ]; do
     *) usage ;;
   esac
 done
-if [ "$QUEUE" = false ] && [ -n "$QUEUE_BUILD_CONCURRENCY" ]; then
-  echo "derive-consumer-policy.sh: --build-concurrency needs the merge queue" >&2
+if [ "$QUEUE" = false ] && [ -n "$QUEUE_BUILD_CONCURRENCY$QUEUE_MERGE_BATCH" ]; then
+  echo "derive-consumer-policy.sh: --build-concurrency and --merge-batch need the merge queue" >&2
   exit 2
 fi
 # A pull-request status cannot gate a queued consumer: the queue commit would
@@ -196,7 +205,7 @@ if [ "$PATH_SET_COUNT" -gt 0 ]; then
   done
 fi
 
-derived="$(jq --arg repo "$REPOSITORY" --arg validationRevision "$VALIDATION_REVISION" --argjson queue "$QUEUE" --argjson contexts "$contexts_json" --argjson pathSets "$path_sets_json" --argjson buildConcurrency "${QUEUE_BUILD_CONCURRENCY:-null}" '
+derived="$(jq --arg repo "$REPOSITORY" --arg validationRevision "$VALIDATION_REVISION" --argjson queue "$QUEUE" --argjson contexts "$contexts_json" --argjson pathSets "$path_sets_json" --argjson buildConcurrency "${QUEUE_BUILD_CONCURRENCY:-null}" --argjson mergeBatch "${QUEUE_MERGE_BATCH:-null}" '
   .repository = $repo
   | .rollbackPrerequisites.repositoryFiles = []
   | .managedRuleset.name = "Touchstone policy v\(.contractVersion): \(.organization)/\($repo)@\(.branch)"
@@ -219,6 +228,9 @@ derived="$(jq --arg repo "$REPOSITORY" --arg validationRevision "$VALIDATION_REV
       .managedRepositoryRuleset.name = "Touchstone merge queue v\(.contractVersion): \(.organization)/\($repo)@\(.branch)"
       | if $buildConcurrency != null then
           .managedRepositoryRuleset.rules |= map(if .type == "merge_queue" then .parameters.max_entries_to_build = $buildConcurrency else . end)
+        else . end
+      | if $mergeBatch != null then
+          .managedRepositoryRuleset.rules |= map(if .type == "merge_queue" then .parameters.max_entries_to_merge = $mergeBatch else . end)
         else . end
     else
       .managedRepositoryRuleset = null
