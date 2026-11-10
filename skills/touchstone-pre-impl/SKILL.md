@@ -1,6 +1,6 @@
 ---
 name: touchstone-pre-impl
-description: Use before writing code on any non-trivial change — applies the 7-question pre-implementation gate (shared infra, root cause, code paths, public boundaries, reversibility, migration states, reviewability).
+description: Use before writing code on any non-trivial change — resolves engineering decisions about existing owners, scope, boundaries, and evidence; adds migration checks only when relevant.
 ---
 
 # Pre-Implementation Checklist

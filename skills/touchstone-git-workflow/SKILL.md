@@ -5,8 +5,9 @@ description: Use when committing, branching, opening a PR, watching PR reviews/c
 
 # Touchstone Git Workflow
 
-Read and follow **`principles/git-workflow.md`** for the delivery procedure,
-including its scope, review, recovery, and cleanup rules.
+Use **`principles/git-workflow.md`** as the delivery reference. Start with its
+lifecycle and the section for the current operation. Read recovery procedures
+when their trigger occurs, not as extra steps for every change.
 
 Before opening a PR, also read **`principles/local-review.md`** for work
 slicing, the review tier, and the PR's evidence. These documents own the

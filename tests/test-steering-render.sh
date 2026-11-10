@@ -295,6 +295,13 @@ bash "$INSTALL" install --home "$H1" >/dev/null
 for f in "${DRIVER_FILES[@]}"; do
   if grep -qF '## Touchstone — Shared Agent Steering' "$H1/$f" 2>/dev/null; then
     pass "$f carries the contract"
+    for guidance in 'test the uncertainty' 'Find the existing owner' 'Do not stop at a plan'; do
+      if grep -qF "$guidance" "$H1/$f"; then
+        pass "$f receives engineering and delivery guidance: $guidance"
+      else
+        fail "$f lost engineering and delivery guidance: $guidance"
+      fi
+    done
   else
     fail "$f did not receive the contract"
   fi

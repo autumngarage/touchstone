@@ -7,13 +7,13 @@
      Content outside the markers is the project's own. -->
 ## Touchstone — Shared Agent Steering
 
-You are an AI agent (Claude Code, Codex, or another driving CLI) working in a Touchstone-bootstrapped project. This block is the universal contract: rules that apply on every turn, plus a routing table to deeper docs you should consult when specific triggers fire. Project-specific guidance lives outside this block in your driver's steering doc (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`).
+This shared contract applies to Claude Code, Codex, and other driving CLIs. Use the routing table when its triggers apply. Project-specific guidance lives outside this block in `CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`.
 
 ## Purpose
 
 **Humans approve plans. Agents write and ship code. GitHub reviews code.**
 
-That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar.
+Machines own the code-quality bar; human review of a diff is not a merge precondition.
 
 GitHub's effective repository policy is the enforcement authority. Where the Touchstone policy is installed and verified, the protected validation workflow and required `review-gate` workflow must pass, every finding must be answered, every thread must be resolved, and native rules reject direct and force pushes and branch deletion; emergency admin bypass is limited to pull requests, where GitHub records it. Local hooks are fast feedback, not the boundary. Do not infer adoption from this document: inspect the repository's effective rules — and a repository without that enforcement still does not authorize a direct push.
 
@@ -28,7 +28,7 @@ To hold those lines, Touchstone does three things and nothing else:
 3. **Carry the contract** — the same rules reach every project and every agent, automatically.
    - **Every agent on a machine shares one GitHub REST quota.** Poll PR and check state no faster than every 2 min, GraphQL first; run `gh api rate_limit --hostname <host>` before bulk reads; never retry-loop on a rate limit (403 or 429) — wait for the reset.
 
-Before adding anything here, name which of the three it serves; if you cannot, it does not belong. "Is it useful?" is not the test: does it constrain the agent, or merely serve it? Automating what you can already do (retrying a push, recovering a moved base) belongs in the project, not here: you are the recovery mechanism.
+Add guidance only when it serves one of these three responsibilities. Keep project-specific recovery in the project.
 
 ## Agent Roles And Fallbacks
 
@@ -39,7 +39,7 @@ Before adding anything here, name which of the three it serves; if you cannot, i
 
 ## Engineering principles (always in mind)
 
-Non-negotiable. Every code change is reviewed against them. Full rationale lives in `principles/engineering-principles.md`.
+Use judgment within these boundaries. Find the existing owner, choose the smallest complete change, and test the uncertainty. Keep routine reasoning internal. Full guidance lives in `principles/engineering-principles.md`.
 
 - **No band-aids** — fix the root cause; if patching a symptom, say so explicitly and name the root cause.
 - **Extend existing systems** — search for the existing owner; improve it before adding a parallel system. Reuse follows responsibility.
@@ -51,17 +51,17 @@ Non-negotiable. Every code change is reviewed against them. Full rationale lives
 - **Every retained fix gets a test** — reuse or extend CI regression evidence that fails on old code; add only distinct defect coverage, with minimal fixtures. Never justify a fix-created regression.
 - **Think in invariants** — name and assert one for nontrivial logic; make invalid states hard to represent.
 - **One code path** — share business rules across modes; isolate differences at adapters/config/I/O.
-- **Version your data boundaries** — version decision-affecting model/algorithm/source changes; don't aggregate across.
+- **Version your data boundaries** — preserve provenance and compatibility; never silently combine incompatible meanings.
 - **Separate behavior changes from tidying** — keep unrelated renames, formatting, and refactors separate.
 - **Make irreversible actions recoverable** — plan recovery before mutation, including partial completion and retries.
 - **Preserve compatibility at boundaries** — public contracts and generated artifacts need compatibility or migration plans.
-- **Audit weak-point classes** — search sibling defects and add a guardrail; follow `principles/audit-weak-points.md`.
+- **Audit weak-point classes** — search relevant siblings; choose proportionate regression coverage; follow `principles/audit-weak-points.md`.
 - **File-writing subagents** — use worktrees; remove one only after final result delivery or confirmed cancellation.
 - **File tracked bugs** — file bugs found here or upstream in the configured tracker; review feedback follows the dispositions in `principles/git-workflow.md`.
 - **Checkpoint scope expansion before editing** — a follow-up approves doing the work, not bundling it. Route independent additions pre-edit; file count alone never decides.
 - **Keep review subordinate to scope** — review cannot amend approved scope. A review-fix defect stops patching. A second ends same-shape work.
 - **Count fix rounds; at three, take an exit** — one push of review-driven change is one round. Exits: merge-answered, revert-simplify, split, close-replan; more rounds is not one. Three fix rounds follow the capability across replacement PRs; closing or renaming never resets the budget.
-- **Stop when the task is correct** — deterministic gates first. **The badge is the bar: fix P0/P1; consider P2, P3, or unbadged feedback, briefly answer and resolve; default to no further action — never fix one here, and never reopen the design space.** **Exact-head review after a fix commit is never skipped** and never authorizes mutation past a stop.
+- **Stop when the task is correct** — deterministic gates first. **The badge is the bar: fix P0/P1; consider P2, P3, or unbadged feedback, briefly answer and resolve; default to no further action, including no follow-up ticket unless requested — never fix one here, and never reopen the design space.** **Exact-head review after a fix commit is never skipped** and never authorizes mutation past a stop.
 
 ## Never commit on the default branch
 
@@ -69,7 +69,7 @@ Before the first edit of a tracked file in a session, run `git branch --show-cur
 
 ## Required Delivery Workflow
 
-Branch and claim before edits; ship when the user ends iteration. See `principles/local-review.md`.
+Branch and claim before edits; ship when the user ends iteration. An explicit implement-and-ship request authorizes the full path: validate, review, merge, verify, and reconcile. Do not stop at a plan, passing tests, or an open PR. Keep one complete outcome per review unit; reuse unchanged evidence and stop expanding correct work. See `principles/local-review.md`.
 
 1. **Pull.** `git pull --rebase` on the default branch.
 2. **Branch.** Before any edit that might become a commit.

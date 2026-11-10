@@ -1,80 +1,33 @@
-# Pre-Implementation Checklist
+# Pre-Implementation Decisions
 
-Before writing code, walk through these questions. If any answer exposes duplicated infrastructure, a symptom patch, a second code path, or unclear ownership, stop and discuss scope before continuing.
+Resolve these questions from the repository before editing a non-trivial change. Keep routine answers internal; record decisions that affect scope, compatibility, or recovery. Proceed within existing authorization. Ask only when missing intent, unapproved scope, or material irreversible risk prevents a sound decision. A justified scoped patch or planned migration is not automatically a reason to stop.
 
-This checklist is a pre-flight prompt; the canonical rules live in [engineering-principles.md](engineering-principles.md).
+The canonical design guidance is [engineering-principles.md](engineering-principles.md). **Choose the simplest design that meets the requirement**; avoid turning the questions below into new machinery.
 
 ## 1. What existing system owns this responsibility?
 
-Search existing implementations and their callers before designing a new system. Name the owner you will extend, or the concrete requirement that needs a new one. Apply **Extend existing systems before inventing new ones** and **Choose the simplest design that meets the requirement** in the engineering principles. Keep any migration within approved scope.
+Trace its implementation, callers, tests, and recorded decisions. Extend that owner before creating another system. Prefer a standard library or existing dependency over a custom implementation. Reuse follows responsibility, not similar syntax; a new owner needs a concrete unmet requirement.
 
-## 2. Am I fixing the root cause or the symptom?
+## 2. What outcome and invariant must change?
 
-See **No band-aids** in the engineering principles. If this is a symptom patch, the PR must say so explicitly and name the root cause. Patching a symptom is sometimes the right call (time pressure, scope, risk) — but it must be a conscious, documented choice, not an accident.
+Name the observable before/after behavior and the invariant to preserve. Reproduce a bug at the smallest useful boundary before fixing it. A scoped symptom patch may be safer than a broad root-cause migration: explain why and track the unresolved cause.
 
-## 3. Will this create a second code path?
+## 3. What is the smallest complete delivery unit?
 
-See **One code path** in the engineering principles. If the same business rule will have parallel implementations, can you delete the old path in the same PR? If not, document the owner, removal condition, and follow-up issue. Distinct responsibilities and adapters are not duplicate business logic.
+Keep one independently acceptable outcome together, including callers and required generated artifacts. Multiple test scenarios do not imply multiple PRs. Split independent behavior or unrelated tidying, not an atomic migration. Temporary parallel implementations need an owner, removal condition, and tracked remainder.
 
-## 4. Am I changing a public boundary?
+## 4. Which boundaries can break?
 
-If this touches a public API, config file, schema, CLI flag, hook, template, or generated artifact, see **Preserve compatibility at boundaries** in the engineering principles. Downstream consumers may lag — the PR must include a compatibility or migration plan before merging.
+Inspect only the boundaries this change reaches: external input, public APIs, configuration, persisted data, authorization, resource lifetime, and deployed consumers. Preserve ownership and validation at the existing boundary. Name unsupported inputs and report failures explicitly; do not invent fallback success.
 
-## 5. Is this action reversible?
+## 5. How will correctness be demonstrated?
 
-If this deletes, migrates, rewrites history, or has external side effects, see **Make irreversible actions recoverable**. The PR must describe how failure leaves the system in a known recoverable state — dry run, backup, idempotency key, rollback, or forward-fix plan.
+Choose the smallest test that catches the actual defect; reuse existing fixtures. For external formats, use authoritative implementations or captured real artifacts rather than teaching a fake the same assumptions as the implementation. Cover meaningful ordinary, invalid, and boundary cases. Record what was not checked. Follow [local-review.md](local-review.md) for delivery evidence and review disposition.
 
-## 6. Am I removing or replacing a subsystem with existing persisted or deployed state?
+## When migrating or replacing persisted/deployed behavior
 
-Removals look clean in a fresh checkout and break in the field, one starting state at a time — each edge case discovered by an external reviewer one head after another instead of enumerated up front. The gate fires on **any existing persisted or deployed state**, whoever owns it: user-visible config and artifacts, but equally system- or operator-owned state such as database schemas, queued work, cache contents, and internal checkpoints. Before the first review request, enumerate the observable starting states **derived from this subsystem's own persistence boundary** — its config files, generated artifacts, installed hooks and skills, CLI entry points, downstream copies, schemas, queues, and checkpoints. Do not work from a fixed global matrix; the states that matter are wherever *this* subsystem actually persists itself.
+Derive supported starting states from the actual persistence and deployment boundary, including mixed versions where rollout permits them. For each materially different state, identify the invariant, source of truth, migration or explicit refusal, and regression evidence. Test partial completion and recovery; preserve recoverable data. Include an unsupported-state case when that state can occur. Keep compatibility shims owned and give temporary shims a removal condition.
 
-For each state you decide to support, write down:
+## When translating external declarations into actions
 
-- the **invariant** that must hold after the change;
-- the **source of truth** that decides that state's outcome;
-- the **fail-closed behavior** when an input matches no supported state — an explicit error naming the replacement, never silence;
-- a **regression fixture** exercising that state, landed before the first review request — not added one reviewer round at a time.
-
-The fail-closed fallback is itself a state to verify: include a dedicated fixture that presents an unmatched or unsupported persisted-state combination and asserts the explicit error, so the safeguard is exercised rather than assumed.
-
-Distinguish **active compatibility** (behavior the new code keeps indefinitely) from **inert, time-bounded migration shims** (warn-and-rewrite paths with a named removal version or condition). The distinction sets lifetime expectations — it exempts nothing: every executable compatibility shim is a temporary second code path and carries all of question 3's controls (named owner, removal condition, follow-up issue) until it is deleted. A named expiry bounds the drift window; it does not remove the drift.
-
-A bounded example, removing a config-file-backed subsystem: fresh project (no config → defaults, doctor clean); current project (modern config → behavior unchanged); legacy-only (retired file → migrate or fail closed with the migration command); mixed (both files → named precedence); retired CLI flags and subcommands (explicit error naming the replacement); stale downstream copies (update path reconciles or refuses loudly). Your subsystem's boundary decides which of these exist and which additional ones do.
-
-## 7. Is this a reviewable unit with adversarial boundary coverage?
-
-A PR that translates external declarations into commands, policy, generated
-files, or mutations is a compiler even when it is written as a small script.
-Before implementation, name its single correctness invariant and enumerate the
-independent input domains it accepts. If the change spans multiple ecosystems,
-protocols, or parsers that can be validated independently, split them into
-separate review units. Shared plumbing may land first; breadth is not evidence
-that the behaviors belong in one PR.
-
-Bind that enumeration to a versioned source of truth. If scope is an installed
-fleet or portfolio, check in the supported inventory or a reproducible snapshot
-before writing detectors. A phrase such as "shapes currently in use" is not a
-boundary until the shapes are named. Inputs absent from that source take the
-explicit/manual path; they do not justify speculative parser branches.
-
-For every retained input domain, map the effective discovery roots and the
-inputs execution will actually observe. Derive the fixture matrix from states
-that domain can express: cover a representative normal case plus missing,
-empty, and malformed inputs where applicable; for filesystem-backed domains,
-also cover inherited and child-local configuration plus ignored and symlinked
-paths where those states exist. Do not invent meaningless filesystem fixtures
-for API payloads, database records, or other non-filesystem declarations. When
-static verification cannot prove the generated behavior will run from a clean
-checkout, refuse with a manual or explicit path instead of guessing.
-
-Fixtures that claim compatibility with an external format or tool must come
-from the authoritative implementation or a captured real artifact. A fake
-executable may test transport and failure handling, but it cannot define npm,
-uv, Cargo, GitHub, or another vendor's semantics. Keep live differential trials
-off the required offline gate, record their versions, and promote discovered
-artifacts into deterministic fixtures before the first review request.
-
-The reviewability test is concrete: a reviewer should be able to falsify one
-named invariant across a bounded fixture matrix. If the matrix keeps acquiring
-new dimensions while implementation proceeds, stop and split or narrow the
-design before review turns into serial test discovery.
+Define the supported input domains from a versioned specification or reproducible inventory. Inspect effective inputs, including inherited configuration and symlinks where relevant. Unknown formats take an explicit unsupported/manual path. Prove generated actions with a focused execution check when static inspection is insufficient; do not claim execution from source inspection alone. If independent domains keep expanding the design, split or narrow scope before adding more branches.
