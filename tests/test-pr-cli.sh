@@ -963,6 +963,11 @@ case "$1 ${2:-}" in
   "api --paginate")
     if has 'rules/branches/' "$@"; then
       serve_rules "$@"
+    elif has '/actions/runs/95/attempts/1/jobs?per_page=100' "$@"; then
+      # The macOS run whose required job was never created: only the classifier ran.
+      printf '%s\n' '{"jobs":[{"id":9501,"name":"Classify changes","run_attempt":1,"status":"completed","conclusion":"success","steps":[{"name":"Set up job"}]}]}'
+    elif has "commits/$GH_HEAD/check-runs?per_page=100" "$@"; then
+      printf '%s\n' '{"check_runs":[{"name":"review-gate","app":{"slug":"github-actions"},"status":"completed","conclusion":"success"}]}'
     elif has '/actions/runs/88/attempts/1/jobs?per_page=100' "$@"; then
       if [ "${GH_MODE:-ok}" = status_gate_new_run_race ]; then
         printf '%s\n' '{"jobs":[{"id":89,"name":"review-gate","run_attempt":1,"status":"in_progress","conclusion":null}]}'
@@ -983,11 +988,13 @@ case "$1 ${2:-}" in
         status_gate_pending | status_gate_run_recency)
           printf '%s\n' '{"jobs":[{"id":81,"name":"review-gate","run_attempt":2,"status":"in_progress","conclusion":null}]}' ;;
         status_gate_failure | status_gate_collision)
-          printf '%s\n' '{"jobs":[{"id":82,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"failure"}]}' ;;
+          printf '%s\n' '{"jobs":[{"id":82,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"failure","steps":[{"name":"Review","status":"completed","conclusion":"failure","number":2}]}]}' ;;
         status_gate_cancelled)
           printf '%s\n' '{"jobs":[{"id":82,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"cancelled"}]}' ;;
-        status_gate_workflow_cancelled | status_gate_workflow_failure)
+        status_gate_workflow_cancelled | status_gate_zero_jobs)
           printf '%s\n' '{"jobs":[]}' ;;
+        status_gate_workflow_failure)
+          printf '%s\n' '{"jobs":[{"id":82,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"failure","steps":[{"name":"Review","status":"completed","conclusion":"failure","number":2}]}]}' ;;
         status_gate_success | status_gate_historical)
           printf '%s\n' '{"jobs":[{"id":84,"name":"review-gate","run_attempt":2,"status":"completed","conclusion":"success"}]}' ;;
         status_gate_status_race)
@@ -1007,7 +1014,9 @@ case "$1 ${2:-}" in
     elif has '/actions/runs/80/attempts/2/jobs?per_page=100' "$@"; then
       # A real evidence verdict ran its steps before failing; the job GitHub
       # refused on hesperus#354 (run 34491554998) ran none (AUT-1594).
-      if [ "${GH_MODE:-ok}" = actions_refused ]; then
+      if [ "${GH_MODE:-ok}" = evidence_zero_jobs ]; then
+        printf '%s\n' '{"total_count":0,"jobs":[]}'
+      elif [ "${GH_MODE:-ok}" = actions_refused ]; then
         printf '%s\n' '{"total_count":1,"jobs":[{"id":102919303957,"run_id":80,"workflow_name":"delivery-evidence","name":"delivery-evidence","run_attempt":2,"status":"completed","conclusion":"failure","steps":[],"check_run_url":"https://api.github.com/repos/autumngarage/current/check-runs/102919303957","labels":["ubuntu-latest"],"runner_id":0,"runner_name":""}]}'
       else
         printf '%s\n' '{"total_count":1,"jobs":[{"id":102919300001,"run_id":80,"name":"delivery-evidence","run_attempt":2,"status":"completed","conclusion":"failure","steps":[{"name":"Set up job","status":"completed","conclusion":"success","number":1},{"name":"Check delivery evidence","status":"completed","conclusion":"failure","number":2}]}]}'
@@ -1026,7 +1035,7 @@ case "$1 ${2:-}" in
         status_gate_cancelled)
           jq -cn --arg head "$GH_HEAD" '{check_runs:[{id:82,name:"review-gate",head_sha:$head,check_suite:{id:900},status:"completed",conclusion:"cancelled",details_url:"https://example.test/runs/82",output:{title:"Review evaluation cancelled",summary:"Inspect the workflow run."}}]}'
           ;;
-        status_gate_workflow_cancelled | status_gate_workflow_failure)
+        status_gate_workflow_cancelled | status_gate_workflow_failure | status_gate_zero_jobs)
           jq -cn '{check_runs:[]}'
           ;;
         status_gate_success | status_gate_historical)
@@ -1357,6 +1366,20 @@ case "$1 ${2:-}" in
         | jq -r "$(value_after --jq "$@")"
       exit 0
     fi
+    # A failed job's log: the summary job of a matrix that GitHub abandoned
+    # prints the result it was handed (job-log-result), a test failure prints "failure".
+    if has '/actions/jobs/' "$@" && has '/logs' "$@"; then
+      printf '2026-11-09T18:40:59.1Z   PLAN_RESULT: success\n2026-11-09T18:40:59.2Z   GROUPS_RESULT: %s\n' "$(cat "$GH_STATE/job-log-result" 2>/dev/null || echo failure)"
+      exit 0
+    fi
+    if has '/contents/.github/workflows/macos.yml' "$@"; then
+      printf 'jobs:\n  classify:\n    name: Classify changes\n  app:\n    name: powershell-tests\n'
+      exit 0
+    fi
+    if has "commits/$GH_HEAD/status" "$@"; then
+      printf '%s\n' '{"statuses":[{"context":"convoy/delivery-protocol","state":"success"}]}'
+      exit 0
+    fi
     if has '/check-runs/' "$@" && has '/annotations' "$@"; then
       if [ -f "$GH_STATE/annotations-unreadable" ]; then
         printf 'gh: Not Found (HTTP 404)\n' >&2
@@ -1598,7 +1621,7 @@ case "$1 ${2:-}" in
           status_gate_run_recency)
             gate_attempt=3
             ;;
-          status_gate_failure | status_gate_collision | status_gate_refused | actions_refused | status_gate_workflow_failure)
+          status_gate_failure | status_gate_collision | status_gate_refused | actions_refused | status_gate_workflow_failure | status_gate_zero_jobs)
             gate_status=completed
             gate_conclusion_json='"failure"'
             ;;
@@ -1629,7 +1652,7 @@ case "$1 ${2:-}" in
           gate_started_at="$(jq -nr --argjson started "$(( $(date -u +%s) - 300 ))" '$started | todateiso8601')"
         fi
         evidence_conclusion="${GH_EVIDENCE_CONCLUSION:-success}"
-        case "${GH_MODE:-ok}" in delivery_evidence_failure | actions_refused) evidence_conclusion=failure ;; esac
+        case "${GH_MODE:-ok}" in delivery_evidence_failure | actions_refused | evidence_zero_jobs) evidence_conclusion=failure ;; esac
         [ ! -f "$GH_STATE/evidence-reruns" ] || evidence_conclusion=success
         runs="{\"workflow_runs\":[
           {\"id\":77,\"node_id\":\"RUN_77\",\"name\":\"review-gate\",\"head_sha\":\"$GH_HEAD\",\"check_suite_id\":900,\"run_attempt\":$gate_attempt,\"event\":\"pull_request\",\"status\":\"$gate_status\",\"conclusion\":$gate_conclusion_json,\"workflow_id\":999,\"run_started_at\":\"$gate_started_at\",\"updated_at\":\"2026-08-27T17:30:00Z\",\"pull_requests\":[{\"number\":7}]},
@@ -1738,6 +1761,9 @@ case "$1 ${2:-}" in
       fi
       if [ -f "$GH_STATE/local-evidence-rule" ]; then
         runs="$(printf '%s' "$runs" | jq -c '{workflow_runs: [.workflow_runs[] | select(.id != 80)]}')"
+      fi
+      if [ -f "$GH_STATE/macos-run-only" ]; then
+        runs='{"workflow_runs":[{"id":95,"node_id":"RUN_95","name":"macOS","path":".github/workflows/macos.yml","head_sha":"'"$GH_HEAD"'","run_attempt":1,"event":"pull_request","status":"completed","conclusion":"success","workflow_id":1003,"run_started_at":"2026-08-27T17:05:00Z","pull_requests":[{"number":7}]}]}'
       fi
       if [ "${GH_LAYER_NUMBER:-7}" = 6 ]; then
         runs="$(jq -c '(.workflow_runs[].pull_requests[] | select(.number == 7) | .number) = 6' <<<"$runs")"
@@ -2516,6 +2542,71 @@ BODY
   assert_has "$TMP/out" 're-run each refused run (gh api --hostname github.com -X POST repos/autumngarage/current/actions/runs/77/rerun)'
   assert_not_has "$TMP/out" 'answer the reported findings'
   assert_not_has "$GH_CALLS" 'pr merge'
+
+  echo "==> status names a required run with no jobs as stuck, never as waiting or findings (AUT-3920)"
+  GH_MODE=status_gate_zero_jobs run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"stuckRuns":[{"state":"no-jobs","workflow":"review-gate","workflowRunId":77,"attempt":2,'
+  assert_has "$TMP/out" '"statusPage":"https://www.githubstatus.com","recovery":"gh run rerun 77"'
+  assert_has "$TMP/out" '"phase":"action-required","nextAction":"inspect"'
+  assert_not_has "$TMP/out" 'failureMayBeWaiting'
+  GH_MODE=status_gate_zero_jobs run_pr "$TMP/out" status 7
+  assert_has "$TMP/out" 'stuck run: review-gate run 77 attempt 2 is stuck (no-jobs), neither waiting nor an ordinary failure: the run concluded failure and GitHub created no jobs'
+  assert_has "$TMP/out" 'Check https://www.githubstatus.com for a GitHub Actions incident; once Actions is healthy, run: gh run rerun 77'
+  assert_has "$TMP/out" 'next step: recover with: gh run rerun 77'
+  assert_not_has "$TMP/out" 'waiting for review'
+  assert_not_has "$GH_CALLS" 'actions/runs/77/rerun'
+  assert_not_has "$GH_CALLS" '-X POST'
+
+  echo "==> status names an abandoned matrix only on GitHub's own result, and a real test failure keeps its ordinary reading (AUT-3920)"
+  echo abandoned >"$TMP/state/job-log-result"
+  GH_MODE=status_gate_failure run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"state":"abandoned-matrix","workflow":"review-gate","workflowRunId":77,"attempt":2,'
+  assert_has "$TMP/out" '"recovery":"gh run rerun 77 --failed"'
+  echo failure >"$TMP/state/job-log-result"
+  GH_MODE=status_gate_failure run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_not_has "$TMP/out" 'stuckRuns'
+  assert_not_has "$TMP/out" 'gh run rerun'
+  assert_has "$TMP/out" '"phase":"fix-required"'
+  GH_MODE=status_gate_failure run_pr "$TMP/out" status 7
+  assert_not_has "$TMP/out" 'stuck run'
+  assert_not_has "$TMP/out" 'githubstatus'
+  rm -f "$TMP/state/job-log-result"
+
+  echo "==> status names a required job a completed run never created, from current work only (AUT-3920)"
+  touch "$TMP/state/consumer-status" "$TMP/state/macos-run-only"
+  GH_MODE=status_gate_success run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"state":"missing-job","workflow":"macOS","workflowRunId":95,"attempt":1,'
+  assert_has "$TMP/out" 'required context \"powershell-tests\" has no job in its current attempt'
+  assert_has "$TMP/out" '"recovery":"gh run rerun 95"'
+  assert_not_has "$TMP/out" 'convoy/delivery-protocol\" has no job'
+  assert_not_has "$GH_CALLS" '-X POST'
+  GH_MODE=status_gate_success run_pr "$TMP/out" status 7
+  assert_has "$TMP/out" 'stuck run: macOS run 95 attempt 1 is stuck (missing-job)'
+  rm -f "$TMP/state/consumer-status" "$TMP/state/macos-run-only"
+  GH_MODE=status_gate_success run_pr "$TMP/out" status 7 --json
+  assert_not_has "$TMP/out" 'stuckRuns'
+
+  echo "==> merge names a gate run with no jobs instead of reporting findings (AUT-3920)"
+  GH_MODE=status_gate_zero_jobs run_pr "$TMP/out" merge 7 --head "$HEAD_SHA"
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'review-gate run 77 attempt 2 is stuck (no-jobs)'
+  assert_has "$TMP/out" 'Recover with: gh run rerun 77'
+  assert_not_has "$TMP/out" 'answer the reported findings'
+  assert_not_has "$GH_CALLS" 'pr merge'
+
+  echo "==> open names a run with no jobs and keeps its single re-run (AUT-3920)"
+  touch "$TMP/state/review-gate" "$TMP/state/behavior-version-next" "$TMP/state/pr-exists"
+  rm -f "$TMP/state/gate-reruns" "$TMP/state/evidence-reruns" "$TMP/state/review-request"
+  GH_MODE=evidence_zero_jobs run_pr_v3 "$TMP/out" open --title 'Zero jobs' --body-file "$TMP/body"
+  assert_has "$TMP/out" 'delivery-evidence run 80 attempt 2 is stuck (no-jobs), neither waiting nor an ordinary failure'
+  assert_has "$TMP/out" 'once Actions is healthy, run: gh run rerun 80'
+  assert_has "$GH_CALLS" 'actions/runs/80/rerun'
+  rm -f "$TMP/state/behavior-version-next" "$TMP/state/pr-exists" "$TMP/state/pr-body" "$TMP/state/review-request" \
+    "$TMP/state/gate-reruns" "$TMP/state/evidence-reruns"
 
   echo "==> status reads delivery-evidence and validate refusals through the gate's reader (AUT-1610)"
   GH_MODE=actions_refused run_pr "$TMP/out" status 7 --json

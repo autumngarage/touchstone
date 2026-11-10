@@ -279,7 +279,19 @@ taking this document's word for it.
   head, and the queue's own checks are refused the same way. The refused runs
   themselves, and the one next step, are reported in every phase. Human output
   names each refused run and prints one next step, the refusal remedy naming
-  every refused run (AUT-1610). The adjacent
+  every refused run (AUT-1610). Three silent stuck states are named from
+  GitHub's recorded state, never from timers, in `status`, `merge` and `open`
+  (AUT-3920): a required run that concluded failure with no jobs (`no-jobs`);
+  a required context no current job, non-Actions check or commit status
+  reports, which a completed successful run's workflow file defines
+  (`missing-job`); and a failed summary job whose log carries GitHub's own
+  `abandoned` result (`abandoned-matrix`). `status` adds the additive
+  `stuckRuns` array of `{state, workflow, workflowRunId, attempt, detail,
+  statusPage, recovery, text}` and the phase `action-required` (`inspect`);
+  `recovery` is `gh run rerun <id>`, or `gh run rerun <id> --failed` for an
+  abandoned matrix. Nothing is re-run on this basis: `open` keeps its single
+  existing re-run. A failed run whose summary result is `failure` stays an
+  ordinary failure with no re-run hint. The adjacent
   `reviewGateBehaviorContractVersion` is the version verified at the effective
   exact pinned revision, or `null` when that live binding is not verified; PR
   clients use this field instead of inferring behavior from local policy bytes.
