@@ -55,6 +55,7 @@ Use judgment within these boundaries. Find the existing owner, choose the smalle
 - **One code path** — share business rules across modes; isolate differences at adapters/config/I/O.
 - **Version your data boundaries** — preserve provenance and compatibility; never silently combine incompatible meanings.
 - **Separate behavior changes from tidying** — keep unrelated renames, formatting, and refactors separate.
+- **Leave no residue** — comments give the present why, not history; retiring something removes its code, tests, and references.
 - **Make irreversible actions recoverable** — plan recovery before mutation, including partial completion and retries.
 - **Preserve compatibility at boundaries** — public contracts and generated artifacts need compatibility or migration plans.
 - **Audit weak-point classes** — search relevant siblings; choose proportionate regression coverage; follow `principles/audit-weak-points.md`.

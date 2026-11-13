@@ -46,6 +46,11 @@ Version changes to meaning, compatibility, or interpretation at the boundary con
 ## Separate behavior changes from tidying
 Keep functional changes separate from broad renames, formatting sweeps, dependency churn, and unrelated refactors. Separate commits or PRs make the behavior change easier to review, bisect, and revert.
 
+## Leave no residue
+Code describes the system as it is. A comment states what the code cannot: a constraint, an invariant, an external quirk, the reason for a non-obvious choice. It does not narrate how the code got here, such as an incident story, a date, "previously", or "no longer"; commits, pull requests, and decision records hold that history, and `git blame` reaches them. Keep an issue or decision reference only when it names the constraint a reader must respect.
+
+Retiring a feature, tool, role, client, or dependency is complete only when its code, tests, comments, configuration, suppression directives, and steering references are gone, in the same change or in a tracked follow-up whose done-evidence is an empty search for its name. Code that only its own tests call is dead; delete it with those tests. Prefer a cheap automated check (unused exports, unused imports, unreferenced symbols) over review to keep this true.
+
 ## Make irreversible actions recoverable
 Before a destructive or one-way operation, define how failure leaves a known recoverable state. Use appropriate safeguards: dry run, backup, idempotency, rollback, or forward-fix plan. Account for partial completion and retries; a successful run alone does not establish recoverability.
 
