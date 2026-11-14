@@ -2169,6 +2169,65 @@ EOF
   assert_has "$TMP/out" 'phase: armed-blocked'
   assert_has "$TMP/out" 'blocked by: 2 unresolved review thread(s)'
 
+  echo "==> an armed, unqueued conflict requires action even while checks run (AUT-4186)"
+  # Hesperus PR #2319: DIRTY, the same head still armed, no queue entry,
+  # a successful review gate, and validation checks still running.
+  touch "$TMP/state/status-conflicts"
+  GH_MODE=status_auto_merge run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"mergeState":"DIRTY"'
+  assert_has "$TMP/out" "\"autoMerge\":{\"armed\":true,\"enabledAt\":\"2026-08-24T20:00:00Z\",\"head\":\"$HEAD_SHA\"}"
+  assert_has "$TMP/out" '"mergeQueue":null,"mergeQueueEviction":null,"phase":"action-required","nextAction":"inspect"'
+  assert_has "$TMP/out" '"blockers":{"failedChecks":"","pendingChecks":"Build, test, and smoke (in_progress)","unresolvedThreads":0}'
+  assert_has "$TMP/out" '"status":"completed","conclusion":"success"'
+  grep -Eq '^(pr (merge|comment|review|edit|create) |api .*([-]X (POST|PUT|PATCH|DELETE)|mutation))' "$GH_CALLS" \
+    && fail "status mutated the armed PR" || true
+  GH_MODE=status_auto_merge run_pr "$TMP/out" status 7
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" 'phase: action-required'
+  assert_has "$TMP/out" 'next action: inspect'
+  assert_has "$TMP/out" 'merge state: DIRTY'
+  assert_has "$TMP/out" 'still running: Build, test, and smoke (in_progress)'
+  assert_not_has "$TMP/out" 'command:'
+  assert_not_has "$TMP/out" 'waiting on:'
+  grep -Eq '^(pr (merge|comment|review|edit|create) |api .*([-]X (POST|PUT|PATCH|DELETE)|mutation))' "$GH_CALLS" \
+    && fail "status mutated the armed PR" || true
+
+  # A workflow-source policy with no managed ruleset is genuinely queueless.
+  touch "$TMP/state/no-queue-rule"
+  : >"$GH_CALLS"
+  set +e
+  GH_MODE=status_auto_merge GH_FAKE_REPO=autumngarage/touchstone-workflows \
+    bash "$TMP/tool-queueless/bin/touchstone" pr status 7 --project "$TMP/project" --json >"$TMP/out" 2>&1
+  RUN_RC=$?
+  set -e
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"enforcement":{"status":"applied","missing":[]}'
+  assert_has "$TMP/out" '"mergeState":"DIRTY"'
+  assert_has "$TMP/out" '"autoMerge":{"armed":true'
+  assert_has "$TMP/out" '"mergeQueue":null,"mergeQueueEviction":null,"phase":"action-required","nextAction":"inspect"'
+  assert_not_has "$TMP/out" '"blockers"'
+  assert_not_has "$GH_CALLS" "/commits/$HEAD_SHA/check-runs?per_page=100"
+  grep -Eq '^(pr (merge|comment|review|edit|create) |api .*([-]X (POST|PUT|PATCH|DELETE)|mutation))' "$GH_CALLS" \
+    && fail "status mutated the armed PR" || true
+  rm -f "$TMP/state/no-queue-rule"
+
+  # A known queue entry or a confirmed eviction still owns the phase.
+  GH_MODE=status_gate_queued run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"mergeState":"DIRTY"'
+  assert_has "$TMP/out" '"mergeQueue":{"state":"AWAITING_CHECKS","position":1},"mergeQueueEviction":null,"phase":"queued","nextAction":"wait"'
+  GH_MODE=status_gate_queue_unmergeable run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"mergeState":"DIRTY"'
+  assert_has "$TMP/out" '"mergeQueue":{"state":"UNMERGEABLE","position":1},"mergeQueueEviction":null,"phase":"action-required","nextAction":"wait-queue-release","blockerReason":"queue-unmergeable"'
+  touch "$TMP/state/queue-evicted"
+  GH_MODE=status_auto_merge run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"mergeState":"DIRTY"'
+  assert_has "$TMP/out" '"phase":"evicted","nextAction":"inspect"'
+  rm -f "$TMP/state/status-conflicts" "$TMP/state/queue-evicted"
+
   echo "==> a PR closed without merging is closed, a terminal phase (AUT-511)"
   GH_MODE=status_closed run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0

@@ -3948,8 +3948,7 @@ PR_BLOCKER_REASON=""
 # cannot enforce it. The phase stays fix-required for compatibility, and this
 # says the failure may be a wait (AUT-1635).
 PR_GATE_FAILURE_MAY_BE_WAITING=false
-# Whether this classification read the head's blockers outside the armed
-# phases, which always do: the JSON carries them when it did.
+# Whether to include already-read blockers outside the usual armed phases.
 PR_HEAD_BLOCKERS_READ=false
 
 # A concluded review-gate failure. Under contracts 1-3 the gate waited for
@@ -4089,6 +4088,14 @@ classify_pr_phase() {
       return 0
     fi
     if [ "$ENFORCEMENT_QUEUE_APPLIED" = true ]; then
+      read_head_blockers "$number" "$head"
+    fi
+    # A known conflict needs action even while checks still run.
+    if [ "$merge_state" = DIRTY ]; then
+      PR_HEAD_BLOCKERS_READ="$ENFORCEMENT_QUEUE_APPLIED"
+      return 0
+    fi
+    if [ "$ENFORCEMENT_QUEUE_APPLIED" = true ]; then
       # Under a merge queue, an armed auto-merge request with no queue entry
       # is not "queued": GitHub has not admitted the head and nothing here
       # will land it. Reporting it as queued hid the difference between
@@ -4097,7 +4104,6 @@ classify_pr_phase() {
       # ordinary state of a fresh head, so say what GitHub is waiting on:
       # a check still running is a wait; a failed check or an unresolved
       # thread is what to inspect.
-      read_head_blockers "$number" "$head"
       if [ -n "$HEAD_FAILED_CHECKS" ] || [ "$HEAD_UNRESOLVED_THREADS" -gt 0 ]; then
         PR_PHASE=armed-blocked
         PR_NEXT_ACTION=inspect
@@ -4627,10 +4633,12 @@ status_pr() {
         "$(printf '%s' "$REVIEW_GATE_CHECK_JSON" | jq -r 'if .detailsUrl != null then "the gate run at \(.detailsUrl)" else "the log of review-gate workflow run \(.workflowRunId)" end')" \
         "$(review_gate_failure_recovery)"
     case "$PR_PHASE" in
-      armed-blocked)
-        [ -z "$HEAD_FAILED_CHECKS" ] || printf '  blocked by: %s\n' "$HEAD_FAILED_CHECKS"
-        [ "$HEAD_UNRESOLVED_THREADS" -eq 0 ] || printf '  blocked by: %s unresolved review thread(s)\n' "$HEAD_UNRESOLVED_THREADS"
-        [ -z "$HEAD_PENDING_CHECKS" ] || printf '  still running: %s\n' "$HEAD_PENDING_CHECKS"
+      armed-blocked | action-required)
+        if [ "$PR_PHASE" = armed-blocked ] || { [ "$merge_state" = DIRTY ] && [ "$PR_HEAD_BLOCKERS_READ" = true ]; }; then
+          [ -z "$HEAD_FAILED_CHECKS" ] || printf '  blocked by: %s\n' "$HEAD_FAILED_CHECKS"
+          [ "$HEAD_UNRESOLVED_THREADS" -eq 0 ] || printf '  blocked by: %s unresolved review thread(s)\n' "$HEAD_UNRESOLVED_THREADS"
+          [ -z "$HEAD_PENDING_CHECKS" ] || printf '  still running: %s\n' "$HEAD_PENDING_CHECKS"
+        fi
         ;;
       armed-waiting-checks) printf '  waiting on: %s\n' "$HEAD_PENDING_CHECKS" ;;
       answer-required)
