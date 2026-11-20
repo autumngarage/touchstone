@@ -3225,6 +3225,31 @@ await_review() {
   fi
 }
 
+# The target branch opts in. Running its committed adapter keeps a new branch
+# from introducing an executable merely by proposing a pull request.
+precheck_project_pr_body() {
+  local base_ref="$1" head="$2" check_path=.touchstone/pr-body-check.sh
+  local advertised base_sha checker output
+  project_git cat-file -e "refs/remotes/origin/$base_ref:$check_path" 2>/dev/null || return 0
+  advertised="$(project_git ls-remote --heads origin "refs/heads/$base_ref")" \
+    || fail_operation "could not read the PR body check's base $base_ref" "Retry once the remote is reachable."
+  base_sha="${advertised%%$'\t'*}"
+  [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]] \
+    || fail_operation "the PR body check did not get an exact base for $base_ref" "Verify the target branch."
+  if ! project_git cat-file -e "$base_sha^{commit}" 2>/dev/null; then
+    project_git fetch --no-tags origin "$base_sha" >&2 \
+      || fail_operation "could not fetch the PR body check's base $base_sha" "Retry once the remote is reachable."
+  fi
+  project_git cat-file -e "$base_sha:$check_path" 2>/dev/null || return 0
+  checker="$(project_git show "$base_sha:$check_path")" \
+    || fail_operation "could not read $check_path from $base_sha" "Repair the target branch's committed checker."
+  if ! output="$(cd "$PROJECT_ROOT" && bash -s -- --base "$base_sha" --head "$head" --body-file "$BODY_FILE" <<<"$checker" 2>&1)"; then
+    fail_input "the proposed PR body failed the repository check at $base_sha:
+$output" "Fix the proposed body and re-run. GitHub's required checks still decide merge."
+  fi
+  [ "$JSON_MODE" = true ] || printf '%s\n' "$output" >&2
+}
+
 # Fast feedback before anything is pushed-to, created or edited: run the exact
 # evidence checker the required delivery-evidence workflow runs, resolved the
 # way that workflow resolves it (effective rule pin -> the pinned source's
@@ -3387,6 +3412,7 @@ open_pr() {
     || fail_input "repository Actions are disabled for $REPO, so no required workflow can run and nothing would gate this pull request" \
       "$(actions_disabled_remedy | sed 's/^enable them: /Enable them: /'), then retry."
 
+  precheck_project_pr_body "$BASE_REF" "$local_head"
   if [ -n "$STACK_PARENT" ]; then
     printf 'Delivery-evidence precheck skipped: a stacked open resolves the pin per trunk. The required delivery-evidence gate on GitHub remains the authority.\n' >&2
   else
