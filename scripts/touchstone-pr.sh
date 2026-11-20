@@ -168,6 +168,7 @@ Usage:
   touchstone pr status PR [--project DIR] [--json]
   touchstone pr merge PR --head SHA [--unguarded] [--retry-after-flake EVIDENCE]
                       [--merge-request UUID] [--project DIR] [--json]
+  touchstone pr wait PR --head SHA [--project DIR] [--json]
   touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change)
   touchstone pr answer PR --finding ID --body-file FILE (--fix-commit SHA | --no-code-change)
   touchstone pr answer PR --all-resolved-check
@@ -559,7 +560,7 @@ require_option_value() {
 }
 
 case "$OPERATION" in
-  status | merge | await-review | wake-review-gate)
+  status | merge | wait | await-review | wake-review-gate)
     [ "$#" -ge 2 ] || usage
     PR_NUMBER="$2"
     case "$PR_NUMBER" in "" | *[!0-9]*) usage ;; esac
@@ -660,6 +661,12 @@ case "$OPERATION" in
   merge)
     [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_BRANCH" ] \
       || fail_input "merge received an option for another operation" "Use only --head, --unguarded, and --retry-after-flake."
+    ;;
+  wait)
+    [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_BRANCH" ] && [ "$UNGUARDED" = false ] && [ "$RETRY_AFTER_FLAKE_SET" = false ] \
+      || fail_input "wait received an option for another operation" "Use only --head, --project, and --json."
+    [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] \
+      || fail_input "wait requires --head with the full 40-character commit SHA" "Pass the head you pushed: git rev-parse HEAD."
     ;;
   await-review | wake-review-gate)
     [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_BRANCH" ] && [ -n "$EXPECTED_HEAD" ] \
@@ -3773,12 +3780,17 @@ MERGE_QUEUE_EVICTED=false
 MERGE_QUEUE_EVICTED_AT=""
 MERGE_QUEUE_EVICTION_REASON=""
 MERGE_QUEUE_EVICTION_BASE=""
+# What GitHub says about a pull request's merge-queue life, in one selection and one projection, so
+# `status` and `wait` read the same facts the same way: auto-merge, the live entry, and the newest queue
+# and head events (a removal that is the newest event means the head was ejected).
+QUEUE_OBSERVATION_SELECTION='autoMergeRequest{enabledAt} mergeQueueEntry{state position enqueuedAt} timelineItems(last:40,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT,PULL_REQUEST_COMMIT,HEAD_REF_FORCE_PUSHED_EVENT,BASE_REF_CHANGED_EVENT]){nodes{__typename ... on AddedToMergeQueueEvent{createdAt} ... on RemovedFromMergeQueueEvent{createdAt reason beforeCommit{oid}} ... on HeadRefForcePushedEvent{createdAt} ... on BaseRefChangedEvent{createdAt} ... on PullRequestCommit{commit{committedDate}}}}'
+QUEUE_OBSERVATION_FIELDS='autoMergeEnabledAt:(.autoMergeRequest.enabledAt // null),mergeQueueState:(.mergeQueueEntry.state // null),mergeQueuePosition:(.mergeQueueEntry.position // null),mergeQueueEnqueuedAt:(.mergeQueueEntry.enqueuedAt // null),queueEvents:[(.timelineItems.nodes // [])[] | {type:(if .__typename == "RemovedFromMergeQueueEvent" then "removed" elif .__typename == "AddedToMergeQueueEvent" then "added" elif .__typename == "BaseRefChangedEvent" then "base_changed" else "head_moved" end),createdAt:(.createdAt // .commit.committedDate // null),reason:(.reason // null),queueBase:(.beforeCommit.oid // null)}]'
 read_auto_merge_state() {
   local number="$1" expected_head="$2" observation eviction
   read_with_retry gh api graphql --hostname "$REPO_HOST" \
     -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F number="$number" \
-    -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid autoMergeRequest{enabledAt} mergeQueueEntry{state position enqueuedAt} timelineItems(last:40,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT,PULL_REQUEST_COMMIT,HEAD_REF_FORCE_PUSHED_EVENT,BASE_REF_CHANGED_EVENT]){nodes{__typename ... on AddedToMergeQueueEvent{createdAt} ... on RemovedFromMergeQueueEvent{createdAt reason beforeCommit{oid}} ... on HeadRefForcePushedEvent{createdAt} ... on BaseRefChangedEvent{createdAt} ... on PullRequestCommit{commit{committedDate}}}}}}}' \
-    --jq '.data.repository.pullRequest | {head:.headRefOid,autoMergeEnabledAt:(.autoMergeRequest.enabledAt // null),mergeQueueState:(.mergeQueueEntry.state // null),mergeQueuePosition:(.mergeQueueEntry.position // null),mergeQueueEnqueuedAt:(.mergeQueueEntry.enqueuedAt // null),queueEvents:[(.timelineItems.nodes // [])[] | {type:(if .__typename == "RemovedFromMergeQueueEvent" then "removed" elif .__typename == "AddedToMergeQueueEvent" then "added" elif .__typename == "BaseRefChangedEvent" then "base_changed" else "head_moved" end),createdAt:(.createdAt // .commit.committedDate // null),reason:(.reason // null),queueBase:(.beforeCommit.oid // null)}]}' \
+    -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid '"$QUEUE_OBSERVATION_SELECTION"'}}}' \
+    --jq '.data.repository.pullRequest | {head:.headRefOid,'"$QUEUE_OBSERVATION_FIELDS"'}' \
     || fail_operation "could not read auto-merge or merge-queue state for PR #$number: $READ_OUTPUT" "Retry after GitHub recovers."
   observation="$(printf '%s' "$READ_OUTPUT" | jq -ce '
     if (.head | type) != "string" or .head == "" then error("missing head")
@@ -5118,10 +5130,134 @@ Unguarded merge requested for head \`$head\` by \`touchstone pr merge --unguarde
   fi
 }
 
+# `wait` is the one tested command for "tell me when this pull request's queue life ends", so no agent writes
+# its own poller and reads the wrong field. It reads GitHub's own `state` and `mergeQueueEntry` and the PR's
+# queue events (the facts `status` reads), and ends on the first of five outcomes, each with its own exit code
+# and one sentence:
+#   0 merged · 10 removed from the merge queue · 11 closed without merging · 12 the head changed
+#   13 open, neither queued nor armed for auto-merge (nothing to wait for)
+# It reads at most once every two minutes (GraphQL, one point a read): a faster read helps nothing, because a
+# queue run takes minutes, and every agent on a machine shares one GitHub quota.
+WAIT_INTERVAL_SECONDS=120
+read_wait_observation() {
+  read_with_retry gh api graphql --hostname "$REPO_HOST" \
+    -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F number="$PR_NUMBER" \
+    -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){state headRefOid mergedAt mergeCommit{oid} '"$QUEUE_OBSERVATION_SELECTION"'}}}' \
+    || fail_operation "could not read PR #$PR_NUMBER: $READ_OUTPUT" "Retry after GitHub recovers."
+  WAIT_OBSERVATION="$(printf '%s' "$READ_OUTPUT" | jq -ce '
+    .data.repository.pullRequest
+    | select(type == "object" and (.headRefOid | type) == "string" and (.state | IN("OPEN", "CLOSED", "MERGED")))
+    | {state, head:.headRefOid, mergedAt, mergeCommit:(.mergeCommit.oid // null), '"$QUEUE_OBSERVATION_FIELDS"'}')" \
+    || fail_operation "GitHub returned a malformed observation for PR #$PR_NUMBER" "Retry after GitHub returns a complete pull-request observation."
+}
+
+# What the observation means, as one object: {outcome, ...}. `waiting` is the only outcome that continues.
+classify_wait_observation() {
+  printf '%s' "$WAIT_OBSERVATION" | jq -ce --arg head "$EXPECTED_HEAD" '
+    ((.queueEvents // []) | last) as $newest
+    | if .head != $head then {outcome:"head-changed", live:.head}
+      elif .state == "CLOSED" then {outcome:"closed"}
+      elif .state == "MERGED" then
+        (if (.mergeCommit | type) == "string" and (.mergeCommit | test("^[0-9a-f]{40}$")) then {outcome:"merged", mergeCommit:.mergeCommit, mergedAt:.mergedAt}
+         else error("merged without a merge commit") end)
+      elif .mergeQueueState != null then {outcome:"waiting", detail:("queued (" + .mergeQueueState + (if .mergeQueuePosition != null then ", position " + (.mergeQueuePosition | tostring) else "" end) + ")")}
+      elif $newest != null and $newest.type == "removed" then {outcome:"removed", at:($newest.createdAt // null), reason:($newest.reason // null)}
+      elif .autoMergeEnabledAt != null then {outcome:"waiting", detail:"auto-merge armed, not yet queued"}
+      else {outcome:"not-queued"} end'
+}
+
+# The check that failed on the queue's candidate for this PR: the newest merge_group run for it that did not
+# succeed, and its failed jobs. A merge-queue candidate is a branch named gh-readonly-queue/<base>/pr-<N>-<sha>.
+# What cannot be read is said, never skipped.
+WAIT_FAILED_CHECKS='[]'
+WAIT_FAILED_NOTE=""
+read_failed_queue_checks() {
+  local run
+  WAIT_FAILED_CHECKS='[]'
+  WAIT_FAILED_NOTE=""
+  if ! read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs?event=merge_group&per_page=100"; then
+    WAIT_FAILED_NOTE="the queue's runs could not be read: $(clean_diagnostic "$READ_OUTPUT")"
+    return 0
+  fi
+  run="$(printf '%s' "$READ_OUTPUT" | jq -c --arg pr "$PR_NUMBER" '
+    [.workflow_runs[]? | select((.head_branch // "") | test("^gh-readonly-queue/.+/pr-" + $pr + "-[0-9a-f]+$"))
+      | select(.status == "completed" and (.conclusion | IN("failure", "timed_out")))]
+    | sort_by(.created_at) | last // empty | {id, name, url:.html_url}')" || run=""
+  if [ -z "$run" ]; then
+    WAIT_FAILED_NOTE="no failed merge-queue run for this PR is among the queue's latest 100"
+    return 0
+  fi
+  if ! read_with_retry gh api --hostname "$REPO_HOST" "repos/$REPO/actions/runs/$(printf '%s' "$run" | jq -r .id)/jobs?per_page=100"; then
+    WAIT_FAILED_NOTE="the failed run's jobs could not be read: $(clean_diagnostic "$READ_OUTPUT")"
+    return 0
+  fi
+  WAIT_FAILED_CHECKS="$(printf '%s' "$READ_OUTPUT" | jq -c --argjson run "$run" '
+    [.jobs[]? | select(.conclusion | IN("failure", "timed_out")) | {name, runId:$run.id, url:(.html_url // $run.url)}]')" \
+    || WAIT_FAILED_CHECKS='[]'
+  [ "$WAIT_FAILED_CHECKS" != "[]" ] || WAIT_FAILED_NOTE="run $(printf '%s' "$run" | jq -r .id) failed with no failed job to name: $(printf '%s' "$run" | jq -r .url)"
+}
+
+wait_pr() {
+  local result outcome message code="" last="" detail head="$EXPECTED_HEAD" names
+  while :; do
+    read_wait_observation
+    result="$(classify_wait_observation)" \
+      || fail_operation "could not classify the observation of PR #$PR_NUMBER" "Inspect it with: touchstone pr status $PR_NUMBER"
+    outcome="$(printf '%s' "$result" | jq -r .outcome)"
+    case "$outcome" in
+      waiting)
+        detail="$(printf '%s' "$result" | jq -r .detail)"
+        if [ "$detail" != "$last" ] && [ "$JSON_MODE" = false ]; then
+          printf 'PR #%s: %s; reading again in %s s\n' "$PR_NUMBER" "$detail" "$WAIT_INTERVAL_SECONDS" >&2
+        fi
+        last="$detail"
+        sleep "$WAIT_INTERVAL_SECONDS"
+        continue
+        ;;
+      merged)
+        code=0
+        message="PR #$PR_NUMBER merged at $(printf '%s' "$result" | jq -r .mergeCommit) (head $head)."
+        ;;
+      removed)
+        code=10
+        read_failed_queue_checks
+        names="$(printf '%s' "$WAIT_FAILED_CHECKS" | jq -r 'map("\(.name) (\(.url))") | join("; ")')"
+        message="PR #$PR_NUMBER was removed from the merge queue at $(printf '%s' "$result" | jq -r '.at // "an unknown time"') ($(printf '%s' "$result" | jq -r '.reason // "no reason recorded"'))"
+        if [ -n "$names" ]; then message="$message; failing check: $names."; else message="$message; failing check not identified: $WAIT_FAILED_NOTE."; fi
+        ;;
+      closed)
+        code=11
+        message="PR #$PR_NUMBER was closed without merging."
+        ;;
+      head-changed)
+        code=12
+        message="PR #$PR_NUMBER is now at $(printf '%s' "$result" | jq -r .live), not $head; this wait was for $head and ended."
+        ;;
+      not-queued)
+        code=13
+        message="PR #$PR_NUMBER is open and neither queued nor armed for auto-merge; there is nothing to wait for. Run: touchstone pr merge $PR_NUMBER --head $head"
+        ;;
+      *) fail_operation "unknown wait outcome '$outcome' for PR #$PR_NUMBER" "Inspect it with: touchstone pr status $PR_NUMBER" ;;
+    esac
+    break
+  done
+  if [ "$JSON_MODE" = true ]; then
+    jq -nc --arg schema "$OUTPUT_SCHEMA" --argjson pr "$PR_NUMBER" --arg head "$head" --argjson result "$result" \
+      --arg message "$message" --argjson code "$code" --argjson failed "$WAIT_FAILED_CHECKS" --arg note "$WAIT_FAILED_NOTE" \
+      '{schema:$schema, operation:"wait", status:$result.outcome, exitCode:$code, pullRequest:$pr, head:$head, message:$message}
+        + ($result | del(.outcome))
+        + (if $result.outcome == "removed" then {failedChecks:$failed, failedChecksNote:(if $note == "" then null else $note end)} else {} end)'
+  else
+    printf '%s\n' "$message"
+  fi
+  exit "$code"
+}
+
 case "$OPERATION" in
   open) open_pr ;;
   status) status_pr ;;
   merge) merge_pr ;;
+  wait) wait_pr ;;
   await-review | wake-review-gate) await_review ;;
   policy-status) policy_status ;;
 esac

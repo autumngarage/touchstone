@@ -1,0 +1,24 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "state": "CLOSED",
+        "headRefOid": "ccf1473fcf41637a680b0323c091a93494ac1200",
+        "mergedAt": null,
+        "mergeCommit": null,
+        "autoMergeRequest": null,
+        "mergeQueueEntry": null,
+        "timelineItems": {
+          "nodes": [
+            {
+              "__typename": "PullRequestCommit",
+              "commit": {
+                "committedDate": "2026-09-16T21:23:58Z"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

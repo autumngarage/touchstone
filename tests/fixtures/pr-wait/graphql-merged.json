@@ -1,0 +1,38 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "state": "MERGED",
+        "headRefOid": "0e05597c5d0ccb3ce9845c342c59dd803d0f32f6",
+        "mergedAt": "2026-11-20T07:23:07Z",
+        "mergeCommit": {
+          "oid": "4342708a20c6a5c2f663c836826e17f185e3bd39"
+        },
+        "autoMergeRequest": null,
+        "mergeQueueEntry": null,
+        "timelineItems": {
+          "nodes": [
+            {
+              "__typename": "PullRequestCommit",
+              "commit": {
+                "committedDate": "2026-11-20T06:58:27Z"
+              }
+            },
+            {
+              "__typename": "AddedToMergeQueueEvent",
+              "createdAt": "2026-11-20T07:11:13Z"
+            },
+            {
+              "__typename": "RemovedFromMergeQueueEvent",
+              "createdAt": "2026-11-20T07:23:07Z",
+              "reason": "merged",
+              "beforeCommit": {
+                "oid": "4342708a20c6a5c2f663c836826e17f185e3bd39"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

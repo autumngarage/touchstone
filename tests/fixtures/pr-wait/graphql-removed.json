@@ -1,0 +1,60 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "state": "OPEN",
+        "headRefOid": "4f177296adbf33ed374fed6015eed38626eefcd1",
+        "mergedAt": null,
+        "mergeCommit": null,
+        "autoMergeRequest": null,
+        "mergeQueueEntry": null,
+        "timelineItems": {
+          "nodes": [
+            {
+              "__typename": "PullRequestCommit",
+              "commit": {
+                "committedDate": "2026-11-19T15:44:30Z"
+              }
+            },
+            {
+              "__typename": "PullRequestCommit",
+              "commit": {
+                "committedDate": "2026-11-19T15:50:49Z"
+              }
+            },
+            {
+              "__typename": "PullRequestCommit",
+              "commit": {
+                "committedDate": "2026-11-19T15:58:32Z"
+              }
+            },
+            {
+              "__typename": "PullRequestCommit",
+              "commit": {
+                "committedDate": "2026-11-19T15:59:46Z"
+              }
+            },
+            {
+              "__typename": "PullRequestCommit",
+              "commit": {
+                "committedDate": "2026-11-19T16:46:07Z"
+              }
+            },
+            {
+              "__typename": "AddedToMergeQueueEvent",
+              "createdAt": "2026-11-19T17:22:24Z"
+            },
+            {
+              "__typename": "RemovedFromMergeQueueEvent",
+              "createdAt": "2026-11-19T17:56:32Z",
+              "reason": "failed_checks",
+              "beforeCommit": {
+                "oid": "71851e8b78b7133e78fec7b57e9e1d0faf4613f7"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
