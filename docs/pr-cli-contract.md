@@ -130,6 +130,13 @@ taking this document's word for it.
   no checker, a failed fetch or sha256 mismatch, a stacked open), it
   prints one `Delivery-evidence precheck skipped: <reason>` line and falls
   through. The skip is not a pass: the required workflow stays the authority.
+  A project can opt into earlier feedback by committing
+  `.touchstone/pr-body-check.sh` to the target branch. When the fetched
+  remote-tracking base has that adapter, `open` resolves the current
+  remote base and runs its committed adapter from the project root.
+  The adapter receives `--base SHA --head SHA --body-file FILE`.
+  A refusal stops creation or editing and prints the adapter's diagnosis.
+  GitHub's required checks still govern merge.
   `open` also proves the local and remote branch heads match, reuses an existing
   open PR for that branch or runs `gh pr create`, re-reads GitHub after the
   mutation, requires the policy-declared `delivery-evidence` workflow to

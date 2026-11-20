@@ -16,6 +16,66 @@ ok() {
   echo "  OK: $*"
 }
 
+(
+  echo "==> a repository body check runs from the target base before PR writes"
+  ERRORS=0
+  fragment="$TMP_DIR/body-check.sh"
+  sed -n '/^precheck_project_pr_body() {/,/^}/p' "$TOUCHSTONE_ROOT/scripts/touchstone-pr.sh" >"$fragment"
+  # shellcheck source=/dev/null
+  . "$fragment"
+  PROJECT_ROOT="$TMP_DIR/body-check-project"
+  BODY_FILE="$TMP_DIR/proposed-body"
+  JSON_MODE=false
+  git init -q --bare "$TMP_DIR/body-check-origin"
+  git init -q -b main "$PROJECT_ROOT"
+  project_git() { git -C "$PROJECT_ROOT" -c core.hooksPath=/dev/null "$@"; }
+  fail_input() {
+    printf '%s\n' "$*" >&2
+    exit 2
+  }
+  fail_operation() {
+    printf '%s\n' "$*" >&2
+    exit 1
+  }
+  project_git config user.name 'Fixture'
+  project_git config user.email 'fixture@example.test'
+  project_git remote add origin "$TMP_DIR/body-check-origin"
+  project_git commit -q --allow-empty -m initial
+  project_git push -q -u origin main
+  mkdir -p "$PROJECT_ROOT/.touchstone"
+  printf 'exit 93\n' >"$PROJECT_ROOT/.touchstone/pr-body-check.sh"
+  precheck_project_pr_body main "$(project_git rev-parse HEAD)" || fail "an unadopted project ran a checkout's file"
+
+  cat >"$PROJECT_ROOT/.touchstone/pr-body-check.sh" <<'CHECKER'
+[ "$1" = --base ] && [ "$2" = "$EXPECTED_BASE" ] &&
+  [ "$3" = --head ] && [ "$4" = "$EXPECTED_HEAD" ] &&
+  [ "$5" = --body-file ] && [ "$6" = "$EXPECTED_BODY" ] || exit 91
+grep -Fxq serious "$6" || { echo 'expected serious'; exit 1; }
+echo 'repository body passed'
+CHECKER
+  project_git add .touchstone/pr-body-check.sh
+  project_git commit -qm checker
+  project_git push -q origin main
+  export EXPECTED_BASE EXPECTED_HEAD EXPECTED_BODY
+  EXPECTED_BASE="$(project_git rev-parse HEAD)"
+  project_git switch -qc feature
+  printf 'exit 93\n' >"$PROJECT_ROOT/.touchstone/pr-body-check.sh"
+  project_git commit -qam 'branch changes the adapter'
+  EXPECTED_HEAD="$(project_git rev-parse HEAD)"
+  EXPECTED_BODY="$BODY_FILE"
+  printf 'normal\n' >"$BODY_FILE"
+  if (precheck_project_pr_body main "$EXPECTED_HEAD") >"$TMP_DIR/body-rejected" 2>&1; then
+    fail "precheck allowed a proposed body that the base checker refused"
+  fi
+  grep -q 'expected serious' "$TMP_DIR/body-rejected" || fail "precheck lost the base checker's diagnosis"
+  printf 'serious\n' >"$BODY_FILE"
+  precheck_project_pr_body main "$EXPECTED_HEAD" >"$TMP_DIR/body-accepted" 2>&1 \
+    || fail "precheck refused the corrected body"
+  grep -q 'repository body passed' "$TMP_DIR/body-accepted" || fail "precheck did not run the base checker"
+  [ "$ERRORS" -eq 0 ]
+  ok "opt-in, exact coordinates, rejected proposal and corrected proposal"
+)
+
 # AUT759-MERGE-IDENTITY-BEGIN
 (
   echo "==> status keeps the actual merge identity from its one PR snapshot (AUT-759)"
