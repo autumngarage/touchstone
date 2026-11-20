@@ -12,6 +12,7 @@ touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
                    [--expect-branch BRANCH] [--expect-pr NUMBER] [--stack-parent PR]
 touchstone pr status PR
 touchstone pr merge PR --head SHA [--unguarded] [--retry-after-flake EVIDENCE] [--merge-request UUID]
+touchstone pr wait PR --head SHA [--json]
 touchstone policy status [--base BRANCH]
 touchstone policy apply --base BRANCH --authorize-admin
 touchstone pr answer PR --comment-id ID --body-file FILE (--fix-commit SHA | --no-code-change) [--head SHA]
@@ -118,6 +119,27 @@ Each operation below records the awkwardness that justifies it. A reader who
 doubts one can re-run that test on raw commands and compare, rather than
 taking this document's word for it.
 
+- `wait` ends the poller every agent otherwise writes for itself and reads the wrong field of. It reads the
+  pull request's GraphQL `state`, `headRefOid`, `mergeCommit`, `mergeQueueEntry`, `autoMergeRequest` and queue
+  events (the selection `status` reads) no more often than every 120 seconds, and ends on the first of five
+  outcomes, each with its own exit code and one sentence (or, with `--json`, one object whose `status`, `exitCode`
+  and `message` say the same):
+
+  | Exit | Outcome | Sentence |
+  |---|---|---|
+  | 0 | merged | `PR #N merged at <merge commit> (head <head>).` |
+  | 10 | removed from the merge queue | `PR #N was removed from the merge queue at <time> (<reason>); failing check: <job> (<url>).` |
+  | 11 | closed | `PR #N was closed without merging.` |
+  | 12 | the head changed | `PR #N is now at <live head>, not <head>; this wait was for <head> and ended.` |
+  | 13 | open, neither queued nor armed | says there is nothing to wait for and the command that queues it |
+
+  `--head` is the full 40-character SHA the caller pushed; a head that differs from it ends the wait first, even
+  for a merged pull request, because the caller asked about that head. A pull request in the queue, or armed for
+  auto-merge and not yet queued, is waited for; progress goes to standard error once per change, never to
+  standard output. The failing check is the newest failed merge-group run for the pull request among the queue's
+  latest 100 and its failed jobs; what cannot be read is named in the sentence and never skipped. Exit 1 is
+  GitHub unavailable or malformed, and exit 2 is invalid input, as for every operation. The raw equivalent is one
+  `gh api graphql` read of those fields.
 - `open` runs the pinned evidence checker locally against `--body-file`,
   before it creates, edits or comments on anything. It resolves the checker
   exactly as the `delivery-evidence` workflow does: the effective rule's pinned

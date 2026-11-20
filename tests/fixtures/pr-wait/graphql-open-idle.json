@@ -1,0 +1,36 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "state": "OPEN",
+        "headRefOid": "dcd98586b9ab4881c5b0210e2dab2fb3d1587eeb",
+        "mergedAt": null,
+        "mergeCommit": null,
+        "autoMergeRequest": null,
+        "mergeQueueEntry": null,
+        "timelineItems": {
+          "nodes": [
+            {
+              "__typename": "PullRequestCommit",
+              "commit": {
+                "committedDate": "2026-11-19T16:46:18Z"
+              }
+            },
+            {
+              "__typename": "PullRequestCommit",
+              "commit": {
+                "committedDate": "2026-11-19T16:55:27Z"
+              }
+            },
+            {
+              "__typename": "PullRequestCommit",
+              "commit": {
+                "committedDate": "2026-11-19T17:02:26Z"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

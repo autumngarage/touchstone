@@ -465,7 +465,9 @@ this head, such as a hang, a starved host, or a lost runner -- re-queue the
 same head once with `touchstone pr merge <n> --head <sha> --retry-after-flake
 "<evidence>"`, which records the evidence on the PR first; a second ejection
 at that head is the verdict. `touchstone pr merge` reports `queued`; `MERGED` arrives when the queue lands
-it.
+it. To wait for that outcome, run `touchstone pr wait <n> --head <sha>` rather than writing a poller: it reads
+GitHub's own queue state at most every two minutes and exits `0` merged, `10` removed from the queue (naming the
+failing check), `11` closed, `12` head changed, or `13` neither queued nor armed, each with one sentence.
 
 **A live exact-head queue entry ends merge mutation.** Read `mergeQueueEntry`
 before any raw recovery or emergency attempt. When the same PR head is already
