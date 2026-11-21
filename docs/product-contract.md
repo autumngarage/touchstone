@@ -228,9 +228,12 @@ Two version lines exist and are never conflated. The **tool version**
 the released CLI; the line starts at `3.0.0` because the post-strip command
 surface shares nothing with `2.15.0`, and the bump keeps `brew upgrade` a
 genuine upgrade. `touchstone version` reports the current release.
-The **project contract** line currently spans schemas `1` and `2` — schema 2
-adds only the optional execution-stage field — and every v3 CLI release
-accepts every valid declaration of both.
+The **project contract** evolves independently through explicit schema
+versions, preserving the meaning of older declarations. A consumer adopts a
+new schema only after its CLI and protected workflow support it; older pinned
+engines keep their supported schemas. The
+[validation contract](validation-contract.md) owns the supported versions and
+fields.
 
 The project contract uses a major schema boundary. Within a major version:
 
