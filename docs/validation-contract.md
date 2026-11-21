@@ -1,6 +1,6 @@
 # Validation Contract
 
-This document owns Touchstone's validation boundary: schema 1, schema 2 (which adds only the optional task `stage` key), and schema 3 (which adds only the optional task `group` key). The canonical
+This document owns Touchstone's validation boundary: schema 1, schema 2 (which adds only the optional task `stage` key), schema 3 (which adds only the optional task `group` key), and schema 4 (which adds only the optional task `pull_request` boolean). The canonical
 example is [`.touchstone.toml`](../.touchstone.toml); other documentation links
 here instead of copying the shape.
 
@@ -75,6 +75,34 @@ groups (`groups`: names in first-appearance order, tasks in declaration
 order) so a scheduler can build its fan-out from contract data alone,
 without executing project code. Existing fields keep their meaning.
 
+## Schema 4 — pull request eligibility
+
+Schema 4 adds optional task `pull_request = false`; absent or `true` means
+eligible. `validate --event pull_request` and `prepare --event pull_request`
+exclude only tasks explicitly declaring `false`. Stage and group selection
+still apply. Other events, an omitted event, and unknown events execute the
+full selected declaration. Ambient event variables never select this mode.
+A new task therefore runs on PRs without maintaining another task list.
+
+Setup and target preflight use the same selection as execution. Inspection
+still validates every target and executes no project commands. Enforcement
+with no executed task still fails; an empty commit stage still passes.
+
+For schema 4, `--check-contract --json` retains the full `groups` inventory
+and adds `pull_request_groups`, derived from the same selector. Both contain
+only the selected stage and ignore `--group` and `--event`. Schemas 1–3 keep
+their existing JSON exactly. An all-deferred group is absent from the PR
+inventory; a mixed group retains its eligible tasks.
+
+This is a capability, not an automatic workflow upgrade. A scheduler may
+select PR eligibility only after proving that the declaration is unchanged
+between trusted base and candidate regular Git blobs. A changed, unknown or
+unverifiable declaration must use the full inventory **and omit the PR event
+when executing it**. Missing PR inventory or an empty reduced plan also uses
+the full plan. Fork placement remains hosted. Consumers opt in only after a
+compatible released engine and protected workflow have been adopted; older
+pinned consumers and schemas require no changes.
+
 ## Wiring the commit stage
 
 Declaring a commit-stage task gives the engine the capability; the project
@@ -102,7 +130,7 @@ it would let a consumer believe it declared a guard that runs nowhere.
 
 Schema 1 is a deliberately narrow TOML subset:
 
-- `schema = 1` at the root (or `schema = 2`, which adds only `stage`, or `schema = 3`, which adds only `group`);
+- `schema = 1` at the root (or `schema = 2`, which adds only `stage`, `schema = 3`, which adds only `group`, or `schema = 4`, which adds only `pull_request`);
 - one `[validation]` table with `runtime = "bash"`, an optional, non-empty
   `setup` command, and an optional `runner` — the GitHub-hosted runner label
   the central workflow executes the declaration on (`ubuntu-latest` when
@@ -162,7 +190,7 @@ Tests and adapters that need a different location pass the explicit
 `--project` or `--config` arguments.
 
 Missing, malformed, ambiguous, path-escaping, and unsupported-schema contracts
-fail closed. Schema 1, 2, and 3 are all accepted; every schema-1 declaration means
+fail closed. Schemas 1, 2, 3, and 4 are all accepted; every schema-1 declaration means
 exactly what it meant before schema 2 existed, and `tests/test-validation-engine.sh`
 asserts that. A repository that still has `.touchstone-config` receives an
 explicit migration error; frozen consumers keep their committed legacy runner
@@ -170,8 +198,8 @@ until a reviewable adoption plan creates `.touchstone.toml`.
 
 ## Preparation before toolchain cache selection
 
-The pinned engine also accepts `prepare` with the same project, config, stage
-and group selectors. It validates the selected declaration and targets, then
+The pinned engine also accepts `prepare` with the same project, config, stage,
+group and event selectors. It validates the selected declaration and targets, then
 runs only the declared setup, if the selection has tasks. Its successful
 report has verdict `prepared` and zero executed tasks, never `passed`.
 Setup failure retains the normal diagnostic and exit status. Combining

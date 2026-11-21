@@ -477,7 +477,7 @@ for fixture in unsupported duplicate escape unknown; do
   dir="$TMP_DIR/$fixture"
   write_contract "$dir" "true"
   case "$fixture" in
-    unsupported) sed 's/schema = 1/schema = 4/' "$dir/.touchstone.toml" >"$dir/new" ;;
+    unsupported) sed 's/schema = 1/schema = 5/' "$dir/.touchstone.toml" >"$dir/new" ;;
     duplicate)
       awk '{ print; if ($0 == "path = \".\"") print "name = \"root-again\"" }' \
         "$dir/.touchstone.toml" >"$dir/new"
@@ -1268,7 +1268,7 @@ assert_contains "$ADOPTION/ambiguous.json" 'competing project evidence found: np
 
 UNSUPPORTED="$ADOPTION/unsupported"
 new_adoption_repo "$UNSUPPORTED"
-printf 'schema = 4\n' >"$UNSUPPORTED/.touchstone.toml"
+printf 'schema = 5\n' >"$UNSUPPORTED/.touchstone.toml"
 git -C "$UNSUPPORTED" add .touchstone.toml
 git -C "$UNSUPPORTED" commit -qm unsupported
 run_adoption "$ADOPTION/unsupported.out" adopt --dry-run --project "$UNSUPPORTED"
@@ -2237,7 +2237,7 @@ fi
 
 echo "==> an unsupported schema still fails closed"
 V3="$STAGE_TMP/v3"
-make_stage_project "$V3" 'schema = 4
+make_stage_project "$V3" 'schema = 5
 
 [validation]
 runtime = "bash"
@@ -2252,7 +2252,7 @@ target = "root"
 command = "true"
 required = true'
 if bash "$RUN_ENGINE" validate --project "$V3" >/dev/null 2>&1; then
-  fail "schema 4 was accepted"
+  fail "schema 5 was accepted"
 else
   pass "an unsupported schema is rejected"
 fi
@@ -2715,3 +2715,114 @@ if [ "$FAILURES" -ne 0 ]; then
   exit 1
 fi
 echo "==> PASS: execution groups select tasks, inventory is exact, and schemas 1-2 are unchanged"
+
+echo "==> schema-4 PR eligibility shares inventory, preparation and execution selection"
+ELIGIBLE="$GROUPS_TMP/eligible"
+make_stage_project "$ELIGIBLE" 'schema = 4
+[validation]
+runtime = "bash"
+setup = "echo SETUP_SENTINEL"
+[[validation.targets]]
+name = "root"
+path = "."
+[[validation.tasks]]
+name = "integration"
+target = "root"
+group = "integration"
+pull_request = false
+command = "echo INTEGRATION_SENTINEL"
+required = true
+[[validation.tasks]]
+name = "mixed-deferred"
+target = "root"
+group = "mixed"
+pull_request = false
+command = "echo DEFERRED_SENTINEL"
+required = true
+[[validation.tasks]]
+name = "new-default"
+target = "root"
+group = "mixed"
+command = "echo DEFAULT_SENTINEL"
+required = true
+[[validation.tasks]]
+name = "explicit"
+target = "root"
+pull_request = true
+command = "echo EXPLICIT_SENTINEL"
+required = true
+[[validation.tasks]]
+name = "guard"
+target = "root"
+stage = "commit"
+pull_request = false
+command = "echo GUARD_SENTINEL"
+required = true'
+out="$(bash "$RUN_ENGINE" validate --check-contract --json --event pull_request --project "$ELIGIBLE")"
+[ "$out" = '{"schema":4,"verdict":"valid","runner":"ubuntu-latest","groups":[{"name":"integration","tasks":["integration"]},{"name":"mixed","tasks":["mixed-deferred","new-default"]},{"name":"default","tasks":["explicit"]}],"pull_request_groups":[{"name":"mixed","tasks":["new-default"]},{"name":"default","tasks":["explicit"]}]}' ] \
+  || fail "full/PR inventories diverged from declaration: $out"
+for event in '' push merge_group schedule workflow_dispatch workflow_call unknown; do
+  out="$(GITHUB_EVENT_NAME=pull_request bash "$RUN_ENGINE" validate --event "$event" --project "$ELIGIBLE" 2>&1)"
+  printf '%s' "$out" >"$TMP_DIR/eligibility.out"
+  assert_contains "$TMP_DIR/eligibility.out" INTEGRATION_SENTINEL
+  assert_contains "$TMP_DIR/eligibility.out" DEFERRED_SENTINEL
+  assert_contains "$TMP_DIR/eligibility.out" 'ran=4 skipped=0 failed=0'
+done
+out="$(GITHUB_EVENT_NAME=pull_request bash "$RUN_ENGINE" validate --project "$ELIGIBLE" 2>&1)"
+printf '%s' "$out" >"$TMP_DIR/eligibility.out"
+assert_contains "$TMP_DIR/eligibility.out" 'ran=4 skipped=0 failed=0'
+out="$(bash "$RUN_ENGINE" validate --event pull_request --group mixed --project "$ELIGIBLE" 2>&1)"
+printf '%s' "$out" >"$TMP_DIR/eligibility.out"
+assert_contains "$TMP_DIR/eligibility.out" DEFAULT_SENTINEL
+assert_not_contains "$TMP_DIR/eligibility.out" DEFERRED_SENTINEL
+assert_not_contains "$TMP_DIR/eligibility.out" INTEGRATION_SENTINEL
+assert_contains "$TMP_DIR/eligibility.out" 'ran=1 skipped=0 failed=0'
+out="$(bash "$RUN_ENGINE" prepare --event pull_request --group integration --project "$ELIGIBLE" 2>&1)"
+printf '%s' "$out" >"$TMP_DIR/eligibility.out"
+assert_not_contains "$TMP_DIR/eligibility.out" SENTINEL
+assert_contains "$TMP_DIR/eligibility.out" 'prepare verdict: prepared'
+if bash "$RUN_ENGINE" validate --event pull_request --group integration --project "$ELIGIBLE" >"$TMP_DIR/eligibility.out" 2>&1; then
+  fail "an entirely deferred enforcement selection passed without running"
+fi
+assert_contains "$TMP_DIR/eligibility.out" 'NOTHING RAN'
+assert_not_contains "$TMP_DIR/eligibility.out" SENTINEL
+out="$(bash "$RUN_ENGINE" validate --stage commit --event pull_request --project "$ELIGIBLE" 2>&1)"
+printf '%s' "$out" >"$TMP_DIR/eligibility.out"
+assert_not_contains "$TMP_DIR/eligibility.out" SENTINEL
+assert_contains "$TMP_DIR/eligibility.out" 'ran=0 skipped=0 failed=0'
+
+echo "==> inactive PR targets are skipped only for execution, never contract inspection"
+sed 's/path = "\."/path = "missing"/' "$ELIGIBLE/.touchstone.toml" >"$ELIGIBLE/missing.toml"
+out="$(bash "$RUN_ENGINE" prepare --event pull_request --group integration --config missing.toml --project "$ELIGIBLE" 2>&1)"
+printf '%s' "$out" >"$TMP_DIR/eligibility.out"
+assert_not_contains "$TMP_DIR/eligibility.out" SENTINEL
+if bash "$RUN_ENGINE" validate --check-contract --event pull_request --config missing.toml --project "$ELIGIBLE" >"$TMP_DIR/eligibility.out" 2>&1; then
+  fail "PR eligibility weakened whole-contract path validation"
+fi
+assert_contains "$TMP_DIR/eligibility.out" "target 'root' path not found"
+
+echo "==> eligibility syntax is strict and older schemas keep their meaning"
+for schema in 1 2 3; do
+  sed -e "s/schema = 4/schema = $schema/" -e '/^group = /d' -e '/^stage = /d' "$ELIGIBLE/.touchstone.toml" >"$ELIGIBLE/old.toml"
+  if bash "$RUN_ENGINE" validate --check-contract --config old.toml --project "$ELIGIBLE" >"$TMP_DIR/eligibility.out" 2>&1; then
+    fail "schema-$schema accepted PR eligibility"
+  fi
+  assert_contains "$TMP_DIR/eligibility.out" 'task pull_request requires schema = 4'
+  # Existing valid declarations still execute every enforcement task on PRs.
+  out="$(bash "$RUN_ENGINE" validate --event pull_request --project "$GROUPS_TMP/prepare-$schema" 2>&1)"
+  printf '%s' "$out" >"$TMP_DIR/eligibility.out"
+  assert_contains "$TMP_DIR/eligibility.out" 'ran=1 skipped=0 failed=0'
+done
+for value in '"false"' maybe 0; do
+  sed "s/pull_request = false/pull_request = $value/" "$ELIGIBLE/.touchstone.toml" >"$ELIGIBLE/bad.toml"
+  if bash "$RUN_ENGINE" validate --check-contract --config bad.toml --project "$ELIGIBLE" >"$TMP_DIR/eligibility.out" 2>&1; then
+    fail "invalid pull_request value $value was accepted"
+  fi
+  assert_contains "$TMP_DIR/eligibility.out" 'pull_request must be true or false'
+done
+sed 's/pull_request = false/pull_request = false\npull_request = false/' "$ELIGIBLE/.touchstone.toml" >"$ELIGIBLE/bad.toml"
+if bash "$RUN_ENGINE" validate --check-contract --config bad.toml --project "$ELIGIBLE" >"$TMP_DIR/eligibility.out" 2>&1; then
+  fail "duplicate eligibility was accepted"
+fi
+assert_contains "$TMP_DIR/eligibility.out" "duplicate key 'pull_request'"
+echo "==> PASS: PR eligibility is explicit, conservative, and derived from tasks"
