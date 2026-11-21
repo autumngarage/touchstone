@@ -13,6 +13,8 @@ Usage:
   scripts/github-policy.sh dry-run [policy.json]
   scripts/github-policy.sh backup <output.json> [policy.json]
   scripts/github-policy.sh apply [policy.json] [--no-retrigger]
+  scripts/github-policy.sh repin-validation <receipt.json> [policy.json]
+  scripts/github-policy.sh resume-dispatch <receipt.json> [policy.json]
   scripts/github-policy.sh verify [policy.json]
   scripts/github-policy.sh rollback <backup.json> [policy.json]
 
@@ -21,6 +23,12 @@ branch protection. rollback restores branch protection before changing the
 ruleset, so neither direction creates an unprotected interval. --no-retrigger
 leaves PRs untouched; an outstanding required-workflow refresh returns nonzero
 while the successfully installed policy remains in place.
+
+repin-validation pauses native dispatch, leaving queued PRs in order. Repeat
+with the same receipt once in-flight builds finish. It changes only the
+validate.yml SHA, verifies the readback, and restores build concurrency.
+resume-dispatch ends this maintenance window without any further pin change.
+Use one operator and a private receipt outside the checkout for each window.
 EOF
 }
 
@@ -981,7 +989,7 @@ retrigger_open_pull_requests() {
 }
 
 case "$COMMAND" in
-  backup | rollback)
+  backup | rollback | repin-validation | resume-dispatch)
     ARTIFACT="${1:-}"
     [ -n "$ARTIFACT" ] || die "$COMMAND requires an artifact path"
     shift
@@ -1023,6 +1031,10 @@ fi
 DESIRED_REPO_RULESET="$(jq -c '.managedRepositoryRuleset // null' "$POLICY")"
 
 case "$COMMAND" in
+  repin-validation | resume-dispatch)
+    source "$ROOT/scripts/github-policy-repin.sh"
+    maintain_validation_pin
+    ;;
   diff)
     desired="$(jq -S '.managedRuleset' "$POLICY" | normalize_ruleset)"
     current="$(managed_ruleset_json)"
