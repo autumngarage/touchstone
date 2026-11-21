@@ -81,9 +81,12 @@ emit() {
 }
 
 case "$method $endpoint" in
+  "GET repos/autumngarage/touchstone/actions/runs?event=merge_group&head_sha="*)
+    cat "$state/drain-runs.json" ;;
   "GET graphql")
     case "$fields" in
       *'mergeQueue(branch:'*)
+        if [ -f "$state/drain-queue.json" ]; then cat "$state/drain-queue.json"; exit; fi
         case "${GH_FAKE_QUEUE:-empty}" in
           error) exit 1 ;;
           malformed) emit '{"data":{"repository":{}}}' ;;
@@ -450,7 +453,7 @@ case "$method $endpoint" in
     cat "$state/source-repo-ruleset.json"
     ;;
   "POST repos/autumngarage/touchstone/rulesets")
-    jq '. + {id:321}' >"$state/repo-ruleset.json"
+    jq '. + {id:321,updated_at:(now|tostring)}' >"$state/repo-ruleset.json"
     echo "POST repo-ruleset" >>"$state/mutations.log"
     if [ "${GH_FAKE_FAIL_REPO_MUTATION:-0}" = 1 ]; then
       rm -f "$state/repo-ruleset.json"
@@ -460,7 +463,7 @@ case "$method $endpoint" in
     emit "$(cat "$state/repo-ruleset.json")"
     ;;
   "PUT repos/autumngarage/touchstone/rulesets/321")
-    jq '. + {id:321}' >"$state/repo-ruleset.json"
+    jq '. + {id:321,updated_at:(now|tostring)}' >"$state/repo-ruleset.json"
     echo "PUT repo-ruleset" >>"$state/mutations.log"
     emit "$(cat "$state/repo-ruleset.json")"
     ;;
@@ -503,10 +506,11 @@ RUNNER_REPO="$TMP_DIR/policy-runner"
 RUNNER_SOURCE_POLICY="$RUNNER_REPO/policy/github/workflow-sources/touchstone-workflows.json"
 mkdir -p "$RUNNER_REPO/scripts" "$(dirname "$RUNNER_SOURCE_POLICY")"
 cp "$SOURCE_SCRIPT" "$RUNNER_REPO/scripts/github-policy.sh"
+cp "$ROOT/scripts/github-policy-repin.sh" "$RUNNER_REPO/scripts/"
 cp "$SOURCE_POLICY" "$RUNNER_SOURCE_POLICY"
 git -C "$RUNNER_REPO" init -q
 git -C "$RUNNER_REPO" symbolic-ref HEAD refs/heads/main
-git -C "$RUNNER_REPO" add scripts/github-policy.sh policy/github/workflow-sources/touchstone-workflows.json
+git -C "$RUNNER_REPO" add scripts/github-policy.sh scripts/github-policy-repin.sh policy/github/workflow-sources/touchstone-workflows.json
 git -C "$RUNNER_REPO" -c user.name=Touchstone -c user.email=touchstone@example.invalid \
   commit -qm "policy test runner"
 SCRIPT="$RUNNER_REPO/scripts/github-policy.sh"
@@ -1261,6 +1265,48 @@ run_policy apply "$POLICY"
 after_count="$(wc -l <"$TMP_DIR/state/mutations.log" | tr -d ' ')"
 [ "$before_count" = "$after_count" ] || fail "second apply changed remote state"
 ok "apply is ordered safely and a second apply is a no-op"
+
+echo "==> Validation-only repin retains waiting native entries and recovers a lost acknowledgement"
+repin_receipt_file="$TMP_DIR/validation-window.json"
+repin_queue_file="$TMP_DIR/state/drain-queue.json"
+fixture_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+jq -n --arg sha "$fixture_sha" '
+  def entry($n): {id:("entry-"+($n|tostring)),position:$n,state:"QUEUED",
+     pullRequest:{id:("PR"+($n|tostring)),number:$n,headRefOid:$sha},baseCommit:null,headCommit:null};
+  {data:{repository:{mergeQueue:{id:"MQ",entries:{totalCount:2,nodes:[
+    (entry(1)|.state="AWAITING_CHECKS"|.baseCommit={oid:$sha}|.headCommit={oid:$sha}), entry(2)]}}}}}
+' >"$repin_queue_file"
+jq -n --arg sha "$fixture_sha" '{total_count:1,workflow_runs:[{id:31,status:"in_progress",event:"merge_group",head_sha:$sha}]}' >"$TMP_DIR/state/drain-runs.json"
+jq --arg sha "$fixture_sha" '(.rules[] | select(.type=="workflows").parameters.workflows[] | select(.path==".github/workflows/validate.yml").sha)=$sha' \
+  "$TMP_DIR/state/ruleset.json" >"$TMP_DIR/old-pin.json"
+cp "$TMP_DIR/old-pin.json" "$TMP_DIR/state/ruleset.json"
+if run_policy repin-validation "$repin_receipt_file" "$POLICY" >"$TMP_DIR/repin.out" 2>&1; then fail "active old-pin candidate allowed new pin"; fi
+grep -q "old candidates still active" "$TMP_DIR/repin.out" || {
+  cat "$TMP_DIR/repin.out"
+  fail "missing active candidate diagnosis"
+}
+jq -e '.phase=="paused" and (.runs[]|length)==1' "$repin_receipt_file" >/dev/null || fail "missing pause receipt"
+jq -e '[.rules[]|select(.type=="merge_queue").parameters.max_entries_to_build]==[0]' "$TMP_DIR/state/repo-ruleset.json" >/dev/null || fail "native dispatch still active"
+diff -q "$TMP_DIR/old-pin.json" "$TMP_DIR/state/ruleset.json" >/dev/null || fail "paused a live candidate after repin"
+jq '.data.repository.mergeQueue.entries |= {nodes:[(.nodes[1]|.position=1)],totalCount:1}' "$repin_queue_file" >"$TMP_DIR/drained.json"
+jq '.data.repository.mergeQueue.entries.nodes[0].pullRequest.headRefOid="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' "$TMP_DIR/drained.json" >"$repin_queue_file"
+if run_policy repin-validation "$repin_receipt_file" "$POLICY" >"$TMP_DIR/repin.out" 2>&1; then fail "changed PR head was adopted"; fi
+grep -q "waiting membership" "$TMP_DIR/repin.out" || fail "lost queue membership diagnosis"
+cp "$TMP_DIR/drained.json" "$repin_queue_file"
+if run_policy repin-validation "$repin_receipt_file" "$POLICY" >"$TMP_DIR/repin.out" 2>&1; then fail "outstanding old workflow allowed repin"; fi
+grep -q "workflows still running" "$TMP_DIR/repin.out" || fail "missing outstanding run diagnosis"
+jq '.workflow_runs[0].status="completed"' "$TMP_DIR/state/drain-runs.json" >"$TMP_DIR/finished.json"
+mv "$TMP_DIR/finished.json" "$TMP_DIR/state/drain-runs.json"
+rm -f "$TMP_DIR/state/org-mutation-failed"
+if GH_FAKE_FAIL_ORG_MUTATION_ONCE=1 run_policy repin-validation "$repin_receipt_file" "$POLICY" >"$TMP_DIR/repin.out" 2>&1; then fail "lost update acknowledgement reported complete"; fi
+run_policy repin-validation "$repin_receipt_file" "$POLICY"
+jq -e '.phase=="closed"' "$repin_receipt_file" >/dev/null || fail "recoverable window never closed"
+repin_before="$(cat "$TMP_DIR/state/mutations.log")"
+run_policy repin-validation "$repin_receipt_file" "$POLICY"
+[ "$(cat "$TMP_DIR/state/mutations.log")" = "$repin_before" ] || fail "finished repin issued another mutation"
+diff -q "$TMP_DIR/drained.json" "$repin_queue_file" >/dev/null || fail "waiting queue changed"
+rm -f "$repin_queue_file" "$TMP_DIR/state/drain-runs.json" "$TMP_DIR/state/org-mutation-failed"
+ok "active native runs, changed heads and in-flight candidates hold dispatch; lost acknowledgements reconcile"
 
 echo "==> Workflow refresh preserves existing auto-merge intent"
 refresh_fixture() {
