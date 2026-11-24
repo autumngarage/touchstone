@@ -110,14 +110,17 @@ landing. Regenerate without the flag when the plan or visibility changes.
 Queued consumers inherit two concurrent candidate builds and a 120-minute
 check timeout from the canonical policy. A consumer with more runner capacity
 can declare `--build-concurrency N` when deriving its policy; GitHub supports
-1 through 100 concurrent builds. Hesperus declares six to use its local Linux
-pool and managed overflow. Other consumers retain their existing capacity.
+1 through 100 concurrent builds. Hesperus declares one: each candidate runs six
+validation jobs on five self-hosted Linux runners, and six concurrent candidates
+needed longer than the 120-minute timeout, so the head entry timed out and
+discarded every build behind it. Raise it only when a measured round fits the
+timeout. Other consumers retain their existing capacity.
 
 This changes only GitHub's native build concurrency. Every candidate still
 gets its own required validation and review: `ALLGREEN` remains unchanged and
 `max_entries_to_merge` stays 1 unless a consumer declares `--merge-batch N`
 (1 through 100) so several already-green entries land in one queue step.
-Hesperus declares four. `min_entries_to_merge` stays 1 and its wait 0, so a
+Hesperus declares one, matching its single build. `min_entries_to_merge` stays 1 and its wait 0, so a
 lone entry is never held. More speculative builds can be discarded after
 an earlier candidate fails or the queue is reordered; increase capacity with
 the available runners and keep queue order stable.
