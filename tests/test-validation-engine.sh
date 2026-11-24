@@ -2759,7 +2759,7 @@ pull_request = false
 command = "echo GUARD_SENTINEL"
 required = true'
 out="$(bash "$RUN_ENGINE" validate --check-contract --json --event pull_request --project "$ELIGIBLE")"
-[ "$out" = '{"schema":4,"verdict":"valid","runner":"ubuntu-latest","groups":[{"name":"integration","tasks":["integration"]},{"name":"mixed","tasks":["mixed-deferred","new-default"]},{"name":"default","tasks":["explicit"]}],"pull_request_groups":[{"name":"mixed","tasks":["new-default"]},{"name":"default","tasks":["explicit"]}]}' ] \
+[ "$out" = '{"schema":4,"verdict":"valid","runner":"ubuntu-latest","groups":[{"name":"integration","tasks":["integration"]},{"name":"mixed","tasks":["mixed-deferred","new-default"]},{"name":"default","tasks":["explicit"]}],"pull_request_groups":[{"name":"mixed","tasks":["new-default"]},{"name":"default","tasks":["explicit"]}],"merge_group_groups":[{"name":"integration","tasks":["integration"]},{"name":"mixed","tasks":["mixed-deferred","new-default"]},{"name":"default","tasks":["explicit"]}]}' ] \
   || fail "full/PR inventories diverged from declaration: $out"
 for event in '' push merge_group schedule workflow_dispatch workflow_call unknown; do
   out="$(GITHUB_EVENT_NAME=pull_request bash "$RUN_ENGINE" validate --event "$event" --project "$ELIGIBLE" 2>&1)"
@@ -2826,3 +2826,73 @@ if bash "$RUN_ENGINE" validate --check-contract --config bad.toml --project "$EL
 fi
 assert_contains "$TMP_DIR/eligibility.out" "duplicate key 'pull_request'"
 echo "==> PASS: PR eligibility is explicit, conservative, and derived from tasks"
+
+echo "==> schema-4 merge_group eligibility mirrors pull_request and is independent of it"
+MQ="$GROUPS_TMP/merge-queue"
+make_stage_project "$MQ" 'schema = 4
+[validation]
+runtime = "bash"
+[[validation.targets]]
+name = "root"
+path = "."
+[[validation.tasks]]
+name = "pr-only"
+target = "root"
+group = "mixed"
+merge_group = false
+command = "echo MQ_OPTOUT_SENTINEL"
+required = true
+[[validation.tasks]]
+name = "both-off"
+target = "root"
+group = "off"
+pull_request = false
+merge_group = false
+command = "echo BOTH_OFF_SENTINEL"
+required = true
+[[validation.tasks]]
+name = "always"
+target = "root"
+group = "mixed"
+merge_group = true
+command = "echo ALWAYS_SENTINEL"
+required = true'
+out="$(bash "$RUN_ENGINE" validate --check-contract --json --project "$MQ")"
+[ "$out" = '{"schema":4,"verdict":"valid","runner":"ubuntu-latest","groups":[{"name":"mixed","tasks":["pr-only","always"]},{"name":"off","tasks":["both-off"]}],"pull_request_groups":[{"name":"mixed","tasks":["pr-only","always"]}],"merge_group_groups":[{"name":"mixed","tasks":["always"]}]}' ] \
+  || fail "merge_group inventory diverged from declaration: $out"
+out="$(bash "$RUN_ENGINE" validate --event merge_group --project "$MQ" 2>&1)"
+printf '%s' "$out" >"$TMP_DIR/eligibility.out"
+assert_contains "$TMP_DIR/eligibility.out" ALWAYS_SENTINEL
+assert_not_contains "$TMP_DIR/eligibility.out" MQ_OPTOUT_SENTINEL
+assert_not_contains "$TMP_DIR/eligibility.out" BOTH_OFF_SENTINEL
+assert_contains "$TMP_DIR/eligibility.out" 'ran=1 skipped=0 failed=0'
+for event in pull_request '' push schedule unknown; do
+  out="$(bash "$RUN_ENGINE" validate --event "$event" --project "$MQ" 2>&1)"
+  printf '%s' "$out" >"$TMP_DIR/eligibility.out"
+  assert_contains "$TMP_DIR/eligibility.out" MQ_OPTOUT_SENTINEL
+  assert_contains "$TMP_DIR/eligibility.out" ALWAYS_SENTINEL
+done
+out="$(bash "$RUN_ENGINE" validate --project "$MQ" 2>&1)"
+printf '%s' "$out" >"$TMP_DIR/eligibility.out"
+assert_contains "$TMP_DIR/eligibility.out" 'ran=3 skipped=0 failed=0'
+for schema in 1 2 3; do
+  sed -e "s/schema = 4/schema = $schema/" -e '/^group = /d' -e '/^pull_request = /d' "$MQ/.touchstone.toml" >"$MQ/old.toml"
+  if bash "$RUN_ENGINE" validate --check-contract --config old.toml --project "$MQ" >"$TMP_DIR/eligibility.out" 2>&1; then
+    fail "schema-$schema accepted merge_group"
+  fi
+  assert_contains "$TMP_DIR/eligibility.out" 'task merge_group requires schema = 4'
+done
+for value in '"false"' maybe 0; do
+  sed "s/merge_group = false/merge_group = $value/" "$MQ/.touchstone.toml" >"$MQ/bad.toml"
+  if bash "$RUN_ENGINE" validate --check-contract --config bad.toml --project "$MQ" >"$TMP_DIR/eligibility.out" 2>&1; then
+    fail "invalid merge_group value $value was accepted"
+  fi
+  assert_contains "$TMP_DIR/eligibility.out" 'merge_group must be true or false'
+done
+sed 's/merge_group = true/merge_group = true\nmerge_group = true/' "$MQ/.touchstone.toml" >"$MQ/bad.toml"
+if bash "$RUN_ENGINE" validate --check-contract --config bad.toml --project "$MQ" >"$TMP_DIR/eligibility.out" 2>&1; then
+  fail "duplicate merge_group was accepted"
+fi
+assert_contains "$TMP_DIR/eligibility.out" "duplicate key 'merge_group'"
+echo "==> PASS: merge_group eligibility is explicit, independent, and derived from tasks"
+
