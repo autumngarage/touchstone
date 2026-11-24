@@ -976,7 +976,7 @@ jq -e 'any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")' \
 # must also wait for that exact prospective-merge verdict.
 jq -e '
   any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue")
-  and any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue" and .parameters.max_entries_to_build == 6)
+  and any(.managedRepositoryRuleset.rules[]?; .type == "merge_queue" and .parameters.max_entries_to_build == 1 and .parameters.max_entries_to_merge == 1)
   and [.managedRuleset.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] == ["App tests, Release bundle, and daemon smoke"]
 ' \
   "$ROOT/policy/github/consumers/hesperus.json" >/dev/null \
