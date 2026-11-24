@@ -15,7 +15,8 @@
 # run groups in parallel jobs; without it every group runs in declaration
 # order, exactly as before groups existed.
 #
-# --event pull_request (schema 4) omits tasks declaring pull_request = false.
+# --event pull_request (schema 4) omits tasks declaring pull_request = false;
+# --event merge_group omits tasks declaring merge_group = false.
 # Missing or unknown events execute the full selected stage/group.
 #
 # This is the single validation engine used by the local CLI boundary and the
@@ -307,6 +308,7 @@ BLOCK_REQUIRED=""
 BLOCK_STAGE=""
 BLOCK_GROUP=""
 BLOCK_PULL_REQUEST=""
+BLOCK_MERGE_GROUP=""
 SEEN_KEYS=""
 
 key_seen() {
@@ -353,8 +355,9 @@ finalize_block() {
     [ -n "$BLOCK_GROUP" ] || BLOCK_GROUP=default
     valid_identifier "$BLOCK_GROUP" || config_error "invalid group name '$BLOCK_GROUP'"
     [ -n "$BLOCK_PULL_REQUEST" ] || BLOCK_PULL_REQUEST=true
+    [ -n "$BLOCK_MERGE_GROUP" ] || BLOCK_MERGE_GROUP=true
     append_validation_record "$TASKS_FILE" \
-      "$BLOCK_NAME	$BLOCK_TARGET	$BLOCK_REQUIRED	$BLOCK_STAGE	$BLOCK_GROUP	$BLOCK_PULL_REQUEST	$BLOCK_COMMAND"
+      "$BLOCK_NAME	$BLOCK_TARGET	$BLOCK_REQUIRED	$BLOCK_STAGE	$BLOCK_GROUP	$BLOCK_PULL_REQUEST	$BLOCK_MERGE_GROUP	$BLOCK_COMMAND"
   fi
 
   BLOCK=""
@@ -366,6 +369,7 @@ finalize_block() {
   BLOCK_STAGE=""
   BLOCK_GROUP=""
   BLOCK_PULL_REQUEST=""
+  BLOCK_MERGE_GROUP=""
   SEEN_KEYS=""
 }
 
@@ -491,6 +495,14 @@ while IFS= read -r line || [ -n "$line" ]; do
         *) config_error "task pull_request must be true or false at line $LINE_NUMBER" ;;
       esac
       ;;
+    task:merge_group)
+      [ "$SCHEMA_VERSION" = 4 ] \
+        || config_error "task merge_group requires schema = 4 at line $LINE_NUMBER"
+      case "$(trim "${raw_value%%#*}")" in
+        true | false) BLOCK_MERGE_GROUP="$(trim "${raw_value%%#*}")" ;;
+        *) config_error "task merge_group must be true or false at line $LINE_NUMBER" ;;
+      esac
+      ;;
     *) config_error "unknown key '$key' in $SECTION at line $LINE_NUMBER" ;;
   esac
 done <"$CONFIG_FILE"
@@ -506,7 +518,7 @@ esac
 [ -n "$(validation_records "$TARGETS_FILE")" ] || config_error "schema 1 requires at least one explicit target"
 [ -n "$(validation_records "$TASKS_FILE")" ] || config_error "schema 1 requires at least one explicit task"
 
-while IFS="$(printf '\t')" read -r task_name task_target _task_required _task_stage _task_group _task_pull_request _task_command; do
+while IFS="$(printf '\t')" read -r task_name task_target _task_required _task_stage _task_group _task_pull_request _task_merge_group _task_command; do
   if ! validation_records "$TARGETS_FILE" \
     | awk -F '\t' -v name="$task_target" '$1 == name { found=1 } END { exit !found }'; then
     config_error "task '$task_name' references unknown target '$task_target'"
@@ -524,22 +536,23 @@ if [ -n "$GROUP_ARG" ]; then
   fi
 fi
 
-# Only an explicit pull_request event narrows tasks. Ambient event variables,
+# Only an explicit pull_request or merge_group event narrows tasks. Ambient event variables,
 # omitted events and unknown events retain the full declaration for callers
 # that cannot establish the declaration's trusted provenance.
 task_selected() {
-  local task_stage="$1" task_group="$2" task_pr="$3" event="$4" group="$5"
+  local task_stage="$1" task_group="$2" task_pr="$3" task_mg="$4" event="$5" group="$6"
   [ "$task_stage" = "$STAGE_ARG" ] || return 1
   if [ -n "$group" ] && [ "$task_group" != "$group" ]; then return 1; fi
   if [ "$event" = pull_request ] && [ "$task_pr" = false ]; then return 1; fi
+  if [ "$event" = merge_group ] && [ "$task_mg" = false ]; then return 1; fi
   return 0
 }
 
 selected_tasks() {
-  local event="$1" group="$2" name target required stage shard pr command
-  while IFS="$(printf '\t')" read -r name target required stage shard pr command; do
-    task_selected "$stage" "$shard" "$pr" "$event" "$group" || continue
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$target" "$required" "$stage" "$shard" "$pr" "$command"
+  local event="$1" group="$2" name target required stage shard pr mg command
+  while IFS="$(printf '\t')" read -r name target required stage shard pr mg command; do
+    task_selected "$stage" "$shard" "$pr" "$mg" "$event" "$group" || continue
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$target" "$required" "$stage" "$shard" "$pr" "$mg" "$command"
   done < <(validation_records "$TASKS_FILE")
 }
 
@@ -576,10 +589,10 @@ while IFS="$(printf '\t')" read -r target_name target_path; do
     # always done and what an unreferenced broken path should still report.
     target_in_stage=false
     target_owned=false
-    while IFS="$(printf '\t')" read -r _tn task_target _tr task_stage task_group task_pr _tc; do
+    while IFS="$(printf '\t')" read -r _tn task_target _tr task_stage task_group task_pr task_mg _tc; do
       [ "$task_target" = "$target_name" ] || continue
       target_owned=true
-      task_selected "$task_stage" "$task_group" "$task_pr" "$EVENT_ARG" "$GROUP_ARG" || continue
+      task_selected "$task_stage" "$task_group" "$task_pr" "$task_mg" "$EVENT_ARG" "$GROUP_ARG" || continue
       target_in_stage=true
       break
     done < <(validation_records "$TASKS_FILE")
@@ -615,6 +628,7 @@ if [ "$CHECK_CONTRACT" = true ]; then
     printf '{"schema":%s,"verdict":"valid","runner":"%s","groups":%s' "$SCHEMA_VERSION" "$RUNNER" "$groups_json"
     if [ "$SCHEMA_VERSION" = 4 ]; then
       printf ',"pull_request_groups":%s' "$(group_inventory pull_request)"
+      printf ',"merge_group_groups":%s' "$(group_inventory merge_group)"
     fi
     printf '}\n'
   else
@@ -667,7 +681,7 @@ run_command() {
 # nothing, so running setup there would make an empty commit stage pay the
 # project's full provisioning cost -- the opposite of fast local feedback.
 STAGE_HAS_TASKS=false
-while IFS="$(printf '\t')" read -r _n _t _r _stage _group _pr _c; do
+while IFS="$(printf '\t')" read -r _n _t _r _stage _group _pr _mg _c; do
   STAGE_HAS_TASKS=true
   break
 done < <(selected_tasks "$EVENT_ARG" "$GROUP_ARG")
@@ -690,7 +704,7 @@ if [ "$ACTION" = prepare ]; then
   exit 0
 fi
 
-while IFS="$(printf '\t')" read -r task_name task_target _task_required _task_stage _task_group _task_pr task_command; do
+while IFS="$(printf '\t')" read -r task_name task_target _task_required _task_stage _task_group _task_pr _task_mg task_command; do
   target_path="$(validation_records "$TARGETS_FILE" \
     | awk -F '\t' -v name="$task_target" '$1 == name { print $2 }')"
   if [ -z "$task_command" ]; then
